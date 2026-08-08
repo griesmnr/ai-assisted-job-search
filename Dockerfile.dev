@@ -1,0 +1,74 @@
+# Dev container for the AI-assisted job search project.
+#
+# Reproduces the environment documented in SETUP_HISTORY.md, in Dockerfile
+# form, fixing the three failures recorded there:
+#
+#   1. CA certificates were missing, so `go install` (and anything else doing
+#      TLS) failed with "tls: failed to verify certificate". Fix: install
+#      ca-certificates and run update-ca-certificates BEFORE any step that
+#      talks to the network over HTTPS (go install, npm install, curl).
+#   2. `go install github.com/.../git-bug@latest` failed because git-bug's
+#      module uses `replace` directives, which `go install` does not support.
+#      Fix: clone the repo and `make install` instead (this also matches
+#      git-bug's own documented "build from source" instructions).
+#   3. Ubuntu 24.04's `apt install nodejs` gives Node 18, which is too old for
+#      current pnpm. Fix: install Node 22 from the NodeSource repository
+#      instead of the Ubuntu package.
+#
+# Note: git-bug's go.mod currently requires a newer Go toolchain than the
+# Ubuntu 24.04 apt package (golang-go) ships. Go's GOTOOLCHAIN=auto default
+# handles this transparently -- `go install`/`make install` will download the
+# required toolchain on first use. That download needs working CA certs
+# (reason ca-certificates is installed first) and network access, and can
+# make the first `docker compose build` take a few minutes longer than
+# expected. This is normal, not a hang.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- Base tools + CA certificates FIRST ---
+# ca-certificates must be installed and activated before any step below that
+# performs HTTPS (go install/build, npm, curl scripts) or TLS verification
+# fails, per SETUP_HISTORY.md Step 5-6.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        git \
+        make \
+        golang-go \
+        postgresql-client \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Node 22 (NodeSource, not the Ubuntu 24.04 apt package which is Node 18) ---
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- pnpm ---
+RUN npm install -g pnpm
+
+# --- git-bug, built from source ---
+# `go install ...@latest` does not work for this module (replace directives).
+# Clone and `make install` instead, matching git-bug's documented build-from-
+# source instructions. GOBIN is pinned to a directory already on PATH so the
+# resulting binary is usable without further PATH changes.
+ENV GOBIN=/usr/local/bin
+RUN git clone --depth 1 https://github.com/git-bug/git-bug.git /tmp/git-bug \
+    && cd /tmp/git-bug \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/git-bug
+
+# --- RTK ---
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /workspace
+
+# Stay running in the background under `docker compose up -d` so Nicole can
+# attach a shell with `docker compose exec dev bash` at any time. A plain
+# `bash` CMD would exit immediately with no attached TTY.
+CMD ["sleep", "infinity"]
