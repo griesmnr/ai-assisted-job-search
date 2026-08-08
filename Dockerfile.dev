@@ -1,42 +1,64 @@
 # Dev container for the AI-assisted job search project.
 #
 # Reproduces the environment documented in SETUP_HISTORY.md, in Dockerfile
-# form, fixing the three failures recorded there:
+# form, fixing the failures recorded there:
 #
 #   1. CA certificates were missing, so `go install` (and anything else doing
 #      TLS) failed with "tls: failed to verify certificate". Fix: install
 #      ca-certificates and run update-ca-certificates BEFORE any step that
-#      talks to the network over HTTPS (go install, npm install, curl).
-#   2. `go install github.com/.../git-bug@latest` failed because git-bug's
-#      module uses `replace` directives, which `go install` does not support.
-#      Fix: clone the repo and `make install` instead (this also matches
-#      git-bug's own documented "build from source" instructions).
+#      talks to the network over HTTPS (go build/install, npm, curl).
+#   2. `go install github.com/.../git-bug@latest` failed. As of the current
+#      git-bug, this is NOT because of `replace` directives in go.mod (it has
+#      none) -- it's because git-bug's binary embeds its web UI via
+#      `//go:embed all:dist` in webui/handler.go, and that `dist/` directory
+#      is a build artifact (from `pnpm install && pnpm run build` in webui/)
+#      that does not exist in a plain module fetch. `go install` alone can
+#      never produce it. Fix: clone the repo and `make install`, which runs
+#      the `build-webui` target first -- matching git-bug's own documented
+#      "build from source" instructions.
 #   3. Ubuntu 24.04's `apt install nodejs` gives Node 18, which is too old for
 #      current pnpm. Fix: install Node 22 from the NodeSource repository
 #      instead of the Ubuntu package.
 #
-# Note: git-bug's go.mod currently requires a newer Go toolchain than the
-# Ubuntu 24.04 apt package (golang-go) ships. Go's GOTOOLCHAIN=auto default
-# handles this transparently -- `go install`/`make install` will download the
+# Note: git-bug's go.mod requires a newer Go toolchain than the Ubuntu 24.04
+# apt package (golang-go) ships. Go's GOTOOLCHAIN=auto default (set explicitly
+# below) handles this transparently -- `make install` will download the
 # required toolchain on first use. That download needs working CA certs
 # (reason ca-certificates is installed first) and network access, and can
-# make the first `docker compose build` take a few minutes longer than
-# expected. This is normal, not a hang.
+# make the first `docker compose build` take several minutes longer than
+# later ones. This is normal, not a hang.
 
 FROM ubuntu:24.04
 
+# Use bash with pipefail for every RUN below. Without this, Ubuntu's default
+# /bin/sh (dash) does not support pipefail, so `curl ... | sh` style
+# installers that fail mid-pipe (e.g. RTK's installer) exit 0 and leave a
+# broken image with no error -- and CLAUDE.md mandates `rtk` for every
+# command, so a silently-missing rtk breaks everything downstream with no
+# clue why.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ENV DEBIAN_FRONTEND=noninteractive
+ENV GOTOOLCHAIN=auto
+
+# Pin what we build/install from moving targets, so a rebuild next month
+# doesn't silently pick up a different git-bug or rtk release.
+ENV GIT_BUG_VERSION=v0.10.1
+ENV RTK_VERSION=v0.45.0
 
 # --- Base tools + CA certificates FIRST ---
 # ca-certificates must be installed and activated before any step below that
-# performs HTTPS (go install/build, npm, curl scripts) or TLS verification
+# performs HTTPS (go build/install, npm, curl scripts) or TLS verification
 # fails, per SETUP_HISTORY.md Step 5-6.
+# build-essential is included for the cgo dependencies pulled in by
+# git-bug's search indexing (bleve / go-faiss), which need a C toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         gnupg \
         git \
         make \
+        build-essential \
         golang-go \
         postgresql-client \
     && update-ca-certificates \
@@ -50,21 +72,38 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # --- pnpm ---
 RUN npm install -g pnpm
 
-# --- git-bug, built from source ---
-# `go install ...@latest` does not work for this module (replace directives).
-# Clone and `make install` instead, matching git-bug's documented build-from-
-# source instructions. GOBIN is pinned to a directory already on PATH so the
-# resulting binary is usable without further PATH changes.
+# --- git-bug, built from source at a pinned tag ---
+# `go install ...@latest` does not work for this module -- see note at the
+# top of this file. Clone at a fixed tag and `make install` instead, which
+# builds the webui and embeds it before compiling the Go binary. GOBIN is
+# pinned to a directory already on PATH so the resulting binary is usable
+# without further PATH changes. Go module/build caches and the pnpm store
+# created while building the webui are pruned in this same layer so they
+# don't bloat the image.
 ENV GOBIN=/usr/local/bin
-RUN git clone --depth 1 https://github.com/git-bug/git-bug.git /tmp/git-bug \
+RUN git clone --branch "${GIT_BUG_VERSION}" --depth 1 \
+        https://github.com/git-bug/git-bug.git /tmp/git-bug \
     && cd /tmp/git-bug \
     && make install \
     && cd / \
-    && rm -rf /tmp/git-bug
+    && rm -rf /tmp/git-bug \
+    && go clean -cache -modcache \
+    && pnpm store prune
 
-# --- RTK ---
+# --- RTK, pinned via RTK_VERSION (supported by its install script) ---
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
+
+# --- Build-time verification ---
+# Fail the build here, in CI/on this machine, rather than leaving Nicole to
+# discover a broken tool on her Mac with no diagnostic. Every tool this
+# Dockerfile is supposed to provide must actually answer --version/version.
+RUN node --version \
+    && pnpm --version \
+    && go version \
+    && git-bug version \
+    && rtk --version \
+    && pg_isready --version
 
 WORKDIR /workspace
 

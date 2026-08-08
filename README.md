@@ -11,14 +11,20 @@ Ubuntu sandbox container that Claude Code runs in. That sandbox has no
 `docker` CLI (see `SETUP_HISTORY.md`), so this must be run from a normal
 Terminal on macOS, in the project root.
 
-Three services:
+Three services, but two different start commands (see below) because the
+`dev` service is opt-in:
 
 | Service    | What it is                          | Reachable from `dev` as | Reachable from Mac host as |
 |------------|--------------------------------------|--------------------------|------------------------------|
 | `postgres` | Postgres 16.4                        | `postgres:5432`          | `localhost:5432`             |
 | `rabbitmq` | RabbitMQ 3.13.7 + management plugin  | `rabbitmq:5672`           | `localhost:5672`             |
-| `dev`      | Ubuntu 24.04 + Go, Node 22, pnpm, git-bug, RTK | (this is the client) | `docker compose exec dev bash` |
 |            | RabbitMQ management UI               | `rabbitmq:15672`          | `localhost:15672`            |
+| `dev`      | Ubuntu 24.04 + Go, Node 22, pnpm, git-bug, RTK | (this is the client) | `docker compose exec dev bash` |
+
+Published ports are bound to `127.0.0.1` only (not `0.0.0.0`), so they're
+reachable as `localhost:<port>` from the Mac itself but not from other
+machines on the local network — Postgres and the RabbitMQ UI ship with a
+placeholder password in `.env.example`, so this is deliberate, not a bug.
 
 **Important — use service names, not `localhost`, from inside the `dev`
 container.** `postgres` and `rabbitmq` are separate containers on the
@@ -31,25 +37,27 @@ from those variables rather than hardcoding `localhost`.
 ### First-time setup
 
 ```bash
-cp .env.example .env
-# then edit .env and set real values for:
-#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
-#   RABBITMQ_DEFAULT_USER, RABBITMQ_DEFAULT_PASS
+[ -f .env ] || cp .env.example .env
+# then edit .env and fill in real values
 ```
+
+That `[ -f .env ] ||` guard matters: a plain `cp .env.example .env` silently
+**overwrites** an existing `.env`, and since `.env` is gitignored there is no
+undo. If `.env` already has real values in it (rotated API keys, credentials
+issued by hand), a bare `cp` destroys them with no recovery. The command
+above only copies the template when `.env` doesn't exist yet, and does
+nothing (safely) if it already does.
 
 `.env` is gitignored and must never be committed. `.env.example` (committed)
-documents which keys are required, with placeholder values only.
+documents every key the project uses, with placeholder or empty values only.
 
-### Start everything
+### Start Postgres and RabbitMQ
+
+This is the normal day-to-day command — it does **not** build or start `dev`:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
-
-`--build` is only needed the first time, or after changing `Dockerfile.dev`;
-`docker compose up -d` is enough after that. The `dev` service waits for
-`postgres` and `rabbitmq` to report healthy (via `depends_on: condition:
-service_healthy`) before it starts.
 
 Check status:
 
@@ -57,9 +65,29 @@ Check status:
 docker compose ps
 ```
 
-All three services should show as `running`/`healthy` (postgres and rabbitmq
-have healthchecks; dev has no healthcheck defined so it will just show
-`running`).
+`postgres` and `rabbitmq` should show `running`/`healthy`.
+
+### Start the dev container (opt-in, slow first build)
+
+`dev` is behind a compose profile so a plain `up -d` never triggers it. Its
+image compiles `git-bug` from source, which downloads a Go toolchain and
+builds git-bug's web UI with Vite — 10-20 minutes on a cold build cache. Only
+build/start it when you actually need a shell with Go/Node/pnpm/git-bug/rtk:
+
+```bash
+docker compose --profile dev up -d --build dev
+```
+
+`--build` is only needed the first time, or after changing `Dockerfile.dev`;
+after that, `docker compose --profile dev up -d dev` is enough. `dev` waits
+for `postgres` and `rabbitmq` to report healthy (via `depends_on: condition:
+service_healthy`) before it starts.
+
+The image's own build includes a verification step (see the bottom of
+`Dockerfile.dev`) that checks `node`, `pnpm`, `go`, `git-bug`, `rtk`, and
+`pg_isready` all actually run — if any tool is broken, `docker compose build`
+fails immediately with that tool's name in the output, rather than leaving a
+broken shell to debug later.
 
 ### Reach each service
 
@@ -78,6 +106,8 @@ have healthchecks; dev has no healthcheck defined so it will just show
 ```bash
 docker compose exec dev bash
 ```
+
+(Requires `dev` to already be running — see "Start the dev container" above.)
 
 Inside that shell, `/workspace` is the project directory (bind-mounted from
 the Mac host — edits made on the Mac or in this container show up in both
@@ -100,12 +130,23 @@ curl -sS -u "$RABBITMQ_DEFAULT_USER:$RABBITMQ_DEFAULT_PASS" \
 docker compose down
 ```
 
-Postgres data persists across `down`/`up` in the named volume
-`postgres-data`. To wipe it (start from a clean database):
+This stops `postgres` and `rabbitmq` (and `dev`, if it was running) but
+**keeps their data** in the named volumes `postgres-data` and
+`rabbitmq-data` — including RabbitMQ's queue/exchange definitions and any
+dead-lettered messages, which matter here since DLQs are a deliberate part
+of this project's architecture (see `CLAUDE.md`).
+
+To wipe all data and start clean:
 
 ```bash
 docker compose down -v
 ```
+
+**If you change `RABBITMQ_DEFAULT_USER` or `RABBITMQ_DEFAULT_PASS` in `.env`
+after RabbitMQ has already started once**, you must `docker compose down -v`
+first. RabbitMQ only applies those variables while creating a fresh data
+directory on first boot; with the `rabbitmq-data` volume already populated,
+it keeps the old credentials and ignores the new ones.
 
 ### Rebuilding the dev image
 
@@ -113,11 +154,13 @@ After changing `Dockerfile.dev`:
 
 ```bash
 docker compose build dev
-docker compose up -d dev
+docker compose --profile dev up -d dev
 ```
 
-The first build downloads and compiles `git-bug` from source, which includes
-Go automatically fetching a newer toolchain than the Ubuntu 24.04 `golang-go`
-package ships (git-bug's `go.mod` requires a newer Go than `apt` provides;
-see the comment block at the top of `Dockerfile.dev`). This makes the first
-build noticeably slower than later ones — that is expected, not a hang.
+The first build downloads and compiles `git-bug` from source (pinned to a
+specific tag, see `Dockerfile.dev`), which includes Go automatically
+fetching a newer toolchain than the Ubuntu 24.04 `golang-go` package ships
+(git-bug's `go.mod` requires a newer Go than `apt` provides; see the comment
+block at the top of `Dockerfile.dev` for why this is safe and expected).
+This makes the first build noticeably slower than later ones — that is
+expected, not a hang.
