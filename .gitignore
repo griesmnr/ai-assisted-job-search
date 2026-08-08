@@ -1,1 +1,13 @@
 prep/
+.worktrees/
+
+# Secrets — never commit
+.env
+.env.local
+*.env
+!.env.example
+
+# Node
+node_modules/
+dist/
+build/
