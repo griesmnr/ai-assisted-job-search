@@ -51,6 +51,16 @@ nothing (safely) if it already does.
 `.env` is gitignored and must never be committed. `.env.example` (committed)
 documents every key the project uses, with placeholder or empty values only.
 
+If `.env` is missing or missing a required key, `docker compose up` now
+**fails immediately** with a one-line error naming the missing variable
+(`docker-compose.yml` guards `POSTGRES_USER`/`POSTGRES_PASSWORD`/
+`POSTGRES_DB`/`RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS` with `:?`).
+That's deliberate: without the guard, a missing var silently interpolates as
+an empty string, postgres starts with no password, exits immediately, and
+`restart: unless-stopped` restart-loops it forever — `up -d` would appear to
+succeed while postgres cycled in the background, with the real cause buried
+in `docker compose logs`.
+
 ### Start Postgres and RabbitMQ
 
 This is the normal day-to-day command — it does **not** build or start `dev`:
@@ -67,12 +77,15 @@ docker compose ps
 
 `postgres` and `rabbitmq` should show `running`/`healthy`.
 
-### Start the dev container (opt-in, slow first build)
+### Start the dev container (opt-in)
 
 `dev` is behind a compose profile so a plain `up -d` never triggers it. Its
-image compiles `git-bug` from source, which downloads a Go toolchain and
-builds git-bug's web UI with Vite — 10-20 minutes on a cold build cache. Only
-build/start it when you actually need a shell with Go/Node/pnpm/git-bug/rtk:
+image compiles `git-bug` from source at a pinned tag (v0.10.1), which
+includes Go downloading its own newer toolchain on a cold build cache —
+a few extra minutes the first time, not 10-20: this git-bug tag ships its
+web UI as pre-built, committed Go source, so there's no pnpm/Vite build in
+the loop at all. Only build/start `dev` when you actually need a shell with
+Go/Node/pnpm/git-bug/rtk:
 
 ```bash
 docker compose --profile dev up -d --build dev

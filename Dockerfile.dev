@@ -7,26 +7,36 @@
 #      TLS) failed with "tls: failed to verify certificate". Fix: install
 #      ca-certificates and run update-ca-certificates BEFORE any step that
 #      talks to the network over HTTPS (go build/install, npm, curl).
-#   2. `go install github.com/.../git-bug@latest` failed. As of the current
-#      git-bug, this is NOT because of `replace` directives in go.mod (it has
-#      none) -- it's because git-bug's binary embeds its web UI via
-#      `//go:embed all:dist` in webui/handler.go, and that `dist/` directory
-#      is a build artifact (from `pnpm install && pnpm run build` in webui/)
-#      that does not exist in a plain module fetch. `go install` alone can
-#      never produce it. Fix: clone the repo and `make install`, which runs
-#      the `build-webui` target first -- matching git-bug's own documented
-#      "build from source" instructions.
+#   2. `go install github.com/.../git-bug@latest` failed when SETUP_HISTORY.md
+#      was recorded, against git-bug's floating master branch. This
+#      Dockerfile instead builds git-bug at the pinned tag v0.10.1 for a
+#      reproducible image -- and at that specific tag, `go install
+#      github.com/git-bug/git-bug@v0.10.1` would in fact work standalone:
+#      go.mod has no `replace` directives, and (unlike master at the time
+#      this was first written) the web UI ships as committed, pre-generated
+#      Go source (webui/packed_assets.go, produced by vfsgen) rather than an
+#      embedded `dist/` directory that has to be built at compile time --
+#      v0.10.1's Makefile `install` target is just `go generate; go install`,
+#      with no webui/pnpm/Vite step (that lives in a separate `pack-webui`
+#      target that `install` never calls). We still clone and `make install`
+#      below, for parity with the exact sequence SETUP_HISTORY.md recorded
+#      and verified working -- not because `go install` is broken at this
+#      tag. If this Dockerfile ever tracks a newer git-bug tag where the
+#      webui build IS back on the `install` path, re-check this comment.
 #   3. Ubuntu 24.04's `apt install nodejs` gives Node 18, which is too old for
 #      current pnpm. Fix: install Node 22 from the NodeSource repository
-#      instead of the Ubuntu package.
+#      instead of the Ubuntu package. (This project's own toolchain needs
+#      Node 22 + pnpm regardless of git-bug -- see CLAUDE.md's pnpm
+#      workspaces monorepo layout -- so both stay in this image even though
+#      git-bug's build no longer exercises them.)
 #
-# Note: git-bug's go.mod requires a newer Go toolchain than the Ubuntu 24.04
-# apt package (golang-go) ships. Go's GOTOOLCHAIN=auto default (set explicitly
-# below) handles this transparently -- `make install` will download the
-# required toolchain on first use. That download needs working CA certs
-# (reason ca-certificates is installed first) and network access, and can
-# make the first `docker compose build` take several minutes longer than
-# later ones. This is normal, not a hang.
+# Note: git-bug v0.10.1's go.mod pins `go 1.24.0` (toolchain go1.24.2), newer
+# than the Ubuntu 24.04 apt package (golang-go, currently 1.22.x). Go's
+# GOTOOLCHAIN=auto default (set explicitly below) handles this transparently
+# -- `make install` will download the required toolchain on first use. That
+# download needs working CA certs (reason ca-certificates is installed
+# first) and network access, and can add a few minutes to the first
+# `docker compose build`. This is normal, not a hang.
 
 FROM ubuntu:24.04
 
@@ -50,8 +60,12 @@ ENV RTK_VERSION=v0.45.0
 # ca-certificates must be installed and activated before any step below that
 # performs HTTPS (go build/install, npm, curl scripts) or TLS verification
 # fails, per SETUP_HISTORY.md Step 5-6.
-# build-essential is included for the cgo dependencies pulled in by
-# git-bug's search indexing (bleve / go-faiss), which need a C toolchain.
+# build-essential: nothing in git-bug v0.10.1's module graph was found to
+# require cgo (checked go.mod directly -- bleve v1.0.14 here is pure Go, and
+# there is no go-faiss dependency at this tag). Kept anyway as cheap
+# insurance: a missing C toolchain turns into a confusing cgo/linker error
+# far from its cause, and the package costs comparatively little next to the
+# base image. Revisit if image size becomes a real concern.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -73,13 +87,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN npm install -g pnpm
 
 # --- git-bug, built from source at a pinned tag ---
-# `go install ...@latest` does not work for this module -- see note at the
-# top of this file. Clone at a fixed tag and `make install` instead, which
-# builds the webui and embeds it before compiling the Go binary. GOBIN is
-# pinned to a directory already on PATH so the resulting binary is usable
-# without further PATH changes. Go module/build caches and the pnpm store
-# created while building the webui are pruned in this same layer so they
-# don't bloat the image.
+# `go install github.com/git-bug/git-bug@v0.10.1` would also work standalone
+# at this tag -- see the top-of-file note. We still clone and `make install`
+# here for parity with the exact sequence SETUP_HISTORY.md recorded and
+# verified working, not because `go install` is broken. GOBIN is pinned to a
+# directory already on PATH so the resulting binary is usable without
+# further PATH changes. The Go module/build cache from this compile is
+# pruned in the same layer so it doesn't bloat the image.
 ENV GOBIN=/usr/local/bin
 RUN git clone --branch "${GIT_BUG_VERSION}" --depth 1 \
         https://github.com/git-bug/git-bug.git /tmp/git-bug \
@@ -87,8 +101,7 @@ RUN git clone --branch "${GIT_BUG_VERSION}" --depth 1 \
     && make install \
     && cd / \
     && rm -rf /tmp/git-bug \
-    && go clean -cache -modcache \
-    && pnpm store prune
+    && go clean -cache -modcache
 
 # --- RTK, pinned via RTK_VERSION (supported by its install script) ---
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
