@@ -1,0 +1,9 @@
+# Keep the docker-compose build context small. Without this, the build
+# context grows with every git worktree and every install artifact under
+# this directory, which slows down every `docker compose build`.
+.git
+.worktrees/
+.pnpm-store/
+node_modules/
+prep/
+.env

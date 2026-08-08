@@ -1,0 +1,118 @@
+services:
+  postgres:
+    image: postgres:16.4
+    restart: unless-stopped
+    # The :? guards below are load-bearing, not decoration: without env_file,
+    # a missing .env used to interpolate these as empty strings, so postgres
+    # would start with no superuser password, exit immediately with
+    # "Database is uninitialized and superuser password is not specified",
+    # and then restart-loop forever under `restart: unless-stopped` --
+    # `docker compose up -d` would report success while postgres cycled, with
+    # the real cause 30+ seconds up the scrollback. `:?` makes `docker
+    # compose up` refuse to start at all with a one-line error instead.
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER -- run [ -f .env ] || cp .env.example .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD -- run [ -f .env ] || cp .env.example .env}"
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB -- run [ -f .env ] || cp .env.example .env}"
+    ports:
+      # Bound to loopback only: this ships with a placeholder password
+      # (POSTGRES_PASSWORD=changeme in .env.example) and Docker Desktop on
+      # macOS otherwise publishes container ports on all interfaces, which
+      # would expose Postgres to the local network. Other containers must
+      # reach it via the "postgres" hostname on jobsearch-net, not this
+      # published port -- see README.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces a real TCP check instead of the local unix
+      # socket, so this can't report healthy while initdb is still running
+      # on first boot (the socket can appear ready slightly before the
+      # server is actually accepting TCP connections).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:?set POSTGRES_USER -- run [ -f .env ] || cp .env.example .env} -d ${POSTGRES_DB:?set POSTGRES_DB -- run [ -f .env ] || cp .env.example .env}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - jobsearch-net
+
+  rabbitmq:
+    image: rabbitmq:3.13.7-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?set RABBITMQ_DEFAULT_USER -- run [ -f .env ] || cp .env.example .env}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?set RABBITMQ_DEFAULT_PASS -- run [ -f .env ] || cp .env.example .env}"
+    ports:
+      # Loopback only -- see the postgres port comment above; the same
+      # reasoning applies to the AMQP port and, especially, the management
+      # UI, which would otherwise expose login to the local network.
+      - "127.0.0.1:5672:5672"   # AMQP
+      - "127.0.0.1:15672:15672" # management UI, http://localhost:15672 from the Mac host
+    volumes:
+      # Without this, `docker compose down` wipes queue/exchange definitions
+      # and any dead-lettered messages -- on a project whose whole point is
+      # demonstrating DLQs, that's a real loss, not just inconvenience.
+      # If you change RABBITMQ_DEFAULT_USER/PASS after the volume already
+      # has data, RabbitMQ will NOT pick up the new credentials (they only
+      # apply on first boot with an empty data dir) -- run `docker compose
+      # down -v` first to reset.
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      # check_port_connectivity is a lighter, more specific signal than
+      # check_running (which reports healthy before listeners are all up);
+      # this is closer to "can a client actually connect".
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - jobsearch-net
+
+  dev:
+    # Not started by a plain `docker compose up -d` -- only postgres and
+    # rabbitmq are (the profiles list on THIS service, not on the others).
+    # Building this image compiles git-bug from source at a pinned tag
+    # (v0.10.1, see Dockerfile.dev), which involves Go downloading its own
+    # newer toolchain (~100-150MB) on a cold cache -- no webui/Vite build is
+    # involved at this tag. Still worth keeping off the default `up -d` path:
+    # gating Postgres/RabbitMQ behind any image build would be a bad first
+    # impression for a ticket that only asked for infra. Run `docker compose
+    # --profile dev up -d --build` (or `docker compose up -d --build dev`)
+    # to include it.
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Service-name endpoints for reaching the other containers. NOT
+      # localhost -- localhost inside this container is this container.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_MANAGEMENT_PORT: 15672
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - jobsearch-net
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+
+networks:
+  jobsearch-net:
+    driver: bridge
