@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+.pnpm-store
+pnpm-lock.yaml
+*.tsbuildinfo
+.rtk
+
+# Hand-maintained PM/setup docs at the repo root, not scaffold-owned
+/CLAUDE.md
+/SETUP_HISTORY.md

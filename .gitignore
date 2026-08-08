@@ -7,11 +7,17 @@ prep/
 *.env
 !.env.example
 
-# Node
+# Node / pnpm workspace
 node_modules/
 dist/
 build/
+dist-node/
+*.tsbuildinfo
+coverage/
 
 # Tooling
 .rtk/
 .pnpm-store/
+
+# Vite
+apps/*/.vite/
