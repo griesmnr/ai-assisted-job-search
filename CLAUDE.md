@@ -317,10 +317,14 @@ Every ticket is implemented in its own worktree on its own branch. Agents never
 work in `/workspace` directly and never touch `main`.
 
 ```bash
-rtk git worktree add ../wt-<bug-id-short> -b ticket/<bug-id-short>-<slug>
+rtk git worktree add .worktrees/<bug-id-short> -b ticket/<bug-id-short>-<slug>
 # ... agent works there ...
-rtk git worktree remove ../wt-<bug-id-short>
+rtk git worktree remove .worktrees/<bug-id-short>
 ```
+
+Worktrees live in `.worktrees/` **inside** the repo, which is gitignored. They
+cannot go in the parent directory: `/workspace` is the macOS bind mount, so
+anything written to `/` exists only inside the container and vanishes on restart.
 
 Branch naming: `ticket/<short-bug-id>-<kebab-slug>`.
 

@@ -11,3 +11,7 @@ prep/
 node_modules/
 dist/
 build/
+
+# Tooling
+.rtk/
+.pnpm-store/
