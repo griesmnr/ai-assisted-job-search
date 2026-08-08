@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 
 /**
@@ -9,7 +10,12 @@ export function buildApp() {
   return Fastify({ logger: true });
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// pathToFileURL handles spaces/non-ASCII in the path correctly (percent-
+// encodes as needed); a raw `file://${process.argv[1]}` template does not,
+// so this check would silently fail — and the server would silently never
+// listen — for anyone running from a path like `~/My Projects/`.
+const isMain =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
   const app = buildApp();

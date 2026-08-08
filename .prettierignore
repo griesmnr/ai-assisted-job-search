@@ -5,6 +5,7 @@ build
 pnpm-lock.yaml
 *.tsbuildinfo
 .rtk
+.worktrees
 
 # Hand-maintained PM/setup docs at the repo root, not scaffold-owned
 /CLAUDE.md

@@ -197,18 +197,42 @@ This gives real homes for the three patterns the JD names:
 
 ### Commands
 
-> Filled in as the scaffold ticket lands. Until then these are the intended shape:
-
 ```bash
 rtk pnpm install          # install workspace deps
-rtk pnpm build            # build all packages
-rtk vitest                # run tests
-rtk lint                  # lint
+rtk pnpm build            # build all packages (tsc per package, vite build for web)
+rtk vitest                # run tests — resolves @app/shared from source, no build required first
+rtk pnpm lint             # eslint . && prettier --check .
+rtk pnpm format           # prettier --write .
 docker compose up -d      # Postgres + RabbitMQ (from the host, not this container)
 ```
 
+`rtk vitest` works standalone on a fresh clone: `vitest.config.ts` aliases
+`@app/shared` straight to `packages/shared/src/index.ts`, so tests always run
+against current source, never a possibly-stale `dist/`. `pnpm build` is the
+one command that needs workspace build order (shared before api/web), which
+`pnpm -r run build` provides automatically since it's topological.
+
 **Definition of done for a ticket:** build passes, `vitest` passes, lint passes,
 and the acceptance criteria are verified against the diff.
+
+### Toolchain decisions
+
+- **TypeScript is pinned to `~6.0.3`, not `^`.** `typescript@7.0` is the new
+  native (Go-based) compiler; `typescript-eslint` does not support it yet
+  (throws outright — see [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940)),
+  which breaks `pnpm lint`. `typescript-eslint`'s own peer range on
+  `typescript` is `<6.1.0`, so the tilde matters: a caret would still allow
+  `6.1.0` to resolve on the next `pnpm install`/lockfile refresh and silently
+  reintroduce the exact breakage this pin exists to prevent. **Unpin when**
+  typescript-eslint#10940 closes with TS 7.x support (check the issue, then
+  bump the four `package.json` typescript entries and this note together).
+- **`noUncheckedIndexedAccess` is deliberately off.** `strict: true` alone
+  satisfies the ticket's TypeScript-strictness requirement; this flag is
+  beyond it. It would force a guard on every `jobs[0]`, `results[i]`,
+  `scoresBySource[source]` — and this app is built on exactly those shapes.
+  Nicole has ~9 hours before the interview it's prep for; that time belongs
+  on RabbitMQ, Drizzle, and React, not on indexed-access ceremony. Revisit
+  once the core features exist and there's slack to spend on it.
 
 ### Learning constraint — read this before dispatching agents
 
