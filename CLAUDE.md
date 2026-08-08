@@ -146,32 +146,85 @@ This project is run as an AI software team. Claude acts as **project manager**:
 it owns the ticket backlog, dispatches implementation agents, gates every merge
 behind adversarial review, and performs the merges itself.
 
+## The Project
+
+An AI-assisted job search web app. The user picks which job sources to search
+(airline-style toggles), supplies a resume, and gets back a ranked list of
+postings with AI-generated match scores, best match first.
+
+Chosen to mirror the DAT Software Engineer II job description, because the
+project's primary purpose is interview preparation.
+
 ## Project Stack
 
-> **STATUS: NOT YET DETERMINED.** The repository currently contains no
-> application code — only `SETUP_HISTORY.md` (environment provisioning notes)
-> and this file. The stack will be fixed during the project interview and this
-> section replaced with concrete build/test/lint commands.
+TypeScript end to end.
 
-Toolchains available in the container today:
+| Layer | Choice | Why |
+|---|---|---|
+| Backend | Node.js + TypeScript (Fastify) | JD: "backend services in Node.js/TypeScript" |
+| Frontend | React + TypeScript (Vite), **separate app** | JD: "contribute to React frontends"; a separate app forces a real REST contract boundary rather than hiding it behind a framework |
+| Database | PostgreSQL + Drizzle ORM | JD: "SQL databases (schema basics, writing queries, migrations)". Drizzle stays close to SQL |
+| Messaging | RabbitMQ (`amqplib`) | JD: "message-driven workflows (Kafka/RabbitMQ)... retries, DLQs, idempotency" |
+| Tests | Vitest | TS-native, fast, RTK has a filter for it |
+| Local dev | docker-compose | Postgres + RabbitMQ + both apps on one network |
+| Repo layout | pnpm workspaces monorepo | One toolchain, one lint config, one test runner |
+| AI | `@anthropic-ai/sdk`, `claude-opus-5` | Resume analysis and per-job match scoring |
 
-| Tool | Version |
-|---|---|
-| Go | 1.22.2 (linux/arm64) |
-| Node | 22.23.2 |
-| pnpm | 10.33.0 |
-| Python | 3.12.3 |
-| git-bug | installed (`git-bug`, `git bug`) |
-| RTK | installed |
+**Deliberately NOT Next.js.** It would collapse frontend and backend into one
+app, which is less like the target job, not more.
 
-Not installed: `cargo`, `docker` CLI, `gh`. Adding any of these is itself a
+Not installed in the dev container yet: `docker` CLI, `gh`. Adding either is a
 ticket, not an ad-hoc action.
 
-Once the stack is chosen, this section must list, explicitly:
+### Why RabbitMQ is the honest architecture here
 
-- the build command, the test command, the lint/format command
-- how to run the project locally
-- the definition of done for a ticket (which of the above must pass)
+Not decoration. A search fans out to N job sources that are unequal and
+unreliable, which is exactly what a queue is for:
+
+1. API records the search, publishes one `fetch.source` message per selected source.
+2. **Source workers** fetch from that source, normalize wildly different response
+   shapes into one `Job` record, publish one `score.job` message per posting.
+3. **Scoring workers** send resume + job description to Claude, write the match score.
+4. Frontend renders the ranked list as scores land.
+
+This gives real homes for the three patterns the JD names:
+
+- **Retries** — a source rate-limits or times out. Retry with backoff.
+- **DLQs** — a source fails repeatedly. It dead-letters, the UI shows that source
+  as unavailable, and the other sources still return. Product behavior, not a demo.
+- **Idempotency** — the same posting arrives from two sources, or RabbitMQ
+  redelivers after a worker dies mid-scoring. Dedupe on `(source, external_id)`.
+
+### Commands
+
+> Filled in as the scaffold ticket lands. Until then these are the intended shape:
+
+```bash
+rtk pnpm install          # install workspace deps
+rtk pnpm build            # build all packages
+rtk vitest                # run tests
+rtk lint                  # lint
+docker compose up -d      # Postgres + RabbitMQ (from the host, not this container)
+```
+
+**Definition of done for a ticket:** build passes, `vitest` passes, lint passes,
+and the acceptance criteria are verified against the diff.
+
+### Learning constraint — read this before dispatching agents
+
+Nicole has never written TypeScript and has no RabbitMQ experience, and is
+building this to prepare for interviews on exactly those technologies. **An
+impressive repo she cannot explain is the failure mode**, so the split is:
+
+- **Agents write** what does not need defending: scaffolding, config,
+  docker-compose, test harnesses, additional source adapters once the first
+  exists as a pattern, CI.
+- **Nicole writes** — or reads and modifies line by line — anything that maps to
+  a JD bullet: the RabbitMQ consumer with its retry and DLQ config, the Drizzle
+  schema and migrations, the match-scoring service, the main React components.
+
+Tickets carry an `owner:` label (`owner:nicole` or `owner:agent`) to record which
+side of that line they fall on. Do not let agent throughput outrun comprehension.
 
 ## Model Roster and Escalation Ladder
 
@@ -221,6 +274,11 @@ Every ticket carries **exactly one** of each of the first three:
 | `type:` | `design`, `task`, `bug`, `chore`, `docs` |
 | `difficulty:` | `trivial`, `easy`, `moderate`, `hard`, `research` |
 | `model:` | `haiku`, `sonnet`, `opus`, `fable` |
+
+Plus **exactly one** `owner:` label — `owner:nicole` or `owner:agent` — recording
+which side of the learning constraint the ticket falls on (see Project Stack).
+`owner:nicole` tickets are never dispatched to an agent unassisted; at most an
+agent drafts and Nicole reviews line by line.
 
 Optional: `area:<component>`, `epic` (a parent that must be split), `blocked`.
 
