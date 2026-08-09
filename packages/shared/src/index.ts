@@ -37,3 +37,25 @@ export type JobMatch = {
   matchScore: number;
   rationale: string;
 };
+
+export type Search = {
+  id: string;
+  resumeId: string;
+  searchedAt: Date;
+};
+
+export type SearchResult = {
+  id: string;
+  searchId: string;
+  jobId: string;
+};
+
+export type SearchSource = {
+  searchId: string;
+  sourceDescriptorId: string;
+};
+
+export type SourceDescriptor = {
+  id: string;
+  displayName: string;
+};
