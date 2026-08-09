@@ -9,3 +9,31 @@
 export function ping(): string {
   return "pong";
 }
+
+export type Job = {
+  id: string;
+  externalId: string;
+  dataSource: "usajobs" | "wa-state";
+  title: string;
+  description: string;
+  company: string;
+  payType: "hourly" | "salary";
+  commitment: "full-time" | "part-time" | "contract";
+  locationType: "remote" | "onsite" | "hybrid";
+  location?: string;
+  linkToApply: string;
+  postedAt: Date;
+};
+
+export type Resume = {
+  id: string;
+  resumeText: string;
+};
+
+export type JobMatch = {
+  id: string;
+  resumeId: string;
+  jobId: string;
+  matchScore: number;
+  rationale: string;
+};
