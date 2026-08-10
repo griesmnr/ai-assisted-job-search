@@ -1,0 +1,92 @@
+{
+  "LanguageCode": "EN",
+  "SearchParameters": { "Keyword": "engineer" },
+  "SearchResult": {
+    "SearchResultCount": 4,
+    "SearchResultCountAll": 4,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "900000001",
+        "MatchedObjectDescriptor": {
+          "PositionID": "GOOD-1",
+          "PositionTitle": "Good Job",
+          "PositionURI": "https://www.usajobs.gov/job/900000001",
+          "ApplyURI": ["https://www.usajobs.gov/job/900000001/apply"],
+          "PositionLocationDisplay": "Austin, Texas",
+          "OrganizationName": "Department of Energy",
+          "PositionRemuneration": [{ "RateIntervalCode": "Per Year" }],
+          "PositionSchedule": [{ "Name": "Full-time" }],
+          "PublicationStartDate": "2026-07-01",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "A perfectly normal, fully mappable posting.",
+              "TeleworkEligible": "No",
+              "RemoteIndicator": false
+            }
+          }
+        }
+      },
+      {
+        "MatchedObjectId": "900000002",
+        "MatchedObjectDescriptor": {
+          "PositionID": "BAD-PAYTYPE",
+          "PositionTitle": "Ambiguous Pay Basis Job",
+          "PositionURI": "https://www.usajobs.gov/job/900000002",
+          "ApplyURI": ["https://www.usajobs.gov/job/900000002/apply"],
+          "PositionLocationDisplay": "Reno, Nevada",
+          "OrganizationName": "Department of Agriculture",
+          "PositionRemuneration": [{ "RateIntervalCode": "Per Day" }],
+          "PositionSchedule": [{ "Name": "Full-time" }],
+          "PublicationStartDate": "2026-07-01",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "Pay is quoted per diem, which is neither hourly nor an annual salary.",
+              "TeleworkEligible": "No",
+              "RemoteIndicator": false
+            }
+          }
+        }
+      },
+      {
+        "MatchedObjectId": "900000003",
+        "MatchedObjectDescriptor": {
+          "PositionID": "BAD-COMMITMENT",
+          "PositionTitle": "Ambiguous Schedule Job",
+          "PositionURI": "https://www.usajobs.gov/job/900000003",
+          "ApplyURI": ["https://www.usajobs.gov/job/900000003/apply"],
+          "PositionLocationDisplay": "Tampa, Florida",
+          "OrganizationName": "Department of Health and Human Services",
+          "PositionRemuneration": [{ "RateIntervalCode": "Per Year" }],
+          "PositionSchedule": [{ "Name": "Intermittent" }],
+          "PublicationStartDate": "2026-07-01",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "Schedule is intermittent, not clearly full- or part-time.",
+              "TeleworkEligible": "No",
+              "RemoteIndicator": false
+            }
+          }
+        }
+      },
+      {
+        "MatchedObjectId": "900000004",
+        "MatchedObjectDescriptor": {
+          "PositionID": "BAD-LOCATIONTYPE",
+          "PositionTitle": "Ambiguous Location Job",
+          "PositionURI": "https://www.usajobs.gov/job/900000004",
+          "ApplyURI": ["https://www.usajobs.gov/job/900000004/apply"],
+          "PositionLocationDisplay": "Boise, Idaho",
+          "OrganizationName": "Department of the Treasury",
+          "PositionRemuneration": [{ "RateIntervalCode": "Per Year" }],
+          "PositionSchedule": [{ "Name": "Full-time" }],
+          "PublicationStartDate": "2026-07-01",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "Neither TeleworkEligible nor RemoteIndicator is present in this record."
+            }
+          }
+        }
+      }
+    ]
+  }
+}

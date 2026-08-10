@@ -1,0 +1,69 @@
+{
+  "LanguageCode": "EN",
+  "SearchParameters": { "Keyword": "software engineer" },
+  "SearchResult": {
+    "SearchResultCount": 2,
+    "SearchResultCountAll": 3,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "787306400",
+        "MatchedObjectDescriptor": {
+          "PositionID": "ST-12345-25-AB",
+          "PositionTitle": "Software Engineer",
+          "PositionURI": "https://www.usajobs.gov/job/787306400",
+          "ApplyURI": ["https://www.usajobs.gov/job/787306400/apply"],
+          "PositionLocationDisplay": "Washington, District of Columbia",
+          "OrganizationName": "Department of the Army",
+          "DepartmentName": "Department of Defense",
+          "PositionRemuneration": [
+            {
+              "MinimumRange": "104861.00",
+              "MaximumRange": "136402.00",
+              "RateIntervalCode": "Per Year"
+            }
+          ],
+          "PositionSchedule": [{ "Name": "Full-time", "Code": "1" }],
+          "PublicationStartDate": "2026-07-01",
+          "ApplicationCloseDate": "2026-08-15",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "Design and build backend services for Army logistics systems.",
+              "QualificationSummary": "Requires a degree in computer science or equivalent experience.",
+              "TeleworkEligible": "No",
+              "RemoteIndicator": false
+            }
+          }
+        }
+      },
+      {
+        "MatchedObjectId": "787306401",
+        "MatchedObjectDescriptor": {
+          "PositionID": "ST-12346-25-AB",
+          "PositionTitle": "IT Specialist (Contractor Support)",
+          "PositionURI": "https://www.usajobs.gov/job/787306401",
+          "ApplyURI": ["https://www.usajobs.gov/job/787306401/apply"],
+          "PositionLocationDisplay": "Anywhere in the U.S. (remote job)",
+          "OrganizationName": "Department of Veterans Affairs",
+          "DepartmentName": "Department of Veterans Affairs",
+          "PositionRemuneration": [
+            {
+              "MinimumRange": "38.00",
+              "MaximumRange": "52.00",
+              "RateIntervalCode": "Per Hour"
+            }
+          ],
+          "PositionSchedule": [{ "Name": "Part-time", "Code": "2" }],
+          "PublicationStartDate": "2026-07-03",
+          "ApplicationCloseDate": "2026-08-01",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "Support VA telehealth infrastructure remotely.",
+              "TeleworkEligible": "Yes",
+              "RemoteIndicator": true
+            }
+          }
+        }
+      }
+    ]
+  }
+}
