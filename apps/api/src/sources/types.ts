@@ -35,6 +35,15 @@ export type SkippedRecord = {
 export type SourceSearchResult = {
   jobs: NormalizedJob[];
   skipped: SkippedRecord[];
+  /**
+   * `skipped.length / (jobs.length + skipped.length)`, or `0` when the
+   * source matched nothing at all. Exists so "found nothing" (a legitimate
+   * empty search) can't be confused with "found things but couldn't map any
+   * of them" (a mapper bug or an upstream schema change) — both otherwise
+   * present to a caller as `jobs: []`. A worker should treat a high
+   * `skipRate` on a non-empty result as a signal to alert, not just log.
+   */
+  skipRate: number;
 };
 
 /**
@@ -63,7 +72,12 @@ export interface JobSource {
 // ---------------------------------------------------------------------------
 
 export type SourceErrorKind =
-  "rate-limited" | "auth-failed" | "transient" | "malformed-response" | "unexpected-status";
+  | "rate-limited"
+  | "auth-failed"
+  | "forbidden"
+  | "transient"
+  | "malformed-response"
+  | "unexpected-status";
 
 export abstract class SourceError extends Error {
   abstract readonly kind: SourceErrorKind;
@@ -88,12 +102,29 @@ export class RateLimitedError extends SourceError {
   }
 }
 
-/** Our credentials were rejected (HTTP 401/403). Retrying the same request
- * will never succeed — this needs a human to fix the API key or user agent,
- * not a retry loop. */
+/** The source told us, in a response it authenticated as its own (JSON body,
+ * not a WAF page), that our credentials are invalid (HTTP 401). Retrying the
+ * same request will never succeed — this needs a human to fix the API key or
+ * user agent, not a retry loop. */
 export class AuthFailedError extends SourceError {
   readonly kind = "auth-failed";
   readonly retryable = false;
+}
+
+/** HTTP 403. Deliberately *not* folded into `AuthFailedError`: for USAJOBS
+ * specifically, 403 is what you get from Akamai (the WAF in front of the
+ * real API) rejecting the request — e.g. on an unrecognized `User-Agent` —
+ * and comes back as an HTML block page, not the API's own JSON error. That
+ * is a different failure than the API itself telling us our key is bad, and
+ * it is not reliably permanent (a WAF rule or fingerprint can change
+ * request-to-request), so this defaults retryable rather than assuming it
+ * will never succeed. Kept as its own kind rather than merged into
+ * `transient` so a caller can alert on a run of 403s distinctly from a run
+ * of 5xxs — a 403 storm usually means "fix the User-Agent format", a 5xx
+ * storm means "the upstream is down". */
+export class ForbiddenError extends SourceError {
+  readonly kind = "forbidden";
+  readonly retryable = true;
 }
 
 /** A network-level failure (timeout, DNS, connection reset) or a 5xx from

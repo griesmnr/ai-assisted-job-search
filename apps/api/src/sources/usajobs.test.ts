@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   AuthFailedError,
+  ForbiddenError,
   MalformedResponseError,
   RateLimitedError,
   TransientSourceError,
@@ -10,21 +11,47 @@ import {
 } from "./types.js";
 import { UsajobsSource, createUsajobsSourceFromEnv } from "./usajobs.js";
 
-function loadFixture(name: string): unknown {
-  const path = fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url));
-  return JSON.parse(readFileSync(path, "utf-8"));
-}
+// ---------------------------------------------------------------------------
+// Fixture: a real, live-captured USAJOBS response (Fields=Full, HTTP 200,
+// 2 records chosen to cover TeleworkEligible true and false). See
+// __fixtures__/usajobs-real-response.json. Every test below either uses
+// this response directly or derives a variant from a deep clone of one of
+// its records with a single field changed — never a hand-invented shape.
+// An earlier version of this suite used fixtures built from memory of the
+// USAJOBS docs rather than a real response, and every mapping in them was
+// subtly wrong (RateIntervalCode values, PositionSchedule matching,
+// TeleworkEligible's type) in ways that made the adapter map zero real
+// jobs while the suite stayed green. Do not reintroduce hand-built
+// fixtures for the success/pagination/skip paths - derive from this file.
+// ---------------------------------------------------------------------------
 
 type UsajobsFixture = {
   SearchResult: {
     SearchResultCountAll: number;
-    SearchResultItems: unknown[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    SearchResultItems: any[];
   };
 };
 
-const page1 = loadFixture("usajobs-page-1.json") as UsajobsFixture;
-const page2 = loadFixture("usajobs-page-2.json") as UsajobsFixture;
-const withUnmappable = loadFixture("usajobs-with-unmappable.json") as UsajobsFixture;
+function loadFixture(name: string): UsajobsFixture {
+  const path = fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url));
+  return JSON.parse(readFileSync(path, "utf-8")) as UsajobsFixture;
+}
+
+const real = loadFixture("usajobs-real-response.json");
+const realItems = real.SearchResult.SearchResultItems;
+// Sanity-check the fixture itself hasn't drifted from what these tests
+// assume, so a broken fixture fails with a clear message instead of
+// confusing downstream assertion failures.
+if (realItems.length !== 2) {
+  throw new Error(`expected the real fixture to have 2 items, got ${realItems.length}`);
+}
+const [civilEngineer, engineeringGeneralist] = realItems;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cloneItem(item: any): any {
+  return structuredClone(item);
+}
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -42,92 +69,75 @@ function makeSource(fetchImpl: typeof fetch) {
   });
 }
 
-describe("UsajobsSource — successful mapping", () => {
-  it("maps USAJOBS fields onto Job, including required-field derivation", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      jsonResponse({
-        SearchResult: { ...page1.SearchResult, SearchResultCountAll: 2 },
-      }),
-    );
+describe("UsajobsSource — mapping against a real captured response", () => {
+  it("returns a non-empty jobs array for a real response with a 0 skip rate", async () => {
+    // This is the guardrail: if the mapping functions regress in a way
+    // that makes every real record unmappable (e.g. matching a field type
+    // or code that doesn't actually appear in USAJOBS' payload), this
+    // fails loudly instead of quietly returning `jobs: []`, which is what
+    // happened before this fixture existed.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
     const source = makeSource(fetchImpl);
 
-    const { jobs, skipped } = await source.search({ keyword: "software engineer" });
+    const { jobs, skipped, skipRate } = await source.search({ keyword: "engineer" });
 
-    expect(skipped).toEqual([]);
+    expect(jobs.length).toBeGreaterThan(0);
     expect(jobs).toHaveLength(2);
+    expect(skipped).toEqual([]);
+    expect(skipRate).toBe(0);
+  });
 
-    const [salaried, hourly] = jobs;
-    expect(salaried).toEqual({
-      externalId: "787306400",
+  it("maps every field of the real response onto Job", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
+    const source = makeSource(fetchImpl);
+
+    const { jobs } = await source.search({ keyword: "engineer" });
+    const [civil, generalist] = jobs;
+
+    expect(civil).toEqual({
+      externalId: "879434300",
       dataSource: "usajobs",
-      title: "Software Engineer",
-      description: "Design and build backend services for Army logistics systems.",
-      company: "Department of the Army",
+      title: "Civil Engineer (Structural)",
+      description: civilEngineer.MatchedObjectDescriptor.UserArea.Details.JobSummary,
+      company: "U.S. Army Corps of Engineers",
       payType: "salary",
       commitment: "full-time",
-      locationType: "onsite",
-      location: "Washington, District of Columbia",
-      linkToApply: "https://www.usajobs.gov/job/787306400/apply",
-      postedAt: new Date("2026-07-01"),
+      // RemoteIndicator: false, TeleworkEligible: true
+      locationType: "hybrid",
+      location: "Walla Walla, Washington",
+      linkToApply: "https://www.usajobs.gov:443/job/879434300",
+      postedAt: new Date("2026-08-06T00:00:00.0000"),
     });
 
-    expect(hourly).toEqual({
-      externalId: "787306401",
+    expect(generalist).toEqual({
+      externalId: "846773600",
       dataSource: "usajobs",
-      title: "IT Specialist (Contractor Support)",
-      description: "Support VA telehealth infrastructure remotely.",
-      company: "Department of Veterans Affairs",
-      payType: "hourly",
-      commitment: "part-time",
-      locationType: "remote",
-      location: "Anywhere in the U.S. (remote job)",
-      linkToApply: "https://www.usajobs.gov/job/787306401/apply",
-      postedAt: new Date("2026-07-03"),
+      title: "ENGINEERING",
+      description: engineeringGeneralist.MatchedObjectDescriptor.UserArea.Details.JobSummary,
+      company: "Air Force Civilian Career Training",
+      payType: "salary",
+      commitment: "full-time",
+      // RemoteIndicator: false, TeleworkEligible: false
+      locationType: "onsite",
+      location: "Multiple Locations",
+      linkToApply: "https://www.usajobs.gov:443/job/846773600",
+      postedAt: new Date("2025-09-29T00:00:00.0000"),
     });
   });
 
-  it("maps TeleworkEligible=Yes + RemoteIndicator=false to hybrid", async () => {
-    // Standalone page: override SearchResultCountAll to match the single
-    // item actually included, so the adapter doesn't try to fetch a
-    // (nonexistent) second page.
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse({ SearchResult: { ...page2.SearchResult, SearchResultCountAll: 1 } }),
-      );
+  it("produces a stable externalId (MatchedObjectId) across repeated calls", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse(real));
     const source = makeSource(fetchImpl);
 
-    const { jobs } = await source.search({ keyword: "sysadmin" });
+    const first = await source.search({ keyword: "engineer" });
+    const second = await source.search({ keyword: "engineer" });
 
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.locationType).toBe("hybrid");
-    expect(jobs[0]?.externalId).toBe("787306402");
-  });
-
-  it("produces a stable externalId across repeated calls for the same posting", async () => {
-    // mockImplementation (not mockResolvedValue) so each fetch call gets a
-    // fresh Response — a Response body can only be read once, and this
-    // test calls search() twice.
-    const fetchImpl = vi
-      .fn()
-      .mockImplementation(async () =>
-        jsonResponse({ SearchResult: { ...page1.SearchResult, SearchResultCountAll: 2 } }),
-      );
-    const source = makeSource(fetchImpl);
-
-    const first = await source.search({ keyword: "software engineer" });
-    const second = await source.search({ keyword: "software engineer" });
-
+    expect(first.jobs.map((j) => j.externalId)).toEqual(["879434300", "846773600"]);
     expect(first.jobs.map((j) => j.externalId)).toEqual(second.jobs.map((j) => j.externalId));
-    expect(first.jobs[0]?.externalId).toBe("787306400");
   });
 
-  it("sends Authorization-Key and User-Agent headers, and never a query param for the API key", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse({ SearchResult: { SearchResultCountAll: 0, SearchResultItems: [] } }),
-      );
+  it("requests Fields=Full and sends Authorization-Key / User-Agent, never leaking the key into the URL", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
     const source = new UsajobsSource({
       apiKey: "super-secret-key",
       userAgent: "nicole@griesmeyer.org",
@@ -138,6 +148,7 @@ describe("UsajobsSource — successful mapping", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as [URL, RequestInit];
+    expect(url.searchParams.get("Fields")).toBe("Full");
     const headers = init.headers as Record<string, string>;
     expect(headers["Authorization-Key"]).toBe("super-secret-key");
     expect(headers["User-Agent"]).toBe("nicole@griesmeyer.org");
@@ -147,71 +158,135 @@ describe("UsajobsSource — successful mapping", () => {
 
 describe("UsajobsSource — pagination", () => {
   it("follows pages until SearchResultCountAll is reached", async () => {
+    const page1 = {
+      SearchResult: { SearchResultCountAll: 2, SearchResultItems: [cloneItem(civilEngineer)] },
+    };
+    const page2 = {
+      SearchResult: {
+        SearchResultCountAll: 2,
+        SearchResultItems: [cloneItem(engineeringGeneralist)],
+      },
+    };
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(page1))
       .mockResolvedValueOnce(jsonResponse(page2));
     const source = makeSource(fetchImpl);
 
-    const { jobs, skipped } = await source.search({ keyword: "software engineer" });
+    const { jobs, skipped } = await source.search({ keyword: "engineer" });
 
     expect(skipped).toEqual([]);
-    expect(jobs).toHaveLength(3);
-    expect(jobs.map((j) => j.externalId)).toEqual(["787306400", "787306401", "787306402"]);
+    expect(jobs.map((j) => j.externalId)).toEqual(["879434300", "846773600"]);
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const firstUrl = fetchImpl.mock.calls[0]?.[0] as URL;
     const secondUrl = fetchImpl.mock.calls[1]?.[0] as URL;
     expect(firstUrl.searchParams.get("Page")).toBe("1");
     expect(secondUrl.searchParams.get("Page")).toBe("2");
+    expect(firstUrl.searchParams.get("Fields")).toBe("Full");
+    expect(secondUrl.searchParams.get("Fields")).toBe("Full");
   });
 
   it("stops after one page when the first page already covers SearchResultCountAll", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse({ SearchResult: { ...page1.SearchResult, SearchResultCountAll: 2 } }),
-      );
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
     const source = makeSource(fetchImpl);
 
-    await source.search({ keyword: "software engineer" });
+    await source.search({ keyword: "engineer" });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("stops if a page comes back with zero items even though the count implies more", async () => {
+    const page1 = {
+      SearchResult: { SearchResultCountAll: 2, SearchResultItems: [cloneItem(civilEngineer)] },
+    };
+    const emptyPage2 = { SearchResult: { SearchResultCountAll: 2, SearchResultItems: [] } };
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(page1))
-      .mockResolvedValueOnce(
-        jsonResponse({ SearchResult: { SearchResultCountAll: 3, SearchResultItems: [] } }),
-      );
+      .mockResolvedValueOnce(jsonResponse(emptyPage2));
     const source = makeSource(fetchImpl);
 
-    const { jobs } = await source.search({ keyword: "software engineer" });
+    const { jobs } = await source.search({ keyword: "engineer" });
 
-    expect(jobs).toHaveLength(2);
+    expect(jobs).toHaveLength(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("UsajobsSource — surfaces unmappable fields instead of guessing", () => {
-  it("skips records whose payType/commitment/locationType cannot be determined, with reasons", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(withUnmappable));
+  it("skips records whose payType/commitment/locationType cannot be determined, with reasons, and reports skipRate", async () => {
+    const good = cloneItem(civilEngineer);
+
+    const badPayType = cloneItem(civilEngineer);
+    badPayType.MatchedObjectId = "900000002";
+    badPayType.MatchedObjectDescriptor.PositionRemuneration = [
+      { MinimumRange: "10", MaximumRange: "20", RateIntervalCode: "PD", Description: "Per Day" },
+    ];
+
+    const badCommitment = cloneItem(civilEngineer);
+    badCommitment.MatchedObjectId = "900000003";
+    badCommitment.MatchedObjectDescriptor.PositionSchedule = [{ Name: "", Code: "4" }];
+
+    const badLocationType = cloneItem(civilEngineer);
+    badLocationType.MatchedObjectId = "900000004";
+    delete badLocationType.MatchedObjectDescriptor.UserArea.Details.RemoteIndicator;
+
+    const response = {
+      SearchResult: {
+        SearchResultCountAll: 4,
+        SearchResultItems: [good, badPayType, badCommitment, badLocationType],
+      },
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(response));
     const source = makeSource(fetchImpl);
 
-    const { jobs, skipped } = await source.search({ keyword: "engineer" });
+    const { jobs, skipped, skipRate } = await source.search({ keyword: "engineer" });
 
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.externalId).toBe("900000001");
+    expect(jobs[0]?.externalId).toBe("879434300");
 
     expect(skipped).toHaveLength(3);
     const byId = new Map(skipped.map((s) => [s.externalId, s.reason]));
     expect(byId.get("900000002")).toMatch(/payType/);
-    expect(byId.get("900000002")).toMatch(/Per Day/);
+    expect(byId.get("900000002")).toMatch(/PD/);
     expect(byId.get("900000003")).toMatch(/commitment/);
-    expect(byId.get("900000003")).toMatch(/Intermittent/);
+    expect(byId.get("900000003")).toMatch(/"4"/);
     expect(byId.get("900000004")).toMatch(/locationType/);
+
+    expect(skipRate).toBe(0.75);
+  });
+
+  it("reports a skipRate of 1 (not a silent empty result) when every record fails to map", async () => {
+    const allBad = cloneItem(civilEngineer);
+    delete allBad.MatchedObjectDescriptor.UserArea.Details.RemoteIndicator;
+    delete allBad.MatchedObjectDescriptor.UserArea.Details.TeleworkEligible;
+
+    const response = {
+      SearchResult: { SearchResultCountAll: 1, SearchResultItems: [allBad] },
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(response));
+    const source = makeSource(fetchImpl);
+
+    const { jobs, skipped, skipRate } = await source.search({ keyword: "engineer" });
+
+    expect(jobs).toHaveLength(0);
+    expect(skipped).toHaveLength(1);
+    expect(skipRate).toBe(1);
+  });
+
+  it("reports skipRate 0, not NaN, when the source genuinely matched nothing", async () => {
+    const response = { SearchResult: { SearchResultCountAll: 0, SearchResultItems: [] } };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(response));
+    const source = makeSource(fetchImpl);
+
+    const { jobs, skipped, skipRate } = await source.search({
+      keyword: "a search with no matches",
+    });
+
+    expect(jobs).toHaveLength(0);
+    expect(skipped).toHaveLength(0);
+    expect(skipRate).toBe(0);
   });
 });
 
@@ -233,11 +308,24 @@ describe("UsajobsSource — error classification", () => {
     expect((err as AuthFailedError).retryable).toBe(false);
   });
 
-  it("classifies HTTP 403 as AuthFailedError", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(new Response("Forbidden", { status: 403 }));
+  it("classifies HTTP 403 as ForbiddenError, distinct from AuthFailedError, and retryable", async () => {
+    // USAJOBS sits behind Akamai; a 403 there is a WAF block (e.g. bad
+    // User-Agent format), not the API itself rejecting our key.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response("<html>Access Denied</html>", { status: 403 }));
     const source = makeSource(fetchImpl);
 
-    await expect(source.search({})).rejects.toThrow(AuthFailedError);
+    let err: unknown;
+    try {
+      await source.search({});
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect(err).not.toBeInstanceOf(AuthFailedError);
+    expect((err as ForbiddenError).kind).toBe("forbidden");
+    expect((err as ForbiddenError).retryable).toBe(true);
   });
 
   it("classifies HTTP 429 as RateLimitedError (retryable) and reads Retry-After", async () => {

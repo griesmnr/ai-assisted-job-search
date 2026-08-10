@@ -1,6 +1,7 @@
 import type { Job } from "@app/shared";
 import {
   AuthFailedError,
+  ForbiddenError,
   MalformedResponseError,
   RateLimitedError,
   TransientSourceError,
@@ -99,6 +100,16 @@ export class UsajobsSource implements JobSource {
     let page = 1;
     let seen = 0;
 
+    // KNOWN LIMITATION (tracked as a follow-up, not fixed here): if
+    // #fetchPage throws on page N, everything normalized from pages
+    // 1..N-1 is discarded along with it, since nothing is returned until
+    // the loop exits normally. A RateLimitedError on a late page therefore
+    // re-fetches from page 1 on the caller's retry, which both wastes work
+    // and worsens the exact throttling that triggered the error. Fixing
+    // this means either returning partial results alongside the error or
+    // making the caller resumable from a page number - deferred so as not
+    // to change this ticket's return-type contract underneath the worker
+    // ticket (RTK-08) that will actually call this.
     for (;;) {
       const data = await this.#fetchPage(criteria, page);
       const items = data.SearchResult.SearchResultItems;
@@ -122,7 +133,10 @@ export class UsajobsSource implements JobSource {
       page += 1;
     }
 
-    return { jobs, skipped };
+    const total = jobs.length + skipped.length;
+    const skipRate = total === 0 ? 0 : skipped.length / total;
+
+    return { jobs, skipped, skipRate };
   }
 
   async #fetchPage(criteria: SearchCriteria, page: number): Promise<UsajobsSearchResponse> {
@@ -131,6 +145,11 @@ export class UsajobsSource implements JobSource {
     if (criteria.location) url.searchParams.set("LocationName", criteria.location);
     url.searchParams.set("ResultsPerPage", String(this.#resultsPerPage));
     url.searchParams.set("Page", String(page));
+    // Min (the default) omits UserArea.Details entirely, which is where
+    // JobSummary/TeleworkEligible/RemoteIndicator live — without this,
+    // every record fails normalization and search() returns zero jobs no
+    // matter how the mapping functions below are written.
+    url.searchParams.set("Fields", "Full");
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.#requestTimeoutMs);
@@ -162,9 +181,18 @@ export class UsajobsSource implements JobSource {
 }
 
 async function parseResponse(response: Response): Promise<UsajobsSearchResponse> {
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new AuthFailedError(
-      `USAJOBS rejected our credentials (HTTP ${response.status}). Check USAJOBS_API_KEY and USAJOBS_USER_AGENT.`,
+      "USAJOBS rejected our credentials (HTTP 401). Check USAJOBS_API_KEY and USAJOBS_USER_AGENT.",
+    );
+  }
+  if (response.status === 403) {
+    // USAJOBS sits behind Akamai. A 403 here is typically Akamai blocking
+    // the request (e.g. on an unrecognized User-Agent) before it ever
+    // reaches the USAJOBS API, not the API itself rejecting our key — that
+    // comes back as a 401 with a JSON body. See ForbiddenError's doc comment.
+    throw new ForbiddenError(
+      "Request was blocked with HTTP 403 (likely Akamai/WAF, not a USAJOBS auth rejection — check USAJOBS_USER_AGENT is a plausible User-Agent string).",
     );
   }
   if (response.status === 429) {
@@ -214,18 +242,36 @@ type UsajobsSearchResponse = {
 };
 
 type UsajobsRemuneration = {
+  /**
+   * The machine-readable pay basis code, e.g. `"PA"` (Per Annum/Year),
+   * `"PH"` (Per Hour). `Description` is the human-readable sibling (e.g.
+   * `"Per Year"`) — verified against a live captured response
+   * (`__fixtures__/usajobs-real-response.json`). Note `"PW"` is Piece Work,
+   * not Per Week — do not add it as a hourly/salary alias.
+   */
   RateIntervalCode?: string;
+  Description?: string;
 };
 
 type UsajobsSchedule = {
+  /**
+   * Unreliable in practice: observed as `""` on some real records and
+   * `"Full Time"` (space, capital T) on others in the same response, so it
+   * cannot be matched as a fixed literal. `Code` is the reliable field
+   * (`"1"` = Full-time, `"2"` = Part-time per USAJOBS' schedule code list)
+   * — match on `Code` first and treat `Name` only as a loose fallback.
+   */
   Name?: string;
+  Code?: string;
 };
 
 type UsajobsDetails = {
   JobSummary?: string;
   QualificationSummary?: string;
-  /** "Yes" | "No" in USAJOBS' actual payload — a string, not a bool. */
-  TeleworkEligible?: string;
+  /** Boolean in USAJOBS' actual payload — verified against a live captured
+   * response. (An earlier version of this adapter assumed "Yes"/"No"
+   * strings; that was wrong and silently made every record unmappable.) */
+  TeleworkEligible?: boolean;
   RemoteIndicator?: boolean;
 };
 
@@ -338,21 +384,21 @@ function normalizeItem(item: UsajobsSearchResultItem): NormalizeResult {
 
   const payType = mapPayType(d.PositionRemuneration);
   if (!payType) {
-    const code = d.PositionRemuneration?.[0]?.RateIntervalCode ?? "(none)";
+    const entry = d.PositionRemuneration?.[0];
     return {
       ok: false,
       externalId,
-      reason: `cannot determine payType from RateIntervalCode "${code}"`,
+      reason: `cannot determine payType from RateIntervalCode "${entry?.RateIntervalCode ?? "(none)"}" (Description "${entry?.Description ?? "(none)"}")`,
     };
   }
 
   const commitment = mapCommitment(d.PositionSchedule);
   if (!commitment) {
-    const name = d.PositionSchedule?.[0]?.Name ?? "(none)";
+    const entry = d.PositionSchedule?.[0];
     return {
       ok: false,
       externalId,
-      reason: `cannot determine commitment from PositionSchedule "${name}"`,
+      reason: `cannot determine commitment from PositionSchedule Code "${entry?.Code ?? "(none)"}" (Name "${entry?.Name ?? "(none)"}")`,
     };
   }
 
@@ -386,41 +432,68 @@ function normalizeItem(item: UsajobsSearchResultItem): NormalizeResult {
 
 /**
  * Only USAJOBS' two unambiguous annual/hourly codes map. Everything else
- * (Per Day, Biweekly, Per Case, Without Compensation, ...) genuinely could
+ * (Per Day, Biweekly, Piece Work, Without Compensation, ...) genuinely could
  * be either "hourly" or "salary" depending on the position, and Job#payType
  * has no third option — so we surface it as unmappable instead of guessing.
+ *
+ * Matches on `RateIntervalCode` (machine-readable, e.g. `"PA"`) first, and
+ * falls back to the human-readable `Description` sibling (e.g. `"Per
+ * Year"`) only if the code isn't one we recognize — some records may use a
+ * code we haven't seen but still spell out an unambiguous description.
  */
 function mapPayType(remuneration: UsajobsRemuneration[] | undefined): Job["payType"] | undefined {
-  const code = remuneration?.[0]?.RateIntervalCode;
-  if (code === "Per Year") return "salary";
-  if (code === "Per Hour") return "hourly";
+  const entry = remuneration?.[0];
+  if (!entry) return undefined;
+
+  if (entry.RateIntervalCode === "PA") return "salary";
+  if (entry.RateIntervalCode === "PH") return "hourly";
+
+  if (entry.Description === "Per Year") return "salary";
+  if (entry.Description === "Per Hour") return "hourly";
+
   return undefined;
 }
 
 /**
- * USAJOBS' PositionSchedule.Name has values beyond a clean full/part split
- * (e.g. "Intermittent", "Multiple Schedules", "Shift Work") — those are
- * left unmapped rather than guessed. USAJOBS postings are federal
+ * `PositionSchedule.Name` is unreliable in practice — observed empty on
+ * some real records and inconsistently cased/spaced on others in the same
+ * response — so it cannot be matched as a fixed literal. `Code` is the
+ * reliable field (`"1"` = Full-time, `"2"` = Part-time); `Name` is only
+ * used as a loose fallback when `Code` is absent or unrecognized. Codes
+ * beyond full/part-time (e.g. "4" Intermittent, "6" Multiple Schedules)
+ * are left unmapped rather than guessed. USAJOBS postings are federal
  * *employment*, never a contractor engagement, so "contract" is never
  * produced by this adapter.
  */
 function mapCommitment(schedule: UsajobsSchedule[] | undefined): Job["commitment"] | undefined {
-  const name = schedule?.[0]?.Name;
-  if (name === "Full-time") return "full-time";
-  if (name === "Part-time") return "part-time";
+  const entry = schedule?.[0];
+  if (!entry) return undefined;
+
+  if (entry.Code === "1") return "full-time";
+  if (entry.Code === "2") return "part-time";
+
+  const name = entry.Name?.trim().toLowerCase();
+  if (name === "full-time" || name === "full time") return "full-time";
+  if (name === "part-time" || name === "part time") return "part-time";
+
   return undefined;
 }
 
 /**
  * USAJOBS has no single clean tri-state remote/onsite/hybrid field. We
- * combine the two closest signals: `RemoteIndicator` (added to the API to
- * flag fully remote postings) and `TeleworkEligible` (whether the position
- * allows some telework). Any position where telework eligibility can't be
- * read is left unmapped rather than defaulted to "onsite".
+ * combine the two closest signals, both booleans: `RemoteIndicator` (flags
+ * fully remote postings) and `TeleworkEligible` (whether the position
+ * allows some telework). Presence is checked explicitly first — a missing
+ * signal must fall out through one clearly-named branch, not by silently
+ * failing to match three separate strict-equality checks.
  */
 function mapLocationType(details: UsajobsDetails | undefined): Job["locationType"] | undefined {
-  if (details?.RemoteIndicator === true) return "remote";
-  if (details?.RemoteIndicator === false && details.TeleworkEligible === "Yes") return "hybrid";
-  if (details?.RemoteIndicator === false && details.TeleworkEligible === "No") return "onsite";
-  return undefined;
+  if (details === undefined) return undefined;
+
+  const { RemoteIndicator, TeleworkEligible } = details;
+  if (RemoteIndicator === undefined || TeleworkEligible === undefined) return undefined;
+
+  if (RemoteIndicator) return "remote";
+  if (TeleworkEligible) return "hybrid";
+  return "onsite";
 }
