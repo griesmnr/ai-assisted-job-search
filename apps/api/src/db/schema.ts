@@ -59,15 +59,23 @@ export const searches = pgTable("searches", {
   searchedAt: timestamp("searched_at").notNull(),
 });
 
-export const searchResults = pgTable("search_results", {
-  id: text("id").primaryKey(),
-  searchId: text("search_id")
-    .notNull()
-    .references(() => searches.id),
-  jobId: text("job_id")
-    .notNull()
-    .references(() => jobs.id),
-});
+export const searchResults = pgTable(
+  "search_results",
+  {
+    id: text("id").primaryKey(),
+    searchId: text("search_id")
+      .notNull()
+      .references(() => searches.id),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+  },
+  // Backs the ingestion worker's idempotent link step (RTK-08/RTK-09): a
+  // redelivered fetch.source message re-runs the same (search, job) link
+  // and must not create a duplicate row, mirroring the jobs table's own
+  // (data_source, external_id) uniqueness.
+  (table) => [unique().on(table.searchId, table.jobId)],
+);
 
 export const searchSources = pgTable("search_sources", {
   id: text("id").primaryKey(),

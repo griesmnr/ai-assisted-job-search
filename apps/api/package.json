@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "@app/shared": "workspace:*",
+    "amqplib": "^2.0.1",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.3",
     "pg": "^8.23.0"
   },
   "devDependencies": {
+    "@types/amqplib": "^0.10.8",
     "@types/node": "^26.2.0",
     "@types/pg": "^8.21.0",
     "drizzle-kit": "^0.31.10",

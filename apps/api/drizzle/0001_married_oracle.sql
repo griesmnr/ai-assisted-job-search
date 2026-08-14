@@ -1,0 +1,1 @@
+ALTER TABLE "search_results" ADD CONSTRAINT "search_results_search_id_job_id_unique" UNIQUE("search_id","job_id");
