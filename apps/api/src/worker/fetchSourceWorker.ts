@@ -1,14 +1,19 @@
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
-import { SourceError, type JobSource, type SearchCriteria } from "../sources/types.js";
+import {
+  RateLimitedError,
+  SourceError,
+  type JobSource,
+  type SearchCriteria,
+} from "../sources/types.js";
+import { FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js";
 
 /**
  * The fetch.source worker: consumes one message per (search, source) pair,
  * calls the matching adapter, persists whatever it found idempotently
  * (ingestJobsForSearch, ticket 6bf2196), and publishes one score.job
- * message per job that was newly inserted - never for a job this or an
- * earlier search already ingested, since that job was already scored.
+ * message per job now linked to the search - new or already known.
  *
  * Message shapes (JSON bodies on the "jobs" exchange):
  *
@@ -17,19 +22,40 @@ import { SourceError, type JobSource, type SearchCriteria } from "../sources/typ
  *       and is how this worker dispatches to the right adapter.
  *
  *   score.job: { jobId: string }
- *     - one per newly-ingested job. The scoring worker (RTK-10, out of
- *       scope here) is responsible for its own idempotency on redelivery.
+ *     - one per job linked to this search. NOT filtered to "rows this call
+ *       happened to insert" (see the note on `newlyInsertedJobIds` below) -
+ *       the scoring worker (RTK-10, out of scope here) owns deduping
+ *       repeated score.job messages for a job it already scored.
  *
  * Retry/DLQ: see topology.ts for the queue wiring this relies on
- * (fetch.source -> fetch.source.retry -> back to fetch.source, or ->
- * fetch.source.dlq). This module owns the *decision* of which path a
- * failure takes; topology.ts owns the broker-side plumbing that makes the
- * decision effective.
+ * (fetch.source -> one of the fetch.source.retry.* tiers -> back to
+ * fetch.source, or -> fetch.source.dlq). This module owns the *decision*
+ * of which path a failure takes; topology.ts owns the broker-side plumbing
+ * that makes the decision effective.
+ *
+ * On `newlyInsertedJobIds` vs `linkedJobIds`: ingestJobsForSearch reports
+ * both - the DB layer's distinction between "rows this call inserted" and
+ * "every job this call linked to the search" is correct and useful. What
+ * was wrong (caught in review) was USING `newlyInsertedJobIds` to decide
+ * which jobs need a score.job message. Those two ideas only coincide on a
+ * message's first, uninterrupted attempt. The moment a message is retried
+ * - which is the entire reason the retry path exists - they diverge: if
+ * attempt 1 inserts the job row and then fails (a publish error, a crash,
+ * a dropped connection) *before* its score.job goes out, attempt 2 finds
+ * the row already there, `newlyInsertedJobIds` comes back empty, and a
+ * job that was never actually scored silently never gets a score.job
+ * message either - total, silent loss, with the message acked as a
+ * success. Publishing over `linkedJobIds` instead means a retried attempt
+ * always re-publishes score.job for every job it found, at the cost of a
+ * harmless duplicate message on the (rarer) case where the *entire*
+ * attempt - insert *and* publish - already succeeded and only the ack was
+ * lost. At-least-once delivery over score.job, with the scoring worker
+ * responsible for not scoring the same job twice, is a better trade than
+ * silently dropping jobs that need scoring.
  */
 
 export const JOBS_EXCHANGE = "jobs";
 export const FETCH_SOURCE_QUEUE = "fetch.source";
-export const FETCH_SOURCE_RETRY_QUEUE = "fetch.source.retry";
 export const SCORE_JOB_ROUTING_KEY = "score.job";
 
 /** RabbitMQ does not count delivery attempts for you - this header is how
@@ -60,6 +86,18 @@ export class InvalidMessageError extends Error {}
  * adapter. */
 export class UnknownSourceError extends Error {}
 
+/** The adapter registered under `sourceId` reports a different
+ * `JobSource["dataSource"]` than the key it's registered under (e.g. a
+ * copy/paste bug wiring `sources["wa-state"] = usajobsSource`). Ingesting
+ * under this mismatch writes rows tagged with the adapter's *own*
+ * dataSource while querying/linking under the message's `sourceId` -
+ * `ingestJobsForSearch` would insert a job, then fail to find it again
+ * under the wrong dataSource, link nothing, and (before this check
+ * existed) that "nothing to link" silently looked like an empty search
+ * rather than a config bug. Retrying changes nothing about the
+ * registration, so this is not retryable. */
+export class SourceMismatchError extends Error {}
+
 export type HighSkipRateInfo = {
   searchId: string;
   sourceId: string;
@@ -67,6 +105,8 @@ export type HighSkipRateInfo = {
   jobCount: number;
   skippedCount: number;
 };
+
+export type RetryTier = { readonly queue: string; readonly delayMs: number };
 
 export type FetchSourceWorkerOptions = {
   channel: ConfirmChannel;
@@ -81,10 +121,15 @@ export type FetchSourceWorkerOptions = {
    * dead-lettering a retryable failure. 3-5 per ticket 568cc5f; defaults to
    * 4. */
   maxAttempts?: number;
-  /** Backoff, in ms, before the Nth attempt (N >= 2) is redelivered.
-   * Defaults to exponential (1s, 2s, 4s, ...). Overridable so tests don't
-   * have to wait on real-world backoff. */
-  backoffMs?: (attempt: number) => number;
+  /** Backoff delay tiers, ordered shortest to longest, one durable queue
+   * per tier. Defaults to `FETCH_SOURCE_RETRY_TIERS` from topology.ts (the
+   * queues `setupTopology()` actually declares). Overridable so tests can
+   * use short-lived tiers instead of waiting on real-world backoff -
+   * whatever is passed here MUST already exist as a queue wired the same
+   * way topology.ts wires its tiers (queue-level TTL, dead-letter back to
+   * "jobs"/"fetch.source"), which `startFetchSourceWorker` checks at
+   * startup (see below) rather than discovering it per-message. */
+  retryTiers?: ReadonlyArray<RetryTier>;
   /** skipRate at or above this, on a non-empty result, is treated as a
    * mapper-bug/upstream-schema-change signal rather than a quiet success.
    * Defaults to 0.5. */
@@ -98,13 +143,6 @@ export type FetchSourceWorkerOptions = {
    * to console.error. */
   log?: (message: string) => void;
 };
-
-function defaultBackoffMs(attempt: number): number {
-  // Backoff before attempt N (N >= 2): 1s, 2s, 4s, 8s, ... Generous enough
-  // to ride out a rate-limit window; bounded by maxAttempts so "back off
-  // and retry" can never become "retry forever".
-  return 1000 * 2 ** (attempt - 2);
-}
 
 function defaultOnHighSkipRate(info: HighSkipRateInfo): void {
   console.error(
@@ -158,6 +196,9 @@ function classify(err: unknown): Classification {
   if (err instanceof UnknownSourceError) {
     return { retryable: false, kind: "unknown-source" };
   }
+  if (err instanceof SourceMismatchError) {
+    return { retryable: false, kind: "source-mismatch" };
+  }
   // Anything else (DB connection blip, a bug we didn't anticipate, ...) is
   // *not* assumed permanent - unlike SourceError's non-retryable kinds, we
   // have no evidence a retry is futile. But it still rides the same
@@ -173,6 +214,30 @@ function getAttempt(msg: ConsumeMessage): number {
   return Number.isFinite(n) && n >= 1 ? n : 1;
 }
 
+/** Picks which retry tier a message should go into next. When the failure
+ * told us how long to wait (`RateLimitedError.retryAfterMs`), honor that -
+ * use the shortest tier whose delay is at least that long (falling back to
+ * the longest tier if the source asked for longer than we have). Otherwise
+ * fall back to picking by attempt number: attempt 2 -> tiers[0], attempt 3
+ * -> tiers[1], etc., clamped to the last tier if `maxAttempts` asks for
+ * more attempts than there are tiers (reusing the longest backoff rather
+ * than erroring). */
+export function pickRetryTier(
+  tiers: ReadonlyArray<RetryTier>,
+  nextAttempt: number,
+  desiredDelayMs?: number,
+): RetryTier {
+  if (tiers.length === 0) {
+    throw new Error("pickRetryTier: no retry tiers configured");
+  }
+  if (desiredDelayMs !== undefined) {
+    const byDesired = tiers.find((tier) => tier.delayMs >= desiredDelayMs);
+    return byDesired ?? tiers[tiers.length - 1]!;
+  }
+  const index = Math.min(Math.max(0, nextAttempt - 2), tiers.length - 1);
+  return tiers[index]!;
+}
+
 /**
  * Builds the per-message handler. Exported separately from the `consume()`
  * wiring so tests can invoke it directly against a real (or fake) channel
@@ -184,7 +249,7 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
     db,
     sources,
     maxAttempts = 4,
-    backoffMs = defaultBackoffMs,
+    retryTiers = FETCH_SOURCE_RETRY_TIERS,
     highSkipRateThreshold = 0.5,
     onHighSkipRate = defaultOnHighSkipRate,
     log = (message: string) => console.error(message),
@@ -200,6 +265,12 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
       if (!source) {
         throw new UnknownSourceError(`no adapter registered for sourceId "${message.sourceId}"`);
       }
+      if (source.dataSource !== message.sourceId) {
+        throw new SourceMismatchError(
+          `adapter registered for sourceId "${message.sourceId}" reports ` +
+            `dataSource "${source.dataSource}" - refusing to ingest under a mismatched natural key`,
+        );
+      }
 
       const result = await source.search(message.criteria);
 
@@ -214,23 +285,30 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         });
       }
 
-      const { newlyInsertedJobIds } = await ingestJobsForSearch(
+      const { linkedJobIds } = await ingestJobsForSearch(
         db,
         message.searchId,
         message.sourceId,
         result.jobs,
       );
 
-      for (const jobId of newlyInsertedJobIds) {
+      // Publish for every job linked to this search, not just the ones
+      // this particular call inserted - see the module doc comment above
+      // for why. The scoring worker is responsible for not double-scoring
+      // a job it's seen a score.job message for before.
+      for (const jobId of linkedJobIds) {
         const payload: ScoreJobMessage = { jobId };
         channel.publish(
           JOBS_EXCHANGE,
           SCORE_JOB_ROUTING_KEY,
           Buffer.from(JSON.stringify(payload)),
-          { persistent: true, contentType: "application/json" },
+          {
+            persistent: true,
+            contentType: "application/json",
+          },
         );
       }
-      if (newlyInsertedJobIds.length > 0) {
+      if (linkedJobIds.length > 0) {
         await channel.waitForConfirms();
       }
 
@@ -258,16 +336,24 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
       }
 
       const nextAttempt = attempt + 1;
-      const delayMs = backoffMs(nextAttempt);
+      const desiredDelayMs =
+        err instanceof RateLimitedError && err.retryAfterMs !== undefined
+          ? err.retryAfterMs
+          : undefined;
+      const tier = pickRetryTier(retryTiers, nextAttempt, desiredDelayMs);
       log(
         `[fetch.source] attempt ${attempt}/${maxAttempts} failed (${kind}): ${errorMessage} ` +
-          `- retrying (attempt ${nextAttempt}) in ${delayMs}ms`,
+          `- retrying (attempt ${nextAttempt}) via ${tier.queue} (${tier.delayMs}ms)` +
+          (desiredDelayMs !== undefined ? ` [source requested ${desiredDelayMs}ms]` : ""),
       );
 
-      channel.sendToQueue(FETCH_SOURCE_RETRY_QUEUE, msg.content, {
+      // No per-message `expiration` here - the tier queue's own
+      // queue-level TTL (see topology.ts / FETCH_SOURCE_RETRY_TIERS) is
+      // what times the backoff out, precisely so messages with different
+      // delays never share a queue and block each other's expiry.
+      channel.sendToQueue(tier.queue, msg.content, {
         persistent: true,
         contentType: msg.properties.contentType,
-        expiration: String(Math.max(0, Math.trunc(delayMs))),
         headers: { ...msg.properties.headers, [ATTEMPT_HEADER]: nextAttempt },
       });
       await channel.waitForConfirms();
@@ -280,18 +366,60 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
   };
 }
 
-/** Starts consuming fetch.source with the given options. Returns the
+/**
+ * Starts consuming fetch.source with the given options. Returns the
  * consumer tag so a caller can `channel.cancel(tag)` to stop (used by
- * tests to tear down cleanly between cases sharing one queue). */
+ * tests to tear down cleanly between cases sharing one queue).
+ *
+ * Fails fast, before consuming a single message, if any configured retry
+ * tier queue doesn't exist yet (`channel.checkQueue` rejects - and closes
+ * the channel - when the queue is missing). Without this, a retryable
+ * failure's `sendToQueue` into a nonexistent tier queue would succeed
+ * silently (no `mandatory` flag, nothing consuming the "jobs" exchange for
+ * an unroutable return), the worker would ack the original message anyway,
+ * and the message would simply vanish - total, silent loss with no error
+ * anywhere. The correct fix for that is making the misconfiguration
+ * (topology not set up before the worker starts) impossible to miss at
+ * boot, not adding recovery machinery for a state the worker should never
+ * reach.
+ */
 export async function startFetchSourceWorker(
   options: FetchSourceWorkerOptions,
   consumeOptions?: { prefetch?: number },
 ): Promise<string> {
+  const retryTiers = options.retryTiers ?? FETCH_SOURCE_RETRY_TIERS;
+  for (const tier of retryTiers) {
+    try {
+      await options.channel.checkQueue(tier.queue);
+    } catch (err) {
+      throw new Error(
+        `startFetchSourceWorker: retry tier queue "${tier.queue}" does not exist - ` +
+          `run setupTopology() (or declare it identically) before starting the worker`,
+        { cause: err },
+      );
+    }
+  }
+
   const handler = createFetchSourceHandler(options);
   await options.channel.prefetch(consumeOptions?.prefetch ?? 1);
   const { consumerTag } = await options.channel.consume(FETCH_SOURCE_QUEUE, (msg) => {
     if (!msg) return; // consumer was cancelled server-side
-    void handler(msg);
+    handler(msg).catch((err: unknown) => {
+      // The handler's own try/catch already turns adapter/DB/publish
+      // failures into a nack or a scheduled retry - reaching here means
+      // something failed *after* that decision was made (e.g. the channel
+      // itself closed mid-flight, so even the ack/nack call threw) or a
+      // bug nobody anticipated. Either way this promise would otherwise
+      // reject unhandled: Node terminates the process on an unhandled
+      // rejection by default, which would take down every other in-flight
+      // message with it over one broker hiccup. Log and move on instead -
+      // the message stays unacked and RabbitMQ redelivers it once this
+      // consumer (or its replacement) is healthy again.
+      const message = err instanceof Error ? err.message : String(err);
+      (options.log ?? ((m: string) => console.error(m)))(
+        `[fetch.source] handler failed outside its own error handling, message left unacked: ${message}`,
+      );
+    });
   });
   return consumerTag;
 }

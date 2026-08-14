@@ -89,10 +89,25 @@ export async function ingestJobsForSearch(
   const newlyInsertedJobIds: string[] = [];
   for (const externalId of allExternalIds) {
     const id = idByExternalId.get(externalId);
-    // Should not happen - every externalId was either just inserted or
-    // already present - but skip rather than link a phantom job id if it
-    // somehow does.
-    if (!id) continue;
+    if (!id) {
+      // Should be impossible: every externalId in this batch was either
+      // just inserted above or already present under `dataSource`. Seeing
+      // one missing here almost always means the caller's `dataSource`
+      // argument doesn't match the `dataSource` actually stamped on the
+      // NormalizedJob objects it's ingesting (e.g. a worker dispatching a
+      // message under one sourceId to an adapter registered under a
+      // different one) - the select filtered on the wrong data_source and
+      // silently found nothing. Silently skipping that job used to be the
+      // behavior here; that's exactly what let a sourceId/adapter mismatch
+      // insert an orphaned row, link nothing, and still ack the message as
+      // a success. Throwing turns it back into a visible failure.
+      throw new Error(
+        `ingestJobsForSearch: no jobs row found for dataSource="${dataSource}" ` +
+          `externalId="${externalId}" immediately after upserting it. This should be ` +
+          `impossible unless the caller's dataSource doesn't match the dataSource on the ` +
+          `NormalizedJob objects being ingested - check the sourceId/adapter dispatch.`,
+      );
+    }
     linkedJobIds.push(id);
     if (insertedExternalIds.has(externalId)) {
       newlyInsertedJobIds.push(id);
