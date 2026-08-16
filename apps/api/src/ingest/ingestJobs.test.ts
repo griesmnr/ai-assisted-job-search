@@ -147,4 +147,31 @@ describe("ingestJobsForSearch", () => {
     const result = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, []);
     expect(result).toEqual({ linkedJobIds: [], newlyInsertedJobIds: [] });
   });
+
+  it("rolls back the insert when the caller's dataSource doesn't match the job's own dataSource (transaction regression)", async () => {
+    // The job itself is tagged DATA_SOURCE (a valid FK target, so the
+    // INSERT succeeds), but the caller passes a DIFFERENT dataSource as
+    // the query parameter - the same shape of bug the worker's dispatch
+    // check (SourceMismatchError) exists to prevent one layer up, and
+    // exactly what makes the "should be impossible" throw in
+    // ingestJobsForSearch fire: the row got inserted under DATA_SOURCE,
+    // but the post-insert select filters on WRONG_DATA_SOURCE and finds
+    // nothing. Without db.transaction() wrapping the whole function, that
+    // insert would already be committed by the time the throw happens -
+    // a real, permanently orphaned row from a call the caller correctly
+    // treated as failed.
+    const externalId = "transaction-rollback-1";
+    const job = makeNormalizedJob({ externalId });
+    const wrongDataSource = "ingest-test-WRONG-source";
+
+    await expect(ingestJobsForSearch(db, SEARCH_ID, wrongDataSource, [job])).rejects.toThrow(
+      /no jobs row found/,
+    );
+
+    const rows = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.dataSource, DATA_SOURCE), eq(jobs.externalId, externalId)));
+    expect(rows).toHaveLength(0);
+  });
 });

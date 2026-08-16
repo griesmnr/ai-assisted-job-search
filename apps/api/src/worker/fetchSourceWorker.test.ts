@@ -249,9 +249,17 @@ beforeAll(async () => {
   // channel gets its own scoped `tempChannel.on("error", ...)`.
   connection.on("error", (err) => connectionErrors.push(err));
 
+  // `durable: false`, unlike every real topology.ts queue: these are
+  // throwaway, test-only substitutes for the real retry tiers, not part
+  // of the actual topology. Durable would mean they survive a broker
+  // restart and keep showing up in `docker compose down`/the management
+  // UI looking exactly like production infrastructure, indistinguishable
+  // from the real fetch.source.retry.* queues at a glance. They're also
+  // explicitly deleted in afterAll below, but non-durable is the backstop
+  // for whatever that misses (a test run that crashes before afterAll).
   for (const tier of [...TEST_RETRY_TIERS, MECHANICS_LONG_TIER, MECHANICS_SHORT_TIER]) {
     await channel.assertQueue(tier.queue, {
-      durable: true,
+      durable: false,
       messageTtl: tier.delayMs,
       deadLetterExchange: JOBS_EXCHANGE,
       deadLetterRoutingKey: FETCH_SOURCE_QUEUE,
@@ -275,6 +283,14 @@ afterAll(async () => {
   await client.end();
 
   expect(connectionErrors).toEqual([]);
+
+  // Explicit belt-and-suspenders cleanup on top of `durable: false` above
+  // - don't leave these test-only queues sitting in the broker (and the
+  // management UI) between test runs even within one broker session that
+  // never restarts.
+  for (const tier of [...TEST_RETRY_TIERS, MECHANICS_LONG_TIER, MECHANICS_SHORT_TIER]) {
+    await channel.deleteQueue(tier.queue).catch(() => {});
+  }
 
   await channel.close();
   await connection.close();
@@ -611,7 +627,7 @@ describe("fetchSourceWorker", () => {
       delayMs: 100,
     };
     await channel.assertQueue(tier.queue, {
-      durable: true,
+      durable: false,
       messageTtl: tier.delayMs,
       deadLetterExchange: JOBS_EXCHANGE,
       deadLetterRoutingKey: FETCH_SOURCE_QUEUE,
@@ -814,7 +830,7 @@ describe("fetchSourceWorker", () => {
     }
   });
 
-  it("a handler failure outside its own try/catch does not become an unhandled rejection (H2 regression)", async () => {
+  it("a handler failure outside its own try/catch does not become an unhandled rejection, and closes the channel once nack also fails (H2 regression)", async () => {
     const searchId = await makeSearch();
     const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () => {
       throw new AuthFailedError("bad credentials"); // non-retryable -> hits channel.nack -> throws
@@ -824,6 +840,11 @@ describe("fetchSourceWorker", () => {
     // `nack` can't affect any other test sharing the module-level channel.
     const tempChannel = await connection.createConfirmChannel();
     const brokenChannel = withBrokenNack(tempChannel);
+
+    let channelClosed = false;
+    tempChannel.on("close", () => {
+      channelClosed = true;
+    });
 
     const logs: string[] = [];
     let unhandled: unknown;
@@ -851,14 +872,22 @@ describe("fetchSourceWorker", () => {
       );
       await channel.waitForConfirms();
 
-      await waitFor(async () => logs.some((l) => l.includes("outside its own error handling")), {
+      // withBrokenNack throws on every call, not just the first, so the
+      // outer catch's own `channel.nack(msg, false, false)` retry (see
+      // startFetchSourceWorker) fails too - it should fall through to
+      // closing the channel itself, rather than leaving the message
+      // unacked forever and wedging this prefetch(1) consumer.
+      await waitFor(async () => logs.some((l) => l.includes("nack also failed")), {
         timeoutMs: 2000,
       });
+      await waitFor(async () => channelClosed, { timeoutMs: 2000 });
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
-      // Closing requeues whatever's still unacked on this channel (the
-      // message our broken nack() never actually acknowledged at the
-      // broker) - the module-level purgeAll() in afterEach cleans it up.
+      // Already closed by the worker's own fallback by this point in the
+      // normal case - this is just a backstop. Closing (a channel that
+      // still had our broken-nack message outstanding) requeues it back
+      // to fetch.source; the module-level purgeAll() in afterEach cleans
+      // that up.
       await tempChannel.close().catch(() => {});
     }
 

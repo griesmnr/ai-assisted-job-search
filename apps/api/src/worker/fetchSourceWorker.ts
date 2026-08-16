@@ -486,6 +486,7 @@ export async function startFetchSourceWorker(
   }
 
   const handler = createFetchSourceHandler(options);
+  const log = options.log ?? ((m: string) => console.error(m));
   await options.channel.prefetch(consumeOptions?.prefetch ?? 1);
   const { consumerTag } = await options.channel.consume(FETCH_SOURCE_QUEUE, (msg) => {
     if (!msg) return; // consumer was cancelled server-side
@@ -497,13 +498,39 @@ export async function startFetchSourceWorker(
       // bug nobody anticipated. Either way this promise would otherwise
       // reject unhandled: Node terminates the process on an unhandled
       // rejection by default, which would take down every other in-flight
-      // message with it over one broker hiccup. Log and move on instead -
-      // the message stays unacked and RabbitMQ redelivers it once this
-      // consumer (or its replacement) is healthy again.
+      // message with it over one broker hiccup.
       const message = err instanceof Error ? err.message : String(err);
-      (options.log ?? ((m: string) => console.error(m)))(
-        `[fetch.source] handler failed outside its own error handling, message left unacked: ${message}`,
+      log(
+        `[fetch.source] handler failed outside its own error handling: ${message} - ` +
+          `attempting to dead-letter the message directly`,
       );
+
+      try {
+        // Simply logging and moving on, as an earlier version of this
+        // code did, leaves the message unacked forever. Under
+        // `prefetch(1)` that's not "one message lost" - it PERMANENTLY
+        // WEDGES this consumer: RabbitMQ won't deliver a second message
+        // to a consumer that hasn't acked its first, so the whole worker
+        // silently stops making progress while everything about it
+        // (connection up, consumer registered, no errors thrown) still
+        // reports healthy. Try once more to get the message off this
+        // channel via a direct nack straight to the DLQ.
+        options.channel.nack(msg, false, false);
+      } catch (nackErr) {
+        // Even the nack failed - the channel itself is almost certainly
+        // the problem (nack is a synchronous local call; this is the
+        // realistic way it throws). Closing it is what actually
+        // unwedges things: amqplib requeues whatever was left unacked on
+        // a channel when it closes, and a supervisor restarting this
+        // worker on a fresh connection/channel is a far better outcome
+        // than a consumer that stays "up" and silently stops progressing.
+        const nackMessage = nackErr instanceof Error ? nackErr.message : String(nackErr);
+        log(
+          `[fetch.source] nack also failed (${nackMessage}) - closing the channel so the ` +
+            `message isn't held unacked forever and a supervisor can restart this worker`,
+        );
+        options.channel.close().catch(() => {});
+      }
     });
   });
   return consumerTag;
