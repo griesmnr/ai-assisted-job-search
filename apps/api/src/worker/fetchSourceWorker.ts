@@ -7,7 +7,7 @@ import {
   type JobSource,
   type SearchCriteria,
 } from "../sources/types.js";
-import { FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js";
+import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js";
 
 /**
  * The fetch.source worker: consumes one message per (search, source) pair,
@@ -216,26 +216,85 @@ function getAttempt(msg: ConsumeMessage): number {
 
 /** Picks which retry tier a message should go into next. When the failure
  * told us how long to wait (`RateLimitedError.retryAfterMs`), honor that -
- * use the shortest tier whose delay is at least that long (falling back to
- * the longest tier if the source asked for longer than we have). Otherwise
- * fall back to picking by attempt number: attempt 2 -> tiers[0], attempt 3
- * -> tiers[1], etc., clamped to the last tier if `maxAttempts` asks for
- * more attempts than there are tiers (reusing the longest backoff rather
- * than erroring). */
+ * use the shortest tier whose delay is at least that long, so the message
+ * doesn't come back before the source's own rate-limit window has passed
+ * (returning too early just spends an attempt on a guaranteed second 429).
+ * If the source asked for longer than the longest configured tier can
+ * hold, this clamps to the longest tier anyway rather than dropping the
+ * message or inventing an unbounded wait - `clamped` on the return value
+ * tells the caller that happened, so it can log it instead of silently
+ * under-waiting. Otherwise (no `desiredDelayMs`) falls back to picking by
+ * attempt number: attempt 2 -> tiers[0], attempt 3 -> tiers[1], etc.,
+ * clamped to the last tier if `maxAttempts` asks for more attempts than
+ * there are tiers (reusing the longest backoff rather than erroring).
+ *
+ * Both lookup strategies assume `tiers` is ordered shortest to longest
+ * delay - sorted defensively here so a caller passing them out of order
+ * (or an unordered literal) gets correct behavior instead of a silent
+ * wrong pick from `Array.prototype.find`. */
 export function pickRetryTier(
   tiers: ReadonlyArray<RetryTier>,
   nextAttempt: number,
   desiredDelayMs?: number,
-): RetryTier {
+): { tier: RetryTier; clamped: boolean } {
   if (tiers.length === 0) {
     throw new Error("pickRetryTier: no retry tiers configured");
   }
+  const sorted = [...tiers].sort((a, b) => a.delayMs - b.delayMs);
+  const longest = sorted[sorted.length - 1]!;
+
   if (desiredDelayMs !== undefined) {
-    const byDesired = tiers.find((tier) => tier.delayMs >= desiredDelayMs);
-    return byDesired ?? tiers[tiers.length - 1]!;
+    const byDesired = sorted.find((tier) => tier.delayMs >= desiredDelayMs);
+    if (byDesired) return { tier: byDesired, clamped: false };
+    return { tier: longest, clamped: true };
   }
-  const index = Math.min(Math.max(0, nextAttempt - 2), tiers.length - 1);
-  return tiers[index]!;
+  const index = Math.min(Math.max(0, nextAttempt - 2), sorted.length - 1);
+  return { tier: sorted[index]!, clamped: false };
+}
+
+// Marks a channel as already having the `return` handler below attached,
+// so calling createFetchSourceHandler/startFetchSourceWorker more than
+// once against the same channel (every test in this file does, sharing
+// one channel across many `it`s) registers the listener exactly once.
+// Without this, N registrations would each independently dead-letter the
+// same returned message, producing N duplicate fetch.source.dlq entries
+// for one lost retry.
+//
+// A property tagged directly on the channel object, not a module-level
+// `WeakSet<ConfirmChannel>` keyed by reference: a `WeakSet` breaks the
+// moment a caller passes a *wrapped* channel (a logging/tracing/retry
+// decorator - `new Proxy(channel, {...})` - is a normal pattern, and
+// tests in this file do exactly that). A Proxy is a different object
+// reference from the channel it wraps, so a WeakSet would consider it
+// "not yet registered" every time, silently accumulating one extra
+// permanent listener on the real underlying channel per distinct wrapper
+// - reproduced: a test wrapping the shared channel duplicated a later
+// test's DLQ entry. Reading/writing a property through an unintercepted
+// Proxy trap forwards to the real target by default, so tagging the
+// channel itself survives wrapping in a way a reference-keyed collection
+// cannot.
+const RETURN_HANDLER_ATTACHED = Symbol.for("fetchSourceWorker.retryReturnHandlerAttached");
+
+/** Wires up the channel-level safety net for an unroutable retry publish
+ * (see the `mandatory: true` comment at the sendToQueue call site below):
+ * dead-letters whatever bounced back, with a log line explaining why,
+ * instead of leaving it to vanish. */
+function ensureRetryReturnHandler(channel: ConfirmChannel, log: (message: string) => void): void {
+  const tagged = channel as ConfirmChannel & { [RETURN_HANDLER_ATTACHED]?: true };
+  if (tagged[RETURN_HANDLER_ATTACHED]) return;
+  tagged[RETURN_HANDLER_ATTACHED] = true;
+
+  channel.on("return", (returned) => {
+    log(
+      `[fetch.source] retry publish to "${returned.fields.routingKey}" was unroutable ` +
+        `(queue missing or renamed after startup?) - dead-lettering into ${FETCH_SOURCE_DLQ} instead`,
+    );
+    channel.sendToQueue(FETCH_SOURCE_DLQ, returned.content, {
+      persistent: true,
+      contentType: returned.properties.contentType,
+      headers: returned.properties.headers,
+    });
+  });
 }
 
 /**
@@ -254,6 +313,8 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
     onHighSkipRate = defaultOnHighSkipRate,
     log = (message: string) => console.error(message),
   } = options;
+
+  ensureRetryReturnHandler(channel, log);
 
   return async function handleFetchSourceMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
@@ -340,19 +401,36 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         err instanceof RateLimitedError && err.retryAfterMs !== undefined
           ? err.retryAfterMs
           : undefined;
-      const tier = pickRetryTier(retryTiers, nextAttempt, desiredDelayMs);
+      const { tier, clamped } = pickRetryTier(retryTiers, nextAttempt, desiredDelayMs);
       log(
         `[fetch.source] attempt ${attempt}/${maxAttempts} failed (${kind}): ${errorMessage} ` +
           `- retrying (attempt ${nextAttempt}) via ${tier.queue} (${tier.delayMs}ms)` +
-          (desiredDelayMs !== undefined ? ` [source requested ${desiredDelayMs}ms]` : ""),
+          (desiredDelayMs !== undefined ? ` [source requested ${desiredDelayMs}ms]` : "") +
+          (clamped
+            ? ` [CLAMPED: requested delay exceeds the longest configured retry tier - ` +
+              `retrying sooner than the source asked for]`
+            : ""),
       );
 
       // No per-message `expiration` here - the tier queue's own
       // queue-level TTL (see topology.ts / FETCH_SOURCE_RETRY_TIERS) is
       // what times the backoff out, precisely so messages with different
       // delays never share a queue and block each other's expiry.
+      //
+      // `mandatory: true` + the `channel.on("return", ...)` handler
+      // registered in `createFetchSourceHandler` below: sendToQueue is
+      // "publish to the default exchange, routing key = queue name" under
+      // the hood, so if `tier.queue` doesn't exist - deleted, renamed, or
+      // drifted from what `startFetchSourceWorker` validated at startup -
+      // this would otherwise succeed silently (no consumer, no binding,
+      // nothing to complain), `waitForConfirms` would resolve anyway, and
+      // the message below would get acked having genuinely gone nowhere.
+      // `mandatory` makes an unroutable publish come back as a `return`
+      // event instead, which the handler dead-letters into
+      // fetch.source.dlq rather than losing it.
       channel.sendToQueue(tier.queue, msg.content, {
         persistent: true,
+        mandatory: true,
         contentType: msg.properties.contentType,
         headers: { ...msg.properties.headers, [ATTEMPT_HEADER]: nextAttempt },
       });
@@ -371,17 +449,24 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
  * consumer tag so a caller can `channel.cancel(tag)` to stop (used by
  * tests to tear down cleanly between cases sharing one queue).
  *
- * Fails fast, before consuming a single message, if any configured retry
- * tier queue doesn't exist yet (`channel.checkQueue` rejects - and closes
- * the channel - when the queue is missing). Without this, a retryable
- * failure's `sendToQueue` into a nonexistent tier queue would succeed
- * silently (no `mandatory` flag, nothing consuming the "jobs" exchange for
- * an unroutable return), the worker would ack the original message anyway,
- * and the message would simply vanish - total, silent loss with no error
- * anywhere. The correct fix for that is making the misconfiguration
- * (topology not set up before the worker starts) impossible to miss at
- * boot, not adding recovery machinery for a state the worker should never
- * reach.
+ * Two independent layers guard against a retryable failure's
+ * `sendToQueue` into a tier queue silently going nowhere:
+ *
+ * 1. Fails fast here, before consuming a single message, if any
+ *    configured retry tier queue doesn't exist yet (`channel.checkQueue`
+ *    rejects - and closes the channel - when the queue is missing). This
+ *    catches the common case (topology not set up before the worker
+ *    starts) at boot, loudly, instead of at the first retry.
+ * 2. It does NOT catch a tier queue that existed at startup and was
+ *    later deleted, renamed, or otherwise drifted out from under a
+ *    long-running worker - `sendToQueue` doesn't re-check existence per
+ *    call. That's what `mandatory: true` on the retry publish (see
+ *    `createFetchSourceHandler`) plus the `channel.on("return", ...)`
+ *    handler it registers are for: an unroutable retry publish comes back
+ *    as a `return` event instead of vanishing, and gets dead-lettered
+ *    into fetch.source.dlq with a log line explaining why, rather than
+ *    the worker acking the original message having genuinely done
+ *    nothing with it.
  */
 export async function startFetchSourceWorker(
   options: FetchSourceWorkerOptions,

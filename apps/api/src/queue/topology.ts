@@ -23,12 +23,23 @@ import amqp from "amqplib";
  * (FIFO) and nothing blocks anything else. The worker (fetchSourceWorker.ts)
  * picks which tier to republish into based on the message's attempt number
  * (and, when the source told us how long to wait via
- * `RateLimitedError.retryAfterMs`, by that instead). Each tier's
- * `deadLetterExchange`/`deadLetterRoutingKey` sends an expired message back
- * to the "jobs" exchange under the "fetch.source" routing key - i.e. back
- * into the work queue below for another attempt - the same DLX mechanism
- * used everywhere else in this file, just pointed at a work queue instead
- * of a dead-letter queue.
+ * `RateLimitedError.retryAfterMs`, by that instead - see `pickRetryTier`).
+ * Each tier's `deadLetterExchange`/`deadLetterRoutingKey` sends an expired
+ * message back to the "jobs" exchange under the "fetch.source" routing key
+ * - i.e. back into the work queue below for another attempt - the same DLX
+ * mechanism used everywhere else in this file, just pointed at a work
+ * queue instead of a dead-letter queue.
+ *
+ * The 60s top tier exists specifically for `RateLimitedError.retryAfterMs`:
+ * USAJOBS (this project's primary source) can and does hand back a
+ * `Retry-After` in that range on a 429. Without a tier that can actually
+ * hold that long, `pickRetryTier` would have nothing >= the requested delay
+ * to pick and would clamp down to 8s - retrying three times inside the
+ * source's own rate-limit window, getting 429'd every time, and
+ * dead-lettering a message the source would have accepted fine a minute
+ * later. attempt-number-based escalation (no RateLimitedError involved)
+ * still only reaches this tier if `maxAttempts` is configured to allow a
+ * 5th attempt; the default (4) never does.
  */
 export const FETCH_SOURCE_RETRY_TIERS: ReadonlyArray<{
   readonly queue: string;
@@ -38,7 +49,14 @@ export const FETCH_SOURCE_RETRY_TIERS: ReadonlyArray<{
   { queue: "fetch.source.retry.2s", delayMs: 2_000 },
   { queue: "fetch.source.retry.4s", delayMs: 4_000 },
   { queue: "fetch.source.retry.8s", delayMs: 8_000 },
+  { queue: "fetch.source.retry.60s", delayMs: 60_000 },
 ];
+
+/** The dead-letter queue a permanently-failed (or unroutable-retry)
+ * `fetch.source` message ends up in. Exported so the worker's `return`
+ * handler (see fetchSourceWorker.ts) can dead-letter a retry publish that
+ * bounced off a missing tier queue without hardcoding the name twice. */
+export const FETCH_SOURCE_DLQ = "fetch.source.dlq";
 
 export async function setupTopology() {
   const url = `amqp://${process.env.RABBITMQ_DEFAULT_USER}:${process.env.RABBITMQ_DEFAULT_PASS}@${process.env.RABBITMQ_HOST}:${process.env.RABBITMQ_PORT}`;
@@ -63,8 +81,8 @@ export async function setupTopology() {
   await channel.bindQueue("fetch.source", "jobs", "fetch.source");
 
   // the dead letter queue
-  await channel.assertQueue("fetch.source.dlq", { durable: true });
-  await channel.bindQueue("fetch.source.dlq", "jobs.dlx", "fetch.source");
+  await channel.assertQueue(FETCH_SOURCE_DLQ, { durable: true });
+  await channel.bindQueue(FETCH_SOURCE_DLQ, "jobs.dlx", "fetch.source");
 
   // the retry tiers - backoff, not failure. See FETCH_SOURCE_RETRY_TIERS'
   // doc comment above for why this is one queue per delay rather than one

@@ -57,6 +57,7 @@ const createdSearchIds: string[] = [];
 
 let connection: ChannelModel;
 let channel: ConfirmChannel;
+const connectionErrors: unknown[] = [];
 
 const SCORE_JOB_QUEUE = "score.job";
 const FETCH_SOURCE_DLQ = "fetch.source.dlq";
@@ -238,13 +239,15 @@ beforeAll(async () => {
   const topology = await setupTopology();
   connection = topology.connection;
   channel = topology.channel;
-  // amqplib throws (crashing the process) on an 'error' event with no
-  // listener. The H1 test deliberately drives a channel into a protocol
-  // error (checkQueue on a missing queue) on its own temporary channel;
-  // this is a defensive backstop on the shared connection so a stray
-  // connection-level error from that (or anything else) doesn't take the
-  // whole suite down.
-  connection.on("error", () => {});
+  // Deliberately NOT a blanket `connection.on("error", () => {})`: a
+  // checkQueue failure on a missing queue is a *channel*-level protocol
+  // error (verified - it never reaches the connection), so the shared
+  // connection doesn't need a swallow for the H1 test's sake, and a bare
+  // swallow here would hide a genuine connection-level error from every
+  // other test in this file. Instead, record any connection error and
+  // assert there were none at the end - the H1 test's own temporary
+  // channel gets its own scoped `tempChannel.on("error", ...)`.
+  connection.on("error", (err) => connectionErrors.push(err));
 
   for (const tier of [...TEST_RETRY_TIERS, MECHANICS_LONG_TIER, MECHANICS_SHORT_TIER]) {
     await channel.assertQueue(tier.queue, {
@@ -270,6 +273,8 @@ afterAll(async () => {
   await db.delete(resumes).where(eq(resumes.id, RESUME_ID));
   await db.delete(sourceDescriptors).where(eq(sourceDescriptors.id, SOURCE_ID));
   await client.end();
+
+  expect(connectionErrors).toEqual([]);
 
   await channel.close();
   await connection.close();
@@ -323,23 +328,38 @@ describe("fetchSourceWorker", () => {
     // publishes nothing: the job is ingested but permanently never scored,
     // acked as a success. Publishing from `linkedJobIds` instead means
     // attempt 2 republishes it correctly.
-    const flakyChannel = withFailingFirstPublish(channel, SCORE_JOB_ROUTING_KEY);
+    //
+    // A dedicated channel, not the shared one: withFailingFirstPublish
+    // wraps it in a Proxy, which is a different object reference than the
+    // channel it wraps. ensureRetryReturnHandler's dedup (see
+    // fetchSourceWorker.ts) keys off that reference, so registering
+    // against a fresh Proxy on the SHARED channel would attach an extra,
+    // permanent `return` listener to the real underlying channel - every
+    // later test's unroutable-publish events would then be double-handled
+    // (reproduced: it duplicated a later test's DLQ entry). Isolating the
+    // proxy on its own channel avoids polluting shared state at all.
+    const tempChannel = await connection.createConfirmChannel();
+    const flakyChannel = withFailingFirstPublish(tempChannel, SCORE_JOB_ROUTING_KEY);
 
-    activeConsumerTag = await startFetchSourceWorker({
-      channel: flakyChannel,
-      db,
-      sources: { [SOURCE_ID]: source },
-      retryTiers: TEST_RETRY_TIERS,
-      log: () => {},
-    });
+    try {
+      await startFetchSourceWorker({
+        channel: flakyChannel,
+        db,
+        sources: { [SOURCE_ID]: source },
+        retryTiers: TEST_RETRY_TIERS,
+        log: () => {},
+      });
 
-    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+      publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
 
-    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 1, { timeoutMs: 3000 });
-    expect(source.calls).toBe(2);
+      await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 1, { timeoutMs: 3000 });
+      expect(source.calls).toBe(2);
 
-    const rows = await db.select().from(jobs).where(eq(jobs.externalId, externalId));
-    expect(rows).toHaveLength(1);
+      const rows = await db.select().from(jobs).where(eq(jobs.externalId, externalId));
+      expect(rows).toHaveLength(1);
+    } finally {
+      await tempChannel.close().catch(() => {});
+    }
   });
 
   it("a genuinely redelivered fetch.source message republishes score.job - the scoring worker is the dedupe boundary now, not this one", async () => {
@@ -538,6 +558,108 @@ describe("fetchSourceWorker", () => {
     // Comfortably below the 900ms tier and the naive 100ms tier alike -
     // pins this to "picked 300ms", not just "picked something >= 250ms".
     expect(gapMs).toBeLessThan(700);
+  });
+
+  it("clamps to the longest tier (and logs that it did) when retryAfterMs exceeds every configured tier", async () => {
+    const searchId = await makeSearch();
+    const externalId = `clamp-${randomUUID()}`;
+    const attemptTimes: number[] = [];
+    const source: JobSource = {
+      dataSource: SOURCE_ID as Job["dataSource"],
+      search: async () => {
+        attemptTimes.push(Date.now());
+        if (attemptTimes.length === 1) {
+          // Bigger than TEST_RETRY_TIERS' longest tier (900ms) - nothing
+          // configured can honor this in full. Before the fix, this
+          // (and every subsequent attempt asking for the same 5000ms)
+          // would have silently clamped to the SHORTEST usable gap with
+          // no record that it happened - here it must clamp to the
+          // longest tier (900ms) and say so in the log.
+          throw new RateLimitedError("slow down a lot", 5000);
+        }
+        return okResult([normalizedJob({ externalId })]);
+      },
+    };
+
+    const logs: string[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      retryTiers: TEST_RETRY_TIERS,
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 1, { timeoutMs: 3000 });
+    expect(attemptTimes).toHaveLength(2);
+
+    const gapMs = attemptTimes[1]! - attemptTimes[0]!;
+    // Landed on the longest available tier (900ms) - nowhere near
+    // instant, and nowhere near the 5000ms actually requested either.
+    expect(gapMs).toBeGreaterThanOrEqual(850);
+    expect(gapMs).toBeLessThan(2000);
+
+    expect(logs.some((l) => l.includes("CLAMPED"))).toBe(true);
+  });
+
+  it("a retry tier deleted while the worker is running dead-letters the message instead of losing it (mandatory/return regression)", async () => {
+    const searchId = await makeSearch();
+    const tier: RetryTier = {
+      queue: `fetch.source.retry.test.deleteme-${randomUUID()}`,
+      delayMs: 100,
+    };
+    await channel.assertQueue(tier.queue, {
+      durable: true,
+      messageTtl: tier.delayMs,
+      deadLetterExchange: JOBS_EXCHANGE,
+      deadLetterRoutingKey: FETCH_SOURCE_QUEUE,
+    });
+
+    const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () => {
+      throw new TransientSourceError("upstream is down");
+    });
+
+    // A dedicated channel: the `return` handler is registered (and its
+    // `log` closure captured) once per channel, the first time
+    // startFetchSourceWorker runs against it (see ensureRetryReturnHandler
+    // in fetchSourceWorker.ts) - the shared `channel` already has one
+    // attached from an earlier test in this file, bound to THAT test's
+    // `log`, so asserting on this test's own `logs` array against the
+    // shared channel would only ever see whatever the first test captured.
+    // A fresh channel makes this test's own registration the first (and
+    // only) one.
+    const tempChannel = await connection.createConfirmChannel();
+    const logs: string[] = [];
+
+    try {
+      await startFetchSourceWorker({
+        channel: tempChannel,
+        db,
+        sources: { [SOURCE_ID]: source },
+        retryTiers: [tier],
+        log: (m) => logs.push(m),
+      });
+
+      // Simulate drift: the tier this worker validated against at startup
+      // is gone by the time a message actually needs to retry into it -
+      // deleted, renamed, whatever. startFetchSourceWorker's own
+      // checkQueue() can't catch this; only mandatory+return (at the
+      // sendToQueue call site) can.
+      await channel.deleteQueue(tier.queue);
+
+      publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+      await waitFor(async () => (await queueCount(FETCH_SOURCE_DLQ)) === 1, { timeoutMs: 3000 });
+
+      // Only the one call - the "retry" never actually happened, it just
+      // got redirected straight to the DLQ once it bounced.
+      expect(source.calls).toBe(1);
+      expect(logs.some((l) => l.includes("unroutable"))).toBe(true);
+    } finally {
+      await tempChannel.close().catch(() => {});
+    }
   });
 
   it("treats a high skipRate as a signal even though the message still succeeds", async () => {
