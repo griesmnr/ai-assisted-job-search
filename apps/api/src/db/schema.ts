@@ -24,8 +24,10 @@ export const jobs = pgTable(
     title: text("title").notNull(),
     description: text("description").notNull(),
     company: text("company").notNull(),
-    payType: payTypeEnum("pay_type").notNull(),
-    commitment: commitmentEnum("commitment").notNull(),
+    // Nullable: sources differ on whether they publish these at all.
+    // See the note on Job.payType in packages/shared.
+    payType: payTypeEnum("pay_type"),
+    commitment: commitmentEnum("commitment"),
     locationType: locationTypeEnum("location_type").notNull(),
     location: text("location"),
     linkToApply: text("link_to_apply").notNull(),

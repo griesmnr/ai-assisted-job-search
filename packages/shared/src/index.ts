@@ -17,8 +17,13 @@ export type Job = {
   title: string;
   description: string;
   company: string;
-  payType: "hourly" | "salary";
-  commitment: "full-time" | "part-time" | "contract";
+  // Optional because not every source knows. USAJOBS publishes structured
+  // pay and schedule codes; Greenhouse's board API carries neither, for any
+  // posting. Requiring them would mean either dropping those sources or
+  // guessing — and a guess here writes invented data into the database.
+  // "Not stated" is the honest representation of a posting that doesn't state it.
+  payType?: "hourly" | "salary";
+  commitment?: "full-time" | "part-time" | "contract";
   locationType: "remote" | "onsite" | "hybrid";
   location?: string;
   linkToApply: string;
