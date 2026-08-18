@@ -24,7 +24,12 @@ export type Job = {
   // "Not stated" is the honest representation of a posting that doesn't state it.
   payType?: "hourly" | "salary";
   commitment?: "full-time" | "part-time" | "contract";
-  locationType: "remote" | "onsite" | "hybrid";
+  // Also optional, same reasoning. Measured against real Greenhouse boards:
+  // Airbnb asks a custom "Workplace Type" question so this maps cleanly;
+  // Discord asks nothing equivalent. Requiring it meant 0 of 3 Discord jobs
+  // surviving normalization. A posting that doesn't state its work
+  // arrangement genuinely doesn't state it.
+  locationType?: "remote" | "onsite" | "hybrid";
   location?: string;
   linkToApply: string;
   postedAt: Date;

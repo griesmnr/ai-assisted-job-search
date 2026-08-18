@@ -28,7 +28,7 @@ export const jobs = pgTable(
     // See the note on Job.payType in packages/shared.
     payType: payTypeEnum("pay_type"),
     commitment: commitmentEnum("commitment"),
-    locationType: locationTypeEnum("location_type").notNull(),
+    locationType: locationTypeEnum("location_type"),
     location: text("location"),
     linkToApply: text("link_to_apply").notNull(),
     postedAt: timestamp("posted_at").notNull(),

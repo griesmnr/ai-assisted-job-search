@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ALTER COLUMN "location_type" DROP NOT NULL;
