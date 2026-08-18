@@ -10,13 +10,13 @@
  */
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
-import { UsajobsSource } from "./sources/usajobs";
+import { GreenhouseSource } from "./sources/greenhouse";
 import type { NormalizedJob } from "./sources/types";
 
 process.loadEnvFile();
 
 const MODEL = "claude-opus-5";
-const MAX_JOBS = 10;
+const MAX_JOBS = 12;
 const RESUME = fs.readFileSync("prep/resume.txt", "utf8");
 
 const anthropic = new Anthropic();
@@ -77,28 +77,40 @@ async function scoreJob(job: NormalizedJob) {
 }
 
 async function main() {
-  // JobCategoryCode 2210 is the federal occupational series for Information
-  // Technology Management. Without it, "software engineer" as a keyword also
-  // matches civil, aerospace, and electrical engineering postings.
-  // Source-specific filters have no home in SearchCriteria yet, so this rides
-  // in on baseUrl — the adapter preserves query params already present.
-  const source = new UsajobsSource({
-    apiKey: process.env.USAJOBS_API_KEY!,
-    userAgent: process.env.USAJOBS_USER_AGENT!,
-    baseUrl: "https://data.usajobs.gov/api/search?JobCategoryCode=2210",
+  const source = new GreenhouseSource({
+    boardTokens: ["samsara", "flexport", "smartsheet", "pushpay"],
   });
 
-  console.log("Fetching real postings from USAJOBS...");
+  console.log("Fetching live openings from Greenhouse boards...");
   // No keyword: JobCategoryCode=2210 already means "information technology".
   // Adding "software engineer" as free text on top demands those exact words
   // appear in postings that are already IT jobs — the two filters fight, and
   // together with the location they returned zero.
-  const { jobs, skipped, skipRate } = await source.search({
-    location: "Washington",
-  });
+  const { jobs, skipped, skipRate } = await source.search({});
   console.log(`  ${jobs.length} jobs, ${skipped.length} skipped (skipRate ${skipRate.toFixed(2)})\n`);
 
-  const shortlist = jobs.slice(0, MAX_JOBS);
+  // Title filter: actual software engineering roles, not adjacent ones.
+  const SOFTWARE =
+    /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
+  const NOT =
+    /\b(manager|director|principal|sales|marketing|recruit|intern|designer|field service|machine learning|data scientist)\b/i;
+
+  // Location filter: Washington, or genuinely US-remote. Excludes the many
+  // "Remote - Canada/UK/Poland" postings, which aren't applicable.
+  const PLACE = /(washington|seattle|bellevue|,\s*wa\b|remote\s*-\s*us|remote,\s*usa)/i;
+
+  const seen = new Set<string>();
+  const shortlist = jobs
+    .filter((j) => SOFTWARE.test(j.title) && !NOT.test(j.title))
+    .filter((j) => PLACE.test(j.location ?? ""))
+    .filter((j) => {
+      const key = `${j.company}|${j.title}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_JOBS);
+
   console.log(`Scoring ${shortlist.length} of them with ${MODEL}...\n`);
 
   const scored = await Promise.all(
@@ -119,7 +131,7 @@ async function main() {
   console.log("Full JSON written to prep/match-results.json\n");
   console.log("─── ranked ───");
   for (const j of scored) {
-    console.log(`  ${String(j.matchScore).padStart(3)}%  ${j.title}  —  ${j.company}`);
+    console.log(`  ${String(j.matchScore).padStart(3)}%  ${j.company.padEnd(11)} ${j.title.slice(0, 48).padEnd(50)} ${j.location ?? ""}`);
   }
 }
 
