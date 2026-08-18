@@ -3,7 +3,24 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
-    "types": ["node"]
+    "types": ["node"],
+    // Mirrors the alias in the root vitest.config.ts: in a git worktree
+    // checkout, apps/api/node_modules is itself a symlink shared across all
+    // worktrees back to the main checkout's physical node_modules, so
+    // node_modules/@app/shared always resolves to the MAIN checkout's
+    // packages/shared, not this worktree's — no `pnpm install` re-links it
+    // per worktree (by design; worktrees don't run install). Without this,
+    // `tsc --noEmit` here would type-check against whatever packages/shared
+    // last built on main, silently ignoring any edit to this worktree's
+    // packages/shared/src (e.g. an in-progress Job["dataSource"] addition).
+    // Pointing at this worktree's own built declaration file (not the .ts
+    // source directly — rootDir rejects pulling a file outside apps/api/src
+    // into the program) keeps the check honest. Run
+    // `npx tsc -p packages/shared/tsconfig.json` from the worktree root
+    // first if these types look stale after editing packages/shared/src.
+    "paths": {
+      "@app/shared": ["../../packages/shared/dist/index.d.ts"]
+    }
   },
   "include": ["src"]
 }
