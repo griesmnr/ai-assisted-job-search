@@ -1,0 +1,527 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
+import {
+  AuthFailedError,
+  ForbiddenError,
+  MalformedResponseError,
+  RateLimitedError,
+  TransientSourceError,
+  UnexpectedStatusError,
+} from "./types.js";
+import { GreenhouseSource, createGreenhouseSourceFromEnv, htmlToPlainText } from "./greenhouse.js";
+
+// ---------------------------------------------------------------------------
+// Fixtures: real, live-captured Greenhouse Job Board API responses, each
+// trimmed down to a handful of real records (fields untouched) — see
+// __fixtures__/greenhouse-real-response-discord.json and
+// __fixtures__/greenhouse-real-response-airbnb.json, and this adapter's
+// top-of-file comment for how they were captured and what they were
+// checked against (nine live boards, ~1,500 postings, before any mapping
+// was written). Discord's records have no "Workplace Type" metadata
+// (locationType unmappable); Airbnb's three were chosen specifically
+// because they *do* have it, one each of Remote/Hybrid/Onsite, to prove
+// that part of the mapper actually works. Never hand-build a fixture for
+// the success/skip paths below — derive from these files, the same
+// discipline this project's USAJOBS adapter had to be rebuilt to follow.
+// ---------------------------------------------------------------------------
+
+type GreenhouseFixture = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  jobs: any[];
+};
+
+function loadFixture(name: string): GreenhouseFixture {
+  const path = fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url));
+  return JSON.parse(readFileSync(path, "utf-8")) as GreenhouseFixture;
+}
+
+const discordFixture = loadFixture("greenhouse-real-response-discord.json");
+const airbnbFixture = loadFixture("greenhouse-real-response-airbnb.json");
+
+if (discordFixture.jobs.length !== 3) {
+  throw new Error(`expected the discord fixture to have 3 jobs, got ${discordFixture.jobs.length}`);
+}
+if (airbnbFixture.jobs.length !== 3) {
+  throw new Error(`expected the airbnb fixture to have 3 jobs, got ${airbnbFixture.jobs.length}`);
+}
+
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    ...init,
+  });
+}
+
+/** Maps board token -> canned Response, so tests can mock a multi-token
+ * search() by token rather than by call order. */
+function fetchByToken(responses: Record<string, () => Response>): typeof fetch {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return vi.fn(async (input: any) => {
+    const url = input instanceof URL ? input : new URL(String(input));
+    const match = /\/boards\/([^/]+)\/jobs/.exec(url.pathname);
+    const token = match?.[1];
+    const responder = token ? responses[token] : undefined;
+    if (!responder) {
+      throw new Error(`test fetch stub: no mocked response for URL ${url.toString()}`);
+    }
+    return responder();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any;
+}
+
+function makeSource(fetchImpl: typeof fetch, boardTokens: string[] = ["discord"]) {
+  return new GreenhouseSource({ boardTokens, fetchImpl });
+}
+
+describe("GreenhouseSource — mapping against real captured responses", () => {
+  // -------------------------------------------------------------------
+  // THE CENTRAL FINDING OF THIS TICKET, verified against real data:
+  //
+  // Greenhouse's public Job Board API carries no compensation (payType)
+  // and no employment-type (commitment) data anywhere — not for Discord,
+  // not for Airbnb, not for any of the seven other real boards checked
+  // during development (stripe, figma, robinhood, coinbase, asana,
+  // webflow, gitlab). That used to mean every real record was unmappable
+  // and landed in `skipped`, because `payType`/`commitment`/`locationType`
+  // were required fields on `Job` and an absent enum was treated as a
+  // normalization failure.
+  //
+  // The project owner has since made those three fields optional on `Job`
+  // (see packages/shared/src/index.ts): "not stated" is the honest
+  // representation of a posting that simply doesn't state it, and forcing
+  // a guess to fill a required enum was exactly the mistake this project's
+  // USAJOBS post-mortem warned against. `normalizeItem` in greenhouse.ts no
+  // longer treats a missing/unmappable enum as a skip condition — a record
+  // only lands in `skipped` for a structural reason (no id, unparseable
+  // date, etc.). Measured against these real fixtures, that means every
+  // record in both boards below now normalizes successfully: airbnb -> 3
+  // jobs, 0 skipped; discord -> 3 jobs, 0 skipped.
+  //
+  // The tests below assert that current contract: real records come back
+  // as `jobs` with `payType`/`commitment` undefined (Greenhouse never
+  // supplies them) and `locationType` populated only where the source
+  // actually offers it (Airbnb's custom "Workplace Type" metadata). A
+  // dedicated regression test further down (see "never reintroduces
+  // enum-based skipping") pins down that absence of these enums must never
+  // cause a skip again.
+  // -------------------------------------------------------------------
+  it("returns a non-empty jobs array for a real response", async () => {
+    const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs } = await source.search({});
+
+    expect(jobs.length).toBeGreaterThan(0);
+  });
+
+  it("skipRate is not 1.0 for a real response", async () => {
+    const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { skipRate } = await source.search({});
+
+    expect(skipRate).not.toBe(1);
+  });
+
+  it("honestly reports skipRate 1 (not a silent empty result) for records that are genuinely unmappable, with a reason that names the real cause", async () => {
+    // The property under test is the adapter's honesty about *total*
+    // mapping failure, not any particular enum. Real Greenhouse records
+    // are never structurally broken (that's a documented, verified fact
+    // about the API — see this file's top-of-file comment) so there is no
+    // real fixture that provokes skipRate 1 anymore. What's genuinely
+    // unmappable now is a structurally broken record: no `id` at all, and
+    // a `first_published` value that isn't a parseable date. Both are
+    // handcrafted here deliberately (not derived from a fixture) because
+    // real Greenhouse responses never look like this — that's the point.
+    const brokenJobs = [
+      { title: "Broken A", company_name: "Acme", absolute_url: "https://x/1" }, // no id
+      {
+        id: 42,
+        title: "Broken B",
+        company_name: "Acme",
+        absolute_url: "https://x/2",
+        content: "<p>hi</p>",
+        first_published: "not-a-date",
+      },
+    ];
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ jobs: brokenJobs }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs, skipped, skipRate } = await source.search({});
+
+    expect(jobs).toHaveLength(0);
+    expect(skipped).toHaveLength(2);
+    expect(skipRate).toBe(1);
+    expect(skipped[0]?.reason).toMatch(/missing id/);
+    expect(skipped[1]?.reason).toMatch(/unparseable first_published/);
+  });
+
+  it("maps locationType from Airbnb's real 'Workplace Type' metadata (Remote/Hybrid/Onsite) onto the returned jobs", async () => {
+    const fetchImpl = fetchByToken({ airbnb: () => jsonResponse(airbnbFixture) });
+    const source = makeSource(fetchImpl, ["airbnb"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    // All three real Airbnb records normalize successfully now — no
+    // structural problems, and enums are no longer a skip condition.
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(3);
+
+    const byId = new Map(jobs.map((j) => [j.externalId, j]));
+    // One of each Remote/Hybrid/Onsite, matching the fixture's real
+    // "Workplace Type" metadata values for these three ids.
+    expect(byId.get("7995153")?.locationType).toBe("hybrid");
+    expect(byId.get("8067991")?.locationType).toBe("onsite");
+    expect(byId.get("8043588")?.locationType).toBe("remote");
+
+    // payType/commitment stay undefined -- Greenhouse never supplies
+    // them, but that's no longer a reason these jobs would be skipped.
+    for (const job of jobs) {
+      expect(job.payType).toBeUndefined();
+      expect(job.commitment).toBeUndefined();
+    }
+  });
+
+  it("maps every real record from both fixtures into jobs, none skipped, with locationType undefined where Greenhouse offers no equivalent (Discord)", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      airbnb: () => jsonResponse(airbnbFixture),
+    });
+    const source = makeSource(fetchImpl, ["discord", "airbnb"]);
+
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(6);
+
+    // Discord's board asks no equivalent of Airbnb's "Workplace Type"
+    // question, so locationType falls through to undefined for all three
+    // of its records -- that's expected, not a failure.
+    const discordJobs = jobs.filter((j) => j.company === "Discord");
+    expect(discordJobs).toHaveLength(3);
+    for (const job of discordJobs) {
+      expect(job.locationType).toBeUndefined();
+    }
+  });
+
+  it("never reintroduces enum-based skipping: a record with no payType/commitment/locationType signal at all is still returned as a job, not skipped", async () => {
+    // This is the regression this change most needs protecting against:
+    // if someone re-adds a check like "skip when payType/commitment/
+    // locationType is undefined", this test catches it. The record below
+    // is otherwise perfectly well-formed (valid id, title, company, url,
+    // content, date) and carries no metadata that could map to any of the
+    // three enums.
+    const minimalJob = {
+      id: 999,
+      title: "Some Role",
+      company_name: "Acme",
+      absolute_url: "https://acme.example/jobs/999",
+      content: "<p>Do the work.</p>",
+      first_published: "2026-01-01T00:00:00-00:00",
+      location: { name: "Remote" },
+      // deliberately no metadata at all
+    };
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ jobs: [minimalJob] }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs, skipped, skipRate } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(skipRate).toBe(0);
+    expect(jobs[0]?.payType).toBeUndefined();
+    expect(jobs[0]?.commitment).toBeUndefined();
+    expect(jobs[0]?.locationType).toBeUndefined();
+  });
+});
+
+describe("htmlToPlainText — against real Greenhouse `content` values", () => {
+  it("decodes Greenhouse's doubly entity-encoded markup into clean plain text", () => {
+    const rawContent = discordFixture.jobs[0].content as string;
+    // Sanity-check the fixture itself: confirms the raw JSON value really
+    // is entity-encoded markup, not already-decoded HTML or plain text —
+    // otherwise this test would trivially pass no matter what
+    // htmlToPlainText does.
+    expect(rawContent).toContain("&lt;div");
+    expect(rawContent).toContain("&amp;nbsp;"); // the double-encoding case
+
+    const text = htmlToPlainText(rawContent);
+
+    // No leftover markup or entities of either encoding layer.
+    expect(text).not.toContain("<");
+    expect(text).not.toContain("&lt;");
+    expect(text).not.toContain("&gt;");
+    expect(text).not.toContain("&amp;");
+    expect(text).not.toContain("&nbsp;");
+    expect(text).not.toContain("&quot;");
+
+    // The real, known opening line of this posting, recovered as plain
+    // text (this is the exact string a human reads on Discord's careers
+    // page for this job, decoded from two layers of entity-encoding).
+    expect(text).toContain(
+      "Discord has a highly engaged community of millions of daily active users",
+    );
+    // The &amp;nbsp; -> &nbsp; -> " " double-decode specifically: this
+    // phrase in the raw fixture is "partners&amp;nbsp;" immediately
+    // followed by a closing </li> tag — confirms the nested entity
+    // resolved to a real space rather than staying literal text.
+    expect(text).toContain("technical point of contact for programmatic buyers or partners");
+  });
+
+  it("preserves paragraph/list-item structure as line breaks rather than one run-on line", () => {
+    const text = htmlToPlainText(discordFixture.jobs[0].content as string);
+    const lines = text.split("\n");
+    expect(lines.length).toBeGreaterThan(1);
+    // A known bullet point from this real posting should be its own line.
+    expect(lines).toContain(
+      "Coordinate mobile measurement setup with MMP partners (AppsFlyer, Adjust, Singular) and serve as the technical point of contact for attribution",
+    );
+  });
+
+  it("returns empty string for empty input rather than throwing", () => {
+    expect(htmlToPlainText("")).toBe("");
+  });
+
+  it("produces a stable externalId (Greenhouse's job id) across repeated calls", async () => {
+    const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const first = await source.search({});
+    const second = await source.search({});
+
+    const idsFirst = [...first.jobs, ...first.skipped].map((j) => j.externalId);
+    const idsSecond = [...second.jobs, ...second.skipped].map((j) => j.externalId);
+    expect(idsFirst).toEqual(["8599937002", "8614971002", "8625545002"]);
+    expect(idsFirst).toEqual(idsSecond);
+  });
+
+  it("requests content=true for every configured board token, with no credentials required", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      airbnb: () => jsonResponse(airbnbFixture),
+    });
+    const source = makeSource(fetchImpl, ["discord", "airbnb"]);
+
+    await source.search({});
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as [URL, RequestInit][];
+    const urls = calls.map(([url]) => url);
+    expect(urls.some((u) => u.pathname.includes("/boards/discord/jobs"))).toBe(true);
+    expect(urls.some((u) => u.pathname.includes("/boards/airbnb/jobs"))).toBe(true);
+    for (const url of urls) {
+      expect(url.searchParams.get("content")).toBe("true");
+    }
+  });
+});
+
+describe("GreenhouseSource — merging across configured board tokens", () => {
+  it("fetches every configured token and merges the results", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      airbnb: () => jsonResponse(airbnbFixture),
+    });
+    const source = makeSource(fetchImpl, ["discord", "airbnb"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(skipped).toHaveLength(0);
+    const ids = jobs.map((j) => j.externalId).sort();
+    expect(ids).toEqual(
+      ["7995153", "8043588", "8067991", "8599937002", "8614971002", "8625545002"].sort(),
+    );
+  });
+
+  it("filters client-side by keyword (Greenhouse's board endpoint has no server-side search)", async () => {
+    const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs, skipped } = await source.search({ keyword: "Data Engineer" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.externalId).toBe("8614971002");
+  });
+
+  it("filters client-side by location", async () => {
+    const fetchImpl = fetchByToken({ airbnb: () => jsonResponse(airbnbFixture) });
+    const source = makeSource(fetchImpl, ["airbnb"]);
+
+    const { jobs, skipped } = await source.search({ location: "Berlin" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.externalId).toBe("7995153");
+  });
+
+  it("a 404 on one board token is skipped (that company's board doesn't exist) without discarding results from healthy tokens", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      "does-not-exist": () => new Response("Not Found", { status: 404 }),
+    });
+    const source = makeSource(fetchImpl, ["does-not-exist", "discord"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
+      ["8599937002", "8614971002", "8625545002"].sort(),
+    );
+  });
+
+  it("reports skipRate 0, not NaN, when every configured board 404s (nothing at all was fetched)", async () => {
+    const fetchImpl = fetchByToken({
+      "gone-1": () => new Response("Not Found", { status: 404 }),
+      "gone-2": () => new Response("Not Found", { status: 404 }),
+    });
+    const source = makeSource(fetchImpl, ["gone-1", "gone-2"]);
+
+    const { jobs, skipped, skipRate } = await source.search({});
+
+    expect(jobs).toHaveLength(0);
+    expect(skipped).toHaveLength(0);
+    expect(skipRate).toBe(0);
+  });
+});
+
+describe("GreenhouseSource — error classification", () => {
+  it("classifies HTTP 401 as AuthFailedError (not retryable)", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => new Response("Unauthorized", { status: 401 }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AuthFailedError);
+    expect((err as AuthFailedError).kind).toBe("auth-failed");
+    expect((err as AuthFailedError).retryable).toBe(false);
+  });
+
+  it("classifies HTTP 403 as ForbiddenError, distinct from AuthFailedError, and retryable", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => new Response("<html>blocked</html>", { status: 403 }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect(err).not.toBeInstanceOf(AuthFailedError);
+    expect((err as ForbiddenError).retryable).toBe(true);
+  });
+
+  it("classifies HTTP 429 as RateLimitedError (retryable) and reads Retry-After", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () =>
+        new Response("Too Many Requests", { status: 429, headers: { "Retry-After": "12" } }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect((err as RateLimitedError).retryable).toBe(true);
+    expect((err as RateLimitedError).retryAfterMs).toBe(12_000);
+  });
+
+  it("classifies HTTP 500/503 as TransientSourceError (retryable)", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => new Response("Service Unavailable", { status: 503 }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientSourceError);
+    expect((err as TransientSourceError).retryable).toBe(true);
+  });
+
+  it("classifies a network failure (fetch rejects) as TransientSourceError", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET")) as any;
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientSourceError);
+    expect((err as TransientSourceError).cause).toBeInstanceOf(Error);
+  });
+
+  it("classifies invalid JSON as MalformedResponseError (not retryable)", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => new Response("not json{{{", { status: 200 }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MalformedResponseError);
+    expect((err as MalformedResponseError).retryable).toBe(false);
+  });
+
+  it("classifies well-formed JSON with an unexpected shape (missing 'jobs') as MalformedResponseError", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ notWhatWeExpected: true }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MalformedResponseError);
+  });
+
+  it("a lone 404'd board resolves to an empty (not thrown) result — see 'reports skipRate 0' above for the multi-token case", async () => {
+    // 404 is classified as UnexpectedStatusError (same as any other
+    // unmapped 4xx — see the 400 test below for that classification's
+    // fields), but search() specifically catches status 404 at the
+    // orchestration layer and treats it as "this board doesn't exist,
+    // move on" rather than rethrowing — see the doc comment in
+    // GreenhouseSource#search. So even with only one (bad) token
+    // configured, search() resolves normally instead of rejecting.
+    const fetchImpl = fetchByToken({
+      "does-not-exist": () => new Response("Not Found", { status: 404 }),
+    });
+    const source = makeSource(fetchImpl, ["does-not-exist"]);
+
+    const result = await source.search({});
+    expect(result).toEqual({ jobs: [], skipped: [], skipRate: 0 });
+  });
+
+  it("classifies an unmapped 4xx status (400) as UnexpectedStatusError (not retryable)", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => new Response("Bad Request", { status: 400 }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnexpectedStatusError);
+    expect((err as UnexpectedStatusError).status).toBe(400);
+    expect((err as UnexpectedStatusError).retryable).toBe(false);
+  });
+});
+
+describe("GreenhouseSource construction", () => {
+  it("throws when constructed with an empty board token list", () => {
+    expect(() => new GreenhouseSource({ boardTokens: [] })).toThrow(/at least one board token/);
+  });
+});
+
+describe("createGreenhouseSourceFromEnv", () => {
+  it("throws when GREENHOUSE_BOARD_TOKENS is missing", () => {
+    expect(() => createGreenhouseSourceFromEnv({})).toThrow(/GREENHOUSE_BOARD_TOKENS/);
+  });
+
+  it("throws when GREENHOUSE_BOARD_TOKENS is empty/whitespace", () => {
+    expect(() => createGreenhouseSourceFromEnv({ GREENHOUSE_BOARD_TOKENS: "  , ," })).toThrow(
+      /GREENHOUSE_BOARD_TOKENS/,
+    );
+  });
+
+  it("parses a comma-separated list, trimming whitespace", () => {
+    const source = createGreenhouseSourceFromEnv({
+      GREENHOUSE_BOARD_TOKENS: " stripe, airbnb ,discord",
+    });
+    expect(source.dataSource).toBe("greenhouse");
+  });
+});
