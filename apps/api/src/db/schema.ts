@@ -41,17 +41,26 @@ export const resumes = pgTable("resumes", {
   resumeText: text("resume_text").notNull(),
 });
 
-export const jobMatches = pgTable("job_matches", {
-  id: text("id").primaryKey(),
-  resumeId: text("resume_id")
-    .notNull()
-    .references(() => resumes.id),
-  jobId: text("job_id")
-    .notNull()
-    .references(() => jobs.id),
-  matchScore: integer("match_score").notNull(),
-  rationale: text("rationale").notNull(),
-});
+export const jobMatches = pgTable(
+  "job_matches",
+  {
+    id: text("id").primaryKey(),
+    resumeId: text("resume_id")
+      .notNull()
+      .references(() => resumes.id),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    matchScore: integer("match_score").notNull(),
+    rationale: text("rationale").notNull(),
+  },
+  // Makes a duplicate scoring attempt (redelivery, a second demo-match run,
+  // a retried score.job message) harmless instead of an expensive repeat
+  // LLM call: the insert either lands once or is rejected/no-ops on
+  // conflict, mirroring jobs' own (data_source, external_id) uniqueness
+  // and search_results' (search_id, job_id) uniqueness. See ticket 620ca30.
+  (table) => [unique().on(table.resumeId, table.jobId)],
+);
 
 export const searches = pgTable("searches", {
   id: text("id").primaryKey(),
