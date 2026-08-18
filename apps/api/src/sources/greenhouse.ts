@@ -418,23 +418,20 @@ function normalizeItem(item: GreenhouseJob): NormalizeResult {
   // and locationType were also unmappable, which matters for diagnosing
   // whether the skip rate is a bug or (as verified here) the honest shape
   // of Greenhouse's data.
-  const enumFailures: string[] = [];
-  if (!payType) enumFailures.push("payType (Greenhouse exposes no compensation data)");
-  if (!commitment) enumFailures.push("commitment (Greenhouse exposes no employment-type data)");
+  // payType and commitment are optional on `Job` as of the decision recorded
+  // in packages/shared: Greenhouse's board API carries neither for any
+  // posting, and "not stated" is the honest representation of a posting that
+  // doesn't state it. Absence is no longer a reason to skip a record — it
+  // just means the field comes back undefined.
+  //
+  // locationType is still required, so it remains a skip condition.
   if (!locationType) {
-    enumFailures.push(
-      'locationType (no "Workplace Type" metadata question on this board, or an unrecognized answer)',
-    );
-  }
-  if (enumFailures.length > 0 || !payType || !commitment || !locationType) {
-    // The `enumFailures.length > 0` check above is what actually decides
-    // this branch; the three `!payType`/`!commitment`/`!locationType`
-    // clauses are redundant at runtime (they can only be true when
-    // `enumFailures` is already non-empty) but are what lets TypeScript
-    // narrow all three from `X | undefined` to `X` below — the two arrays
-    // (`enumFailures` and these three variables) aren't visibly correlated
-    // to the type checker otherwise.
-    return { ok: false, externalId, reason: `cannot determine ${enumFailures.join("; ")}` };
+    return {
+      ok: false,
+      externalId,
+      reason:
+        'cannot determine locationType (no "Workplace Type" metadata question on this board, or an unrecognized answer)',
+    };
   }
 
   return {
