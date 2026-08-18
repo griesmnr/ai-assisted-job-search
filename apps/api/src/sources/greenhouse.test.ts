@@ -83,104 +83,160 @@ describe("GreenhouseSource — mapping against real captured responses", () => {
   // and no employment-type (commitment) data anywhere — not for Discord,
   // not for Airbnb, not for any of the seven other real boards checked
   // during development (stripe, figma, robinhood, coinbase, asana,
-  // webflow, gitlab). Every real record this adapter has ever been run
-  // against — including these fixtures — is therefore unmappable and
-  // lands in `skipped`, never `jobs`. That is not a mapper bug: it is
-  // the accurate, verified shape of what this API offers, and per this
-  // ticket's own instructions ("Do not guess... report rather than
-  // fudging the mapping") this adapter does not invent a payType or
-  // commitment to force jobs through.
+  // webflow, gitlab). That used to mean every real record was unmappable
+  // and landed in `skipped`, because `payType`/`commitment`/`locationType`
+  // were required fields on `Job` and an absent enum was treated as a
+  // normalization failure.
   //
-  // The two tests immediately below are written to the ticket's literal
-  // spec ("MUST include a test asserting jobs is NON-EMPTY", "MUST
-  // include a test that fails loudly if skipRate is 1.0") and are
-  // EXPECTED TO FAIL against real data, by design — `it.fails` marks
-  // that expectation explicitly, so the suite reports an error (not a
-  // silent green pass) if Greenhouse ever starts exposing this data and
-  // these start passing unexpectedly, which is the moment this adapter's
-  // mapping should be revisited. See this ticket's final report for the
-  // full write-up; the short version is that `Job.payType` and
-  // `Job.commitment` would need to become optional (or gain an
-  // "unspecified" variant) for a Greenhouse-derived job to ever be
-  // producible under the current schema — a call for the project owner,
-  // not this adapter.
+  // The project owner has since made those three fields optional on `Job`
+  // (see packages/shared/src/index.ts): "not stated" is the honest
+  // representation of a posting that simply doesn't state it, and forcing
+  // a guess to fill a required enum was exactly the mistake this project's
+  // USAJOBS post-mortem warned against. `normalizeItem` in greenhouse.ts no
+  // longer treats a missing/unmappable enum as a skip condition — a record
+  // only lands in `skipped` for a structural reason (no id, unparseable
+  // date, etc.). Measured against these real fixtures, that means every
+  // record in both boards below now normalizes successfully: airbnb -> 3
+  // jobs, 0 skipped; discord -> 3 jobs, 0 skipped.
+  //
+  // The tests below assert that current contract: real records come back
+  // as `jobs` with `payType`/`commitment` undefined (Greenhouse never
+  // supplies them) and `locationType` populated only where the source
+  // actually offers it (Airbnb's custom "Workplace Type" metadata). A
+  // dedicated regression test further down (see "never reintroduces
+  // enum-based skipping") pins down that absence of these enums must never
+  // cause a skip again.
   // -------------------------------------------------------------------
-  it.fails(
-    "[EXPECTED TO FAIL — see comment above] returns a non-empty jobs array for a real response",
-    async () => {
-      const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
-      const source = makeSource(fetchImpl, ["discord"]);
-
-      const { jobs } = await source.search({});
-
-      expect(jobs.length).toBeGreaterThan(0);
-    },
-  );
-
-  it.fails(
-    "[EXPECTED TO FAIL — see comment above] skipRate is not 1.0 for a real response",
-    async () => {
-      const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
-      const source = makeSource(fetchImpl, ["discord"]);
-
-      const { skipRate } = await source.search({});
-
-      expect(skipRate).not.toBe(1);
-    },
-  );
-
-  it("honestly reports skipRate 1 (not a silent empty result) against real data, with a reason that names the real cause", async () => {
+  it("returns a non-empty jobs array for a real response", async () => {
     const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs } = await source.search({});
+
+    expect(jobs.length).toBeGreaterThan(0);
+  });
+
+  it("skipRate is not 1.0 for a real response", async () => {
+    const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { skipRate } = await source.search({});
+
+    expect(skipRate).not.toBe(1);
+  });
+
+  it("honestly reports skipRate 1 (not a silent empty result) for records that are genuinely unmappable, with a reason that names the real cause", async () => {
+    // The property under test is the adapter's honesty about *total*
+    // mapping failure, not any particular enum. Real Greenhouse records
+    // are never structurally broken (that's a documented, verified fact
+    // about the API — see this file's top-of-file comment) so there is no
+    // real fixture that provokes skipRate 1 anymore. What's genuinely
+    // unmappable now is a structurally broken record: no `id` at all, and
+    // a `first_published` value that isn't a parseable date. Both are
+    // handcrafted here deliberately (not derived from a fixture) because
+    // real Greenhouse responses never look like this — that's the point.
+    const brokenJobs = [
+      { title: "Broken A", company_name: "Acme", absolute_url: "https://x/1" }, // no id
+      {
+        id: 42,
+        title: "Broken B",
+        company_name: "Acme",
+        absolute_url: "https://x/2",
+        content: "<p>hi</p>",
+        first_published: "not-a-date",
+      },
+    ];
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ jobs: brokenJobs }),
+    });
     const source = makeSource(fetchImpl, ["discord"]);
 
     const { jobs, skipped, skipRate } = await source.search({});
 
     expect(jobs).toHaveLength(0);
-    expect(skipped).toHaveLength(3);
+    expect(skipped).toHaveLength(2);
     expect(skipRate).toBe(1);
-    for (const s of skipped) {
-      expect(s.reason).toMatch(/payType/);
-      expect(s.reason).toMatch(/commitment/);
-      // Discord has no "Workplace Type" metadata, so locationType is also
-      // unmappable for these specific records.
-      expect(s.reason).toMatch(/locationType/);
-    }
+    expect(skipped[0]?.reason).toMatch(/missing id/);
+    expect(skipped[1]?.reason).toMatch(/unparseable first_published/);
   });
 
-  it("maps locationType from Airbnb's real 'Workplace Type' metadata (Remote/Hybrid/Onsite), even though the record is still skipped overall on payType/commitment", async () => {
+  it("maps locationType from Airbnb's real 'Workplace Type' metadata (Remote/Hybrid/Onsite) onto the returned jobs", async () => {
     const fetchImpl = fetchByToken({ airbnb: () => jsonResponse(airbnbFixture) });
     const source = makeSource(fetchImpl, ["airbnb"]);
 
     const { jobs, skipped } = await source.search({});
 
-    // Still fully skipped -- payType/commitment are unconditionally
-    // unmappable regardless of locationType succeeding.
-    expect(jobs).toHaveLength(0);
-    expect(skipped).toHaveLength(3);
+    // All three real Airbnb records normalize successfully now — no
+    // structural problems, and enums are no longer a skip condition.
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(3);
 
-    for (const s of skipped) {
-      expect(s.reason).toMatch(/payType/);
-      expect(s.reason).toMatch(/commitment/);
-      // The key assertion: locationType is NOT listed as a failure for
-      // these three records, proving mapLocationType actually resolved
-      // Remote/Hybrid/Onsite from the real "Workplace Type" metadata
-      // instead of falling through like it does for Discord.
-      expect(s.reason).not.toMatch(/locationType/);
+    const byId = new Map(jobs.map((j) => [j.externalId, j]));
+    // One of each Remote/Hybrid/Onsite, matching the fixture's real
+    // "Workplace Type" metadata values for these three ids.
+    expect(byId.get("7995153")?.locationType).toBe("hybrid");
+    expect(byId.get("8067991")?.locationType).toBe("onsite");
+    expect(byId.get("8043588")?.locationType).toBe("remote");
+
+    // payType/commitment stay undefined -- Greenhouse never supplies
+    // them, but that's no longer a reason these jobs would be skipped.
+    for (const job of jobs) {
+      expect(job.payType).toBeUndefined();
+      expect(job.commitment).toBeUndefined();
     }
   });
 
-  it("never skips a real record for missing/unparseable content (proves htmlToPlainText succeeds on every real posting checked)", async () => {
+  it("maps every real record from both fixtures into jobs, none skipped, with locationType undefined where Greenhouse offers no equivalent (Discord)", async () => {
     const fetchImpl = fetchByToken({
       discord: () => jsonResponse(discordFixture),
       airbnb: () => jsonResponse(airbnbFixture),
     });
     const source = makeSource(fetchImpl, ["discord", "airbnb"]);
 
-    const { skipped } = await source.search({});
-    expect(skipped).toHaveLength(6);
-    for (const s of skipped) {
-      expect(s.reason).not.toMatch(/content/);
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(6);
+
+    // Discord's board asks no equivalent of Airbnb's "Workplace Type"
+    // question, so locationType falls through to undefined for all three
+    // of its records -- that's expected, not a failure.
+    const discordJobs = jobs.filter((j) => j.company === "Discord");
+    expect(discordJobs).toHaveLength(3);
+    for (const job of discordJobs) {
+      expect(job.locationType).toBeUndefined();
     }
+  });
+
+  it("never reintroduces enum-based skipping: a record with no payType/commitment/locationType signal at all is still returned as a job, not skipped", async () => {
+    // This is the regression this change most needs protecting against:
+    // if someone re-adds a check like "skip when payType/commitment/
+    // locationType is undefined", this test catches it. The record below
+    // is otherwise perfectly well-formed (valid id, title, company, url,
+    // content, date) and carries no metadata that could map to any of the
+    // three enums.
+    const minimalJob = {
+      id: 999,
+      title: "Some Role",
+      company_name: "Acme",
+      absolute_url: "https://acme.example/jobs/999",
+      content: "<p>Do the work.</p>",
+      first_published: "2026-01-01T00:00:00-00:00",
+      location: { name: "Remote" },
+      // deliberately no metadata at all
+    };
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ jobs: [minimalJob] }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs, skipped, skipRate } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(skipRate).toBe(0);
+    expect(jobs[0]?.payType).toBeUndefined();
+    expect(jobs[0]?.commitment).toBeUndefined();
+    expect(jobs[0]?.locationType).toBeUndefined();
   });
 });
 
@@ -272,11 +328,11 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
     });
     const source = makeSource(fetchImpl, ["discord", "airbnb"]);
 
-    const { skipped } = await source.search({});
+    const { jobs, skipped } = await source.search({});
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(skipped).toHaveLength(6);
-    const ids = skipped.map((s) => s.externalId).sort();
+    expect(skipped).toHaveLength(0);
+    const ids = jobs.map((j) => j.externalId).sort();
     expect(ids).toEqual(
       ["7995153", "8043588", "8067991", "8599937002", "8614971002", "8625545002"].sort(),
     );
@@ -286,20 +342,22 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
     const fetchImpl = fetchByToken({ discord: () => jsonResponse(discordFixture) });
     const source = makeSource(fetchImpl, ["discord"]);
 
-    const { skipped } = await source.search({ keyword: "Data Engineer" });
+    const { jobs, skipped } = await source.search({ keyword: "Data Engineer" });
 
-    expect(skipped).toHaveLength(1);
-    expect(skipped[0]?.externalId).toBe("8614971002");
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.externalId).toBe("8614971002");
   });
 
   it("filters client-side by location", async () => {
     const fetchImpl = fetchByToken({ airbnb: () => jsonResponse(airbnbFixture) });
     const source = makeSource(fetchImpl, ["airbnb"]);
 
-    const { skipped } = await source.search({ location: "Berlin" });
+    const { jobs, skipped } = await source.search({ location: "Berlin" });
 
-    expect(skipped).toHaveLength(1);
-    expect(skipped[0]?.externalId).toBe("7995153");
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.externalId).toBe("7995153");
   });
 
   it("a 404 on one board token is skipped (that company's board doesn't exist) without discarding results from healthy tokens", async () => {
@@ -309,11 +367,11 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
     });
     const source = makeSource(fetchImpl, ["does-not-exist", "discord"]);
 
-    const { skipped } = await source.search({});
+    const { jobs, skipped } = await source.search({});
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(skipped).toHaveLength(3);
-    expect(skipped.map((s) => s.externalId).sort()).toEqual(
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
       ["8599937002", "8614971002", "8625545002"].sort(),
     );
   });

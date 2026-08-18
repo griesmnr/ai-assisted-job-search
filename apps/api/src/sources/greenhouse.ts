@@ -51,21 +51,31 @@ import {
 //    prose mentions a "Compensation team" with no pay figure attached at
 //    all). Parsing prose to force a closed-enum answer is exactly the kind
 //    of guess that made the USAJOBS adapter map zero real jobs while its
-//    tests stayed green — so this adapter never does it. `mapPayType` and
-//    `mapCommitment` always return `undefined`, and every real record ends
-//    up in `skipped` as a result. That is not a coding gap — it is the
-//    accurate, verified shape of what this API offers. See this file's
-//    test suite for the actual skip rate against real data, and the
-//    implementation ticket's final report for the recommendation this
-//    implies for `Job`'s schema.
+//    tests stayed green — so this adapter never does it: `mapPayType` and
+//    `mapCommitment` always return `undefined`.
+//
+//    That used to mean every real record ended up in `skipped`, back when
+//    `payType`/`commitment`/`locationType` were required fields on `Job`
+//    and an absent enum was treated as a normalization failure. The project
+//    owner has since made those three fields optional on `Job` (see
+//    packages/shared/src/index.ts) specifically because of this finding —
+//    "not stated" is the honest representation of a posting that doesn't
+//    state it, and requiring a guess would mean either inventing data or
+//    dropping this source entirely. So absence of payType/commitment is no
+//    longer a skip condition: it just means those fields come back
+//    `undefined` on an otherwise normally-returned job. See this file's
+//    test suite for the measured skip rate against real data (0.0 for both
+//    captured fixtures) and the implementation ticket's final report for
+//    the full history of that decision.
 //
 // `locationType` fares slightly better: one of the nine boards (Airbnb)
 // asks a custom metadata question named exactly "Workplace Type" with
 // answers "Remote" / "Hybrid" / "Onsite" — see `mapLocationType`. This is
 // not part of Greenhouse's standard schema (the other eight boards checked
 // have no such field, under any name), so it is applied opportunistically
-// and does not rescue the overall skip rate on its own, since payType and
-// commitment are unconditionally unmappable regardless.
+// and, like payType/commitment, its absence elsewhere is not a skip
+// condition either — it simply leaves `locationType` undefined for boards
+// that don't ask an equivalent question.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = "https://boards-api.greenhouse.io/v1/boards";
@@ -411,28 +421,17 @@ function normalizeItem(item: GreenhouseJob): NormalizeResult {
   const commitment = mapCommitment(item);
   const locationType = mapLocationType(item);
 
-  // Collect *every* unmappable enum into one reason rather than stopping at
-  // the first (as USAJOBS' normalizeItem does) — given how consistently
-  // payType/commitment are absent here, a single "cannot determine
-  // payType" reason on every skipped record would bury whether commitment
-  // and locationType were also unmappable, which matters for diagnosing
-  // whether the skip rate is a bug or (as verified here) the honest shape
-  // of Greenhouse's data.
   // payType and commitment are optional on `Job` as of the decision recorded
   // in packages/shared: Greenhouse's board API carries neither for any
   // posting, and "not stated" is the honest representation of a posting that
   // doesn't state it. Absence is no longer a reason to skip a record — it
   // just means the field comes back undefined.
   //
-  // locationType is still required, so it remains a skip condition.
-  if (!locationType) {
-    return {
-      ok: false,
-      externalId,
-      reason:
-        'cannot determine locationType (no "Workplace Type" metadata question on this board, or an unrecognized answer)',
-    };
-  }
+  // locationType is optional too, for the same reason — most Greenhouse
+  // boards ask no equivalent of Airbnb's custom "Workplace Type" question.
+  // No enum is a skip condition here anymore; a record only fails
+  // normalization if something structural is wrong (missing id, unparseable
+  // date), which is what `skipped` should mean.
 
   return {
     ok: true,
@@ -561,11 +560,10 @@ function decodeHtmlEntities(input: string): string {
 
 /**
  * Exported (unlike USAJOBS' private mapping helpers) specifically so it can
- * be unit-tested directly against real fixture content: no real Greenhouse
- * record has ever made it through `normalizeItem` to a `NormalizedJob`
- * (see this file's top-of-file comment), so `description` is otherwise
- * unobservable from `search()`'s output — there is no other way to prove
- * this function does what it claims against real data.
+ * be unit-tested directly against real fixture content, independent of
+ * whatever `normalizeItem` does with `payType`/`commitment`/`locationType` —
+ * decoupling this test from the mapping decisions that live elsewhere in
+ * this file keeps it stable regardless of which fields `Job` requires.
  */
 export function htmlToPlainText(raw: string): string {
   // Layer 1: undo Greenhouse's whole-string entity-encoding to recover the
