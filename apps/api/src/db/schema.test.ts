@@ -30,20 +30,34 @@ describe("job_matches table", () => {
   const JOB_ID = "schema-test-job";
 
   beforeAll(async () => {
-    await db.insert(resumes).values({ id: RESUME_ID, resumeText: "some resume text" });
-    await db.insert(jobs).values({
-      id: JOB_ID,
-      description: "here is the job description",
-      externalId: "schema-test-external-id",
-      dataSource: "great-source-for-jobs",
-      title: "job title",
-      company: "the best one",
-      payType: "salary",
-      commitment: "full-time",
-      linkToApply: "www.awesome.com/job1",
-      locationType: "hybrid",
-      postedAt: new Date(),
-    });
+    // onConflictDoNothing on both: fixed ids so a run that crashed after
+    // this beforeAll but before its own afterAll leaves these rows behind
+    // — without this, every later run would fail on a PK violation here
+    // instead of just reusing the leftover rows.
+    await db
+      .insert(resumes)
+      .values({
+        id: RESUME_ID,
+        resumeText: "some resume text",
+        resumeHash: "schema-test-resume-hash",
+      })
+      .onConflictDoNothing({ target: resumes.id });
+    await db
+      .insert(jobs)
+      .values({
+        id: JOB_ID,
+        description: "here is the job description",
+        externalId: "schema-test-external-id",
+        dataSource: "great-source-for-jobs",
+        title: "job title",
+        company: "the best one",
+        payType: "salary",
+        commitment: "full-time",
+        linkToApply: "www.awesome.com/job1",
+        locationType: "hybrid",
+        postedAt: new Date(),
+      })
+      .onConflictDoNothing({ target: jobs.id });
   });
 
   afterAll(async () => {

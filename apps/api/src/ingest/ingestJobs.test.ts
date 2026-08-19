@@ -49,7 +49,9 @@ function makeNormalizedJob(overrides: Partial<NormalizedJob> = {}): NormalizedJo
 beforeAll(async () => {
   await client.connect();
   await db.insert(sourceDescriptors).values({ id: DATA_SOURCE, displayName: "Ingest Test Source" });
-  await db.insert(resumes).values({ id: RESUME_ID, resumeText: "resume text" });
+  await db
+    .insert(resumes)
+    .values({ id: RESUME_ID, resumeText: "resume text", resumeHash: "ingest-test-resume-hash" });
   await db.insert(searches).values([
     { id: SEARCH_ID, resumeId: RESUME_ID, searchedAt: new Date() },
     { id: OTHER_SEARCH_ID, resumeId: RESUME_ID, searchedAt: new Date() },

@@ -41,7 +41,13 @@ const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
-  process.loadEnvFile();
+  // `pnpm db:seed` (and any other direct `tsx src/db/seed.ts` invocation)
+  // runs with cwd = apps/api, but .env lives at the repo root — a bare
+  // `process.loadEnvFile()` looks for `apps/api/.env`, which doesn't
+  // exist, and throws ENOENT before a single env var is read. Anchoring
+  // the path to this file's own URL (not cwd) makes the script work from
+  // any cwd, not just when invoked from the repo root by coincidence.
+  process.loadEnvFile(new URL("../../../../.env", import.meta.url));
   const client = new Client({
     host: process.env.POSTGRES_HOST,
     port: Number(process.env.POSTGRES_PORT),

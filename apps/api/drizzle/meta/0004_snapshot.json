@@ -1,5 +1,5 @@
 {
-  "id": "f4696ba4-2109-49d0-970a-629f5b259d95",
+  "id": "c79adab0-f4a4-4a6d-ba3f-158850d99067",
   "prevId": "50ac12b2-682e-4e04-bc56-7bd0a8120353",
   "version": "7",
   "dialect": "postgresql",
@@ -37,6 +37,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "strengths": {
+          "name": "strengths",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "gaps": {
+          "name": "gaps",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -209,12 +221,26 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "resume_hash": {
+          "name": "resume_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "resumes_resume_hash_unique": {
+          "name": "resumes_resume_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "resume_hash"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

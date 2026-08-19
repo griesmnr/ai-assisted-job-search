@@ -209,7 +209,9 @@ async function getOrCreateResumeId(
   if (rows.length === 0) {
     // Should be impossible: the insert above either created this row or
     // no-opped because a row with this hash already existed.
-    throw new Error(`getOrCreateResumeId: no resumes row found for hash "${resumeHash}" after upsert`);
+    throw new Error(
+      `getOrCreateResumeId: no resumes row found for hash "${resumeHash}" after upsert`,
+    );
   }
   return rows[0]!.id;
 }
@@ -331,7 +333,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       } else {
         failedCount++;
         const jobId = toScoreIds[i]!;
-        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        const reason =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
         log(`  FAILED to score job ${jobId}: ${reason} (will retry on the next run)`);
       }
     });

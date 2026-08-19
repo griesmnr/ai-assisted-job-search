@@ -1,1 +1,0 @@
-ALTER TABLE "job_matches" ADD CONSTRAINT "job_matches_resume_id_job_id_unique" UNIQUE("resume_id","job_id");

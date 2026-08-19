@@ -234,7 +234,9 @@ async function stopConsumer() {
 beforeAll(async () => {
   await client.connect();
   await db.insert(sourceDescriptors).values({ id: SOURCE_ID, displayName: "Worker Test Source" });
-  await db.insert(resumes).values({ id: RESUME_ID, resumeText: "resume text" });
+  await db
+    .insert(resumes)
+    .values({ id: RESUME_ID, resumeText: "resume text", resumeHash: "worker-test-resume-hash" });
 
   const topology = await setupTopology();
   connection = topology.connection;
