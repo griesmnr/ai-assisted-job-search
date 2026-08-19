@@ -14,23 +14,35 @@ import { LeverSource, createLeverSourceFromEnv } from "./lever.js";
 // ---------------------------------------------------------------------------
 // Fixtures: real, live-captured Lever Postings API responses
 // (`GET https://api.lever.co/v0/postings/{company}?mode=json`), each trimmed
-// down to a handful of real records (fields untouched) — see
+// down to a handful of real records (fields untouched, including `lists`
+// and `additionalPlain` — nothing stripped out of these records beyond
+// which postings were kept) — see
 // __fixtures__/lever-real-response-outreach.json and
 // __fixtures__/lever-real-response-palantir.json, and lever.ts's top-of-file
 // comment for how they were captured and what was cross-checked before any
-// mapping was written (five live boards with open postings, plus four more
-// that 200'd with a legitimate empty `[]`).
+// mapping was written.
 //
 // Outreach's three were chosen to span `salaryRange` presence (two of three
 // have it, one doesn't) and `workplaceType` (`remote` and `hybrid`).
 // Palantir's five were chosen to span every real `categories.commitment`
-// value observed on that board: Full-time, Contractor, Internship,
-// Fixed-Term, Scholarship — proving both that the values that map cleanly
-// (Full-time, Contractor) do, and that the ones that don't
+// value observed on Palantir's board specifically: Full-time, Contractor,
+// Internship, Fixed-Term, Scholarship — proving both that the values that
+// map cleanly (Full-time, Contractor) do, and that the ones that don't
 // (Internship/Fixed-Term/Scholarship) are left undefined rather than
-// guessed at. Never hand-build a fixture for the success/skip paths below —
-// derive from these files, the same discipline this project's USAJOBS
-// adapter had to be rebuilt to follow.
+// guessed at. This is NOT a claim that these are the only
+// `categories.commitment` values that exist anywhere on Lever — see
+// `mapCommitment`'s doc comment in lever.ts for why that field turned out
+// to be a per-company-configurable category, not a fixed enum, and the
+// separate handcrafted tests below (search "synthetic, not fixture-derived")
+// that exercise the substring-matching rule against values real boards were
+// later found to use that neither of these two fixtures happens to contain.
+// Palantir's Backend Software Engineer posting (1345438c-...) additionally
+// carries real `lists` sections titled "What We Require" and "Technologies
+// We Use" — used below to prove requirements text that exists ONLY in
+// `lists`, not in `descriptionPlain`, still ends up in `description` and is
+// still found by keyword filtering. Never hand-build a fixture for the
+// success/skip paths below — derive from these files, the same discipline
+// this project's USAJOBS adapter had to be rebuilt to follow.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -160,7 +172,17 @@ describe("LeverSource — mapping against real captured responses", () => {
     }
   });
 
-  it("uses descriptionPlain (not the HTML description) as the job description", async () => {
+  it("folds descriptionPlain + lists + additionalPlain into description (not just the intro, and not the raw HTML description), so real requirements text survives", async () => {
+    // This replaces a test that was named almost the same thing but could
+    // pass regardless of whether requirements ever made it into
+    // `description` at all -- it only checked that the intro narrative was
+    // present and HTML-tag-free, which is true whether or not `lists` (the
+    // section that actually carries the requirements on this posting) was
+    // read at all. The assertions below fail on the previous
+    // descriptionPlain-only implementation: "At least two years of..." is
+    // real text from this exact posting's "Our Vision of You:" list
+    // (__fixtures__/lever-real-response-outreach.json), not present
+    // anywhere in descriptionPlain.
     const fetchImpl = fetchByCompany({ outreach: () => jsonResponse(outreachFixture) });
     const source = makeSource(fetchImpl, ["outreach"]);
 
@@ -168,12 +190,23 @@ describe("LeverSource — mapping against real captured responses", () => {
 
     const job = jobs.find((j) => j.externalId === "9a24e6ad-3af2-4db0-a606-672946284b40");
     expect(job).toBeDefined();
-    // The real fixture's HTML `description` for this posting contains
-    // markup; descriptionPlain doesn't. This proves normalizeItem actually
-    // read the plain field, not the HTML one.
+    // Intro narrative, from descriptionPlain.
+    expect(job?.description).toContain("Outreach, founded in 2014");
+    // Requirements bullet, real text that exists ONLY inside this posting's
+    // `lists[1].content` ("Our Vision of You:") -- proves `lists` actually
+    // got folded in, not just descriptionPlain.
+    expect(job?.description).toContain(
+      "At least two years of sales lifecycle management, account management, or customer success experience",
+    );
+    // Closing/benefits text, real text from `additionalPlain`.
+    expect(job?.description).toContain("Flexible time off");
+    // The real fixture's HTML `description`/`lists[].content` for this
+    // posting contain markup; the assembled result must not, since
+    // `lists[].content` is HTML-stripped via the shared htmlToPlainText.
     expect(job?.description).not.toContain("<div>");
     expect(job?.description).not.toContain("<strong");
-    expect(job?.description).toContain("Outreach, founded in 2014");
+    expect(job?.description).not.toContain("<ul");
+    expect(job?.description).not.toContain("<li");
   });
 
   it("maps commitment from categories.commitment where it unambiguously matches Job's enum, case-insensitively", async () => {
@@ -299,6 +332,90 @@ describe("LeverSource — mapping against real captured responses", () => {
   });
 });
 
+describe("LeverSource — mapCommitment/mapLocationType/mapPayType edge cases (synthetic, not fixture-derived)", () => {
+  // These postings are handcrafted, not pulled from any fixture -- same
+  // discipline as greenhouse.test.ts's handcrafted broken records. They
+  // exist specifically to pin down matching rules for real raw values that
+  // don't happen to appear in either committed fixture: compound
+  // `categories.commitment` strings a later cross-board check found (see
+  // lever.ts's mapCommitment doc comment for exactly which real boards and
+  // postings each of these came from), and the "on-site"/"per-hour"
+  // spellings that Lever's own README documents but neither outreach's nor
+  // palantir's real postings happened to use.
+  function makeMinimalPosting(overrides: Record<string, unknown>) {
+    return {
+      id: "22222222-2222-2222-2222-222222222222",
+      text: "Some Role",
+      hostedUrl: "https://jobs.lever.co/acme/22222222-2222-2222-2222-222222222222",
+      descriptionPlain: "Do the work.",
+      createdAt: 1_700_000_000_000,
+      ...overrides,
+    };
+  }
+
+  it.each([
+    // [raw categories.commitment value, expected Job.commitment, real source]
+    ["Full-Time - Remote", "full-time", "Anchorage"],
+    ["Full-Time - Hybrid", "full-time", "Anchorage"],
+    ["Full Time Permanent", "full-time", "Anchorage"],
+    [
+      "Full Time Contractor",
+      "contract",
+      "cross-board review (contract wins over the full-time token)",
+    ],
+    ["Contract", "contract", "cross-board review"],
+    ["Permanent", undefined, "cross-board review (permanence axis, not full/part/contract)"],
+    ["Short Term", undefined, "cross-board review (permanence axis)"],
+    [
+      "Fixed Term",
+      undefined,
+      "cross-board review (space, not hyphen -- distinct raw string from 'Fixed-Term')",
+    ],
+    ["Apprenticeship", undefined, "cross-board review (distinct employment relationship)"],
+  ] as const)("categories.commitment %j -> commitment %j (%s)", async (raw, expected, _source) => {
+    const fetchImpl = fetchByCompany({
+      outreach: () =>
+        jsonResponse([makeMinimalPosting({ categories: { commitment: raw, location: "Remote" } })]),
+    });
+    const source = makeSource(fetchImpl, ["outreach"]);
+
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs[0]?.commitment).toBe(expected);
+  });
+
+  it.each([
+    ["on-site", "onsite"],
+    ["on site", "onsite"],
+    ["onsite", "onsite"],
+  ] as const)("workplaceType %j -> locationType %j", async (raw, expected) => {
+    const fetchImpl = fetchByCompany({
+      outreach: () => jsonResponse([makeMinimalPosting({ workplaceType: raw })]),
+    });
+    const source = makeSource(fetchImpl, ["outreach"]);
+
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs[0]?.locationType).toBe(expected);
+  });
+
+  it("maps a per-hour salaryRange.interval to payType 'hourly' (never observed on a real posting, but the branch is real code, not dead code)", async () => {
+    const fetchImpl = fetchByCompany({
+      outreach: () =>
+        jsonResponse([
+          makeMinimalPosting({
+            salaryRange: { min: 20, max: 30, currency: "USD", interval: "per-hour" },
+          }),
+        ]),
+    });
+    const source = makeSource(fetchImpl, ["outreach"]);
+
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs[0]?.payType).toBe("hourly");
+  });
+});
+
 describe("LeverSource — merging across configured companies", () => {
   it("fetches every configured company and merges the results", async () => {
     const fetchImpl = fetchByCompany({
@@ -323,6 +440,23 @@ describe("LeverSource — merging across configured companies", () => {
     expect(skipped).toHaveLength(0);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.externalId).toBe("3c27d8b2-bdef-4a0c-8507-092ef90fab33");
+  });
+
+  it("keyword filtering searches the full assembled description, not just descriptionPlain, so a skill named only in a requirements list still matches", async () => {
+    // "Kafka" appears in Palantir's real Backend Software Engineer posting
+    // (1345438c-...) ONLY inside its "Technologies We Use" `lists` section
+    // -- verified absent from that same posting's descriptionPlain and
+    // absent from every other record in this fixture. If keyword filtering
+    // only searched descriptionPlain (the pre-fix behavior), this would
+    // return zero jobs instead of one.
+    const fetchImpl = fetchByCompany({ palantir: () => jsonResponse(palantirFixture) });
+    const source = makeSource(fetchImpl, ["palantir"]);
+
+    const { jobs, skipped } = await source.search({ keyword: "Kafka" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.externalId).toBe("1345438c-ebfc-4fa5-b545-30c1414f317c");
   });
 
   it("filters client-side by location", async () => {

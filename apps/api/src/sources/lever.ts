@@ -1,4 +1,5 @@
 import type { Job } from "@app/shared";
+import { htmlToPlainText } from "./html.js";
 import {
   AuthFailedError,
   ForbiddenError,
@@ -20,25 +21,25 @@ import {
 //
 //   GET https://api.lever.co/v0/postings/{company}?mode=json
 //
-// Everything below was written against real captured responses from five
-// live company boards — outreach (29 postings), wealthfront (23), palantir
-// (309) all had open postings at the time of writing; plaid, clari,
-// highspot, and lever's own board returned HTTP 200 with an empty `[]`
-// (a real, legitimate "no open postings right now" board, not an error).
-// Trimmed subsets of the outreach and palantir responses (fields untouched)
-// are saved under __fixtures__/lever-real-response-outreach.json and
-// __fixtures__/lever-real-response-palantir.json, chosen specifically to
-// span the field variety this adapter needs to prove it handles: every
-// `categories.commitment` value seen in the wild (Full-Time, Full-time,
-// Contractor, Internship, Fixed-Term, Scholarship — note the inconsistent
-// casing between companies), every `workplaceType` value (remote, hybrid,
-// onsite), and a mix of postings with and without `salaryRange`. Per the
-// standing instruction not to repeat USAJOBS' mistake of inventing
-// fixtures/mappings from assumptions, every field below was read off these
-// real responses, not guessed at.
+// Everything below was written against real captured responses. First pass:
+// outreach (29 postings), wealthfront (23), palantir (309) all had open
+// postings; plaid, clari, highspot, and lever's own board returned HTTP 200
+// with an empty `[]` (a real, legitimate "no open postings right now"
+// board, not an error). A second pass, prompted by an adversarial review
+// that found the first pass's `description` and `categories.commitment`
+// claims didn't hold up, added anchorage (36) and immutable (6) and
+// re-verified counts (palantir's board had shrunk to 307 by then — these
+// boards genuinely change over time; re-fetch before trusting a stale
+// count). Trimmed subsets of the outreach and palantir responses (fields
+// untouched) are saved under __fixtures__/lever-real-response-outreach.json
+// and __fixtures__/lever-real-response-palantir.json. Per the standing
+// instruction not to repeat USAJOBS' mistake of inventing fixtures/mappings
+// from assumptions, every field below was read off real responses, not
+// guessed at — including the second time, when the first pass's own
+// assumptions turned out to need correcting.
 //
-// Three findings from that research shape the design here, each different
-// from Greenhouse's equivalent:
+// Findings that shape the design here, each different from Greenhouse's
+// equivalent:
 //
 // 1. The response body is a bare JSON array of postings — unlike
 //    Greenhouse's `{ jobs: [...] }` envelope, there is no wrapper object.
@@ -48,45 +49,54 @@ import {
 //    `itemMatchesCriteria`).
 //
 // 2. Lever's posting objects carry NO company name field anywhere (checked
-//    across all three non-empty real responses — outreach, wealthfront,
-//    palantir — no `company`/`companyName`/equivalent key exists at any
-//    level). Greenhouse's `company_name` has no Lever equivalent, so
-//    `company` on the returned `Job` is the configured slug itself (the
-//    same string used to build the request URL and the one that appears in
-//    `hostedUrl`, e.g. "outreach" in
-//    "https://jobs.lever.co/outreach/9a24e6ad-..."), not a value read out
-//    of the posting.
+//    across every real response used to build this adapter — no
+//    `company`/`companyName`/equivalent key exists at any level).
+//    Greenhouse's `company_name` has no Lever equivalent, so `company` on
+//    the returned `Job` is the configured slug itself (the same string used
+//    to build the request URL and the one that appears in `hostedUrl`, e.g.
+//    "outreach" in "https://jobs.lever.co/outreach/9a24e6ad-..."), not a
+//    value read out of the posting.
 //
-// 3. Unlike Greenhouse, Lever's schema DOES carry employment-type and
+// 3. A real Lever posting's full text is NOT just `descriptionPlain`. The
+//    first version of this adapter used `descriptionPlain` alone and
+//    dropped `lists` (Lever's own README: "Extra lists (such as
+//    requirements, benefits, etc.) from the job posting") and
+//    `additionalPlain`. Measured on re-check: `descriptionPlain` alone
+//    discarded 69-74% of a posting's real text, and on the majority of
+//    postings checked, the *requirements* — the part of a job posting most
+//    load-bearing for resume matching — existed ONLY in `lists` (e.g.
+//    Palantir's sections are literally titled "What We Require" and "What
+//    We Value"). Both `lists[].content` (HTML, no plain-text sibling field
+//    — stripped here via the shared `htmlToPlainText` from ./html.ts) and
+//    `additionalPlain` (already plain text) are now folded into
+//    `description`; see `buildDescription`. `itemMatchesCriteria` searches
+//    this same fuller text, not just `descriptionPlain`, so keyword
+//    filtering doesn't miss skills that only appear in a requirements list.
+//
+// 4. Unlike Greenhouse, Lever's schema DOES carry employment-type and
 //    work-arrangement data as genuinely structured fields, not free-text
-//    prose to be parsed and guessed at:
-//      - `categories.commitment` is a real field (e.g. "Full-Time",
-//        "Contractor", "Internship", "Fixed-Term", "Scholarship" — all
-//        observed on Palantir's real board alone). This is the first
-//        source besides USAJOBS in this codebase that can supply
-//        `commitment` from a structured field rather than leaving it
-//        always undefined the way `greenhouse.ts` documents it must. Only
-//        the values that map unambiguously onto Job's 3-value enum
-//        ("full-time" | "part-time" | "contract") are mapped; see
-//        `mapCommitment` for why "Internship"/"Fixed-Term"/"Scholarship"
-//        are deliberately left undefined rather than forced into the
-//        closest-sounding bucket.
-//      - `workplaceType` is a top-level field whose values (`"remote"`,
-//        `"onsite"`, `"hybrid"`) match Job's `locationType` enum exactly —
-//        no metadata-question archaeology needed the way Greenhouse's
-//        Airbnb-only "Workplace Type" custom question required.
-//      - `salaryRange.interval` (when present) names the pay period
-//        explicitly (every real posting observed uses
-//        `"per-year-salary"`; no `"per-hour"` posting was found in any of
-//        the three real, non-empty boards checked, but the field is a
-//        structured enum-like string from Lever itself, not prose, so
-//        `mapPayType` matches on it generically — see that function's doc
-//        comment for the exact rule and its limits).
+//    prose to be parsed and guessed at — but `categories.commitment`
+//    specifically is NOT a fixed cross-platform enum the way it first
+//    looked from one board. See `mapCommitment`'s doc comment for the full
+//    correction: it's a per-company-configurable category, evidenced by
+//    compound company-specific values like "Full-Time - Remote" and "Full
+//    Time Permanent" that bake other axes directly into the same string.
+//      - `workplaceType` IS a genuine fixed enum: a top-level field whose
+//        values (`"remote"`, `"onsite"`, `"hybrid"`) match Job's
+//        `locationType` enum exactly — no metadata-question archaeology
+//        needed the way Greenhouse's Airbnb-only "Workplace Type" custom
+//        question required. (Lever's own README additionally documents an
+//        `"on-site"` hyphenated spelling that never showed up in any real
+//        response checked here; `mapLocationType` normalizes hyphens/spaces
+//        so either spelling maps correctly regardless.)
+//      - `salaryRange.interval` (when present) names the pay period — see
+//        `mapPayType`'s doc comment for exactly what is and isn't verified
+//        about its value space.
 //
-//    None of these three are guaranteed present on every posting (plenty of
-//    real records have no `salaryRange` at all, for instance), and per the
-//    project owner's decision recorded in packages/shared, that absence is
-//    not a skip condition — `payType`/`commitment`/`locationType` are
+//    None of `payType`/`commitment`/`locationType` are guaranteed present
+//    on every posting (plenty of real records have no `salaryRange` at
+//    all, for instance), and per the project owner's decision recorded in
+//    packages/shared, that absence is not a skip condition — they're
 //    optional on `Job` and simply come back `undefined` when Lever doesn't
 //    supply (or this adapter can't unambiguously map) a value.
 // ---------------------------------------------------------------------------
@@ -172,8 +182,9 @@ export class LeverSource implements JobSource {
       }
 
       for (const item of postings) {
-        if (!itemMatchesCriteria(item, criteria)) continue;
-        const result = normalizeItem(item, company);
+        const fullDescription = buildDescription(item);
+        if (!itemMatchesCriteria(item, criteria, fullDescription)) continue;
+        const result = normalizeItem(item, company, fullDescription);
         if (result.ok) {
           jobs.push(result.job);
         } else {
@@ -303,17 +314,38 @@ type LeverSalaryRange = {
   interval?: string;
 };
 
+/**
+ * One "extra list" section — Lever's own README: "Extra lists (such as
+ * requirements, benefits, etc.) from the job posting." `text` is the
+ * section heading (e.g. "What We Require"); `content` is HTML with no
+ * plain-text sibling field, unlike `descriptionPlain`/`additionalPlain`.
+ */
+type LeverList = {
+  text?: string;
+  content?: string;
+};
+
 type LeverPosting = {
   id?: string;
   text?: string;
   categories?: LeverCategories;
   /**
    * Plain-text posting body (see `descriptionPlain` vs `description` in
-   * `normalizeItem`'s doc comment for why this, not the HTML `description`
-   * field, is what this adapter uses).
+   * `buildDescription`'s doc comment for why this, not the HTML
+   * `description` field, is what this adapter uses).
    */
   descriptionPlain?: string;
   description?: string;
+  /** See `LeverList`. Real postings checked here carry 1-5 of these,
+   * typically headed "Responsibilities"/"Requirements"/"Benefits" or
+   * company-specific equivalents (Palantir: "What We Require", "What We
+   * Value"). */
+  lists?: LeverList[];
+  /** Plain-text closing section (benefits, EEO statement, hashtags/req
+   * codes). Sibling of HTML `additional`, which this adapter doesn't read
+   * for the same reason it prefers `descriptionPlain` over `description`. */
+  additionalPlain?: string;
+  additional?: string;
   hostedUrl?: string;
   applyUrl?: string;
   /** Epoch milliseconds. Confirmed by inspection (e.g. `1778685097596` on a
@@ -336,17 +368,66 @@ function parsePostingsShape(body: unknown, company: string): LeverPosting[] {
 }
 
 // ---------------------------------------------------------------------------
+// Full-text assembly for `description` — see this file's top-of-file
+// comment, finding 3, for why `descriptionPlain` alone isn't enough: it
+// discards `lists` (the requirements/benefits sections — Lever's own
+// README: "Extra lists (such as requirements, benefits, etc.) from the job
+// posting") and `additionalPlain` (closing/benefits text), and on most real
+// postings checked, the requirements exist ONLY in `lists`.
+//
+// `description` (HTML) still isn't used for the intro, for the same reason
+// as before: `descriptionPlain` is already plain text, so no
+// entity-decoding/tag-stripping is needed there at all. `lists[].content`
+// has no such plain-text sibling, so it's the one piece that does need
+// stripping — via the shared `htmlToPlainText` (./html.ts) with
+// `doubleEncoded: false` (Lever's markup is single-encoded, unlike
+// Greenhouse's; see that file's doc comment for why the distinction
+// matters and would silently corrupt content if gotten backwards).
+//
+// Sections are joined in reading order — intro, then each list (heading
+// line followed by its stripped body), then the closing `additionalPlain`
+// — with a blank line between sections so the result reads as a normal
+// multi-paragraph document, not a run-on wall of text.
+// ---------------------------------------------------------------------------
+
+function buildDescription(item: LeverPosting): string {
+  const sections: string[] = [];
+
+  const intro = item.descriptionPlain?.trim();
+  if (intro) sections.push(intro);
+
+  for (const list of item.lists ?? []) {
+    const body = list.content ? htmlToPlainText(list.content) : "";
+    if (!body) continue;
+    const heading = list.text?.trim();
+    sections.push(heading ? `${heading}\n${body}` : body);
+  }
+
+  const additional = item.additionalPlain?.trim();
+  if (additional) sections.push(additional);
+
+  return sections.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
 // Client-side filtering — like Greenhouse, Lever's postings endpoint has no
 // server-side search; it always returns the company's entire board.
-// `SearchCriteria` is applied here instead, against the raw item, before
+// `SearchCriteria` is applied here instead, against the raw item (and its
+// already-assembled full description, so a keyword that only appears in a
+// `lists` requirements section — e.g. a specific language or framework
+// named nowhere in `descriptionPlain` — still matches), before
 // normalization.
 // ---------------------------------------------------------------------------
 
-function itemMatchesCriteria(item: LeverPosting, criteria: SearchCriteria): boolean {
+function itemMatchesCriteria(
+  item: LeverPosting,
+  criteria: SearchCriteria,
+  fullDescription: string,
+): boolean {
   if (criteria.keyword) {
     const keyword = criteria.keyword.toLowerCase();
     const title = item.text?.toLowerCase() ?? "";
-    const description = item.descriptionPlain?.toLowerCase() ?? "";
+    const description = fullDescription.toLowerCase();
     if (!title.includes(keyword) && !description.includes(keyword)) return false;
   }
   if (criteria.location) {
@@ -364,7 +445,11 @@ function itemMatchesCriteria(item: LeverPosting, criteria: SearchCriteria): bool
 type NormalizeResult =
   { ok: true; job: NormalizedJob } | { ok: false; externalId: string | undefined; reason: string };
 
-function normalizeItem(item: LeverPosting, company: string): NormalizeResult {
+function normalizeItem(
+  item: LeverPosting,
+  company: string,
+  fullDescription: string,
+): NormalizeResult {
   // Lever's `id` is a UUID assigned when the posting is created. It is what
   // both `hostedUrl` and `applyUrl` key on (e.g.
   // "https://jobs.lever.co/outreach/9a24e6ad-3af2-4db0-a606-672946284b40"),
@@ -398,35 +483,24 @@ function normalizeItem(item: LeverPosting, company: string): NormalizeResult {
     return { ok: false, externalId, reason: "missing hostedUrl" };
   }
 
-  // Lever gives both `description` (HTML) and `descriptionPlain` (plain
-  // text) for the same content, and `descriptionPlain` is what this adapter
-  // uses. Two reasons, checked against real postings, not assumed:
-  //   1. It's already plain text — no HTML entity-decoding/tag-stripping
-  //      step is needed the way Greenhouse's `content` requires (see
-  //      `htmlToPlainText` in greenhouse.ts). Using `description` here
-  //      would mean re-implementing that same parser for no benefit, since
-  //      Lever already did the stripping and hands back the result.
-  //   2. Consistency with every other source's `description` field being
-  //      plain text (USAJOBS' JobSummary, Greenhouse's stripped `content`),
-  //      which matters because `description` feeds resume/job matching
-  //      (`JobMatch` in packages/shared) — a matcher shouldn't have to
-  //      special-case one source's HTML tags competing for token budget.
-  // Known limitation, stated honestly: a full Lever posting page also has
-  // `lists` (structured bullet sections — responsibilities, requirements)
-  // and `additional` (closing/benefits text), neither folded in here.
-  // `descriptionPlain` alone (confirmed against the real Outreach fixture)
-  // already contains the substantive "About the company" + "About the
-  // team"/"The role" narrative sections, but omits the bulleted
-  // responsibilities/requirements lists and the closing/benefits section.
-  // Pulling those in would mean writing a Lever-specific HTML-to-text pass
-  // for `lists[].content` (the only place that content exists — there's no
-  // plain-text sibling for it), which felt like scope beyond "pick a
-  // description field" for this ticket; flagged here for a follow-up rather
-  // than silently shipping a narrower field than what a human reading the
-  // real job page would see.
-  const description = item.descriptionPlain?.trim();
+  // `fullDescription` is `buildDescription(item)`'s output — intro
+  // (`descriptionPlain`) + every `lists` section (heading + stripped
+  // content) + `additionalPlain`, computed once per item and passed in from
+  // `search()` so `itemMatchesCriteria` filters against the exact same text
+  // that ends up stored. See this file's top-of-file comment, finding 3,
+  // for why the intro alone isn't enough. A record fails normalization here
+  // only if that combined text comes back completely empty — i.e.
+  // `descriptionPlain`, every `lists[].content`, and `additionalPlain` were
+  // all missing/blank, which real Lever postings checked here never do
+  // (every one had at least a non-empty `descriptionPlain`).
+  const description = fullDescription.trim();
   if (!description) {
-    return { ok: false, externalId, reason: "missing or empty descriptionPlain" };
+    return {
+      ok: false,
+      externalId,
+      reason:
+        "missing description content (descriptionPlain, lists, and additionalPlain were all empty)",
+    };
   }
 
   const createdAt = item.createdAt;
@@ -473,30 +547,59 @@ function normalizeItem(item: LeverPosting, company: string): NormalizeResult {
 
 /**
  * Maps `categories.commitment` -> Job's 3-value enum
- * (`"full-time" | "part-time" | "contract"`), matching case-insensitively
- * since real data disagrees on casing between companies (Outreach uses
- * "Full-Time", Wealthfront and Palantir use "Full-time"). Only values that
- * unambiguously mean one of those three are mapped:
+ * (`"full-time" | "part-time" | "contract"`).
  *
- *   - "full-time" (any casing)  -> "full-time"
- *   - "part-time" (any casing)  -> "part-time"
- *   - "contractor"              -> "contract"
+ * CORRECTION (this comment previously overclaimed): an earlier version of
+ * this adapter, built against a single board, stated its fixture spanned
+ * "every `categories.commitment` value seen in the wild." That was false,
+ * and the *category of mistake* matters as much as the specific values
+ * missed: `categories.commitment` is not a fixed, cross-platform Lever
+ * enum at all — it's a category each company configures for itself in
+ * their own Lever admin panel, the same way Greenhouse boards each define
+ * their own custom metadata questions. Re-checking across five boards
+ * (outreach, palantir, wealthfront, anchorage, immutable — 401 real
+ * postings) surfaced company-specific compound values that don't exist on
+ * any single board alone: "Full-Time - Remote", "Full-Time - Hybrid", and
+ * "Full Time Permanent" (Anchorage bakes `workplaceType`-like and
+ * permanence information directly into the commitment string). A separate
+ * review pass over a different set of boards found still more real values
+ * this adapter had never seen: "Permanent", "Short Term", "Fixed Term"
+ * (space, not hyphen — a distinct raw string from "Fixed-Term"),
+ * "Full Time Contractor", "Apprenticeship", and "Contract". Given it's a
+ * per-company free-configuration field, no fixed list can honestly be
+ * called exhaustive — an as-yet-unseen company can configure any string it
+ * wants. What follows is not "every value"; it's the matching rule this
+ * adapter actually applies, and why it's robust to values not yet seen.
  *
- * Real values seen on Palantir's board that are deliberately left
- * unmapped (fall through to `undefined`): "Internship", "Fixed-Term",
- * "Scholarship". These are genuinely different employment relationships,
- * not synonyms for one of the three enum values, and forcing a guess
- * (e.g. "Fixed-Term" -> "contract", "Internship" -> "part-time") is exactly
- * the kind of unverified mapping this project's USAJOBS post-mortem warns
- * against — Lever having *more* categories than `Job.commitment` has slots
- * for is not a reason to collapse them incorrectly.
+ * Because the field is evidently composed from independent tokens rather
+ * than being one flat enum, this matches by substring/word rather than by
+ * exact equality (an earlier, exact-match version of this function would
+ * have left "Full-Time - Remote" and "Full Time Permanent" undefined even
+ * though both unambiguously say full-time):
+ *
+ *   - contains "contractor" or the word "contract"  -> "contract"
+ *     (checked FIRST: "Full Time Contractor" is unambiguously a
+ *     contractor arrangement — the more specific signal — even though the
+ *     same string also contains "full time")
+ *   - else contains "part-time"/"part time"         -> "part-time"
+ *   - else contains "full-time"/"full time"         -> "full-time"
+ *   - anything else                                 -> `undefined`
+ *
+ * Deliberately left `undefined` rather than guessed at: "Permanent"/"Fixed
+ * Term"/"Fixed-Term"/"Short Term" (a permanence axis, orthogonal to
+ * full-time/part-time/contract — a role can be full-time AND fixed-term),
+ * "Internship", "Scholarship", "Apprenticeship" (genuinely different
+ * employment relationships, not synonyms for any of the three enum
+ * values). Forcing any of these into the nearest-sounding bucket is
+ * exactly the kind of unverified mapping this project's USAJOBS
+ * post-mortem warns against.
  */
 function mapCommitment(item: LeverPosting): Job["commitment"] | undefined {
   const raw = item.categories?.commitment?.trim().toLowerCase();
   if (!raw) return undefined;
-  if (raw === "full-time" || raw === "full time") return "full-time";
-  if (raw === "part-time" || raw === "part time") return "part-time";
-  if (raw === "contractor" || raw === "contract") return "contract";
+  if (/\bcontractor\b/.test(raw) || /\bcontract\b/.test(raw)) return "contract";
+  if (/\bpart[\s-]time\b/.test(raw)) return "part-time";
+  if (/\bfull[\s-]time\b/.test(raw)) return "full-time";
   return undefined;
 }
 
@@ -505,12 +608,18 @@ function mapCommitment(item: LeverPosting): Job["commitment"] | undefined {
  * Greenhouse, which has no first-class field for this and only gets it
  * opportunistically from one company's custom metadata question, Lever's
  * `workplaceType` values (`"remote"`, `"onsite"`, `"hybrid"`) match the enum
- * exactly on every real posting observed (Outreach, Wealthfront, Palantir).
- * Still defensive against an unrecognized value rather than casting blindly,
- * in case Lever ever adds a value outside this set.
+ * exactly on every real posting observed (five boards checked: outreach,
+ * wealthfront, palantir, anchorage, immutable). Every real occurrence of
+ * the onsite value seen was the unhyphenated `"onsite"`, but Lever's own
+ * postings-api README documents `"on-site"` (hyphenated) as the field's
+ * value for that case — since the two disagree and this adapter has only
+ * directly observed one of them, both spellings (and the unhyphenated
+ * "on site") are normalized to `"onsite"` rather than trusting either
+ * source alone. Still falls through to `undefined` for anything else,
+ * rather than casting blindly, in case Lever adds a value outside this set.
  */
 function mapLocationType(item: LeverPosting): Job["locationType"] | undefined {
-  const raw = item.workplaceType?.trim().toLowerCase();
+  const raw = item.workplaceType?.trim().toLowerCase().replace(/[\s-]/g, "");
   if (raw === "remote" || raw === "onsite" || raw === "hybrid") return raw;
   return undefined;
 }
@@ -518,19 +627,22 @@ function mapLocationType(item: LeverPosting): Job["locationType"] | undefined {
 /**
  * Maps `salaryRange.interval` -> Job's `payType` (`"hourly" | "salary"`).
  * Every real posting with a `salaryRange` observed while building this
- * adapter (all on Outreach's board) used `interval: "per-year-salary"`; no
- * real `"per-hour"` (or any other interval) example turned up on any of the
- * three non-empty boards checked. Rather than hardcode a match against only
- * the one literal string actually observed, this matches generically on
- * whether the interval names an hourly or salaried period ("hour" vs
- * "salary" substring) — Lever's own naming convention for this field
- * consistently suffixes salaried intervals with "-salary" (its documented
- * postings-api schema lists per-year-salary, per-month-salary,
- * per-week-salary, and per-day-salary alongside per-hour), so this is
- * reading a structured, source-defined convention, not inferring meaning
- * from free text. Most postings have no `salaryRange` at all — that is not
- * a skip condition, it just leaves `payType` undefined, same as every other
- * unmappable-but-optional field here.
+ * adapter used `interval: "per-year-salary"` (seen on Outreach's board); no
+ * real `"per-hour"` (or any other interval) example turned up on any board
+ * checked. Lever's postings-api README documents the *existence* of
+ * `salaryRange.interval` but does not enumerate its possible values, so the
+ * rest of this is inference from the one real value seen, not a cited
+ * source — flagged honestly rather than dressed up as more verified than it
+ * is. Rather than hardcode a match against only that one literal string,
+ * this checks for an "hour" substring before falling back to a "salary"
+ * substring: if Lever ever does send an interval naming an hourly rate
+ * (e.g. a hypothetical "per-hour"), this still classifies it correctly
+ * without having seen it; anything matching neither substring — including a
+ * value this reasoning turns out to be wrong about — safely falls through
+ * to `undefined` rather than a wrong guess. Most postings have no
+ * `salaryRange` at all — that is not a skip condition, it just leaves
+ * `payType` undefined, same as every other unmappable-but-optional field
+ * here.
  */
 function mapPayType(item: LeverPosting): Job["payType"] | undefined {
   const interval = item.salaryRange?.interval?.trim().toLowerCase();
