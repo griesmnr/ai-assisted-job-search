@@ -40,9 +40,31 @@ import { LeverSource, createLeverSourceFromEnv } from "./lever.js";
 // carries real `lists` sections titled "What We Require" and "Technologies
 // We Use" — used below to prove requirements text that exists ONLY in
 // `lists`, not in `descriptionPlain`, still ends up in `description` and is
-// still found by keyword filtering. Never hand-build a fixture for the
-// success/skip paths below — derive from these files, the same discipline
-// this project's USAJOBS adapter had to be rebuilt to follow.
+// still found by keyword filtering.
+//
+// Two more fixtures, added after an adversarial review found real cases
+// neither outreach's nor palantir's fixture happened to cover:
+//
+// __fixtures__/lever-real-response-binance.json — three real postings
+// proving `categories.allLocations` (not just the single
+// `categories.location`) drives both location filtering and the stored
+// `Job.location`: 8f870d45-... has `location: "South East Asia"` but
+// `allLocations: ["South East Asia", "Taiwan, Taipei", "Hong Kong"]` (a
+// "Taipei" search must match it even though "Taipei" never appears in
+// `location` itself); 3a2ca7e0-... has 2 allLocations entries;
+// ed0cabf1-... has exactly 1 (the ordinary single-location case, unchanged
+// from before this fix).
+//
+// __fixtures__/lever-real-response-matchgroup.json — one real posting
+// (dcc0335f-..., Match Group / Tinder) with `descriptionPlain: ""`,
+// `additionalPlain: ""`, and `lists: []`, whose only real text lives in the
+// HTML `description` field — proving `buildDescription`'s fallback to
+// `htmlToPlainText(item.description)` actually fires and actually recovers
+// that text, rather than this record silently landing in `skipped`.
+//
+// Never hand-build a fixture for the success/skip paths below — derive
+// from these files, the same discipline this project's USAJOBS adapter had
+// to be rebuilt to follow.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -55,6 +77,8 @@ function loadFixture(name: string): LeverFixture {
 
 const outreachFixture = loadFixture("lever-real-response-outreach.json");
 const palantirFixture = loadFixture("lever-real-response-palantir.json");
+const binanceFixture = loadFixture("lever-real-response-binance.json");
+const matchgroupFixture = loadFixture("lever-real-response-matchgroup.json");
 
 if (outreachFixture.length !== 3) {
   throw new Error(
@@ -64,6 +88,14 @@ if (outreachFixture.length !== 3) {
 if (palantirFixture.length !== 5) {
   throw new Error(
     `expected the palantir fixture to have 5 postings, got ${palantirFixture.length}`,
+  );
+}
+if (binanceFixture.length !== 3) {
+  throw new Error(`expected the binance fixture to have 3 postings, got ${binanceFixture.length}`);
+}
+if (matchgroupFixture.length !== 1) {
+  throw new Error(
+    `expected the matchgroup fixture to have 1 posting, got ${matchgroupFixture.length}`,
   );
 }
 
@@ -207,6 +239,33 @@ describe("LeverSource — mapping against real captured responses", () => {
     expect(job?.description).not.toContain("<strong");
     expect(job?.description).not.toContain("<ul");
     expect(job?.description).not.toContain("<li");
+  });
+
+  it("falls back to the HTML description field when descriptionPlain, lists, and additionalPlain are all empty, instead of skipping the record", async () => {
+    // Real Match Group / Tinder posting dcc0335f-... has descriptionPlain:
+    // "", additionalPlain: "", lists: [] -- every plain-text field this
+    // adapter would otherwise read is empty -- but a fully populated HTML
+    // `description` field with the real posting text. An earlier version of
+    // this adapter's comment claimed no real posting looks like this; this
+    // fixture is that real posting, captured specifically to prove the
+    // fallback fires and this job is NOT silently dropped into `skipped`.
+    const fetchImpl = fetchByCompany({ matchgroup: () => jsonResponse(matchgroupFixture) });
+    const source = makeSource(fetchImpl, ["matchgroup"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    const job = jobs[0];
+    // Real text recovered only via htmlToPlainText(item.description).
+    expect(job?.description).toContain(
+      "Design, build, and maintain scalable machine learning (ML) infrastructure",
+    );
+    expect(job?.description).toContain("Kafka");
+    // HTML-stripped, like every other description-producing path here.
+    expect(job?.description).not.toContain("<div>");
+    expect(job?.description).not.toContain("<p ");
+    expect(job?.description).not.toContain("<span");
   });
 
   it("maps commitment from categories.commitment where it unambiguously matches Job's enum, case-insensitively", async () => {
@@ -468,6 +527,46 @@ describe("LeverSource — merging across configured companies", () => {
     expect(skipped).toHaveLength(0);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.externalId).toBe("774cf5c9-bf6a-4d77-bf60-d50ef1beb1a0");
+  });
+
+  it("location filtering matches against categories.allLocations, not just the single categories.location, so a city that appears only in allLocations still matches", async () => {
+    // Real Binance posting 8f870d45-... has categories.location =
+    // "South East Asia" (no "Taipei" substring anywhere in it) but
+    // categories.allLocations = ["South East Asia", "Taiwan, Taipei",
+    // "Hong Kong"]. A location-only search would find zero results here --
+    // this is the exact under-match an adversarial review measured at 86%
+    // on Binance's real board. 3a2ca7e0-... also has "Taiwan, Taipei" in its
+    // allLocations (alongside "Asia"), so both match; ed0cabf1-... only
+    // lists "Asia" and must not match.
+    const fetchImpl = fetchByCompany({ binance: () => jsonResponse(binanceFixture) });
+    const source = makeSource(fetchImpl, ["binance"]);
+
+    const { jobs, skipped } = await source.search({ location: "Taipei" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
+      ["8f870d45-fa09-4ea6-b90f-fa5906412692", "3a2ca7e0-e2c9-4248-b8fe-0de5d05dee1c"].sort(),
+    );
+  });
+
+  it("stores every entry from categories.allLocations on Job.location, not just the one representative categories.location entry", async () => {
+    const fetchImpl = fetchByCompany({ binance: () => jsonResponse(binanceFixture) });
+    const source = makeSource(fetchImpl, ["binance"]);
+
+    const { jobs } = await source.search({});
+    const byId = new Map(jobs.map((j) => [j.externalId, j]));
+
+    // Real allLocations: ["South East Asia", "Taiwan, Taipei", "Hong Kong"].
+    // "Taiwan, Taipei" itself contains a comma, which is exactly why these
+    // are joined with "; " rather than ", " -- a plain comma-join would be
+    // indistinguishable from a 4th, 5th entry.
+    expect(byId.get("8f870d45-fa09-4ea6-b90f-fa5906412692")?.location).toBe(
+      "South East Asia; Taiwan, Taipei; Hong Kong",
+    );
+    // Ordinary single-location posting (allLocations has exactly 1 entry,
+    // identical to categories.location) -- behavior unchanged from before
+    // this fix, no semicolon, just the one location.
+    expect(byId.get("ed0cabf1-90a5-4127-bcbd-54f2207a9a95")?.location).toBe("Asia");
   });
 
   it("a 404 on one company is skipped (that company's board doesn't exist) without discarding results from healthy companies", async () => {

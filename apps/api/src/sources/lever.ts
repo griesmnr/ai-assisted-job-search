@@ -72,6 +72,14 @@ import {
 //    `description`; see `buildDescription`. `itemMatchesCriteria` searches
 //    this same fuller text, not just `descriptionPlain`, so keyword
 //    filtering doesn't miss skills that only appear in a requirements list.
+//    A second-round correction to this same finding: `descriptionPlain` can
+//    itself be empty on a real posting (measured 2026-08-19: 1 of 1,088
+//    live postings checked had empty `descriptionPlain`, empty
+//    `additionalPlain`, AND empty `lists` — a Match Group/Tinder posting
+//    whose entire text lived in the HTML `description` field instead), so
+//    `buildDescription` falls back to `htmlToPlainText(item.description)`
+//    when `descriptionPlain` is empty. See __fixtures__/
+//    lever-real-response-matchgroup.json.
 //
 // 4. Unlike Greenhouse, Lever's schema DOES carry employment-type and
 //    work-arrangement data as genuinely structured fields, not free-text
@@ -99,6 +107,22 @@ import {
 //    packages/shared, that absence is not a skip condition — they're
 //    optional on `Job` and simply come back `undefined` when Lever doesn't
 //    supply (or this adapter can't unambiguously map) a value.
+//
+// 5. `categories.location` is only ONE of a posting's locations, not
+//    necessarily all of them. A posting open to multiple locations (or
+//    listing a region alongside specific cities within it) carries the
+//    full set in `categories.allLocations`, with `categories.location`
+//    holding just one representative entry — measured 2026-08-19 on a real
+//    Binance board, 250 of 276 postings had 2+ `allLocations` entries, and
+//    on 140 of those, a specific city ("Taiwan, Taipei") existed ONLY in
+//    `allLocations`, never in `location` — a client-side `location: "Taipei"`
+//    search against `categories.location` alone silently missed 86% of the
+//    board's genuinely open Taipei roles. `itemLocations` (below) reads
+//    `allLocations` when present, falling back to the single `location`
+//    value only when it's absent, and both `itemMatchesCriteria`'s location
+//    filter and the `Job.location` this adapter stores now use it — see
+//    __fixtures__/lever-real-response-binance.json for the real record this
+//    was built against.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = "https://api.lever.co/v0/postings";
@@ -375,14 +399,35 @@ function parsePostingsShape(body: unknown, company: string): LeverPosting[] {
 // posting") and `additionalPlain` (closing/benefits text), and on most real
 // postings checked, the requirements exist ONLY in `lists`.
 //
-// `description` (HTML) still isn't used for the intro, for the same reason
-// as before: `descriptionPlain` is already plain text, so no
-// entity-decoding/tag-stripping is needed there at all. `lists[].content`
-// has no such plain-text sibling, so it's the one piece that does need
-// stripping — via the shared `htmlToPlainText` (./html.ts) with
-// `doubleEncoded: false` (Lever's markup is single-encoded, unlike
-// Greenhouse's; see that file's doc comment for why the distinction
-// matters and would silently corrupt content if gotten backwards).
+// `description` (HTML) is normally NOT used for the intro, for the same
+// reason as before: `descriptionPlain` is already plain text, so no
+// entity-decoding/tag-stripping is needed there at all — EXCEPT when
+// `descriptionPlain` is itself empty, which real postings do sometimes do.
+// Measured 2026-08-19 across the 1,088 live postings gathered while fixing
+// N2/N3 below: 17 had an empty `descriptionPlain`; 16 of those still had
+// real content in `lists`, but 1 (Match Group / Tinder, posting
+// dcc0335f-d4bf-4919-bfab-490e8b3913f5, "Senior Software Engineer, Machine
+// Learning Infrastructure") had `descriptionPlain: ""`, `additionalPlain:
+// ""`, and `lists: []` — genuinely nothing to assemble from the plain-text
+// fields, while its HTML `description` field carried the full ~8KB posting.
+// That real record is captured in
+// __fixtures__/lever-real-response-matchgroup.json specifically to cover
+// this case. So the intro falls back to `htmlToPlainText(item.description)`
+// (default `doubleEncoded: false` — correct for Lever's single-encoded
+// markup) whenever `descriptionPlain` comes back empty or missing.
+//
+// A prior version of this comment claimed a record like this "never" occurs
+// in real data. That claim was false and has been corrected here with a
+// measurement and a date. When a comment asserts "no real posting does X,"
+// it needs a measurement and a date behind it or it isn't a claim this
+// project makes.
+//
+// `lists[].content` has no plain-text sibling at all (unlike
+// `descriptionPlain`/`description`), so it's stripped unconditionally via
+// the shared `htmlToPlainText` (./html.ts) with `doubleEncoded: false`
+// (Lever's markup is single-encoded, unlike Greenhouse's; see that file's
+// doc comment for why the distinction matters and would silently corrupt
+// content if gotten backwards).
 //
 // Sections are joined in reading order — intro, then each list (heading
 // line followed by its stripped body), then the closing `additionalPlain`
@@ -393,7 +438,8 @@ function parsePostingsShape(body: unknown, company: string): LeverPosting[] {
 function buildDescription(item: LeverPosting): string {
   const sections: string[] = [];
 
-  const intro = item.descriptionPlain?.trim();
+  const intro =
+    item.descriptionPlain?.trim() || (item.description ? htmlToPlainText(item.description) : "");
   if (intro) sections.push(intro);
 
   for (const list of item.lists ?? []) {
@@ -407,6 +453,24 @@ function buildDescription(item: LeverPosting): string {
   if (additional) sections.push(additional);
 
   return sections.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// `categories.allLocations` vs `categories.location` — see this file's
+// top-of-file comment, finding 5. `location` is one representative entry;
+// `allLocations` is the full set a multi-location (or region-plus-cities)
+// posting is actually open to. Both filtering and the stored `Job.location`
+// use this, not `categories.location` alone.
+// ---------------------------------------------------------------------------
+
+function itemLocations(item: LeverPosting): string[] {
+  const all = (item.categories?.allLocations ?? [])
+    .map((entry) => entry?.trim())
+    .filter((entry): entry is string => Boolean(entry));
+  if (all.length > 0) return all;
+
+  const single = item.categories?.location?.trim();
+  return single ? [single] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -432,8 +496,12 @@ function itemMatchesCriteria(
   }
   if (criteria.location) {
     const location = criteria.location.toLowerCase();
-    const itemLocation = item.categories?.location?.toLowerCase() ?? "";
-    if (!itemLocation.includes(location)) return false;
+    // Matches if ANY of the posting's locations (categories.allLocations,
+    // falling back to the single categories.location) contains the search
+    // term -- see `itemLocations` and finding 5 above for why checking only
+    // `categories.location` under-matches real multi-location postings.
+    const locations = itemLocations(item).map((entry) => entry.toLowerCase());
+    if (!locations.some((entry) => entry.includes(location))) return false;
   }
   return true;
 }
@@ -484,22 +552,25 @@ function normalizeItem(
   }
 
   // `fullDescription` is `buildDescription(item)`'s output — intro
-  // (`descriptionPlain`) + every `lists` section (heading + stripped
-  // content) + `additionalPlain`, computed once per item and passed in from
-  // `search()` so `itemMatchesCriteria` filters against the exact same text
-  // that ends up stored. See this file's top-of-file comment, finding 3,
-  // for why the intro alone isn't enough. A record fails normalization here
-  // only if that combined text comes back completely empty — i.e.
-  // `descriptionPlain`, every `lists[].content`, and `additionalPlain` were
-  // all missing/blank, which real Lever postings checked here never do
-  // (every one had at least a non-empty `descriptionPlain`).
+  // (`descriptionPlain`, falling back to the stripped HTML `description`
+  // when `descriptionPlain` is itself empty) + every `lists` section
+  // (heading + stripped content) + `additionalPlain`, computed once per
+  // item and passed in from `search()` so `itemMatchesCriteria` filters
+  // against the exact same text that ends up stored. See
+  // `buildDescription`'s doc comment for why the intro alone isn't enough,
+  // and for the one real record (measured 2026-08-19) that has nothing in
+  // any of `descriptionPlain`/`lists`/`additionalPlain` and depends on that
+  // HTML fallback. A record fails normalization here only if the combined
+  // text — including that fallback — still comes back completely empty,
+  // which is rare but does happen on real data; it is not asserted to be
+  // impossible.
   const description = fullDescription.trim();
   if (!description) {
     return {
       ok: false,
       externalId,
       reason:
-        "missing description content (descriptionPlain, lists, and additionalPlain were all empty)",
+        "missing description content (descriptionPlain, the HTML description fallback, lists, and additionalPlain were all empty)",
     };
   }
 
@@ -516,7 +587,14 @@ function normalizeItem(
     return { ok: false, externalId, reason: `unparseable createdAt "${createdAt}"` };
   }
 
-  const location = item.categories?.location?.trim() || undefined;
+  // All of the posting's locations (categories.allLocations, falling back
+  // to the single categories.location), not just one representative entry
+  // — see finding 5 at the top of this file. Joined with "; " rather than
+  // ", " because individual entries are themselves frequently
+  // comma-containing city names (e.g. real data: "Taiwan, Taipei"), which a
+  // plain comma-join would make indistinguishable from separate entries.
+  const locations = itemLocations(item);
+  const location = locations.length > 0 ? locations.join("; ") : undefined;
 
   const payType = mapPayType(item);
   const commitment = mapCommitment(item);
