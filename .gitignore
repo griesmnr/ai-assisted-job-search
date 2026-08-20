@@ -21,3 +21,9 @@ coverage/
 
 # Vite
 apps/*/.vite/
+
+# Local snapshots — never commit (contains secrets)
+backups/
+
+# Claude Code local settings (per-machine, not shared)
+.claude/settings.local.json*
