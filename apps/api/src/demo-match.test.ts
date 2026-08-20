@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,7 +14,12 @@ import {
   searchResults,
   searchSources,
 } from "./db/schema.js";
-import { runDemoMatch, type ScoredJob, type ScoreJobFn } from "./demo-match.js";
+import {
+  isTotalScoringFailure,
+  runDemoMatch,
+  type ScoredJob,
+  type ScoreJobFn,
+} from "./demo-match.js";
 import type { JobSource, NormalizedJob, SourceSearchResult } from "./sources/types.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
@@ -109,45 +114,125 @@ function makeFlakyScorer(failFor: ReadonlySet<string>): {
 const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-match-test-"));
 const outputPath = path.join(outputDir, "match-results.json");
 
-// Every resumeId/searchId any test below produces, and every externalId any
-// test below uses, so afterAll can clean up everything this file created in
-// one place regardless of which `it` produced it — including a test that
-// fails partway through.
-const resumeIds: string[] = [];
-const searchIds: string[] = [];
+// What this test FILE owns, known statically at collection time — before
+// any `it` runs, and independent of whether `runDemoMatch` ever returns.
+//
+// The previous version of this cleanup derived resumeId/searchId from
+// `runDemoMatch`'s *return value*. That's wrong: runDemoMatch inserts
+// `searches`, `search_sources`, `jobs` and `search_results` rows well
+// before it can return, so any throw partway through (the exact case
+// finding #2's flaky-scorer test exists to cover, and the exact case a
+// real Anthropic outage would produce) leaks rows under ids the test
+// never learned. `afterAll`'s cleanup would then try to delete `jobs`
+// while an orphaned `search_results` row still referenced them, hit a
+// foreign key violation, throw, and skip every delete after it —
+// including `resumes` — permanently accumulating rows in the shared dev
+// database across every future run of this suite (ticket 620ca30 review
+// finding B2). Resolving ids by SELECT from data this file hard-codes
+// (RESUME_TEXT constants, externalIds) instead of trusting a return value
+// fixes that: cleanup works identically whether the run that created
+// those rows succeeded or threw.
 const allExternalIds: string[] = [];
+const allResumeTexts: string[] = [];
 
 beforeAll(async () => {
   await client.connect();
 });
 
+/** Runs `fn`, logging (not throwing) on failure, so one statement failing
+ * — e.g. because a prior run left the database in a state this cleanup
+ * doesn't fully anticipate — can't skip every statement after it. */
+async function safeDelete(label: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[demo-match.test.ts afterAll] cleanup step "${label}" failed:`, err);
+  }
+}
+
 afterAll(async () => {
-  // Clean up everything this test file created. The "usajobs"
-  // source_descriptors row seeded along the way is real setup data and is
-  // intentionally left in place (see the DATA_SOURCE comment above). Every
-  // delete below is explicitly guarded by a non-empty array (never
-  // `.where(undefined)`/`inArray(col, [])`, the latter of which some
-  // drivers also treat as "match nothing" but is not worth relying on) so
-  // a run that fails before populating these arrays cleans up nothing
-  // rather than everything.
-  if (resumeIds.length > 0) {
-    await db.delete(jobMatches).where(inArray(jobMatches.resumeId, resumeIds));
-  }
-  if (searchIds.length > 0) {
-    await db.delete(searchResults).where(inArray(searchResults.searchId, searchIds));
-    await db.delete(searchSources).where(inArray(searchSources.searchId, searchIds));
-    await db.delete(searches).where(inArray(searches.id, searchIds));
-  }
+  // Resolve everything by SELECT from the statically-known externalIds/
+  // resumeTexts above — never from a runDemoMatch return value (see the
+  // comment on those arrays). Each resolution is independent of the
+  // others succeeding.
+  let jobIds: string[] = [];
+  let resumeIds: string[] = [];
+  let searchIds: string[] = [];
+
   if (allExternalIds.length > 0) {
-    await db
-      .delete(jobsTable)
+    const rows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
       .where(
         and(eq(jobsTable.dataSource, DATA_SOURCE), inArray(jobsTable.externalId, allExternalIds)),
       );
+    jobIds = rows.map((r) => r.id);
+  }
+  if (allResumeTexts.length > 0) {
+    const rows = await db
+      .select({ id: resumes.id })
+      .from(resumes)
+      .where(inArray(resumes.resumeText, allResumeTexts));
+    resumeIds = rows.map((r) => r.id);
   }
   if (resumeIds.length > 0) {
-    await db.delete(resumes).where(inArray(resumes.id, resumeIds));
+    const rows = await db
+      .select({ id: searches.id })
+      .from(searches)
+      .where(inArray(searches.resumeId, resumeIds));
+    searchIds = rows.map((r) => r.id);
   }
+
+  // Children before parents: search_results/search_sources/job_matches
+  // reference jobs/searches/resumes, so they must go first or the
+  // corresponding parent delete hits a foreign key violation.
+  if (jobIds.length > 0 || searchIds.length > 0) {
+    await safeDelete("search_results", () =>
+      db
+        .delete(searchResults)
+        .where(
+          or(
+            jobIds.length > 0 ? inArray(searchResults.jobId, jobIds) : undefined,
+            searchIds.length > 0 ? inArray(searchResults.searchId, searchIds) : undefined,
+          ),
+        ),
+    );
+  }
+  if (searchIds.length > 0) {
+    await safeDelete("search_sources", () =>
+      db.delete(searchSources).where(inArray(searchSources.searchId, searchIds)),
+    );
+  }
+  if (resumeIds.length > 0 || jobIds.length > 0) {
+    await safeDelete("job_matches", () =>
+      db
+        .delete(jobMatches)
+        .where(
+          or(
+            resumeIds.length > 0 ? inArray(jobMatches.resumeId, resumeIds) : undefined,
+            jobIds.length > 0 ? inArray(jobMatches.jobId, jobIds) : undefined,
+          ),
+        ),
+    );
+  }
+  if (allExternalIds.length > 0) {
+    await safeDelete("jobs", () =>
+      db
+        .delete(jobsTable)
+        .where(
+          and(eq(jobsTable.dataSource, DATA_SOURCE), inArray(jobsTable.externalId, allExternalIds)),
+        ),
+    );
+  }
+  if (searchIds.length > 0) {
+    await safeDelete("searches", () => db.delete(searches).where(inArray(searches.id, searchIds)));
+  }
+  if (allResumeTexts.length > 0) {
+    await safeDelete("resumes", () =>
+      db.delete(resumes).where(inArray(resumes.resumeText, allResumeTexts)),
+    );
+  }
+
   fs.rmSync(outputDir, { recursive: true, force: true });
   await client.end();
 });
@@ -163,6 +248,7 @@ describe("runDemoMatch (ticket 620ca30)", () => {
 
   beforeAll(() => {
     allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
+    allResumeTexts.push(RESUME_TEXT);
   });
 
   it("scores every job on the first run, then scores ZERO jobs on a second run against the same candidates", async () => {
@@ -179,8 +265,6 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       log: () => {},
     });
     firstRunResumeId = first.resumeId;
-    resumeIds.push(first.resumeId);
-    searchIds.push(first.searchId);
 
     expect(first.newlyScored).toBe(FAKE_JOBS.length);
     expect(first.skipped).toBe(0);
@@ -223,7 +307,6 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       outputPath,
       log: () => {},
     });
-    searchIds.push(second.searchId);
 
     // The acceptance criterion: nothing new to score, so zero Claude
     // calls happen on the second run.
@@ -287,7 +370,6 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       outputPath,
       log: () => {},
     });
-    searchIds.push(run.searchId);
 
     expect(run.resumeId).toBe(firstRunResumeId);
 
@@ -307,6 +389,7 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
 
   beforeAll(() => {
     allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
+    allResumeTexts.push(RESUME_TEXT);
   });
 
   it("persists the fulfilled scores from a partially-failed batch instead of discarding all of them", async () => {
@@ -322,8 +405,6 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
       outputPath,
       log: () => {},
     });
-    resumeIds.push(first.resumeId);
-    searchIds.push(first.searchId);
 
     // 3 candidates, 1 throws: 2 fulfilled scores get persisted, not 0.
     expect(flaky.calls()).toBe(3);
@@ -351,7 +432,6 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
       outputPath,
       log: () => {},
     });
-    searchIds.push(second.searchId);
 
     expect(fixed.calls()).toBe(1); // only the previously-failed job
     expect(second.newlyScored).toBe(1);
@@ -377,6 +457,7 @@ describe("runDemoMatch: filter hook", () => {
 
   beforeAll(() => {
     allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
+    allResumeTexts.push(RESUME_TEXT);
   });
 
   it("narrows the shortlist before scoring when a filter is provided, and scores everything when it is not", async () => {
@@ -396,12 +477,28 @@ describe("runDemoMatch: filter hook", () => {
       log: () => {},
       filter: (jobs) => jobs.filter((j) => j.title.includes("Engineer")),
     });
-    resumeIds.push(run.resumeId);
-    searchIds.push(run.searchId);
 
     expect(scorer.calls()).toBe(1);
     expect(run.newlyScored).toBe(1);
     expect(run.results).toHaveLength(1);
     expect(run.results[0]!.title).toBe("Widget Engineer");
+  });
+});
+
+describe("isTotalScoringFailure (ticket 620ca30 review finding B3)", () => {
+  // No DB needed — pure function. Extracted out of main() specifically so
+  // this exit-code decision has a direct test instead of only being
+  // exercised by reading main()'s body.
+  it("is true only when every attempted scoring call failed and none succeeded", () => {
+    expect(isTotalScoringFailure({ failed: 3, newlyScored: 0 })).toBe(true);
+  });
+
+  it("is false when nothing failed (a healthy run, including one that scored nothing new)", () => {
+    expect(isTotalScoringFailure({ failed: 0, newlyScored: 0 })).toBe(false);
+    expect(isTotalScoringFailure({ failed: 0, newlyScored: 5 })).toBe(false);
+  });
+
+  it("is false on a partial failure — some scores still succeeded", () => {
+    expect(isTotalScoringFailure({ failed: 1, newlyScored: 2 })).toBe(false);
   });
 });

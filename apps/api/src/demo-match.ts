@@ -166,6 +166,25 @@ export type RunDemoMatchResult = {
 };
 
 /**
+ * True when every scoring call this run attempted failed and nothing new
+ * got scored — as opposed to a healthy run that simply found nothing to
+ * score (0 failed, 0 newlyScored, e.g. everything was already scored) or
+ * a partial failure (some succeeded). `main()` uses this to decide
+ * whether to exit non-zero: since `runDemoMatch` uses `Promise.allSettled`
+ * (not `Promise.all`) to score a batch, a total failure — e.g. Anthropic
+ * 529ing on every job — no longer throws, and without this check would be
+ * observationally identical, at the process exit code, to a successful
+ * search that found nothing (ticket 620ca30 review finding B3). Extracted
+ * as a pure function so this decision has a direct unit test instead of
+ * only being exercised by reading `main()`.
+ */
+export function isTotalScoringFailure(
+  result: Pick<RunDemoMatchResult, "failed" | "newlyScored">,
+): boolean {
+  return result.failed > 0 && result.newlyScored === 0;
+}
+
+/**
  * Deterministic content hash used as the resumes upsert key. Two identical
  * resumes hash identically regardless of process/timing, which is what
  * makes `INSERT ... ON CONFLICT (resume_hash) DO NOTHING` a correct,
@@ -466,7 +485,7 @@ async function main() {
     // reject "Remote - US" / "Seattle, WA" / "Bellevue" postings that
     // `filterSoftwareEngineeringJobs` (title + location regex + dedupe)
     // is specifically written to keep.
-    await runDemoMatch({
+    const result = await runDemoMatch({
       db,
       source,
       resumeText,
@@ -474,6 +493,19 @@ async function main() {
       criteria: {},
       filter: filterSoftwareEngineeringJobs,
     });
+
+    if (result.failed > 0) {
+      console.error(
+        `${result.failed} of ${result.failed + result.newlyScored} scoring call(s) failed this run ` +
+          `(they will be retried, not re-billed, on the next run).`,
+      );
+    }
+    if (isTotalScoringFailure(result)) {
+      console.error(
+        `All ${result.failed} scoring call(s) attempted this run failed and none succeeded — treating this as a failed run.`,
+      );
+      process.exitCode = 1;
+    }
   } finally {
     await client.end();
   }
