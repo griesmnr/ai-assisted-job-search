@@ -1,0 +1,735 @@
+{
+  "offset": 0,
+  "limit": 5,
+  "totalFound": 4780,
+  "content": [
+    {
+      "id": "744000144627757",
+      "name": "AI Research Scientist- World Model ",
+      "uuid": "6e2f0b32-e2a5-4f59-87f0-0cb3bdedccd7",
+      "jobAdId": "9005700a-4cbf-43ca-8a05-e6cced160d8f",
+      "defaultJobAd": true,
+      "refNumber": "REF287333G",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-08-20T20:06:51.507Z",
+      "location": {
+        "city": "Sunnyvale",
+        "region": "CA",
+        "country": "us",
+        "address": "384 Santa Trinita Avenue",
+        "postalCode": "94085",
+        "remote": false,
+        "hybrid": true,
+        "latitude": "37.3820466",
+        "longitude": "-121.9996484",
+        "fullLocation": "Sunnyvale, CA, United States"
+      },
+      "industry": {
+        "id": "research",
+        "label": "Research"
+      },
+      "department": {},
+      "function": {
+        "id": "research",
+        "label": "Research"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe28e96d8bc56863dd9746",
+          "fieldLabel": "Tariff Area",
+          "valueId": "82f1dd4b-de9d-4134-9f1a-8d315be380ae",
+          "valueLabel": "United States Local Grades"
+        },
+        {
+          "fieldId": "586a997ee4b05fd937b86098",
+          "fieldLabel": "Legal Entity(acronym)",
+          "valueId": "RBUS",
+          "valueLabel": "RBUS"
+        },
+        {
+          "fieldId": "586a99b5e4b0daa006ae1079",
+          "fieldLabel": "Working Location",
+          "valueId": "74e3aea0-cc7a-4c14-9adc-c3e33e9f4aef",
+          "valueLabel": "Sunnyvale, CA"
+        },
+        {
+          "fieldId": "5abe295a6d8bc56863dd9747",
+          "fieldLabel": "Global Salary Level",
+          "valueId": "427b1359-5057-4375-a2ae-6c649782296d",
+          "valueLabel": "Experienced/ Middle Tariff"
+        },
+        {
+          "fieldId": "69ca83a2489188782a1e9f87",
+          "fieldLabel": "Direct Or Indirect",
+          "valueId": "1aefbf4c-c10a-422e-a975-a504a7117792",
+          "valueLabel": "Indirect"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        },
+        {
+          "fieldId": "586a9995e4b0daa006ae1078",
+          "fieldLabel": "Legal Entity",
+          "valueId": "Robert Bosch LLC",
+          "valueLabel": "Robert Bosch LLC"
+        },
+        {
+          "fieldId": "691cf1c93001c782b9560ab7",
+          "fieldLabel": "Division full name",
+          "valueId": "b4e099f0-c66a-4d81-b9ce-b9d1d34e310b",
+          "valueLabel": "CR"
+        },
+        {
+          "fieldId": "5abe27936d8bc56863dd9745",
+          "fieldLabel": "Position type",
+          "valueId": "c7b4da31-6f38-405a-b2e8-08a76e3c3f2c",
+          "valueLabel": "Professional"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "586a971ee4b0daa006ae1077",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Bosch Group"
+        },
+        {
+          "fieldId": "586a996ce4b05fd937b86097",
+          "fieldLabel": "Working Country",
+          "valueId": "US",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "586a9b22e4b05fd937b8609a",
+          "fieldLabel": "Local Grade",
+          "valueId": "US_E3",
+          "valueLabel": "US_E3"
+        },
+        {
+          "fieldId": "586a99a5e4b05fd937b86099",
+          "fieldLabel": "Division",
+          "valueId": "CR",
+          "valueLabel": "CR"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000144627757",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000144806059",
+      "name": "SENIOR IT COMMUNICATIONS ASSISTANT (35589)",
+      "uuid": "d2c7435a-e29f-4483-a116-796eb868c98a",
+      "jobAdId": "a2181558-ecfa-4151-aafc-a6d0998b119d",
+      "defaultJobAd": true,
+      "refNumber": "REF294553D",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-08-21T16:24:37.799Z",
+      "location": {
+        "city": "Curitiba",
+        "region": "PR",
+        "country": "br",
+        "address": "Avenida Juscelino Kubitschek de Oliveira - Ld 11800",
+        "postalCode": "81450-902",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "-25.5349041",
+        "longitude": "-49.31845089999999",
+        "fullLocation": "Curitiba, PR, Brazil"
+      },
+      "industry": {
+        "id": "mechanical_engineering",
+        "label": "Mechanical Or Industrial Engineering"
+      },
+      "department": {},
+      "function": {
+        "id": "information_technology",
+        "label": "Information Technology"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "executive",
+        "label": "Executive"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe28e96d8bc56863dd9746",
+          "fieldLabel": "Tariff Area",
+          "valueId": "89e3308f-77ac-4db2-9957-49b221a76b0f",
+          "valueLabel": "Brazil Local Grades"
+        },
+        {
+          "fieldId": "586a997ee4b05fd937b86098",
+          "fieldLabel": "Legal Entity(acronym)",
+          "valueId": "8adcb306-e0ec-4495-965f-97ad717c3c61",
+          "valueLabel": "RBLA"
+        },
+        {
+          "fieldId": "586a99b5e4b0daa006ae1079",
+          "fieldLabel": "Working Location",
+          "valueId": "a6b67848-288a-4d59-8926-9d432da283f6",
+          "valueLabel": "Curitiba"
+        },
+        {
+          "fieldId": "5abe295a6d8bc56863dd9747",
+          "fieldLabel": "Global Salary Level",
+          "valueId": "427b1359-5057-4375-a2ae-6c649782296d",
+          "valueLabel": "Experienced/ Middle Tariff"
+        },
+        {
+          "fieldId": "69ca83a2489188782a1e9f87",
+          "fieldLabel": "Direct Or Indirect",
+          "valueId": "1aefbf4c-c10a-422e-a975-a504a7117792",
+          "valueLabel": "Indirect"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        },
+        {
+          "fieldId": "586a9995e4b0daa006ae1078",
+          "fieldLabel": "Legal Entity",
+          "valueId": "ac40ae51-3cf3-4683-9bdd-9e334dd485be",
+          "valueLabel": "Robert Bosch Ltda."
+        },
+        {
+          "fieldId": "691cf1c93001c782b9560ab7",
+          "fieldLabel": "Division full name",
+          "valueId": "010db496-f6ec-4416-90a5-6f15534b537e",
+          "valueLabel": "Bosch Global Service Solutions"
+        },
+        {
+          "fieldId": "5abe27936d8bc56863dd9745",
+          "fieldLabel": "Position type",
+          "valueId": "c7b4da31-6f38-405a-b2e8-08a76e3c3f2c",
+          "valueLabel": "Professional"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "br",
+          "valueLabel": "Brazil"
+        },
+        {
+          "fieldId": "586a971ee4b0daa006ae1077",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Bosch Group"
+        },
+        {
+          "fieldId": "586a996ce4b05fd937b86097",
+          "fieldLabel": "Working Country",
+          "valueId": "38ffb1d7-cfdc-48e1-a641-1e66623f5afb",
+          "valueLabel": "Brazil"
+        },
+        {
+          "fieldId": "586a9b22e4b05fd937b8609a",
+          "fieldLabel": "Local Grade",
+          "valueId": "346fb6b3-0c79-4432-a690-bc1af0bf16a2",
+          "valueLabel": "BR_MN"
+        },
+        {
+          "fieldId": "586a99a5e4b05fd937b86099",
+          "fieldLabel": "Division",
+          "valueId": "SO",
+          "valueLabel": "SO"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000144806059",
+      "language": {
+        "code": "pt-BR",
+        "label": "Portuguese (Brazil)",
+        "labelNative": "português (Brasil)"
+      }
+    },
+    {
+      "id": "744000144772856",
+      "name": "Project Coordinator - Safety & Security Solutions",
+      "uuid": "e2a88eaf-43f7-49ec-b025-ac5851abaa96",
+      "jobAdId": "dd4b0496-aeb1-4cbb-8be6-a8e741369f61",
+      "defaultJobAd": true,
+      "refNumber": "REF294697B",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-08-21T14:07:25.304Z",
+      "location": {
+        "city": "Berkel en Rodenrijs",
+        "region": "ZH",
+        "country": "nl",
+        "address": "Industrieweg 87",
+        "postalCode": "2651 BC",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "51.9827758",
+        "longitude": "4.4537745",
+        "fullLocation": "Berkel en Rodenrijs, ZH, Netherlands"
+      },
+      "industry": {
+        "id": "security_systems_services",
+        "label": "Security Systems Services"
+      },
+      "department": {},
+      "function": {
+        "id": "project_management",
+        "label": "Project Management"
+      },
+      "typeOfEmployment": {
+        "id": "contract",
+        "label": "Contract"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "98487475-2a49-44f5-a615-408b525b3821",
+          "valueLabel": "Limited"
+        },
+        {
+          "fieldId": "5abe28e96d8bc56863dd9746",
+          "fieldLabel": "Tariff Area",
+          "valueId": "1eb092c9-1716-4683-b6bc-d9ac691709f9",
+          "valueLabel": "Netherlands Local Grades"
+        },
+        {
+          "fieldId": "586a997ee4b05fd937b86098",
+          "fieldLabel": "Legal Entity(acronym)",
+          "valueId": "1df47c31-685c-43e9-805e-4d6e6cf005a6",
+          "valueLabel": "BTHN"
+        },
+        {
+          "fieldId": "586a99b5e4b0daa006ae1079",
+          "fieldLabel": "Working Location",
+          "valueId": "2e821165-2c20-43f9-abc7-d0a793fe0e05",
+          "valueLabel": "Berkel en Rodenrijs"
+        },
+        {
+          "fieldId": "5abe295a6d8bc56863dd9747",
+          "fieldLabel": "Global Salary Level",
+          "valueId": "427b1359-5057-4375-a2ae-6c649782296d",
+          "valueLabel": "Experienced/ Middle Tariff"
+        },
+        {
+          "fieldId": "69ca83a2489188782a1e9f87",
+          "fieldLabel": "Direct Or Indirect",
+          "valueId": "0d8b2ae9-fc67-447b-9165-201f59f71e90",
+          "valueLabel": "Direct"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "ff7c69f3-f89c-498c-9a0e-25f4dad301d4",
+          "valueLabel": "Full-time and/or part-time"
+        },
+        {
+          "fieldId": "586a9995e4b0daa006ae1078",
+          "fieldLabel": "Legal Entity",
+          "valueId": "2cc66cb0-d0a6-41f5-8324-2df937226541",
+          "valueLabel": "Bosch Energy and Building Solutions B.V."
+        },
+        {
+          "fieldId": "691cf1c93001c782b9560ab7",
+          "fieldLabel": "Division full name",
+          "valueId": "9129badf-927e-44a3-a58b-fcfd9c21f2a1",
+          "valueLabel": "Building Technologies"
+        },
+        {
+          "fieldId": "5abe27936d8bc56863dd9745",
+          "fieldLabel": "Position type",
+          "valueId": "c7b4da31-6f38-405a-b2e8-08a76e3c3f2c",
+          "valueLabel": "Professional"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "nl",
+          "valueLabel": "Netherlands"
+        },
+        {
+          "fieldId": "586a971ee4b0daa006ae1077",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Bosch Group"
+        },
+        {
+          "fieldId": "586a996ce4b05fd937b86097",
+          "fieldLabel": "Working Country",
+          "valueId": "bb6cfa09-ac14-4f15-9283-e10e3ed27043",
+          "valueLabel": "Netherlands"
+        },
+        {
+          "fieldId": "586a9b22e4b05fd937b8609a",
+          "fieldLabel": "Local Grade",
+          "valueId": "353ad917-67e6-4867-ae48-4b43b7eeac97",
+          "valueLabel": "NL_Tariff_Experienced"
+        },
+        {
+          "fieldId": "586a99a5e4b05fd937b86099",
+          "fieldLabel": "Division",
+          "valueId": "d7b54d05-61b3-4242-bd3d-cde1ec339e50",
+          "valueLabel": "BT"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000144772856",
+      "creator": {
+        "name": "Jaap van den Broek Humphrey"
+      },
+      "language": {
+        "code": "nl",
+        "label": "Dutch",
+        "labelNative": "Nederlands"
+      }
+    },
+    {
+      "id": "744000144784449",
+      "name": "Werkstudent Supply Chain Management & Logistik bei Bosch eBike Systems (w/m/div.) ",
+      "uuid": "e6f89d68-608b-4233-bbf6-a8c8a825f6ad",
+      "jobAdId": "91e8c49f-08e7-42eb-b947-08ac9aca4267",
+      "defaultJobAd": true,
+      "refNumber": "REF294063A",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-08-21T14:44:20.753Z",
+      "location": {
+        "city": "Reutlingen",
+        "region": "BW",
+        "country": "de",
+        "address": "Markwiesenstraße 58",
+        "postalCode": "72770",
+        "remote": false,
+        "hybrid": true,
+        "latitude": "48.4950381",
+        "longitude": "9.1376823",
+        "fullLocation": "Reutlingen, BW, Germany"
+      },
+      "industry": {
+        "id": "automotive",
+        "label": "Automotive"
+      },
+      "department": {},
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "part-time",
+        "label": "Part-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "98487475-2a49-44f5-a615-408b525b3821",
+          "valueLabel": "Limited"
+        },
+        {
+          "fieldId": "5abe28e96d8bc56863dd9746",
+          "fieldLabel": "Tariff Area",
+          "valueId": "45a4fe7c-ec96-4eda-907f-4aa0356a7704",
+          "valueLabel": "Not tariff-bound / non-tariff / SLx"
+        },
+        {
+          "fieldId": "5aca30e46d8bc56863dd98d8",
+          "fieldLabel": "Tags",
+          "valueId": "f8aadd7e-9952-41c5-af48-02debb3e9010",
+          "valueLabel": "Please enter Career Site Tags"
+        },
+        {
+          "fieldId": "586a997ee4b05fd937b86098",
+          "fieldLabel": "Legal Entity(acronym)",
+          "valueId": "de1f1b31-787f-43b1-88fd-4eb5428a9db8",
+          "valueLabel": "RB"
+        },
+        {
+          "fieldId": "6463ee88f4ba4e3063baf201",
+          "fieldLabel": "Do you want to publish on StepStone?",
+          "valueId": "5449f11a-cf85-46db-80b7-8540bb088d65",
+          "valueLabel": "No"
+        },
+        {
+          "fieldId": "586a99b5e4b0daa006ae1079",
+          "fieldLabel": "Working Location",
+          "valueId": "b6c39aef-8930-4643-81c4-d6265f6bcbcc",
+          "valueLabel": "Reutlingen - Kusterdingen"
+        },
+        {
+          "fieldId": "5abe295a6d8bc56863dd9747",
+          "fieldLabel": "Global Salary Level",
+          "valueId": "80ae06a1-4738-48e8-8aea-4613f58ecd57",
+          "valueLabel": "Others"
+        },
+        {
+          "fieldId": "69ca83a2489188782a1e9f87",
+          "fieldLabel": "Direct Or Indirect",
+          "valueId": "1aefbf4c-c10a-422e-a975-a504a7117792",
+          "valueLabel": "Indirect"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "36d67fff-2442-44b6-b51d-8070aeaca6e6",
+          "valueLabel": "Part-time"
+        },
+        {
+          "fieldId": "586a9995e4b0daa006ae1078",
+          "fieldLabel": "Legal Entity",
+          "valueId": "09a12231-6c9c-4061-a114-3ac523872781",
+          "valueLabel": "Robert Bosch GmbH"
+        },
+        {
+          "fieldId": "691cf1c93001c782b9560ab7",
+          "fieldLabel": "Division full name",
+          "valueId": "422d3be6-d33d-4dda-8fee-583c0eb4c450",
+          "valueLabel": "eBike Systems"
+        },
+        {
+          "fieldId": "5abe27936d8bc56863dd9745",
+          "fieldLabel": "Position type",
+          "valueId": "e4a3c0db-920d-4356-8ce0-c0b44a54e497",
+          "valueLabel": "Working student"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "de",
+          "valueLabel": "Germany"
+        },
+        {
+          "fieldId": "586a971ee4b0daa006ae1077",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Bosch Group"
+        },
+        {
+          "fieldId": "586a996ce4b05fd937b86097",
+          "fieldLabel": "Working Country",
+          "valueId": "34525254-83b2-42bc-9932-cf9f16db5281",
+          "valueLabel": "Germany"
+        },
+        {
+          "fieldId": "586a9b22e4b05fd937b8609a",
+          "fieldLabel": "Local Grade",
+          "valueId": "3830e7ee-7637-48d4-8c1a-45ff4d10910c",
+          "valueLabel": "Others"
+        },
+        {
+          "fieldId": "586a99a5e4b05fd937b86099",
+          "fieldLabel": "Division",
+          "valueId": "ab5b11d2-972b-484f-91af-e7b9d31e98c1",
+          "valueLabel": "EB"
+        },
+        {
+          "fieldId": "5aca31126d8bc56863dd98d9",
+          "fieldLabel": "Career Site Tags",
+          "valueLabel": "Logistics,planning"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000144784449",
+      "creator": {
+        "name": "Angelika Matzke (GS/HRS-PAC6-DE)"
+      },
+      "language": {
+        "code": "de",
+        "label": "German",
+        "labelNative": "Deutsch"
+      }
+    },
+    {
+      "id": "744000144765299",
+      "name": "Customer Care Agent - Leasing company AYV-German market",
+      "uuid": "23a5a262-1724-4981-801a-8e313ec38e4d",
+      "jobAdId": "e1a41ea7-f1e7-4008-9062-106062260123",
+      "defaultJobAd": true,
+      "refNumber": "REF294685N",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-08-21T13:18:48.641Z",
+      "location": {
+        "city": "Barcelona",
+        "region": "CT",
+        "country": "es",
+        "address": "Carrer de Rosselló i Pòrcel 21",
+        "postalCode": "08016",
+        "remote": true,
+        "hybrid": false,
+        "latitude": "41.436685",
+        "longitude": "2.1807191",
+        "fullLocation": "Barcelona, CT, Spain"
+      },
+      "industry": {
+        "id": "telecommunications",
+        "label": "Telecommunications"
+      },
+      "department": {},
+      "function": {
+        "id": "customer_service",
+        "label": "Customer Service"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe28e96d8bc56863dd9746",
+          "fieldLabel": "Tariff Area",
+          "valueId": "c27c6cd6-35d5-492c-ba81-369e0ee39e2c",
+          "valueLabel": "Spain Local Grades"
+        },
+        {
+          "fieldId": "586a997ee4b05fd937b86098",
+          "fieldLabel": "Legal Entity(acronym)",
+          "valueId": "348d8a36-c039-4510-a932-b8bea79f2a13",
+          "valueLabel": "SO"
+        },
+        {
+          "fieldId": "586a99b5e4b0daa006ae1079",
+          "fieldLabel": "Working Location",
+          "valueId": "1809a273-ac27-4207-9ad9-35ab11942ca2",
+          "valueLabel": "Barcelona"
+        },
+        {
+          "fieldId": "5abe295a6d8bc56863dd9747",
+          "fieldLabel": "Global Salary Level",
+          "valueId": "80ae06a1-4738-48e8-8aea-4613f58ecd57",
+          "valueLabel": "Others"
+        },
+        {
+          "fieldId": "69ca83a2489188782a1e9f87",
+          "fieldLabel": "Direct Or Indirect",
+          "valueId": "0d8b2ae9-fc67-447b-9165-201f59f71e90",
+          "valueLabel": "Direct"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        },
+        {
+          "fieldId": "586a9995e4b0daa006ae1078",
+          "fieldLabel": "Legal Entity",
+          "valueId": "405b67f4-1e61-4f96-9abe-8de685a25818",
+          "valueLabel": "Bosch Service Solutions, S.A.U."
+        },
+        {
+          "fieldId": "691cf1c93001c782b9560ab7",
+          "fieldLabel": "Division full name",
+          "valueId": "010db496-f6ec-4416-90a5-6f15534b537e",
+          "valueLabel": "Bosch Global Service Solutions"
+        },
+        {
+          "fieldId": "5abe27936d8bc56863dd9745",
+          "fieldLabel": "Position type",
+          "valueId": "c7b4da31-6f38-405a-b2e8-08a76e3c3f2c",
+          "valueLabel": "Professional"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "es",
+          "valueLabel": "Spain"
+        },
+        {
+          "fieldId": "586a971ee4b0daa006ae1077",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Bosch Group"
+        },
+        {
+          "fieldId": "586a996ce4b05fd937b86097",
+          "fieldLabel": "Working Country",
+          "valueId": "b203eae3-fe03-4aa4-a40f-d839c3f3c816",
+          "valueLabel": "Spain"
+        },
+        {
+          "fieldId": "586a9b22e4b05fd937b8609a",
+          "fieldLabel": "Local Grade",
+          "valueId": "ee6fd306-c4cd-46e7-b91a-e7c3f5d56e13",
+          "valueLabel": "ES_Tariff/ Dentro de Convenio"
+        },
+        {
+          "fieldId": "586a99a5e4b05fd937b86099",
+          "fieldLabel": "Division",
+          "valueId": "SO",
+          "valueLabel": "SO"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000144765299",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    }
+  ]
+}
