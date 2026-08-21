@@ -45,15 +45,21 @@ import { LeverSource, createLeverSourceFromEnv } from "./lever.js";
 // Two more fixtures, added after an adversarial review found real cases
 // neither outreach's nor palantir's fixture happened to cover:
 //
-// __fixtures__/lever-real-response-binance.json — three real postings
-// proving `categories.allLocations` (not just the single
-// `categories.location`) drives both location filtering and the stored
-// `Job.location`: 8f870d45-... has `location: "South East Asia"` but
-// `allLocations: ["South East Asia", "Taiwan, Taipei", "Hong Kong"]` (a
-// "Taipei" search must match it even though "Taipei" never appears in
-// `location` itself); 3a2ca7e0-... has 2 allLocations entries;
-// ed0cabf1-... has exactly 1 (the ordinary single-location case, unchanged
-// from before this fix).
+// __fixtures__/lever-real-response-binance.json — four real postings.
+// 8f870d45-... has `location: "South East Asia"` but `allLocations:
+// ["South East Asia", "Taiwan, Taipei", "Hong Kong"]` (a "Taipei" search
+// must match it even though "Taipei" never appears in `location` itself);
+// 3a2ca7e0-... has 2 allLocations entries; ed0cabf1-... has exactly 1 (the
+// ordinary single-location case, unchanged from before this fix). The 4th,
+// 909abbaa-... ("Operations Manager - South Africa"), is a real posting
+// whose "Responsibilities" list contains literal escaped comparison
+// operators in ordinary body text -- "fraud rate (&lt;0.05% target)" and
+// "reconciliation (&gt;99.5% match)" -- found specifically to close a gap a
+// review identified: `lever.ts`'s own call sites into `htmlToPlainText`
+// (not just the shared helper's default) need to pass `doubleEncoded:
+// false` correctly, and no other fixture available at the time contained a
+// literal escaped `<`/`>` in body text to prove that end-to-end through
+// `LeverSource` rather than through `htmlToPlainText` directly.
 //
 // __fixtures__/lever-real-response-matchgroup.json — one real posting
 // (dcc0335f-..., Match Group / Tinder) with `descriptionPlain: ""`,
@@ -90,8 +96,8 @@ if (palantirFixture.length !== 5) {
     `expected the palantir fixture to have 5 postings, got ${palantirFixture.length}`,
   );
 }
-if (binanceFixture.length !== 3) {
-  throw new Error(`expected the binance fixture to have 3 postings, got ${binanceFixture.length}`);
+if (binanceFixture.length !== 4) {
+  throw new Error(`expected the binance fixture to have 4 postings, got ${binanceFixture.length}`);
 }
 if (matchgroupFixture.length !== 1) {
   throw new Error(
@@ -126,6 +132,22 @@ function fetchByCompany(responses: Record<string, () => Response>): typeof fetch
 
 function makeSource(fetchImpl: typeof fetch, companies: string[] = ["outreach"]) {
   return new LeverSource({ companies, fetchImpl });
+}
+
+/** A structurally-complete-but-otherwise-blank posting, for tests that need
+ * to isolate one field's behavior (a specific `categories` shape, a
+ * specific `workplaceType`/`salaryRange`) without a real fixture's
+ * unrelated fields getting in the way. Module-scoped so every describe
+ * block below can use it. */
+function makeMinimalPosting(overrides: Record<string, unknown>) {
+  return {
+    id: "22222222-2222-2222-2222-222222222222",
+    text: "Some Role",
+    hostedUrl: "https://jobs.lever.co/acme/22222222-2222-2222-2222-222222222222",
+    descriptionPlain: "Do the work.",
+    createdAt: 1_700_000_000_000,
+    ...overrides,
+  };
 }
 
 describe("LeverSource — mapping against real captured responses", () => {
@@ -400,17 +422,8 @@ describe("LeverSource — mapCommitment/mapLocationType/mapPayType edge cases (s
   // lever.ts's mapCommitment doc comment for exactly which real boards and
   // postings each of these came from), and the "on-site"/"per-hour"
   // spellings that Lever's own README documents but neither outreach's nor
-  // palantir's real postings happened to use.
-  function makeMinimalPosting(overrides: Record<string, unknown>) {
-    return {
-      id: "22222222-2222-2222-2222-222222222222",
-      text: "Some Role",
-      hostedUrl: "https://jobs.lever.co/acme/22222222-2222-2222-2222-222222222222",
-      descriptionPlain: "Do the work.",
-      createdAt: 1_700_000_000_000,
-      ...overrides,
-    };
-  }
+  // palantir's real postings happened to use. Uses the module-scoped
+  // `makeMinimalPosting` helper defined above.
 
   it.each([
     // [raw categories.commitment value, expected Job.commitment, real source]
@@ -567,6 +580,91 @@ describe("LeverSource — merging across configured companies", () => {
     // identical to categories.location) -- behavior unchanged from before
     // this fix, no semicolon, just the one location.
     expect(byId.get("ed0cabf1-90a5-4127-bcbd-54f2207a9a95")?.location).toBe("Asia");
+  });
+
+  it("returns the UNION of categories.location and categories.allLocations, not allLocations alone, when location isn't a member of allLocations (synthetic, not fixture-derived -- no real posting checked here happens to have this shape, but Lever's schema gives no guarantee location is ever a member of allLocations)", async () => {
+    // A prior version of itemLocations preferred allLocations exclusively
+    // whenever it was non-empty. Every one of this adapter's 12 committed
+    // fixture postings happens to have `location` duplicated inside
+    // `allLocations`, so that bug passed every existing test. This shape --
+    // a `location` that names a real, distinct place `allLocations` doesn't
+    // mention at all -- is exactly what an adversarial review found: it
+    // would have made `Job.location` become "Taiwan, Taipei; Hong Kong"
+    // (silently dropping Portland) and a "Portland" search return zero
+    // results, a regression against the pre-N2 code, which always read
+    // `location` and always matched.
+    const posting = makeMinimalPosting({
+      categories: {
+        location: "Portland, OR",
+        allLocations: ["Taiwan, Taipei", "Hong Kong"],
+      },
+    });
+    const fetchImpl = fetchByCompany({ outreach: () => jsonResponse([posting]) });
+    const source = makeSource(fetchImpl, ["outreach"]);
+
+    const all = await source.search({});
+    expect(all.skipped).toHaveLength(0);
+    expect(all.jobs[0]?.location).toBe("Portland, OR; Taiwan, Taipei; Hong Kong");
+
+    const portland = await source.search({ location: "Portland" });
+    expect(portland.jobs).toHaveLength(1);
+
+    const taipei = await source.search({ location: "Taipei" });
+    expect(taipei.jobs).toHaveLength(1);
+  });
+
+  it("filters out non-string entries in categories.allLocations instead of throwing (the raw API response is an unvalidated cast, so a malformed entry isn't ruled out at the type level)", async () => {
+    const posting = makeMinimalPosting({
+      categories: {
+        location: "Remote",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        allLocations: ["Berlin", 42, null, "Paris"] as any,
+      },
+    });
+    const fetchImpl = fetchByCompany({ outreach: () => jsonResponse([posting]) });
+    const source = makeSource(fetchImpl, ["outreach"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs[0]?.location).toBe("Remote; Berlin; Paris");
+  });
+
+  it("decodes a literal escaped '<'/'>' in real body text correctly end-to-end through LeverSource (not just through htmlToPlainText called directly), proving lever.ts's own call sites pass doubleEncoded: false", async () => {
+    // Closes a gap a review found: N1 added a direct test on htmlToPlainText
+    // itself, but never checked that lever.ts's two call sites (the intro
+    // fallback and the `lists[].content` stripping in `buildDescription`)
+    // actually pass the correct option through -- mutating both call sites
+    // to `{ doubleEncoded: true }` left every then-existing test green,
+    // because no fixture had a literal escaped "<"/">" in ordinary body
+    // text (only "&amp;", which happens to be invariant under both
+    // pipelines). Real Binance posting 909abbaa-... does: its
+    // "Responsibilities" list contains "fraud rate (&lt;0.05% target)" and
+    // "reconciliation (&gt;99.5% match)" as ordinary prose, not markup.
+    // Under the correct (default, single-encoded) pipeline these decode to
+    // literal "<"/">" with nothing else disturbed; under the wrong
+    // (double-encoded) pipeline, decoding "&lt;"/"&gt;" before stripping
+    // tags turns them into stray "<"/">" characters that the tag-stripper
+    // then treats as real tag delimiters, silently eating text between them
+    // and the next real "<li>"/"</li>" boundary -- the exact corruption N1
+    // demonstrated in isolation, but here through the real call path.
+    const fetchImpl = fetchByCompany({ binance: () => jsonResponse(binanceFixture) });
+    const source = makeSource(fetchImpl, ["binance"]);
+
+    const { jobs, skipped } = await source.search({});
+    const job = jobs.find((j) => j.externalId === "909abbaa-aa23-4607-960f-3fcaf8634ff0");
+
+    expect(skipped).toHaveLength(0);
+    expect(job).toBeDefined();
+    expect(job?.description).toContain("reconciliation (>99.5% match)");
+    expect(job?.description).toContain("fraud rate (<0.05% target)");
+    // Nothing between the operator and the surrounding text was eaten --
+    // the exact corruption the wrong pipeline produces.
+    expect(job?.description).toContain(
+      "Monitor fraud KPIs: fraud rate (<0.05% target), chargeback ratio",
+    );
+    expect(job?.description).not.toContain("&lt;");
+    expect(job?.description).not.toContain("&gt;");
   });
 
   it("a 404 on one company is skipped (that company's board doesn't exist) without discarding results from healthy companies", async () => {

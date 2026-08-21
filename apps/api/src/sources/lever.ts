@@ -118,11 +118,18 @@ import {
 //    `allLocations`, never in `location` — a client-side `location: "Taipei"`
 //    search against `categories.location` alone silently missed 86% of the
 //    board's genuinely open Taipei roles. `itemLocations` (below) reads
-//    `allLocations` when present, falling back to the single `location`
-//    value only when it's absent, and both `itemMatchesCriteria`'s location
-//    filter and the `Job.location` this adapter stores now use it — see
-//    __fixtures__/lever-real-response-binance.json for the real record this
-//    was built against.
+//    BOTH and returns their union: `location` is NOT reliably a member of
+//    `allLocations` (a real Binance posting has `location: "Portland, OR"`
+//    and `allLocations: ["Taiwan, Taipei", "Hong Kong"]` — Portland isn't
+//    in that list at all), so preferring `allLocations` alone whenever it's
+//    non-empty — an earlier version of this function did exactly that —
+//    silently dropped `location` on that shape and turned a working
+//    "Portland" search into zero results, a regression against the
+//    pre-finding-5 code that always read `location`. Both
+//    `itemMatchesCriteria`'s location filter and the `Job.location` this
+//    adapter stores now use the union — see
+//    __fixtures__/lever-real-response-binance.json for the real records
+//    this was built against.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = "https://api.lever.co/v0/postings";
@@ -464,13 +471,29 @@ function buildDescription(item: LeverPosting): string {
 // ---------------------------------------------------------------------------
 
 function itemLocations(item: LeverPosting): string[] {
-  const all = (item.categories?.allLocations ?? [])
-    .map((entry) => entry?.trim())
-    .filter((entry): entry is string => Boolean(entry));
-  if (all.length > 0) return all;
-
+  // `location` is NOT guaranteed to be one of the entries in
+  // `allLocations` — a real Binance posting has `location: "Portland, OR"`
+  // and `allLocations: ["Taiwan, Taipei", "Hong Kong"]`, neither containing
+  // the other. Returning only `allLocations` when it's non-empty (an
+  // earlier version of this function did exactly that) silently dropped
+  // "Portland" — a regression versus the pre-N2 code, which always read
+  // `location`. So this returns the union of both, `location` first, deduped.
   const single = item.categories?.location?.trim();
-  return single ? [single] : [];
+
+  const all = (item.categories?.allLocations ?? [])
+    // Optional chaining on `entry?.trim()` guards only null/undefined, not
+    // a wrong type: a non-string entry (the raw response is an unvalidated
+    // `as LeverPosting[]` cast — see `parsePostingsShape` — so a
+    // malformed/non-conforming API response isn't ruled out at the type
+    // level) would throw `entry.trim is not a function` and take down the
+    // whole board fetch. Filtering on `typeof entry === "string"` first
+    // guards the type, not just nullishness.
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const combined = single ? [single, ...all] : all;
+  return Array.from(new Set(combined));
 }
 
 // ---------------------------------------------------------------------------
@@ -496,10 +519,11 @@ function itemMatchesCriteria(
   }
   if (criteria.location) {
     const location = criteria.location.toLowerCase();
-    // Matches if ANY of the posting's locations (categories.allLocations,
-    // falling back to the single categories.location) contains the search
-    // term -- see `itemLocations` and finding 5 above for why checking only
-    // `categories.location` under-matches real multi-location postings.
+    // Matches if ANY of the posting's locations (the union of
+    // categories.location and every categories.allLocations entry) contains
+    // the search term -- see `itemLocations` and finding 5 above for why
+    // checking only `categories.location` under-matches real multi-location
+    // postings, and why `allLocations` alone isn't a safe replacement for it.
     const locations = itemLocations(item).map((entry) => entry.toLowerCase());
     if (!locations.some((entry) => entry.includes(location))) return false;
   }
@@ -587,12 +611,12 @@ function normalizeItem(
     return { ok: false, externalId, reason: `unparseable createdAt "${createdAt}"` };
   }
 
-  // All of the posting's locations (categories.allLocations, falling back
-  // to the single categories.location), not just one representative entry
-  // — see finding 5 at the top of this file. Joined with "; " rather than
-  // ", " because individual entries are themselves frequently
-  // comma-containing city names (e.g. real data: "Taiwan, Taipei"), which a
-  // plain comma-join would make indistinguishable from separate entries.
+  // The union of categories.location and every categories.allLocations
+  // entry, not just one representative entry — see finding 5 at the top of
+  // this file. Joined with "; " rather than ", " because individual entries
+  // are themselves frequently comma-containing city names (e.g. real data:
+  // "Taiwan, Taipei"), which a plain comma-join would make indistinguishable
+  // from separate entries.
   const locations = itemLocations(item);
   const location = locations.length > 0 ? locations.join("; ") : undefined;
 
