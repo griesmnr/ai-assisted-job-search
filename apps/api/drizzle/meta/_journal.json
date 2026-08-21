@@ -29,6 +29,13 @@
       "when": 1787086132349,
       "tag": "0003_fresh_gabe_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787177962096,
+      "tag": "0004_fancy_richard_fisk",
+      "breakpoints": true
     }
   ]
 }

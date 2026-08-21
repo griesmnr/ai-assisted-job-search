@@ -360,6 +360,64 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
     expect(jobs[0]?.externalId).toBe("7995153");
   });
 
+  it('criteria.location substring-matches the raw board location string, dropping both "Remote - US" and "Seattle, WA" when searching "Washington" — exactly why demo-match.ts (ticket 620ca30) does NOT pass criteria.location and filters client-side instead', async () => {
+    // Neither committed real-response fixture happens to contain a
+    // "Remote - US" listing, so this uses three small, hand-built records —
+    // same discipline as the "never reintroduces enum-based skipping" test
+    // above (this is testing itemMatchesCriteria's filter logic, not the
+    // payType/commitment/locationType mapping the "never hand-build a
+    // fixture" rule at the top of this file is about).
+    const remoteUsJob = {
+      id: 501,
+      title: "Software Engineer",
+      company_name: "Acme",
+      absolute_url: "https://acme.example/jobs/501",
+      content: "<p>Build things.</p>",
+      first_published: "2026-01-01T00:00:00-00:00",
+      location: { name: "Remote - US" },
+    };
+    // A realistic, common way a board actually writes a Washington posting
+    // — abbreviated, not spelled out.
+    const seattleWaJob = {
+      id: 502,
+      title: "Software Engineer",
+      company_name: "Acme",
+      absolute_url: "https://acme.example/jobs/502",
+      content: "<p>Build things.</p>",
+      first_published: "2026-01-01T00:00:00-00:00",
+      location: { name: "Seattle, WA" },
+    };
+    // Control: the ONE spelling that actually contains "washington" as a
+    // literal substring, so it's the only one of the three criteria.location
+    // itself can find.
+    const bellevueWashingtonJob = {
+      id: 503,
+      title: "Software Engineer",
+      company_name: "Acme",
+      absolute_url: "https://acme.example/jobs/503",
+      content: "<p>Build things.</p>",
+      first_published: "2026-01-01T00:00:00-00:00",
+      location: { name: "Bellevue, Washington" },
+    };
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse({ jobs: [remoteUsJob, seattleWaJob, bellevueWashingtonJob] }),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    const { jobs } = await source.search({ location: "Washington" });
+
+    // "remote - us".includes("washington") is false and "seattle, wa"
+    // .includes("washington") is ALSO false (the abbreviation "wa" is not
+    // the substring "washington") — both real, desirable Washington-area
+    // postings are dropped by a plain criteria.location match. Only the
+    // fully-spelled-out control survives. demo-match.ts's main() relies on
+    // this exact behavior to justify passing `criteria: {}` and doing
+    // location narrowing in `filter` (filterSoftwareEngineeringJobs, whose
+    // PLACE regex explicitly handles both "remote - us" and ", WA") instead
+    // — if that reasoning were ever wrong, this test would fail.
+    expect(jobs.map((j) => j.externalId)).toEqual(["503"]);
+  });
+
   it("a 404 on one board token is skipped (that company's board doesn't exist) without discarding results from healthy tokens", async () => {
     const fetchImpl = fetchByToken({
       discord: () => jsonResponse(discordFixture),
