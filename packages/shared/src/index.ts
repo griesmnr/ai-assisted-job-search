@@ -13,7 +13,7 @@ export function ping(): string {
 export type Job = {
   id: string;
   externalId: string;
-  dataSource: "usajobs" | "wa-state" | "greenhouse";
+  dataSource: "usajobs" | "wa-state" | "greenhouse" | "lever";
   title: string;
   description: string;
   company: string;

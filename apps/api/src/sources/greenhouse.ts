@@ -1,4 +1,5 @@
 import type { Job } from "@app/shared";
+import { htmlToPlainText as sharedHtmlToPlainText } from "./html.js";
 import {
   AuthFailedError,
   ForbiddenError,
@@ -530,58 +531,21 @@ function mapLocationType(item: GreenhouseJob): Job["locationType"] | undefined {
 //      raw HTML tags competing for token budget/embedding space only for
 //      Greenhouse postings.
 //
-// This is a lightweight regex-based decode+strip, not a full HTML parser
-// (no such dependency is present in this workspace, and job-board HTML is
-// simple markup — headings/paragraphs/lists — not a case that needs one).
-// It preserves paragraph/list-item breaks as newlines so the result reads
-// as text, not a single run-on line.
+// The actual decode+strip pipeline lives in ./html.ts, shared with
+// lever.ts (which needs the same tag-stripping for `lists[].content`, but
+// with `doubleEncoded: false` — see that file's doc comment for why the two
+// sources need different pipelines, not just different call sites).
 // ---------------------------------------------------------------------------
-
-const BLOCK_BOUNDARY_TAGS = /<\/(?:p|div|li|ul|ol|h[1-6])\s*>|<br\s*\/?>/gi;
-const ANY_TAG = /<[^>]*>/g;
-const NUMERIC_DEC_ENTITY = /&#(\d+);/g;
-const NUMERIC_HEX_ENTITY = /&#x([0-9a-fA-F]+);/g;
-
-/** Decodes one layer of HTML entity encoding. `&amp;` is handled last so it
- * doesn't re-trigger the other replacements (standard unescape ordering —
- * avoids turning an intentional literal `&amp;lt;` into `<` instead of the
- * literal text `&lt;` it represents). */
-function decodeHtmlEntities(input: string): string {
-  return input
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(NUMERIC_DEC_ENTITY, (_, dec: string) => String.fromCodePoint(Number(dec)))
-    .replace(NUMERIC_HEX_ENTITY, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&amp;/g, "&");
-}
 
 /**
  * Exported (unlike USAJOBS' private mapping helpers) specifically so it can
  * be unit-tested directly against real fixture content, independent of
  * whatever `normalizeItem` does with `payType`/`commitment`/`locationType` —
  * decoupling this test from the mapping decisions that live elsewhere in
- * this file keeps it stable regardless of which fields `Job` requires.
+ * this file keeps it stable regardless of which fields `Job` requires. Thin
+ * wrapper over the shared `htmlToPlainText` fixing `doubleEncoded: true`,
+ * Greenhouse's real (verified) encoding.
  */
 export function htmlToPlainText(raw: string): string {
-  // Layer 1: undo Greenhouse's whole-string entity-encoding to recover the
-  // real HTML markup (`&lt;div&gt;` -> `<div>`).
-  const html = decodeHtmlEntities(raw);
-  // Turn block-level boundaries into line breaks before stripping tags, so
-  // paragraphs/list items don't get smashed into one continuous line.
-  const withBreaks = html.replace(BLOCK_BOUNDARY_TAGS, "\n");
-  const stripped = withBreaks.replace(ANY_TAG, "");
-  // Layer 2: the markup's own ordinary HTML entities (`&amp;`, `&nbsp;`,
-  // ...) are still literal text at this point — decode them into the
-  // actual characters they represent.
-  const plainText = decodeHtmlEntities(stripped);
-
-  return plainText
-    .split("\n")
-    .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .filter((line) => line.length > 0)
-    .join("\n")
-    .trim();
+  return sharedHtmlToPlainText(raw, { doubleEncoded: true });
 }
