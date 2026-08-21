@@ -44,6 +44,59 @@ export type SourceSearchResult = {
    * `skipRate` on a non-empty result as a signal to alert, not just log.
    */
   skipRate: number;
+  /**
+   * Populated by sources that shard a single `search()` call into one HTTP
+   * request per employer "token" (Greenhouse today, one request per board
+   * token — see `GreenhouseSource`; the Ashby and SmartRecruiters adapters
+   * in flight follow the same one-request-per-employer shape). Absent
+   * (`undefined`) for sources that don't have this concept, e.g. USAJOBS'
+   * single paginated query — callers must treat a missing/empty array as
+   * "no per-token breakdown available", not as "zero employers configured".
+   *
+   * Exists for ticket b723fb9: without it, three genuinely different
+   * outcomes are indistinguishable from a caller's point of view —
+   *   - a configured token that doesn't resolve to a real board (404)
+   *   - a real board with zero open postings right now
+   *   - a real board with postings, none of which survived a caller's own
+   *     filtering
+   * — and a user staring at an empty result list has no way to tell a
+   * broken config from a quiet market from a shortlist that's simply
+   * strict. See `TokenOutcome`.
+   */
+  tokenOutcomes?: TokenOutcome[];
+};
+
+/** One employer/token's outcome within a sharded `search()` call. See
+ * `SourceSearchResult.tokenOutcomes`. */
+export type TokenStatus =
+  /** The token itself does not resolve (e.g. HTTP 404) — a configuration
+   * problem (typo, renamed/departed employer, wrong ATS guess), not a
+   * signal about the job market. */
+  | "not-found"
+  /** The token resolves to a real board; it currently has zero postings. */
+  | "empty"
+  /** The token resolves to a real board with at least one posting. Says
+   * nothing about whether any posting survives a caller's own filtering —
+   * that is what `postingCount` (raw, pre-filter) is for; a caller that
+   * also tracks post-filter survivors is expected to report the two
+   * numbers side by side. */
+  | "ok";
+
+export type TokenOutcome = {
+  /** The token/slug as configured — e.g. a Greenhouse board token. */
+  token: string;
+  status: TokenStatus;
+  /** Raw posting count for this token, before any `SearchCriteria` or
+   * caller-side `filter` narrowing. Always `0` for "not-found" and
+   * "empty". */
+  postingCount: number;
+  /** The employer's own display name, as self-reported in the token's
+   * response, when available. `undefined` for "not-found" (nothing was
+   * fetched) and possible for "empty" (nothing to read a name from).
+   * Lets a caller correlate post-filter survivors — which carry
+   * `NormalizedJob.company`, not the raw token — back to the token that
+   * produced them. */
+  companyName: string | undefined;
 };
 
 /**

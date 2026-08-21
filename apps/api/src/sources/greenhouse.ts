@@ -12,6 +12,7 @@ import {
   type SearchCriteria,
   type SkippedRecord,
   type SourceSearchResult,
+  type TokenOutcome,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,7 @@ export class GreenhouseSource implements JobSource {
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
+    const tokenOutcomes: TokenOutcome[] = [];
 
     // Sequential, not Promise.all: keeps this well-behaved against an
     // unauthenticated public API shared by every Greenhouse consumer (no
@@ -160,10 +162,27 @@ export class GreenhouseSource implements JobSource {
         // already collected from the healthy boards. So: skip this token
         // and keep going, rather than aborting the whole search().
         if (err instanceof UnexpectedStatusError && err.status === 404) {
+          tokenOutcomes.push({
+            token,
+            status: "not-found",
+            postingCount: 0,
+            companyName: undefined,
+          });
           continue;
         }
         throw err;
       }
+
+      // Recorded before criteria filtering: `postingCount` (and the
+      // "empty" vs "ok" status it drives) describes the board itself, not
+      // what a particular search narrowed it down to — see the doc
+      // comment on `TokenOutcome`.
+      tokenOutcomes.push({
+        token,
+        status: data.jobs.length === 0 ? "empty" : "ok",
+        postingCount: data.jobs.length,
+        companyName: data.jobs[0]?.company_name,
+      });
 
       for (const item of data.jobs) {
         if (!itemMatchesCriteria(item, criteria)) continue;
@@ -179,7 +198,7 @@ export class GreenhouseSource implements JobSource {
     const total = jobs.length + skipped.length;
     const skipRate = total === 0 ? 0 : skipped.length / total;
 
-    return { jobs, skipped, skipRate };
+    return { jobs, skipped, skipRate, tokenOutcomes };
   }
 
   async #fetchBoard(token: string): Promise<GreenhouseBoardResponse> {

@@ -23,8 +23,8 @@ import { Client } from "pg";
 import { seedSourceDescriptors } from "./db/seed.js";
 import { jobMatches, jobs as jobsTable, resumes, searches, searchSources } from "./db/schema.js";
 import { ingestJobsForSearch } from "./ingest/ingestJobs.js";
-import { GreenhouseSource } from "./sources/greenhouse.js";
-import type { JobSource, NormalizedJob, SearchCriteria } from "./sources/types.js";
+import { createGreenhouseSourceFromEnv } from "./sources/greenhouse.js";
+import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
 process.loadEnvFile();
 
@@ -146,6 +146,20 @@ export type RunDemoMatchOptions = {
   log?: (message: string) => void;
 };
 
+/**
+ * One configured token's outcome, extended with how many of its postings
+ * survived `filter` — the third distinction ticket b723fb9 asks for, that
+ * `TokenOutcome` alone (source-level) can't make: a board can be "ok"
+ * (real, has postings) and still contribute zero jobs to the funnel
+ * because none matched the title/location filter. `status`/`postingCount`
+ * describe the source; `survivedFilter` describes what THIS run's `filter`
+ * did with them. A user staring at an empty result can read this list and
+ * tell "your board token is wrong" apart from "that employer isn't
+ * hiring right now" apart from "they're hiring, just not for this" —
+ * three different problems that otherwise all look like silence.
+ */
+export type BoardCoverageEntry = TokenOutcome & { survivedFilter: number };
+
 export type RunDemoMatchResult = {
   resumeId: string;
   searchId: string;
@@ -163,6 +177,12 @@ export type RunDemoMatchResult = {
    */
   failed: number;
   results: RankedResult[];
+  /**
+   * Per-token funnel breakdown, empty when `source.search()` didn't
+   * populate `tokenOutcomes` (sources without that concept — see
+   * `SourceSearchResult.tokenOutcomes`). See `BoardCoverageEntry`.
+   */
+  boardCoverage: BoardCoverageEntry[];
 };
 
 /**
@@ -182,6 +202,55 @@ export function isTotalScoringFailure(
   result: Pick<RunDemoMatchResult, "failed" | "newlyScored">,
 ): boolean {
   return result.failed > 0 && result.newlyScored === 0;
+}
+
+/**
+ * Extends each raw `TokenOutcome` (source-level: does the token resolve,
+ * does the board have postings) with `survivedFilter` — how many of
+ * `filtered` (this run's `filter` applied to everything the source
+ * returned, before the `maxJobs` slice) came from that token's employer.
+ * Matched by `NormalizedJob.company` against `TokenOutcome.companyName`
+ * (case-insensitively; both come from the same source, so this is not a
+ * cross-source guess) rather than by tagging every job with its token,
+ * which would mean widening `NormalizedJob` for a concern specific to this
+ * reporting. Returns `[]` when the source didn't populate `tokenOutcomes`
+ * at all (ticket b723fb9's board-coverage reporting is opt-in per source,
+ * not a requirement every `JobSource` implementation must satisfy).
+ */
+export function buildBoardCoverage(
+  tokenOutcomes: TokenOutcome[] | undefined,
+  filtered: NormalizedJob[],
+): BoardCoverageEntry[] {
+  if (!tokenOutcomes || tokenOutcomes.length === 0) return [];
+
+  const survivedByCompany = new Map<string, number>();
+  for (const job of filtered) {
+    const key = job.company.trim().toLowerCase();
+    survivedByCompany.set(key, (survivedByCompany.get(key) ?? 0) + 1);
+  }
+
+  return tokenOutcomes.map((outcome) => ({
+    ...outcome,
+    survivedFilter: outcome.companyName
+      ? (survivedByCompany.get(outcome.companyName.trim().toLowerCase()) ?? 0)
+      : 0,
+  }));
+}
+
+/**
+ * The one-line-per-board summary ticket b723fb9 exists to make possible:
+ * three outcomes that used to all look like "nothing from this employer"
+ * now read as three different, specific problems.
+ */
+export function describeBoardOutcome(entry: BoardCoverageEntry): string {
+  switch (entry.status) {
+    case "not-found":
+      return "board does not exist (404) — check the token";
+    case "empty":
+      return "board exists, 0 postings right now";
+    case "ok":
+      return `${entry.postingCount} posting(s), ${entry.survivedFilter} survived filtering`;
+  }
 }
 
 /**
@@ -257,10 +326,23 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   const resumeId = await getOrCreateResumeId(db, resumeText);
 
   log(`Fetching real postings from ${source.dataSource.toUpperCase()}...`);
-  const { jobs: found, skipped, skipRate } = await source.search(criteria);
+  const { jobs: found, skipped, skipRate, tokenOutcomes } = await source.search(criteria);
   log(`  ${found.length} jobs, ${skipped.length} skipped (skipRate ${skipRate.toFixed(2)})\n`);
 
-  const shortlist = filter(found).slice(0, maxJobs);
+  // Computed before the `maxJobs` slice, specifically so board-level
+  // survivor counts below reflect what actually passed `filter`, not what
+  // was left after also truncating to the shortlist size.
+  const filtered = filter(found);
+  const shortlist = filtered.slice(0, maxJobs);
+
+  const boardCoverage = buildBoardCoverage(tokenOutcomes, filtered);
+  if (boardCoverage.length > 0) {
+    log("  Board coverage:");
+    for (const b of boardCoverage) {
+      log(`    ${b.token}: ${describeBoardOutcome(b)}`);
+    }
+    log("");
+  }
 
   const searchId = randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
@@ -277,7 +359,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
     fs.writeFileSync(outputPath, JSON.stringify([], null, 2));
-    return { resumeId, searchId, skipped: 0, newlyScored: 0, failed: 0, results: [] };
+    return {
+      resumeId,
+      searchId,
+      skipped: 0,
+      newlyScored: 0,
+      failed: 0,
+      results: [],
+      boardCoverage,
+    };
   }
 
   // Map linked job ids back to the NormalizedJob payload a scorer needs
@@ -424,6 +514,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     newlyScored: newlyScoredCount,
     failed: failedCount,
     results,
+    boardCoverage,
   };
 }
 
@@ -474,9 +565,12 @@ async function main() {
   await client.connect();
   const db = drizzle(client);
 
-  const source = new GreenhouseSource({
-    boardTokens: ["samsara", "flexport", "smartsheet", "pushpay"],
-  });
+  // Board tokens are configuration (GREENHOUSE_BOARD_TOKENS, .env), not a
+  // literal here (ticket b723fb9) — see .env.example for the documented
+  // default list and apps/api/src/scripts/check-greenhouse-board.ts for
+  // how to check whether a candidate employer hosts on Greenhouse at all
+  // before adding its token.
+  const source = createGreenhouseSourceFromEnv();
 
   try {
     // No location/keyword in `criteria`: GreenhouseSource has no

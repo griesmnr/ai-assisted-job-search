@@ -449,6 +449,51 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
   });
 });
 
+describe("GreenhouseSource — tokenOutcomes (ticket b723fb9)", () => {
+  // The heart of the ticket: a 404'd token, a real-but-empty board, and a
+  // real board with postings must be distinguishable from each other in
+  // the data `search()` returns, not just indistinguishable empty results.
+  it("reports 'not-found' for a 404, 'empty' for a real board with zero postings, and 'ok' with a posting count and company name for a real board with postings — all in one search()", async () => {
+    const fetchImpl = fetchByToken({
+      "does-not-exist": () => new Response("Not Found", { status: 404 }),
+      "quiet-board": () => jsonResponse({ jobs: [] }),
+      discord: () => jsonResponse(discordFixture),
+    });
+    const source = makeSource(fetchImpl, ["does-not-exist", "quiet-board", "discord"]);
+
+    const { tokenOutcomes } = await source.search({});
+
+    expect(tokenOutcomes).toEqual([
+      { token: "does-not-exist", status: "not-found", postingCount: 0, companyName: undefined },
+      { token: "quiet-board", status: "empty", postingCount: 0, companyName: undefined },
+      { token: "discord", status: "ok", postingCount: 3, companyName: "Discord" },
+    ]);
+  });
+
+  it("postingCount on an 'ok' token is the raw count before criteria filtering, not after", async () => {
+    // Two jobs, only one of which matches a keyword filter — postingCount
+    // must reflect the board's real size (2), not the post-criteria count
+    // (1). `TokenOutcome` describes the board, not a particular search.
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    // discordFixture's 3 jobs presumably don't all share one keyword; use
+    // a keyword guaranteed not to match anything so criteria filtering
+    // removes every job while postingCount still reports the board's real
+    // size.
+    const { jobs, tokenOutcomes } = await source.search({
+      keyword: "this-keyword-matches-nothing-in-the-fixture-xyz",
+    });
+
+    expect(jobs).toHaveLength(0);
+    expect(tokenOutcomes).toEqual([
+      { token: "discord", status: "ok", postingCount: 3, companyName: "Discord" },
+    ]);
+  });
+});
+
 describe("GreenhouseSource — error classification", () => {
   it("classifies HTTP 401 as AuthFailedError (not retryable)", async () => {
     const fetchImpl = fetchByToken({
@@ -543,7 +588,14 @@ describe("GreenhouseSource — error classification", () => {
     const source = makeSource(fetchImpl, ["does-not-exist"]);
 
     const result = await source.search({});
-    expect(result).toEqual({ jobs: [], skipped: [], skipRate: 0 });
+    expect(result).toEqual({
+      jobs: [],
+      skipped: [],
+      skipRate: 0,
+      tokenOutcomes: [
+        { token: "does-not-exist", status: "not-found", postingCount: 0, companyName: undefined },
+      ],
+    });
   });
 
   it("classifies an unmapped 4xx status (400) as UnexpectedStatusError (not retryable)", async () => {
