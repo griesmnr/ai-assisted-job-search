@@ -114,8 +114,22 @@ function makeFlakyScorer(failFor: ReadonlySet<string>): {
 const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-match-test-"));
 const outputPath = path.join(outputDir, "match-results.json");
 
-// What this test FILE owns, known statically at collection time — before
-// any `it` runs, and independent of whether `runDemoMatch` ever returns.
+/** Every RESUME_TEXT below is prefixed with this. `afterAll` sweeps rows by
+ * exact text, which only catches what THIS run created — a hard process
+ * kill (not a thrown error; that's already covered by resolving ids via
+ * SELECT, see below) skips `afterAll` entirely and leaks a row under a
+ * `randomUUID()` no later run will ever generate again. A shared,
+ * recognizable prefix means a leaked row can still be found and swept by
+ * hand (`resume_text LIKE 'ticket-620ca30-demo-match-test: %'`) — the
+ * per-run UUID after it still keeps every run's own rows distinct from
+ * each other. */
+const RESUME_TEXT_PREFIX = "ticket-620ca30-demo-match-test:";
+
+// What this test FILE owns. Populated by each describe block's own
+// `beforeAll` (see below) — which run at suite start, before any `it` in
+// that describe, not from any `it`'s outcome — so these arrays are
+// complete before the top-level `afterAll` below ever runs, independent
+// of whether `runDemoMatch` succeeds or throws inside a given `it`.
 //
 // The previous version of this cleanup derived resumeId/searchId from
 // `runDemoMatch`'s *return value*. That's wrong: runDemoMatch inserts
@@ -243,7 +257,7 @@ describe("runDemoMatch (ticket 620ca30)", () => {
     job("demo-match-test-2", "Gadget Engineer"),
     job("demo-match-test-3", "Gizmo Engineer"),
   ];
-  const RESUME_TEXT = `demo-match test resume ${randomUUID()}`;
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} main ${randomUUID()}`;
   let firstRunResumeId: string | undefined;
 
   beforeAll(() => {
@@ -385,7 +399,7 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
     job("demo-match-flaky-3", "Gizmo Engineer"),
   ];
   const FAILING_EXTERNAL_ID = "demo-match-flaky-2";
-  const RESUME_TEXT = `demo-match flaky-scorer test resume ${randomUUID()}`;
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} flaky-scorer ${randomUUID()}`;
 
   beforeAll(() => {
     allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
@@ -453,7 +467,7 @@ describe("runDemoMatch: filter hook", () => {
     job("demo-match-filter-2", "Sales Development Rep"),
     job("demo-match-filter-3", "Widget Support Specialist"),
   ];
-  const RESUME_TEXT = `demo-match filter-hook test resume ${randomUUID()}`;
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} filter-hook ${randomUUID()}`;
 
   beforeAll(() => {
     allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
