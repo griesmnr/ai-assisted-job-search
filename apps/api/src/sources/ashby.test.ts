@@ -303,6 +303,54 @@ describe("AshbySource — mapping against real captured responses", () => {
     );
   });
 
+  it("location filtering matches address.postalAddress on a SECONDARY location, not just the primary address (a 'California' search)", async () => {
+    // Both matches below come purely from a secondary location's own
+    // address, not the posting's primary `address`: 94d79eed-... and
+    // 67fadb77-... each have a primary `address` resolving to "New York
+    // City" (their `location` is "New York, NY (HQ)") but a secondary
+    // location "San Francisco, CA" whose OWN address resolves to
+    // `{addressLocality: "San Fransisco", addressRegion: "California "}` —
+    // the real misspelling and real trailing space, unmodified. 4bc09b14-...
+    // matches via its own primary address instead ("San Francisco, CA" is
+    // its only, primary location). If `itemLocationSearchTerms` only read
+    // the primary `address` and dropped `secondaryLocations[].address`,
+    // 94d79eed-... and 67fadb77-... would silently disappear from this
+    // search while 4bc09b14-... kept matching — the exact one-sided-guard
+    // shape an adversarial review flagged.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({ location: "California" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
+      [
+        "4bc09b14-0389-40cd-9d5b-f5557f451d50",
+        "67fadb77-43d8-4449-954b-d4cf2c6d3b8b",
+        "94d79eed-34db-42c8-b47c-5edef335b7f2",
+      ].sort(),
+    );
+  });
+
+  it("location filtering matches address.postalAddress.addressCountry on a SECONDARY location that has no display-string OR primary-address equivalent (a 'United States' search)", async () => {
+    // Real Ramp posting 34413f8d-...'s secondary location "Remote (US)" has
+    // its OWN address, `{addressCountry: "United States"}` — a string that
+    // appears in no display-string location on this posting (the display
+    // strings only ever say "US", inside "Remote (US)") AND in no primary
+    // `address` on this posting either (34413f8d-...'s primary address
+    // country is "USA", not "United States" — the two literal country
+    // strings coexist in real Ashby data and do not contain each other).
+    // This match is possible ONLY by reading a secondary location's own
+    // address.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({ location: "United States" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId)).toEqual(["34413f8d-26bf-4bbc-8ade-eb309a0e2245"]);
+  });
+
   it("still matches on the display string alone when address carries no equivalent signal (a 'Remote' search has no address-component analog)", async () => {
     // The sibling proof to the two address-only tests above: "Remote
     // (Canada)"/"Remote (US)" are display-string-only matches — the
@@ -476,6 +524,28 @@ describe("AshbySource — mapping against real captured responses", () => {
     const { jobs, skipped } = await source.search({});
     expect(skipped).toHaveLength(0);
     expect(jobs[0]?.payType).toBe("hourly");
+  });
+
+  it("matches compensationType case-insensitively, like mapCommitment/mapLocationType already do (all 399 real components checked are exact-cased 'Salary', so this pins the discipline rather than a live bug)", async () => {
+    const fetchImpl = fetchByBoard({
+      ramp: () =>
+        jsonResponse({
+          jobs: [
+            makeMinimalPosting({
+              compensation: {
+                compensationTiers: [
+                  { components: [{ compensationType: " salary ", interval: "1 YEAR" }] },
+                ],
+              },
+            }),
+          ],
+        }),
+    });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({});
+    expect(skipped).toHaveLength(0);
+    expect(jobs[0]?.payType).toBe("salary");
   });
 
   it("never reintroduces enum-based skipping: a record with no employmentType/workplaceType/compensation signal at all is still returned as a job, not skipped", async () => {

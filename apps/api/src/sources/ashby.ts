@@ -118,7 +118,7 @@ import {
 //       display-string locations from 2a, same "union, not replacement"
 //       shape as Lever's `location`/`allLocations` fix, for the same
 //       reason: each side has real coverage the other lacks (see that
-//       function's own doc comment for the "California" case proving this).
+//       function's own doc comment for the "CA"/"Remote" cases proving this).
 //
 //       Deliberately NOT folded into the stored `Job.location` display
 //       string, though: the address data is measurably dirtier than the
@@ -632,14 +632,18 @@ function postalAddressComponents(address: AshbyAddress | undefined): string[] {
  *
  * This is a UNION, not a replacement, for the same reason Lever's `location`
  * ∪ `allLocations` fix was a union and not a swap to `allLocations` alone:
- * `location`/`secondaryLocations[].location` display strings carry real
- * search value `address` doesn't — e.g. "California" matches 141 postings
- * via `address` components but only 65 via display strings *combined*
- * covers more than either side alone (every `address`-only match still adds
- * signal `location` strings never had, and vice versa: a display string
- * like "Remote (US)" has no address-component equivalent at all, since its
- * `address` carries only `addressCountry: "United States"`, not the
- * "Remote" qualifier a "remote" search term needs).
+ * each side has real search coverage the other lacks, verified live
+ * (2026-08-22, same 399 postings). The clearest single case: `"CA"` matches
+ * 177 postings via the union, but only 173 via display strings alone and
+ * only 154 via address components alone — the union's 177 is more than
+ * EITHER side reaches by itself, so neither side is droppable. `"Remote"` is
+ * the sharper one-sided case: 109 real matches, every one of them via a
+ * display string (`"Remote (US)"`/`"Remote (Canada)"`-style location
+ * names) and ZERO via address — `"Remote"` never appears in any real
+ * `address.postalAddress` component (those name places, not work
+ * arrangements: 34413f8d-...'s "Remote (US)" secondary resolves to bare
+ * `{addressCountry: "United States"}`, no "Remote" qualifier at all) — so an
+ * address-only implementation would silently drop every `"Remote"` search.
  *
  * The address data is measurably dirtier than the display-string data —
  * real values seen include the misspelling "San Fransisco" (alongside the
