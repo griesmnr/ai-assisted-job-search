@@ -38,6 +38,19 @@ import { AshbySource, createAshbySourceFromEnv } from "./ashby.js";
 // Ashby's own docs don't mention can be null, confirmed as a literal JSON
 // null on the key, not an omitted key).
 //
+// These same five/three postings also carry real `address.postalAddress`
+// data (untouched — it was already present in the captured response, this
+// suite just didn't assert on it until an adversarial review caught that
+// gap): 34413f8d/94d79eed/67fadb77 each resolve to `addressLocality: "New
+// York City"`, a string that appears in NONE of their `location`/
+// `secondaryLocations[].location` display strings ("New York, NY (HQ)");
+// 94d79eed/67fadb77/4bc09b14 each carry a "San Fransisco"/"California "
+// (real misspelling and real trailing space, unmodified) address alongside
+// display strings that only ever say "San Francisco, CA" or "CA" — real,
+// dirty data used below to prove the location-search haystack is
+// address-aware without that same dirty data leaking into stored
+// `Job.location`.
+//
 // Never hand-build a fixture for the success/skip paths below — derive from
 // these files, the same discipline this project's USAJOBS adapter had to be
 // rebuilt to follow.
@@ -220,6 +233,13 @@ describe("AshbySource — mapping against real captured responses", () => {
     // secondary entries appear in `location` itself.
     const security = findJob(jobs, "34413f8d-26bf-4bbc-8ade-eb309a0e2245");
     expect(security.location).toBe("New York, NY (HQ); Remote (Canada); Remote (US); Miami, FL");
+    // This same real posting's `address.postalAddress.addressLocality` is
+    // "New York City" — must NOT leak into the stored display string (see
+    // the dedicated address-vs-storage test below for the full reasoning;
+    // asserted again here, inline, so a mutation that folds address into
+    // `itemLocations` itself — not just into the search-only function —
+    // is caught by this test too).
+    expect(security.location).not.toContain("New York City");
 
     // Ordinary no-secondary-locations posting — unaffected.
     const contract = findJob(jobs, "690c661d-7ef7-472c-841b-2e20fb4c5db3");
@@ -238,6 +258,92 @@ describe("AshbySource — mapping against real captured responses", () => {
 
     expect(skipped).toHaveLength(0);
     expect(jobs.map((j) => j.externalId)).toEqual(["34413f8d-26bf-4bbc-8ade-eb309a0e2245"]);
+  });
+
+  it("location filtering matches against address.postalAddress, the structured sibling display strings alone silently miss (finding 2c)", async () => {
+    // Real Ramp posting 34413f8d-...'s `location` is "New York, NY (HQ)" —
+    // no display-string location on this posting contains the substring
+    // "New York City", but its `address.postalAddress.addressLocality` IS
+    // "New York City" (94d79eed-... and 67fadb77-... share the same primary
+    // address). A location filter checking only display strings would
+    // return zero results for a search this literal.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({ location: "New York City" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
+      [
+        "34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+        "94d79eed-34db-42c8-b47c-5edef335b7f2",
+        "67fadb77-43d8-4449-954b-d4cf2c6d3b8b",
+      ].sort(),
+    );
+  });
+
+  it("location filtering matches address.postalAddress.addressCountry too, with no display-string equivalent to fall back on (a 'USA' search)", async () => {
+    // None of this fixture's display-string locations ("New York, NY (HQ)",
+    // "Remote (Canada)", "Remote (US)", "Miami, FL", "San Francisco, CA",
+    // "London") contain the literal substring "USA" — this match is
+    // possible ONLY via `address.postalAddress.addressCountry`.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({ location: "USA" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(
+      [
+        "34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+        "94d79eed-34db-42c8-b47c-5edef335b7f2",
+        "67fadb77-43d8-4449-954b-d4cf2c6d3b8b",
+        "4bc09b14-0389-40cd-9d5b-f5557f451d50",
+      ].sort(),
+    );
+  });
+
+  it("still matches on the display string alone when address carries no equivalent signal (a 'Remote' search has no address-component analog)", async () => {
+    // The sibling proof to the two address-only tests above: "Remote
+    // (Canada)"/"Remote (US)" are display-string-only matches — the
+    // "Remote" qualifier itself never appears in any `address` component on
+    // this fixture (34413f8d-...'s Canada/US secondary addresses resolve to
+    // bare `{addressCountry: "Canada"}` / `{addressCountry: "United
+    // States"}`, no "Remote" anywhere). This proves the union in
+    // `itemLocationSearchTerms` still needs the display-string side, not
+    // address alone — a mutation that switched to address-only location
+    // matching would fail this test even though it would still pass the
+    // "New York City"/"USA" tests above.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs, skipped } = await source.search({ location: "Remote" });
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs.map((j) => j.externalId)).toEqual(["34413f8d-26bf-4bbc-8ade-eb309a0e2245"]);
+  });
+
+  it("never stores address.postalAddress data (misspellings and all) on Job.location — the search haystack is address-aware, the stored display string is not", async () => {
+    // Real posting 4bc09b14-...'s address resolves to the misspelling "San
+    // Fransisco" and "California " (trailing space, unmodified real data),
+    // while its display-string `location` is the clean "San Francisco, CA".
+    // Folding address into the stored value would put a misspelling or
+    // stray whitespace in front of a user; this asserts it never does, for
+    // every one of the ramp fixture's postings, not just one.
+    const fetchImpl = fetchByBoard({ ramp: () => jsonResponse(rampFixture) });
+    const source = makeSource(fetchImpl, ["ramp"]);
+
+    const { jobs } = await source.search({});
+
+    const specialist = findJob(jobs, "4bc09b14-0389-40cd-9d5b-f5557f451d50");
+    expect(specialist.location).toBe("San Francisco, CA");
+    expect(specialist.location).not.toContain("Fransisco");
+    expect(specialist.location).not.toContain("California");
+
+    for (const job of jobs) {
+      expect(job.location).not.toContain("New York City");
+      expect(job.location).not.toMatch(/\bUSA\b/);
+    }
   });
 
   it("keyword filtering searches the full assembled description, not just the title, so a skill named only in the requirements section still matches", async () => {

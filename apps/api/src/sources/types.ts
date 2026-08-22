@@ -42,6 +42,15 @@ export type SourceSearchResult = {
    * of them" (a mapper bug or an upstream schema change) — both otherwise
    * present to a caller as `jobs: []`. A worker should treat a high
    * `skipRate` on a non-empty result as a signal to alert, not just log.
+   *
+   * An adapter that fetches multiple upstream collections in one `search()`
+   * call (e.g. one HTTP request per configured board/company/token) may
+   * contribute a `SkippedRecord` for a whole failed collection, not just for
+   * one unmappable posting (see ashby.ts's handling of a nonexistent board
+   * name). That board-level skip is diluted into the same denominator as
+   * every record-level skip from every other configured collection, so
+   * `skipRate` alone won't reliably surface it in a multi-collection search
+   * — `skipped[].reason` is the channel that does.
    */
   skipRate: number;
 };

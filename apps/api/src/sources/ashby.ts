@@ -51,7 +51,10 @@ import {
 //
 // 2. THE HIDDEN FIELD (this ticket's explicit warning: "assume Ashby has its
 //    own version of Lever's allLocations/lists and go looking for it" —
-//    there are two, not one):
+//    there are THREE, not one, and a first pass of this adapter caught the
+//    first two and missed the third — see 2c, added after an adversarial
+//    review, for what "go looking for it" actually requires: not stopping
+//    once one hidden field is found):
 //
 //    a) `secondaryLocations` — Ashby's own docs confirm `location` is only
 //       one representative location, same shape as Lever's finding 5. A
@@ -86,6 +89,49 @@ import {
 //       endpoint would report `payType` as always-undefined and never know
 //       it was looking at a stripped-down response the whole time. This
 //       adapter always requests `includeCompensation=true`.
+//
+//    c) CORRECTION, added after an adversarial review (2026-08-22): finding
+//       2a above is real but incomplete. There is a THIRD sibling this
+//       adapter's first pass never read at all: `address.postalAddress`
+//       (present on the primary posting AND on every `secondaryLocations[]`
+//       entry — its own structured `{addressLocality, addressRegion,
+//       addressCountry}`, independent of that same entry's `location`
+//       display string). `location`/`secondaryLocations[].location` are
+//       display strings; `address.postalAddress` is the canonical
+//       structured place data, and the two routinely disagree in coverage.
+//       Verified live 2026-08-22, 399 postings across
+//       ramp/linear/notion/vanta (boards changed size again since 2a's
+//       2026-08-21 count of 393 — see finding 1's note on boards changing
+//       over time): `address` is present on 399/399 postings. 309 of 399
+//       have at least one address component naming a place absent from
+//       every display-string location on that same posting — e.g. real Ramp
+//       posting 34413f8d-...: `location: "New York, NY (HQ)"`, but
+//       `address.postalAddress.addressLocality` is `"New York City"`, a
+//       string that appears in no display-string location on the posting
+//       at all. The practical cost of missing this: filtering only on
+//       `location`/`secondaryLocations[].location` display strings returns
+//       ZERO of 116 real "New York City" matches, zero of 182 real "USA"
+//       matches, zero of 21 real "Ontario" matches, and only 65 of 141 real
+//       "California" matches. `itemLocationSearchTerms` (below) folds
+//       `address.postalAddress` components — primary and every secondary's
+//       — into the location-filter haystack as a union with the
+//       display-string locations from 2a, same "union, not replacement"
+//       shape as Lever's `location`/`allLocations` fix, for the same
+//       reason: each side has real coverage the other lacks (see that
+//       function's own doc comment for the "California" case proving this).
+//
+//       Deliberately NOT folded into the stored `Job.location` display
+//       string, though: the address data is measurably dirtier than the
+//       display strings it would be joined with — real values include the
+//       misspelling "San Fransisco" alongside correctly-spelled "San
+//       Francisco" on other postings, "California " with a trailing space,
+//       and "USA"/"United States"/"UK"/"United Kingdom" all coexisting as
+//       values for the same two countries. Fine for a search haystack
+//       (substring matching tolerates it, and present-but-dirty beats
+//       silently absent); not something this adapter will put in front of a
+//       user as the job's stored location. `itemLocations` (feeding
+//       `Job.location`) is unchanged by this finding and still never reads
+//       `address`.
 //
 // 3. `descriptionHtml` and `descriptionPlain` are BOTH present on every real
 //    posting checked (393/393) — unlike Lever, which sometimes has an empty
@@ -172,11 +218,31 @@ import {
 //    `externalId: undefined`, reason naming the board and the 404) rather
 //    than silently dropped. This keeps per-board failure isolation intact
 //    (one bad board name still can't fail the whole search — see
-//    `search()`) while making the two cases distinguishable through the one
-//    channel `SourceSearchResult` actually exposes: a nonexistent-board-only
-//    search reports `skipRate: 1` with a reason naming the 404, a
-//    zero-openings-board-only search reports `skipRate: 0` with nothing in
-//    `skipped` at all.
+//    `search()`) while making the two cases distinguishable through
+//    `SourceSearchResult`: a zero-openings-board-only search reports
+//    `skipRate: 0` with nothing in `skipped` at all; a nonexistent-board
+//    search always adds a `SkippedRecord` whose `reason` names the board
+//    and the 404.
+//
+//    CORRECTION (2026-08-22, adversarial review): an earlier version of this
+//    finding claimed the nonexistent-board case "reports skipRate: 1",
+//    stated without qualification. That is only true when the 404'd board
+//    is the *only* board configured. Configure `["ramp", "typo-board"]` and
+//    the real result is `skipRate: skipped.length / (jobs.length +
+//    skipped.length)` — one board-level skip diluted by every one of the
+//    healthy board's postings (e.g. 1 skip against ramp's 135+ real jobs
+//    yields `skipRate` under 0.01, which `demo-match.ts` would render as
+//    "0.01", visually indistinguishable from ordinary per-record noise).
+//    The actual, reliable distinguishing signal — in every configuration,
+//    not just the single-board one — is `skipped[].reason` naming the board
+//    and the 404, not the numeric `skipRate`. See `types.ts`'s `skipRate`
+//    doc comment for the related, more general point: a board-level skip
+//    (one `SkippedRecord` regardless of how many postings that board would
+//    have contributed) makes the denominator behind `skipRate` incoherent
+//    in a way record-level skips don't, and a 404-only search returns
+//    `jobs: []`, so a worker alerting only on "high skipRate on a
+//    *non-empty* result" (`types.ts`'s own documented contract) would not
+//    alert on it at all.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = "https://api.ashbyhq.com/posting-api/job-board";
@@ -390,8 +456,25 @@ function parseRetryAfter(header: string | null): number | undefined {
 // top-of-file comment.
 // ---------------------------------------------------------------------------
 
+/** `address.postalAddress`'s three components — see finding 2c. Any of the
+ * three can be absent even when `address`/`postalAddress` itself is
+ * present. */
+type AshbyPostalAddress = {
+  addressLocality?: string;
+  addressRegion?: string;
+  addressCountry?: string;
+};
+
+type AshbyAddress = {
+  postalAddress?: AshbyPostalAddress;
+};
+
 type AshbySecondaryLocation = {
   location?: string;
+  /** See finding 2c: each secondary location has its own structured
+   * address, independent of (and sometimes disagreeing in coverage with)
+   * its own `location` display string. */
+  address?: AshbyAddress;
 };
 
 /** One compensation component within a tier — e.g. the "Salary" line, the
@@ -422,6 +505,10 @@ type AshbyJob = {
   /** See finding 2a: a posting open to multiple locations carries the rest
    * here, and `location` is not guaranteed to be a member of this list. */
   secondaryLocations?: AshbySecondaryLocation[];
+  /** See finding 2c: the structured sibling of `location`/`secondaryLocations`.
+   * Used only to widen the location *search* haystack (`itemLocationSearchTerms`)
+   * — never stored on `Job.location` (see that function's doc comment for why). */
+  address?: AshbyAddress;
   publishedAt?: string;
   /** Documented enum `"OnSite" | "Remote" | "Hybrid"`, but real data
    * (2026-08-21) also has a fourth real state Ashby's docs don't mention:
@@ -474,24 +561,107 @@ function buildDescription(item: AshbyJob): string {
 // ---------------------------------------------------------------------------
 // `secondaryLocations` vs `location` — see finding 2a. `location` is one
 // representative entry; `secondaryLocations` carries the rest of what a
-// multi-location posting is actually open to. Both filtering and the stored
-// `Job.location` use the union, not `location` alone.
+// multi-location posting is actually open to. Both the location *search*
+// haystack (`itemLocationSearchTerms`, below) and the stored `Job.location`
+// display string use the union of `location` display strings, not `location`
+// alone.
 // ---------------------------------------------------------------------------
 
 function itemLocations(item: AshbyJob): string[] {
   const primary = item.location?.trim();
 
-  const secondary = (item.secondaryLocations ?? [])
-    // `secondaryLocations` is read off an unvalidated `as AshbyJob[]` cast
-    // (see `parseBoardResponseShape`), so a malformed entry isn't ruled out
-    // at the type level — guard the type, not just nullishness, same
-    // discipline as Lever's `allLocations` handling.
-    .filter((entry): entry is AshbySecondaryLocation => typeof entry === "object" && entry !== null)
+  const secondary = validSecondaryLocations(item)
     .map((entry) => entry.location?.trim())
     .filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 
   const combined = primary ? [primary, ...secondary] : secondary;
   return Array.from(new Set(combined));
+}
+
+function validSecondaryLocations(item: AshbyJob): AshbySecondaryLocation[] {
+  // `secondaryLocations` is read off an unvalidated `as AshbyJob[]` cast
+  // (see `parseBoardResponseShape`), so a malformed entry isn't ruled out
+  // at the type level — guard the type, not just nullishness, same
+  // discipline as Lever's `allLocations` handling.
+  return (item.secondaryLocations ?? []).filter(
+    (entry): entry is AshbySecondaryLocation => typeof entry === "object" && entry !== null,
+  );
+}
+
+/**
+ * Pulls `addressLocality`/`addressRegion`/`addressCountry` out of a
+ * `postalAddress`, trimmed and with blanks dropped. Any of the three can be
+ * absent even when `address`/`postalAddress` itself is present (e.g. a real
+ * "Remote (Canada)" secondary location's address carries only
+ * `addressCountry: "Canada"`, no locality or region at all).
+ */
+function postalAddressComponents(address: AshbyAddress | undefined): string[] {
+  const postal = address?.postalAddress;
+  if (!postal) return [];
+  return [postal.addressLocality, postal.addressRegion, postal.addressCountry]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+/**
+ * See finding 2c. Location *search* terms only — this is deliberately NOT
+ * what feeds the stored `Job.location` display string (that's still plain
+ * `itemLocations`, unchanged). Returns the union of every display-string
+ * location (`itemLocations`) and every structured `address.postalAddress`
+ * component, from both the primary `address` and every
+ * `secondaryLocations[].address`.
+ *
+ * Verified live (2026-08-22, 399 postings across ramp/linear/notion/vanta,
+ * `includeCompensation=true` — this endpoint also always returns `address`,
+ * no separate flag needed for it): 309 of 399 postings have at least one
+ * `address` component (on the primary address or a secondary's) that names
+ * a place absent from every `location`/`secondaryLocations[].location`
+ * display string on that same posting — e.g. real Ramp posting
+ * 34413f8d-...: `location: "New York, NY (HQ)"`, but its `address` resolves
+ * to `addressLocality: "New York City"`, a string that never appears in any
+ * display-string location on the posting. Filtering `location` display
+ * strings alone therefore silently misses real matches:
+ * `search({location:"New York City"})` returns 0 of 116 real matches with
+ * display strings alone, `"USA"` returns 0 of 182, `"Ontario"` returns 0 of
+ * 21, `"California"` returns 65 of 141 (address components catch the other
+ * 76 — see the sibling case below for why display strings still matter
+ * too). Exactly Lever's `allLocations` bug (a structured sibling carrying
+ * coverage the display string lacks) wearing a different field name, on a
+ * field this ticket explicitly asked to go looking for.
+ *
+ * This is a UNION, not a replacement, for the same reason Lever's `location`
+ * ∪ `allLocations` fix was a union and not a swap to `allLocations` alone:
+ * `location`/`secondaryLocations[].location` display strings carry real
+ * search value `address` doesn't — e.g. "California" matches 141 postings
+ * via `address` components but only 65 via display strings *combined*
+ * covers more than either side alone (every `address`-only match still adds
+ * signal `location` strings never had, and vice versa: a display string
+ * like "Remote (US)" has no address-component equivalent at all, since its
+ * `address` carries only `addressCountry: "United States"`, not the
+ * "Remote" qualifier a "remote" search term needs).
+ *
+ * The address data is measurably dirtier than the display-string data —
+ * real values seen include the misspelling "San Fransisco" (alongside the
+ * correctly-spelled "San Francisco" on other postings), "California " with
+ * a trailing space, and "USA"/"United States"/"UK"/"United Kingdom" all
+ * coexisting as country values for the same country. That's acceptable in a
+ * search haystack (a substring match against "California" still finds
+ * "California " once trimmed, and dirty-but-present beats absent), but per
+ * the project owner's explicit instruction on this finding, it does NOT
+ * belong in `Job.location`, the display string a user reads — trimming
+ * whitespace is one thing, silently editorializing "San Fransisco" into
+ * "San Francisco" for a stored, user-facing value is another, and this
+ * adapter does neither: `itemLocations` (feeding `Job.location`) never
+ * reads `address` at all.
+ */
+function itemLocationSearchTerms(item: AshbyJob): string[] {
+  const displayTerms = itemLocations(item);
+  const addressTerms = [
+    ...postalAddressComponents(item.address),
+    ...validSecondaryLocations(item).flatMap((entry) => postalAddressComponents(entry.address)),
+  ];
+  return Array.from(new Set([...displayTerms, ...addressTerms]));
 }
 
 // ---------------------------------------------------------------------------
@@ -514,7 +684,11 @@ function itemMatchesCriteria(
   }
   if (criteria.location) {
     const location = criteria.location.toLowerCase();
-    const locations = itemLocations(item).map((entry) => entry.toLowerCase());
+    // The full search haystack — display-string locations UNION structured
+    // address components — see `itemLocationSearchTerms`'s doc comment
+    // (finding 2c) for why display strings alone silently miss real
+    // matches. Deliberately NOT `itemLocations` alone.
+    const locations = itemLocationSearchTerms(item).map((entry) => entry.toLowerCase());
     if (!locations.some((entry) => entry.includes(location))) return false;
   }
   return true;
@@ -699,7 +873,13 @@ function mapPayType(item: AshbyJob): Job["payType"] | undefined {
   const tiers = item.compensation?.compensationTiers ?? [];
   for (const tier of tiers) {
     for (const component of tier.components ?? []) {
-      if (component.compensationType !== "Salary") continue;
+      // Case-insensitive, matching this file's own discipline everywhere
+      // else (`mapCommitment`, `mapLocationType` both lowercase first): all
+      // 399 real postings checked (2026-08-22) do use the exact-cased
+      // "Salary", so this isn't a live bug, but an exact-case comparison
+      // here would be the one place in this file departing from that
+      // discipline in exchange for zero real benefit.
+      if (component.compensationType?.trim().toLowerCase() !== "salary") continue;
       const interval = component.interval?.trim().toLowerCase() ?? "";
       return interval.includes("hour") ? "hourly" : "salary";
     }
