@@ -230,25 +230,29 @@ and the acceptance criteria are verified against the diff.
   satisfies the ticket's TypeScript-strictness requirement; this flag is
   beyond it. It would force a guard on every `jobs[0]`, `results[i]`,
   `scoresBySource[source]` — and this app is built on exactly those shapes.
-  Nicole has ~9 hours before the interview it's prep for; that time belongs
-  on RabbitMQ, Drizzle, and React, not on indexed-access ceremony. Revisit
-  once the core features exist and there's slack to spend on it.
+  Early effort belongs on RabbitMQ, Drizzle, and React, not on indexed-access
+  ceremony. Revisit once the core features exist and there's slack to spend
+  on it.
 
-### Learning constraint — read this before dispatching agents
+### Comprehension constraint — read this before dispatching agents
 
-Nicole has never written TypeScript and has no RabbitMQ experience, and is
-building this to prepare for interviews on exactly those technologies. **An
-impressive repo she cannot explain is the failure mode**, so the split is:
+The point of this project is not the repo. It is the ability to explain the
+repo. **Code the owner cannot defend is worse than code that does not
+exist** — it looks like an asset and behaves like a liability the first time
+someone asks a follow-up question. So the split is:
 
 - **Agents write** what does not need defending: scaffolding, config,
   docker-compose, test harnesses, additional source adapters once the first
   exists as a pattern, CI.
-- **Nicole writes** — or reads and modifies line by line — anything that maps to
-  a JD bullet: the RabbitMQ consumer with its retry and DLQ config, the Drizzle
-  schema and migrations, the match-scoring service, the main React components.
+- **The owner writes** — or reads and modifies line by line — anything load-
+  bearing to the design: the RabbitMQ consumer with its retry and DLQ config,
+  the Drizzle schema and migrations, the match-scoring service, the main React
+  components.
 
-Tickets carry an `owner:` label (`owner:nicole` or `owner:agent`) to record which
-side of that line they fall on. Do not let agent throughput outrun comprehension.
+Tickets carry an `owner:` label (`owner:nicole` or `owner:agent`) to record
+which side of that line they fall on. **Do not let agent throughput outrun
+comprehension.** Throughput is the easy part; it is not the constraint worth
+optimizing.
 
 ## Model Roster and Escalation Ladder
 

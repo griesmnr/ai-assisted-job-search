@@ -133,7 +133,7 @@ const BACKSLASH_SILENT_TEXT = "Skills: regex \\101 and \\\\d+";
 // `\U` is not a recognized bytea escape at all — under the old `::bytea`
 // cast this made the backfill UPDATE throw outright (a whole different
 // failure mode from the silent one above, and worth keeping distinct).
-const BACKSLASH_HARD_ERROR_TEXT = "Path C:\\Users\\nicole\\resume.docx";
+const BACKSLASH_HARD_ERROR_TEXT = "Path C:\\Users\\example\\resume.docx";
 // Two duplicate rows, both already scored against the SAME job — the
 // "does the merge even happen, and does it not silently drop data"
 // baseline case.

@@ -64,7 +64,7 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 function makeSource(fetchImpl: typeof fetch) {
   return new UsajobsSource({
     apiKey: "test-api-key",
-    userAgent: "nicole@griesmeyer.org",
+    userAgent: "jobsearch@example.com",
     fetchImpl,
   });
 }
@@ -140,7 +140,7 @@ describe("UsajobsSource — mapping against a real captured response", () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
     const source = new UsajobsSource({
       apiKey: "super-secret-key",
-      userAgent: "nicole@griesmeyer.org",
+      userAgent: "jobsearch@example.com",
       fetchImpl,
     });
 
@@ -151,7 +151,7 @@ describe("UsajobsSource — mapping against a real captured response", () => {
     expect(url.searchParams.get("Fields")).toBe("Full");
     const headers = init.headers as Record<string, string>;
     expect(headers["Authorization-Key"]).toBe("super-secret-key");
-    expect(headers["User-Agent"]).toBe("nicole@griesmeyer.org");
+    expect(headers["User-Agent"]).toBe("jobsearch@example.com");
     expect(url.toString()).not.toContain("super-secret-key");
   });
 });
@@ -394,7 +394,7 @@ describe("UsajobsSource — error classification", () => {
 describe("createUsajobsSourceFromEnv", () => {
   it("throws when USAJOBS_API_KEY is missing", () => {
     expect(() =>
-      createUsajobsSourceFromEnv({ USAJOBS_USER_AGENT: "nicole@griesmeyer.org" }),
+      createUsajobsSourceFromEnv({ USAJOBS_USER_AGENT: "jobsearch@example.com" }),
     ).toThrow(/USAJOBS_API_KEY/);
   });
 
@@ -407,7 +407,7 @@ describe("createUsajobsSourceFromEnv", () => {
   it("constructs a source when both are present", () => {
     const source = createUsajobsSourceFromEnv({
       USAJOBS_API_KEY: "abc123",
-      USAJOBS_USER_AGENT: "nicole@griesmeyer.org",
+      USAJOBS_USER_AGENT: "jobsearch@example.com",
     });
     expect(source.dataSource).toBe("usajobs");
   });
@@ -415,7 +415,7 @@ describe("createUsajobsSourceFromEnv", () => {
   it("never exposes the credentials via JSON.stringify or enumeration", () => {
     const source = createUsajobsSourceFromEnv({
       USAJOBS_API_KEY: "super-secret-key",
-      USAJOBS_USER_AGENT: "nicole@griesmeyer.org",
+      USAJOBS_USER_AGENT: "jobsearch@example.com",
     });
     expect(JSON.stringify(source)).not.toContain("super-secret-key");
     expect(Object.keys(source)).not.toContain("apiKey");
