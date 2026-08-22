@@ -1,12 +1,20 @@
 /**
- * Checks whether a given employer hosts on Greenhouse, without guessing.
+ * Checks whether a given employer hosts on Greenhouse, without guessing —
+ * and whether it's worth adding, without waiting for a live run to find out.
  *
  * Ticket b723fb9's context: hand-picking board tokens by guessing at a
  * company's careers-page URL wastes slots on boards that 404 (7 of 25
  * candidates checked before this ticket: Costco, PACCAR, Alaska Airlines,
  * Philips, Starbucks, Nordstrom, Expeditors — all Workday/iCIMS, not
- * Greenhouse). This script makes "does employer X host on Greenhouse"
- * a one-command answer instead of trial-and-error against demo-match.ts.
+ * Greenhouse). Existing on Greenhouse is necessary but not sufficient,
+ * though: this ticket's own review found 13 of the 25 configured tokens
+ * report real, sizeable boards (tanium 45, elastic 249, datadog 448, ...)
+ * that contribute ZERO postings after demo-match.ts's title/location
+ * filter. A version of this script that only answered "does token X
+ * resolve" would have recommended all thirteen. So this script runs the
+ * real `filterSoftwareEngineeringJobs` filter too, and reports both
+ * numbers — matching `describeBoardOutcome`'s wording in demo-match.ts, so
+ * a candidate's report and a real run's report read the same way.
  *
  * Method: Greenhouse's public Job Board API
  * (https://developers.greenhouse.io/job-board.html) is unauthenticated and
@@ -25,28 +33,45 @@
  *                            employer is not on Greenhouse (they may be on
  *                            Workday, iCIMS, Lever, Ashby, ...).
  *   HTTP 200, jobs: []   -> a real board that currently has zero postings.
- *   HTTP 200, jobs: [N]  -> a real board with N postings right now.
+ *   HTTP 200, jobs: [N]  -> a real board with N postings; also reports how
+ *                            many of the N would survive
+ *                            filterSoftwareEngineeringJobs.
  *
- * This mirrors exactly what `GreenhouseSource#search` does per token (see
+ * This mirrors what `GreenhouseSource#search` does per token (see
  * ../sources/greenhouse.ts), minus `content=true` — this script only needs
- * the posting count, not full descriptions, so it fetches faster.
+ * title/location/company, not full descriptions, so it fetches faster.
  *
  * Usage:
  *   npx tsx apps/api/src/scripts/check-greenhouse-board.ts token1 token2 ...
  *
- * Always exits 0: a 404 is a useful, expected result, not a script failure.
- * Network errors for an individual token are reported inline and do not
- * stop the rest of the batch.
+ * A completed run always exits 0 — a 404, a fetch error, or a board whose
+ * postings all fail the filter are useful, expected results for an
+ * individual token, not script failures, and none of them stop the rest of
+ * the batch. Exits 1 only for a usage error (no tokens given) or an
+ * unhandled exception in `main()` itself.
  */
 import { pathToFileURL } from "node:url";
+import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
 
 const BASE_URL = "https://boards-api.greenhouse.io/v1/boards";
-const TIMEOUT_MS = 10_000;
+export const TIMEOUT_MS = 10_000;
+
+type RawGreenhouseJob = {
+  title?: string;
+  company_name?: string;
+  location?: { name?: string };
+};
 
 export type BoardCheckResult =
   | { token: string; status: "not-found" }
   | { token: string; status: "error"; message: string }
-  | { token: string; status: "ok"; postingCount: number; companyName: string | undefined };
+  | {
+      token: string;
+      status: "ok";
+      postingCount: number;
+      survivingCount: number;
+      companyName: string | undefined;
+    };
 
 export async function checkBoard(
   token: string,
@@ -92,17 +117,30 @@ export async function checkBoard(
 
   const jobs =
     typeof body === "object" && body !== null && Array.isArray((body as { jobs?: unknown }).jobs)
-      ? ((body as { jobs: Array<{ company_name?: string }> }).jobs ?? [])
+      ? ((body as { jobs: RawGreenhouseJob[] }).jobs ?? [])
       : undefined;
 
   if (jobs === undefined) {
     return { token, status: "error", message: "response did not have a jobs array" };
   }
 
+  // Built straight from the raw list response — title/location/company_name
+  // are present without needing `content=true` (see this file's top-of-file
+  // comment) — and run through the SAME filter demo-match.ts applies to a
+  // real search, so "would this token have been worth adding" is answered
+  // with the actual filter, not a guess about what it might do.
+  const filterable = jobs.map((j) => ({
+    title: j.title ?? "",
+    location: j.location?.name,
+    company: j.company_name ?? "",
+  }));
+  const survivingCount = filterSoftwareEngineeringJobs(filterable).length;
+
   return {
     token,
     status: "ok",
     postingCount: jobs.length,
+    survivingCount,
     companyName: jobs[0]?.company_name,
   };
 }
@@ -115,7 +153,8 @@ function formatResult(result: BoardCheckResult): string {
       return `${result.token.padEnd(20)}  ERROR — ${result.message}`;
     case "ok":
       return (
-        `${result.token.padEnd(20)}  ${String(result.postingCount).padStart(4)} posting(s)` +
+        `${result.token.padEnd(20)}  ${String(result.postingCount).padStart(4)} posting(s), ` +
+        `${result.survivingCount} would survive filtering` +
         (result.companyName ? `  (${result.companyName})` : "")
       );
   }

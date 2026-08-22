@@ -155,11 +155,9 @@ export class GreenhouseSource implements JobSource {
         // (typo, renamed company, board taken down) — it is a property of
         // the token, not of the Greenhouse API as a whole, and it will
         // return the identical 404 on every future request (permanent,
-        // matching UnexpectedStatusError's non-retryable default). Unlike
-        // a 429/5xx/network failure — which likely affects every token
-        // equally and is a reason to stop and surface the error — one bad
+        // matching UnexpectedStatusError's non-retryable default). One bad
         // token among many configured ones shouldn't discard the jobs
-        // already collected from the healthy boards. So: skip this token
+        // already collected from the healthy boards, so: skip this token
         // and keep going, rather than aborting the whole search().
         if (err instanceof UnexpectedStatusError && err.status === 404) {
           tokenOutcomes.push({
@@ -167,23 +165,47 @@ export class GreenhouseSource implements JobSource {
             status: "not-found",
             postingCount: 0,
             companyName: undefined,
+            message: undefined,
+            skippedCount: 0,
+          });
+          continue;
+        }
+        // A `TransientSourceError` (timeout, network failure, or a 5xx —
+        // see #fetchBoard/parseResponse) is, like a 404, a property of
+        // THIS request, not of the whole batch: real captured timings on
+        // the widened token list (ticket b723fb9's review) show some
+        // boards taking 5-8 real seconds against a 15s per-token timeout
+        // — a single slow/flaky board among 25 configured ones is a
+        // meaningfully more likely event than it was among the original 4,
+        // and aborting the entire search() on it would discard every job
+        // already fetched from every healthy board before it (tens of MB
+        // of already-paid-for work). Isolate it exactly like 404, but as
+        // its own "error" status: unlike "not-found", a retry of the exact
+        // same request MAY succeed next time.
+        //
+        // Every other error kind (auth/forbidden/rate-limited/malformed
+        // response/unmapped 4xx) still aborts the whole search(): a 401 or
+        // 403 is very likely to recur identically on every remaining
+        // token (no point burning through the rest to find out), a 429
+        // is a signal to stop hammering the endpoint rather than keep
+        // going, and a malformed response means Greenhouse's schema
+        // changed under us, which should fail loudly, not silently
+        // degrade into a per-token status buried in a report.
+        if (err instanceof TransientSourceError) {
+          tokenOutcomes.push({
+            token,
+            status: "error",
+            postingCount: 0,
+            companyName: undefined,
+            message: err.message,
+            skippedCount: 0,
           });
           continue;
         }
         throw err;
       }
 
-      // Recorded before criteria filtering: `postingCount` (and the
-      // "empty" vs "ok" status it drives) describes the board itself, not
-      // what a particular search narrowed it down to — see the doc
-      // comment on `TokenOutcome`.
-      tokenOutcomes.push({
-        token,
-        status: data.jobs.length === 0 ? "empty" : "ok",
-        postingCount: data.jobs.length,
-        companyName: data.jobs[0]?.company_name,
-      });
-
+      let tokenSkippedCount = 0;
       for (const item of data.jobs) {
         if (!itemMatchesCriteria(item, criteria)) continue;
         const result = normalizeItem(item);
@@ -191,8 +213,24 @@ export class GreenhouseSource implements JobSource {
           jobs.push(result.job);
         } else {
           skipped.push({ externalId: result.externalId, reason: result.reason });
+          tokenSkippedCount++;
         }
       }
+
+      // Recorded before criteria filtering: `postingCount` (and the
+      // "empty" vs "ok" status it drives) describes the board itself, not
+      // what a particular search narrowed it down to — see the doc
+      // comment on `TokenOutcome`. `companyName` is read off the FIRST raw
+      // record only — see the WARNING on `TokenOutcome.companyName` for
+      // why a caller must not treat this as a stable per-token key.
+      tokenOutcomes.push({
+        token,
+        status: data.jobs.length === 0 ? "empty" : "ok",
+        postingCount: data.jobs.length,
+        companyName: data.jobs[0]?.company_name,
+        message: undefined,
+        skippedCount: tokenSkippedCount,
+      });
     }
 
     const total = jobs.length + skipped.length;

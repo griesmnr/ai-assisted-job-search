@@ -80,23 +80,67 @@ export type TokenStatus =
    * that is what `postingCount` (raw, pre-filter) is for; a caller that
    * also tracks post-filter survivors is expected to report the two
    * numbers side by side. */
-  | "ok";
+  | "ok"
+  /** The fetch for this token failed for a reason that is NOT "the token
+   * doesn't exist" — a timeout, a network error, a 5xx, a malformed
+   * response, etc. Distinct from "not-found": this token may well be a
+   * real, healthy board; this run just couldn't confirm that. See
+   * `GreenhouseSource#search`'s per-error-kind isolation policy for which
+   * failures land here vs. abort the whole `search()` call. */
+  | "error";
 
 export type TokenOutcome = {
   /** The token/slug as configured — e.g. a Greenhouse board token. */
   token: string;
   status: TokenStatus;
   /** Raw posting count for this token, before any `SearchCriteria` or
-   * caller-side `filter` narrowing. Always `0` for "not-found" and
-   * "empty". */
+   * caller-side `filter` narrowing. Always `0` for "not-found", "empty",
+   * and "error". */
   postingCount: number;
-  /** The employer's own display name, as self-reported in the token's
-   * response, when available. `undefined` for "not-found" (nothing was
-   * fetched) and possible for "empty" (nothing to read a name from).
-   * Lets a caller correlate post-filter survivors — which carry
-   * `NormalizedJob.company`, not the raw token — back to the token that
-   * produced them. */
+  /**
+   * The employer's own display name, as self-reported by the FIRST
+   * posting in this token's response, when available. `undefined` for
+   * "not-found" and "error" (nothing was successfully fetched) and
+   * possible for "empty" (nothing to read a name from).
+   *
+   * WARNING, from ticket b723fb9's review: this is free text an employer
+   * typed into a form field, not a stable key, and a caller that
+   * correlates post-filter survivors back to a token by matching this
+   * name against `NormalizedJob.company` (as `buildBoardCoverage` in
+   * demo-match.ts does) can silently misattribute:
+   *   - two different tokens can self-report the identical name (a
+   *     double-count: both entries claim the same survivors)
+   *   - the FIRST posting's name can differ from the name on the
+   *     postings that actually matched (a board with mixed casing/legal-
+   *     entity-suffix listings, e.g. "Acme" vs "Acme, Inc.") — the
+   *     correlation then silently drops those survivors to zero
+   *   - `undefined` here (missing `company_name` on the first item) drops
+   *     every one of that token's survivors to zero, even if all of them
+   *     have a `company` set
+   * None of this fires against the 25 tokens configured today (verified:
+   * `sum(survivedFilter) === filtered.length` holds), but it is a latent
+   * hazard, not a guarantee — `buildBoardCoverage` asserts that invariant
+   * at runtime and warns rather than trusting the correlation silently.
+   */
   companyName: string | undefined;
+  /** Present only when `status` is `"error"` — the underlying failure's
+   * message, for a human deciding whether to retry. `undefined` for every
+   * other status. */
+  message: string | undefined;
+  /**
+   * How many of THIS token's own raw postings failed normalization and
+   * landed in `SourceSearchResult.skipped`. Always `0` for "not-found",
+   * "empty", and "error" (nothing was normalized).
+   *
+   * Exists because `SourceSearchResult.skipRate` is aggregated across
+   * every configured token: at 4 boards, one board that failed to
+   * normalize entirely gave a skipRate of ~0.25 — well above any sane
+   * alert threshold. At 25 boards the identical single-board failure
+   * dilutes to ~0.04, which reads as healthy. Widening the token list
+   * (this ticket) makes that dilution worse, not better, so a per-token
+   * count is what preserves the original signal `skipRate` exists for.
+   */
+  skippedCount: number;
 };
 
 /**
