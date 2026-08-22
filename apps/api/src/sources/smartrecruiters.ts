@@ -61,17 +61,33 @@ import {
 //
 //   Location: https://jobs.smartrecruiters.com
 //
-// exactly and only that URL (no path, no query string) — verified
-// identical across Ubisoft, IKEA, Publicis, McDonalds, Skechers, and every
-// nonsense slug tried, never once observed for a real customer even when
-// that customer's own postings total is 0. See `#checkCompanyValidity`.
+// verified identical (host `jobs.smartrecruiters.com`, empty path) across
+// Ubisoft, IKEA, Publicis, McDonalds, Skechers, and every nonsense slug
+// tried, plus case/scheme/query variants probed on a later adversarial
+// review pass, never once observed for a real customer even when that
+// customer's own postings total is 0. See `#checkCompanyValidity`.
+//
+// Matching is on hostname + empty path, not an exact string: an earlier
+// version of this check compared the whole redirect URL against one
+// literal string, which silently classified a tracking query string
+// (`?utm_source=...`) or an `http://` scheme on that SAME homepage as
+// "valid" — a real gap an adversarial review caught (see `#checkCompany
+// Validity`'s own doc comment, Fix E). Anything that is a 3xx redirect but
+// does NOT match that exact host+empty-path pattern is treated as
+// "unknown", not "valid" — this check fails toward "I don't know," never
+// toward "valid," because the entire point of this signal is to never let
+// an unrecognized identifier be silently trusted.
 //
 // This check costs one extra HTTP request, but only in the ambiguous case:
 // it is skipped entirely for any company whose first postings page comes
 // back with totalFound > 0, since a non-empty result already proves the
 // identifier is real. It only fires when the postings API alone can't tell
 // broken from empty — which is exactly the situation this ticket says must
-// never be resolved by silently returning `[]`.
+// never be resolved by silently returning `[]`. A companion check (Fix B
+// below) covers the other half of that same trap: a company whose first
+// page reports totalFound > 0 but whose `content` array is empty anyway —
+// the postings API asserting real postings exist while this adapter would
+// otherwise report a clean, silent zero.
 //
 // ---------------------------------------------------------------------------
 // FINDING 2 — the list endpoint carries NO description text, at all, ever
@@ -102,10 +118,12 @@ import {
 // A detail response's `jobAd.sections` carries up to five keys:
 // `companyDescription`, `jobDescription`, `qualifications`,
 // `additionalInformation`, and an optional `videos` (a list of YouTube
-// URLs, not text — deliberately excluded). A mapper that reads only
-// `jobDescription` — the section whose name most resembles "the
-// description" — silently drops `qualifications`, which is where the
-// actual requirements live (verified on a real posting,
+// URLs, not text — deliberately excluded; enumerated across 160 live
+// postings on three companies during adversarial review — exactly these
+// five, no sixth). A mapper that reads only `jobDescription` — the section
+// whose name most resembles "the description" — silently drops
+// `qualifications`, which is where the actual requirements live (verified
+// on a real posting,
 // __fixtures__/smartrecruiters-real-response-bosch-detail-ai-research-scientist.json:
 // "Ph.D. in Computer Science", "Python, C++", "CVPR, ICCV, ECCV" all live
 // ONLY in `qualifications`, nowhere in `jobDescription`). This is the same
@@ -115,6 +133,27 @@ import {
 // one; see this file's test suite for a demonstration that a
 // `jobDescription`-only implementation fails the exact assertion a full
 // implementation passes.
+//
+// CORRECTION (adversarial review, round 1) — the seventh instance of this
+// project's own recurring bug class, found in this very file: the first
+// version of this test suite proved `qualifications` reaches `description`
+// (the section this adapter went hunting for) but never once asserted
+// `additionalInformation` does — deleting it from `buildDescription` left
+// all 29 tests green. That is NOT a minor section: measured across 120
+// live postings during review, `additionalInformation` accounts for a mean
+// 20.8% of a posting's assembled description text (median 20.5%) —
+// LARGER than `qualifications`'s own mean contribution (11.7%, median
+// 0.3% — most postings' qualifications sections are short bullet lists;
+// most postings' additionalInformation sections are long). 32 of those 120
+// postings carry pay figures, work-model statements ("Hybrid, 3 days/week
+// in office"), or visa/sponsorship terms found in NO other section. The
+// lesson generalizes past this one field: testing the section you went
+// looking for and leaving its larger sibling unguarded is exactly how a
+// real regression (someone "simplifying" `buildDescription` down to three
+// sections) would sail through this suite untouched. See this file's test
+// suite for a dedicated `additionalInformation` assertion and its own
+// failing-stub demonstration, matching the one already in place for
+// `qualifications`.
 //
 // ---------------------------------------------------------------------------
 // FINDING 4 — structured fields that ARE trustworthy, and the one that isn't
@@ -225,9 +264,10 @@ const DEFAULT_MAX_PAGES = 500;
  * measurement happened to show. */
 const DEFAULT_DETAIL_CONCURRENCY = 5;
 
-/** The exact, verified redirect target SmartRecruiters sends unrecognized
- * `careers.smartrecruiters.com/{companyId}` requests to. See Finding 1. */
-const UNRECOGNIZED_COMPANY_REDIRECT = "https://jobs.smartrecruiters.com";
+/** The exact, verified redirect hostname SmartRecruiters sends unrecognized
+ * `careers.smartrecruiters.com/{companyId}` requests to (with an empty
+ * path — see `#checkCompanyValidity`, Fix E). See Finding 1. */
+const UNRECOGNIZED_COMPANY_HOSTNAME = "jobs.smartrecruiters.com";
 
 export type SmartRecruitersConfig = {
   /** One SmartRecruiters company identifier per configured employer, e.g.
@@ -413,6 +453,30 @@ export class SmartRecruitersSource implements JobSource {
       page += 1;
     }
 
+    // FIX (adversarial review, round 1): `firstPage.totalFound > 0` got us
+    // into this branch, but that alone doesn't guarantee `summaries` ended
+    // up non-empty — a first page reporting `totalFound: 500` with an
+    // empty `content` array (a malformed/inconsistent response; `summaries`
+    // can only ever grow from here, never shrink, so this is the only way
+    // it can still be empty at this point) would otherwise fall straight
+    // through to `{jobs: [], skipped: []}` — a clean, silent empty result
+    // that looks identical to a legitimately quiet board, while the API
+    // itself is asserting real postings exist. This is Finding 1's trap
+    // again, verbatim: the API's own totalFound field says "not empty" and
+    // this adapter would have said "empty" anyway. Surfaced as a skip
+    // instead, same as an unrecognized company identifier.
+    if (summaries.length === 0) {
+      return {
+        jobs: [],
+        skipped: [
+          {
+            externalId: undefined,
+            reason: `SmartRecruiters reported totalFound=${firstPage.totalFound} for company "${company}" but the postings list returned no postings — treating this as an inconsistent/malformed response, not a confirmed empty board`,
+          },
+        ],
+      };
+    }
+
     // criteria.location is safe to apply here, before the detail fetch:
     // Finding 5 found no second location field anywhere on this API (no
     // Lever-style `allLocations`), so nothing is at risk of being missed by
@@ -445,10 +509,27 @@ export class SmartRecruitersSource implements JobSource {
   /**
    * Fetches full detail for one posting and either normalizes it into a
    * `Job`, records why it was skipped, or reports it as filtered out by
-   * `criteria.keyword`. Never throws — every failure mode (detail fetch
-   * error, structural mapping failure) is caught here and turned into a
-   * per-record result, so one bad posting can never take down the rest of
-   * a company's search, however many thousands of postings that company has.
+   * `criteria.keyword`. Never throws — every failure mode is caught here
+   * and turned into a per-record result, so one bad posting can never take
+   * down the rest of a company's search, however many thousands of
+   * postings that company has.
+   *
+   * FIX (adversarial review, round 1): the original version of this method
+   * only wrapped `#fetchDetail` in try/catch — `buildDescription`, the
+   * keyword filter, and `normalizeItem` all ran OUTSIDE it. A real (if
+   * malformed) response with a non-string `name` field threw a raw
+   * `TypeError` out of `normalizeItem` (`.trim is not a function` —
+   * optional chaining only guards null/undefined, not a wrong type, the
+   * same lesson lever.ts's `itemLocations` comment already records for
+   * exactly this class of bug) that propagated past this function, past
+   * `mapWithConcurrency`, out of `#searchCompany`, and was only caught by
+   * `search()`'s per-COMPANY try/catch — discarding every other posting
+   * already fetched for that company along with it. On BoschGroup that's a
+   * blast radius of thousands of postings and thousands of already-spent
+   * HTTP requests for one malformed record. The entire body below —
+   * detail fetch, description assembly, filtering, and normalization — is
+   * now inside one try/catch so a thrown error anywhere in this per-record
+   * pipeline degrades to a single skip, never a company-wide loss.
    */
   async #fetchAndNormalize(
     company: string,
@@ -462,33 +543,34 @@ export class SmartRecruitersSource implements JobSource {
     const externalId =
       typeof summary.id === "string" && summary.id.length > 0 ? summary.id : undefined;
 
-    let detail: SmartRecruitersPostingDetail;
     try {
-      detail = await this.#fetchDetail(company, summary.id);
+      const detail = await this.#fetchDetail(company, summary.id);
+      const fullDescription = buildDescription(detail);
+
+      if (criteria.keyword) {
+        const keyword = criteria.keyword.toLowerCase();
+        // typeof-guarded, not just `?.` — optional chaining alone would
+        // still throw on a non-string `name` (e.g. a malformed `name: 12345`
+        // on the real API), the exact failure mode this fix closes.
+        const title = typeof summary.name === "string" ? summary.name.toLowerCase() : "";
+        if (!title.includes(keyword) && !fullDescription.toLowerCase().includes(keyword)) {
+          return { kind: "filtered-out" };
+        }
+      }
+
+      const result = normalizeItem(summary, detail, company, fullDescription);
+      if (result.ok) return { kind: "job", job: result.job };
+      return { kind: "skip", record: { externalId: result.externalId, reason: result.reason } };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
         kind: "skip",
         record: {
           externalId,
-          reason: `failed to fetch full posting detail (needed for description and apply link): ${message}`,
+          reason: `failed to fetch or normalize full posting detail: ${message}`,
         },
       };
     }
-
-    const fullDescription = buildDescription(detail);
-
-    if (criteria.keyword) {
-      const keyword = criteria.keyword.toLowerCase();
-      const title = summary.name?.toLowerCase() ?? "";
-      if (!title.includes(keyword) && !fullDescription.toLowerCase().includes(keyword)) {
-        return { kind: "filtered-out" };
-      }
-    }
-
-    const result = normalizeItem(summary, detail, company, fullDescription);
-    if (result.ok) return { kind: "job", job: result.job };
-    return { kind: "skip", record: { externalId: result.externalId, reason: result.reason } };
   }
 
   async #fetchPostingsPage(company: string, offset: number): Promise<SmartRecruitersPostingsPage> {
@@ -579,13 +661,59 @@ export class SmartRecruitersSource implements JobSource {
       return { status: "valid" };
     }
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location")?.trim().replace(/\/$/, "");
-      if (location === UNRECOGNIZED_COMPANY_REDIRECT) {
+      const location = response.headers.get("location");
+      if (!location) {
+        return { status: "unknown", reason: "redirect (3xx) response had no Location header" };
+      }
+
+      let target: URL;
+      try {
+        target = new URL(location, url);
+      } catch {
+        return {
+          status: "unknown",
+          reason: `redirect (3xx) Location header was not a parseable URL: "${location}"`,
+        };
+      }
+
+      // FIX (adversarial review, round 1): this used to be an exact string
+      // match against the one literal redirect URL observed during
+      // development (`location === "https://jobs.smartrecruiters.com"`),
+      // with anything else assumed "valid". That silently misclassified
+      // three real variants of the SAME known-bad redirect as valid: a
+      // tracking query string appended to that exact homepage
+      // (`?utm_source=careers`), a plain-`http://` scheme instead of
+      // `https://`, and a different smartrecruiters.com host entirely
+      // (`www.smartrecruiters.com`) that isn't a company's own domain
+      // either. If SmartRecruiters ever adds a query param to that
+      // redirect or the exact scheme changes, every bogus company
+      // identifier would silently degrade back to "valid" — exactly the
+      // failure this whole ticket exists to prevent.
+      //
+      // Matching is now host + empty-path only (scheme- and
+      // query-agnostic, so the http:// and ?utm_source= variants of the
+      // known-bad target are still caught as invalid). More importantly:
+      // anything that does NOT match this exact pattern is no longer
+      // assumed "valid" by default — it falls through to "unknown"
+      // instead, the same outcome as a check that couldn't complete at
+      // all. This is deliberately conservative in both directions,
+      // including for a real company whose careers page happens to
+      // redirect to a target this adapter doesn't specifically recognize
+      // (e.g. a genuine custom-domain redirect like BoschGroup's
+      // jobs.bosch.com, IF that company's postings ever went to zero) —
+      // that case now reports "unknown" (surfaced as a skip, not silently
+      // trusted) rather than "valid". Fail toward "I don't know," never
+      // toward "valid."
+      const isKnownUnrecognizedRedirect =
+        target.hostname === UNRECOGNIZED_COMPANY_HOSTNAME &&
+        (target.pathname === "" || target.pathname === "/");
+      if (isKnownUnrecognizedRedirect) {
         return { status: "invalid" };
       }
-      // Redirects somewhere else entirely (a company's own custom domain,
-      // e.g. jobs.bosch.com) -> a real, verified customer.
-      return { status: "valid" };
+      return {
+        status: "unknown",
+        reason: `career-site check redirected to a target ("${location}") that doesn't match the known "unrecognized company" pattern (${UNRECOGNIZED_COMPANY_HOSTNAME} with an empty path) — not assumed valid without positive confirmation`,
+      };
     }
     return {
       status: "unknown",
@@ -780,8 +908,27 @@ function parsePostingDetailShape(
 
 function summaryMatchesLocation(summary: SmartRecruitersPostingSummary, location: string): boolean {
   const needle = location.toLowerCase();
-  const haystack = summary.location?.fullLocation?.toLowerCase() ?? "";
+  // typeof-guarded: this runs inside a synchronous `.filter()` in
+  // `#searchCompany`, OUTSIDE any per-record try/catch — a throw here
+  // (e.g. from `?.toLowerCase()` on a non-string `fullLocation`, the same
+  // class of bug `#fetchAndNormalize`'s doc comment describes) would abort
+  // the whole `.filter()` call and lose every summary for the company, not
+  // just the one malformed record. A malformed location degrades to "no
+  // match" rather than a crash.
+  const raw = summary.location?.fullLocation;
+  const haystack = typeof raw === "string" ? raw.toLowerCase() : "";
   return haystack.includes(needle);
+}
+
+/** Returns `value` trimmed if it's a non-empty string, `undefined`
+ * otherwise — including when `value` isn't a string at all. Optional
+ * chaining (`value?.trim()`) only guards null/undefined, not a wrong
+ * runtime type; see `#fetchAndNormalize`'s doc comment for why that
+ * distinction matters here specifically. */
+function asTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -791,9 +938,24 @@ function summaryMatchesLocation(summary: SmartRecruitersPostingSummary, location
 // `jobAd.sections.*.text` markup is single-encoded ordinary HTML (real
 // `<p>`/`<ul>`/`<strong>` tags directly, with only the markup's own
 // entities encoded — e.g. `&#xa0;` for a non-breaking space) — confirmed
-// against every real detail fixture captured for this adapter — so this
-// uses `doubleEncoded: false` (the shared helper's default), the same
-// pipeline as Lever and unlike Greenhouse's doubly-encoded `content`.
+// against every real detail fixture captured for this adapter, and
+// independently re-confirmed across 120 live postings during adversarial
+// review (real `<tag>`s, only `&#xa0;`/`&amp;` entities, zero literal
+// `&lt;`/`&gt;` in body prose anywhere) — so this uses `doubleEncoded:
+// false` (the shared helper's default), the same pipeline as Lever and
+// unlike Greenhouse's doubly-encoded `content`.
+//
+// That real-data finding is also exactly why flipping this flag to `true`
+// was silently green against all 29 tests in the first version of this
+// suite: none of the real fixtures contain a literal `&lt;`/`&gt;` in body
+// text, the one case where getting `doubleEncoded` backwards corrupts
+// content instead of just leaving stray markup behind (see html.test.ts's
+// own top-of-file comment — this is the identical lesson, previously
+// pinned only for greenhouse.ts/lever.ts's call sites, not this one). The
+// test suite now pins this call site specifically: a real `&amp;`/`&#xa0;`
+// round-trip from a committed fixture, plus a synthetic-but-realistic
+// `&lt;`/`&gt;`-in-prose case (the discriminating input real data doesn't
+// currently contain) that fails if this flag is ever flipped.
 // ---------------------------------------------------------------------------
 
 function buildDescription(detail: SmartRecruitersPostingDetail): string {
@@ -843,14 +1005,17 @@ function normalizeItem(
     return { ok: false, externalId: undefined, reason: "missing id" };
   }
 
-  const title = (detail.name ?? summary.name)?.trim();
+  // `asTrimmedString`, not `?.trim()` — optional chaining only guards
+  // null/undefined, not a wrong runtime type. See `#fetchAndNormalize`'s
+  // doc comment for the concrete failure this closes.
+  const title = asTrimmedString(detail.name) ?? asTrimmedString(summary.name);
   if (!title) {
-    return { ok: false, externalId, reason: "missing name (title)" };
+    return { ok: false, externalId, reason: "missing or non-string name (title)" };
   }
 
-  const company_ = (detail.company?.name ?? summary.company?.name)?.trim();
+  const company_ = asTrimmedString(detail.company?.name) ?? asTrimmedString(summary.company?.name);
   if (!company_) {
-    return { ok: false, externalId, reason: "missing company.name" };
+    return { ok: false, externalId, reason: "missing or non-string company.name" };
   }
 
   // Full description is required — Finding 2: a posting that genuinely has

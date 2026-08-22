@@ -179,7 +179,17 @@ describe("SmartRecruitersSource — distinguishing an unrecognized company from 
     expect(skipRate).toBe(0);
   });
 
-  it("also recognizes a company whose careers page redirects to its own custom domain (not the generic SmartRecruiters homepage) as valid", async () => {
+  // FIX E (adversarial review, round 1): a redirect to a custom domain
+  // (e.g. BoschGroup -> jobs.bosch.com) is a REAL signal a real company
+  // sends, but this adapter now treats it as "unknown" rather than "valid"
+  // — see `#checkCompanyValidity`'s doc comment for why: trusting ANY
+  // non-matching redirect target as proof of validity is the same
+  // over-trusting mistake as the exact-string bug this fix closes, just
+  // with the polarity flipped (trusting too much of "not the known-bad
+  // pattern" instead of too little). "Unknown" is still surfaced as a
+  // skip, not silently swallowed as a clean empty result — it just no
+  // longer claims a confidence this adapter doesn't actually have.
+  it("a redirect to a company's own custom domain is surfaced as 'unknown', not silently trusted as 'valid' (deliberately conservative — see Fix E)", async () => {
     const fetchImpl = makeFetch({
       postings: {
         BoschGroup: () => jsonResponse({ offset: 0, limit: 100, totalFound: 0, content: [] }),
@@ -191,9 +201,72 @@ describe("SmartRecruitersSource — distinguishing an unrecognized company from 
     const { jobs, skipped, skipRate } = await source.search({});
 
     expect(jobs).toHaveLength(0);
-    expect(skipped).toHaveLength(0);
-    expect(skipRate).toBe(0);
+    expect(skipped).toHaveLength(1);
+    expect(skipRate).toBe(1);
+    expect(skipped[0]?.reason).toMatch(/doesn't match the known "unrecognized company" pattern/);
   });
+
+  // Redirect variants that ARE the known-bad target, just with a scheme or
+  // query string SmartRecruiters could plausibly add later — host+path
+  // matching is deliberately scheme/query-agnostic so these stay
+  // confidently "invalid" (not merely "unknown"), closing the two bypasses
+  // an adversarial review found in the original exact-string match.
+  it.each([
+    ["an http:// scheme on the known-bad homepage", "http://jobs.smartrecruiters.com"],
+    [
+      "a tracking query string on the known-bad homepage",
+      "https://jobs.smartrecruiters.com?utm_source=careers",
+    ],
+  ])(
+    "redirect variant '%s' is still confidently flagged invalid, not merely unknown",
+    async (_label, location) => {
+      const fetchImpl = makeFetch({
+        postings: {
+          SomeCo: () => jsonResponse({ offset: 0, limit: 100, totalFound: 0, content: [] }),
+        },
+        careers: {
+          SomeCo: () => new Response(null, { status: 302, headers: { location } }),
+        },
+      });
+      const source = makeSource(fetchImpl, ["SomeCo"]);
+
+      const { skipped } = await source.search({});
+
+      expect(skipped[0]?.reason).toMatch(/not recognized/);
+    },
+  );
+
+  // Redirect variants that are genuinely NOT the known-bad host+empty-path
+  // pattern — a different smartrecruiters.com host entirely, and a
+  // different path on the known-bad host. Neither proves a real company
+  // either (this adapter has no positive evidence for either), so both
+  // must surface as "unknown", never a silently-trusted "valid" — the
+  // third bypass an adversarial review found in the original exact-string
+  // match.
+  it.each([
+    ["a different smartrecruiters.com host entirely", "https://www.smartrecruiters.com/"],
+    ["a different path on the known-bad host", "https://jobs.smartrecruiters.com/some-other-page"],
+  ])(
+    "redirect variant '%s' is surfaced as unknown, not silently accepted as valid",
+    async (_label, location) => {
+      const fetchImpl = makeFetch({
+        postings: {
+          SomeCo: () => jsonResponse({ offset: 0, limit: 100, totalFound: 0, content: [] }),
+        },
+        careers: {
+          SomeCo: () => new Response(null, { status: 302, headers: { location } }),
+        },
+      });
+      const source = makeSource(fetchImpl, ["SomeCo"]);
+
+      const { jobs, skipped, skipRate } = await source.search({});
+
+      expect(jobs).toHaveLength(0);
+      expect(skipped).toHaveLength(1);
+      expect(skipRate).toBe(1);
+      expect(skipped[0]?.reason).toMatch(/doesn't match the known "unrecognized company" pattern/);
+    },
+  );
 
   it("the two zero-postings cases produce genuinely different SourceSearchResults side by side", async () => {
     const fetchImpl = makeFetch({
@@ -330,6 +403,175 @@ describe("SmartRecruitersSource — requirements text (qualifications) reaches d
 
     expect(naiveDescription).not.toContain("Python");
     expect(naiveDescription).not.toContain("Ph.D. in Computer Science");
+  });
+
+  // FIX C (adversarial review, round 1) — the seventh instance of this
+  // project's own recurring bug class, found in this file: deleting
+  // `additionalInformation` from `buildDescription` left every test above
+  // green, because nothing asserted its content specifically reaches
+  // `description`. Measured across 120 live postings during review,
+  // `additionalInformation` is a LARGER mean contributor to description
+  // text (20.8%) than `qualifications` (11.7%), and 32/120 postings carry
+  // pay, work-model, or visa terms found in no other section — on this
+  // exact fixture, the real salary figure ("$165,000 - $185,000") and
+  // 401(k) benefit exist ONLY in `additionalInformation`, nowhere in
+  // `companyDescription`, `jobDescription`, or `qualifications`.
+  it("includes real content that exists only in jobAd.sections.additionalInformation, not any other section", async () => {
+    const fetchImpl = makeFetch({
+      postings: {
+        BoschGroup: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 1,
+            content: [
+              postingsPage1.content.find((p: { id: string }) => p.id === "744000144627757"),
+            ],
+          }),
+      },
+      detail: {
+        BoschGroup: { "744000144627757": () => jsonResponse(detailAiResearchScientist) },
+      },
+    });
+    const source = makeSource(fetchImpl, ["BoschGroup"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    const description = jobs[0]?.description ?? "";
+
+    expect(description).toContain("$165,000");
+    expect(description).toContain("401(k)");
+  });
+
+  it("a naive implementation that drops additionalInformation would miss that same content — demonstrating why buildDescription folds it in too, not just qualifications", () => {
+    // Mirrors the qualifications-dropping demonstration above, but for the
+    // section an adversarial review found this test suite had left
+    // completely unguarded.
+    function naiveBuildDescriptionWithoutAdditionalInformation(
+      detail: typeof detailAiResearchScientist,
+    ): string {
+      const sections = detail.jobAd?.sections;
+      const parts: string[] = [];
+      for (const section of [
+        sections?.companyDescription,
+        sections?.jobDescription,
+        sections?.qualifications,
+      ]) {
+        if (section?.text) parts.push(section.text.replace(/<[^>]*>/g, " "));
+      }
+      return parts.join("\n\n");
+    }
+
+    const naiveDescription =
+      naiveBuildDescriptionWithoutAdditionalInformation(detailAiResearchScientist);
+
+    expect(naiveDescription).not.toContain("$165,000");
+    expect(naiveDescription).not.toContain("401(k)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX D (adversarial review, round 1): nothing previously pinned this
+// adapter's specific `htmlToPlainText` call site to `doubleEncoded: false`
+// — flipping it to `true` left all 29 original tests green, because no
+// real captured fixture happens to contain a literal `&lt;`/`&gt;` in body
+// prose (independently confirmed across 120 live postings during review:
+// zero). html.test.ts already proves the shared helper's own
+// `doubleEncoded` semantics in the abstract; these tests pin THIS file's
+// call site specifically, the same gap-closing motivation html.test.ts's
+// own top-of-file comment records for why it exists at all.
+// ---------------------------------------------------------------------------
+describe("SmartRecruitersSource — HTML decoding pins the correct doubleEncoded setting", () => {
+  it("a real &amp;/&#xa0; snippet from a committed fixture round-trips correctly through the full search() pipeline", async () => {
+    const fetchImpl = makeFetch({
+      postings: {
+        BoschGroup: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 1,
+            content: [
+              postingsPage1.content.find((p: { id: string }) => p.id === "744000144627757"),
+            ],
+          }),
+      },
+      detail: {
+        BoschGroup: { "744000144627757": () => jsonResponse(detailAiResearchScientist) },
+      },
+    });
+    const source = makeSource(fetchImpl, ["BoschGroup"]);
+
+    const { jobs } = await source.search({});
+    const description = jobs[0]?.description ?? "";
+
+    // Real qualifications text on this fixture: "...experience in leading
+    // R&amp;D project &amp; team..." — both `&amp;` entities must decode to
+    // a literal "&", and the adjacent real <li> tags must be stripped, not
+    // left as literal markup.
+    expect(description).toContain("leading R&D project & team");
+    expect(description).not.toContain("&amp;");
+    expect(description).not.toContain("<li>");
+  });
+
+  it("a realistic '<' in body prose survives intact — the discriminating case that fails if doubleEncoded is ever flipped to true", async () => {
+    // Real SmartRecruiters postings don't currently contain this pattern
+    // (confirmed: zero literal &lt;/&gt; in body text across 120 live
+    // postings checked during review) but plausibly could (e.g. a GPA or
+    // budget threshold stated in prose), and the correctness of
+    // `doubleEncoded: false` for SmartRecruiters' single-encoded markup
+    // depends on handling it correctly if it ever does appear. This
+    // mirrors html.test.ts's own "score &lt; 5" corruption demonstration,
+    // but exercised through smartrecruiters.ts's actual buildDescription
+    // call site via the full adapter pipeline, not the shared helper
+    // directly — pinning THIS file's choice, not just the shared one.
+    const detail = {
+      id: "posting-with-real-lt-gt",
+      name: "Role With Threshold Language",
+      company: { name: "Acme" },
+      releasedDate: "2026-08-01T00:00:00.000Z",
+      postingUrl: "https://jobs.smartrecruiters.com/Acme/posting-with-real-lt-gt",
+      jobAd: {
+        sections: {
+          qualifications: {
+            title: "Qualifications",
+            text: "<li>Minimum GPA &lt; 3.0 will not be considered</li><li>Must have 5&#xa0;years experience</li>",
+          },
+        },
+      },
+    };
+    const fetchImpl = makeFetch({
+      postings: {
+        Acme: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 1,
+            content: [{ id: detail.id, name: detail.name, company: detail.company }],
+          }),
+      },
+      detail: { Acme: { [detail.id]: () => jsonResponse(detail) } },
+    });
+    const source = makeSource(fetchImpl, ["Acme"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    const description = jobs[0]?.description ?? "";
+
+    // Under the CORRECT (doubleEncoded: false) pipeline, both list items
+    // survive intact with the real "<" preserved. Under the WRONG
+    // (doubleEncoded: true) pipeline, the pre-decode turns "&lt;" into a
+    // literal "<" that the tag-stripper then mistakes for the start of a
+    // new tag, silently eating "3.0 will not be considered" through
+    // "Must have" — verified directly against html.ts (see this file's
+    // report for the exact node command and output).
+    expect(description).toContain("Minimum GPA < 3.0 will not be considered");
+    // `&#xa0;` decodes to a real non-breaking space (U+00A0), not the
+    // regular ASCII space `&nbsp;` decodes to — `\s` matches both, so this
+    // assertion isn't sensitive to that (correct, unrelated) distinction.
+    expect(description).toMatch(/Must have 5\s*years experience/);
   });
 });
 
@@ -621,7 +863,7 @@ describe("SmartRecruitersSource — skipRate semantics", () => {
     expect(jobs[0]?.externalId).toBe("744000144627757");
     expect(skipped).toHaveLength(1);
     expect(skipped[0]?.externalId).toBe("744000144806059");
-    expect(skipped[0]?.reason).toMatch(/failed to fetch full posting detail/);
+    expect(skipped[0]?.reason).toMatch(/failed to fetch or normalize full posting detail/);
   });
 });
 
@@ -680,6 +922,113 @@ describe("SmartRecruitersSource — per-company failure isolation", () => {
     const { jobs, skipped } = await source.search({});
     expect(jobs).toHaveLength(1);
     expect(skipped.some((s) => s.reason.includes("RateLimitedCo"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX A (adversarial review, round 1): a malformed posting (non-string
+// `name`) used to throw a raw TypeError out of `normalizeItem`, past
+// `#fetchAndNormalize`'s (at the time, too-narrow) try/catch, destroying
+// every other posting already fetched for that company along with it —
+// see `#fetchAndNormalize`'s doc comment for the full mechanism. This
+// reproduces the reviewer's exact scenario: three postings for one
+// company, one with a non-string `name`, asserting the other two still
+// come back.
+// ---------------------------------------------------------------------------
+describe("SmartRecruitersSource — per-posting failure isolation (malformed records)", () => {
+  it("a posting with a non-string name does not destroy the other healthy postings in the same company", async () => {
+    const healthyA = { id: "healthy-a", name: "Healthy Role A", company: { name: "Acme" } };
+    const malformed = { id: "malformed-b", name: 12345, company: { name: "Acme" } };
+    const healthyC = { id: "healthy-c", name: "Healthy Role C", company: { name: "Acme" } };
+
+    function detailFor(summary: { id: string; name: unknown }) {
+      return {
+        id: summary.id,
+        name: summary.name,
+        company: { name: "Acme" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/Acme/${summary.id}`,
+        jobAd: {
+          sections: {
+            jobDescription: {
+              title: "Job Description",
+              text: `<p>Do the work for ${summary.id}.</p>`,
+            },
+          },
+        },
+      };
+    }
+
+    const fetchImpl = makeFetch({
+      postings: {
+        Acme: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 3,
+            content: [healthyA, malformed, healthyC],
+          }),
+      },
+      detail: {
+        Acme: {
+          "healthy-a": () => jsonResponse(detailFor(healthyA)),
+          "malformed-b": () => jsonResponse(detailFor(malformed)),
+          "healthy-c": () => jsonResponse(detailFor(healthyC)),
+        },
+      },
+    });
+    const source = makeSource(fetchImpl, ["Acme"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    // Both healthy postings survive; the malformed one is skipped, not
+    // fatal to the company (the old bug: `jobs: []`, one company-wide skip,
+    // both healthy postings destroyed).
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(["healthy-a", "healthy-c"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.externalId).toBe("malformed-b");
+    expect(skipped[0]?.reason).toMatch(/missing or non-string name/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX B (adversarial review, round 1): `totalFound > 0` with an empty
+// `content` array on the first page used to fall straight through to a
+// silent `{jobs: [], skipped: []}` — the API asserting real postings exist
+// while this adapter reported a clean zero, the USAJOBS failure signature
+// verbatim. See `#searchCompany`'s doc comment.
+// ---------------------------------------------------------------------------
+describe("SmartRecruitersSource — totalFound asserts postings exist but content is empty", () => {
+  it("is surfaced as a skip, not a silent clean empty result", async () => {
+    const fetchImpl = makeFetch({
+      postings: {
+        InconsistentCo: () => jsonResponse({ offset: 0, limit: 100, totalFound: 500, content: [] }),
+      },
+    });
+    const source = makeSource(fetchImpl, ["InconsistentCo"]);
+
+    const { jobs, skipped, skipRate } = await source.search({});
+
+    expect(jobs).toHaveLength(0);
+    expect(skipped).toHaveLength(1);
+    expect(skipRate).toBe(1);
+    expect(skipped[0]?.reason).toContain("totalFound=500");
+    expect(skipped[0]?.reason).toContain("InconsistentCo");
+  });
+
+  it("does not trigger the careers-site validity check — that check is reserved for totalFound === 0", async () => {
+    const careersCheck = vi.fn(REAL_CAREERS_RESPONSES.recognizedHostedDirectly);
+    const fetchImpl = makeFetch({
+      postings: {
+        InconsistentCo: () => jsonResponse({ offset: 0, limit: 100, totalFound: 500, content: [] }),
+      },
+      careers: { InconsistentCo: careersCheck },
+    });
+    const source = makeSource(fetchImpl, ["InconsistentCo"]);
+
+    await source.search({});
+
+    expect(careersCheck).not.toHaveBeenCalled();
   });
 });
 
