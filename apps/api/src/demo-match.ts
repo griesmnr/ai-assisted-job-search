@@ -28,7 +28,23 @@ import type { JobSource, NormalizedJob, SearchCriteria } from "./sources/types.j
 
 process.loadEnvFile();
 
-export const MODEL = "claude-opus-5";
+/**
+ * Scoring model. Chosen by Nicole 2026-08-22 on the evidence of the A/B in
+ * `model-ab.ts`, which re-scored the same real jobs against the same real
+ * resume with both models: sonnet produced the same #1, the same top-5 set,
+ * and the same overall ordering as opus for roughly 40% less. That was a
+ * defensible-either-way call at 13 candidates; at 130 (ticket b723fb9 took
+ * the funnel from 545 postings to 6,038) the cost difference stops being
+ * theoretical.
+ *
+ * Note this makes new scores not strictly comparable to the opus-scored
+ * rows already in `job_matches` — including the 72% and 74% Nicole applied
+ * to. The A/B says the *ranking* agrees, which is what the shortlist
+ * actually consumes, so mixed scales are acceptable here; re-scoring
+ * history to match would cost more than the inconsistency does.
+ * Re-run `model-ab.ts` before changing this again.
+ */
+export const MODEL = "claude-sonnet-5";
 export const MAX_JOBS = 12;
 
 const SCHEMA = {
