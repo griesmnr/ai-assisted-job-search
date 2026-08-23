@@ -226,15 +226,32 @@ export function isTotalScoringFailure(
  * None of that fires against the 25 tokens configured today, but it is
  * real and latent, not hypothetical — `fivetran`'s real API response
  * self-reports `"Fivetran "` with a trailing space today; only `.trim()`
- * keeps that one matching. Rather than pretend the correlation is exact,
- * this function checks its own output: every survivor in `filtered` must
- * be attributed to exactly one token, so `sum(survivedFilter)` across the
- * returned entries must equal `filtered.length`. When it doesn't, `warn`
- * is called with a diagnostic instead of silently returning numbers that
- * may misrepresent which board a survivor actually came from — a board
- * that's actually healthy must never silently read as "0 survived
- * filtering" (that reads as dead and is exactly what gets a productive
- * token deleted).
+ * keeps that one matching.
+ *
+ * Rather than pretend the correlation is exact, this function runs two
+ * cheap sanity checks over its own output and calls `warn` when either
+ * fires, instead of silently returning numbers that may misattribute
+ * survivors between boards:
+ *
+ *   1. `sum(survivedFilter)` across every returned entry should equal
+ *      `filtered.length` — every survivor should be attributed to exactly
+ *      one token. A mismatch PROVES some misattribution happened
+ *      (over-counted somewhere, under-counted somewhere, or both), but a
+ *      MATCHING sum does not prove there was none: errors can cancel. Two
+ *      tokens sharing a name can double-count 2 survivors up to 4 while a
+ *      third, nameless token under-counts its own 2 down to 0 — sum stays
+ *      right (4) while every individual number is wrong. That's what
+ *      check 2 is for.
+ *   2. Two or more entries reporting the identical `companyName`
+ *      (case-insensitively) are flagged directly — this is exactly the
+ *      double-counting hazard, caught independent of whether the sum
+ *      happens to net out.
+ *
+ * Neither check proves the report is correct; both together catch every
+ * hazard this function's own review turned up. A board that's actually
+ * healthy must never silently read as "0 survived filtering" (that reads
+ * as dead and is exactly what gets a productive token deleted) without at
+ * least a `warn` alongside it.
  */
 export function buildBoardCoverage(
   tokenOutcomes: TokenOutcome[] | undefined,
@@ -267,6 +284,23 @@ export function buildBoardCoverage(
     );
   }
 
+  const namesSeen = new Set<string>();
+  const duplicateNames = new Set<string>();
+  for (const entry of coverage) {
+    if (!entry.companyName) continue;
+    const key = entry.companyName.trim().toLowerCase();
+    if (namesSeen.has(key)) duplicateNames.add(key);
+    namesSeen.add(key);
+  }
+  if (duplicateNames.size > 0) {
+    warn(
+      `buildBoardCoverage: multiple tokens self-report the same company name ` +
+        `(${[...duplicateNames].join(", ")}) — each such token's survivedFilter counts every ` +
+        `survivor attributed to that name, so they are almost certainly double-counted between ` +
+        `those tokens specifically, regardless of whether the totals above happened to match.`,
+    );
+  }
+
   return coverage;
 }
 
@@ -282,7 +316,16 @@ export function describeBoardOutcome(entry: BoardCoverageEntry): string {
     case "empty":
       return "board exists, 0 postings right now";
     case "error":
-      return `fetch failed (${entry.message ?? "unknown error"}) — may be transient, rerun to retry`;
+      // `entry.message` already says what happened — a fetch failure
+      // ("Greenhouse request for board ... timed out...", "... HTTP
+      // 503..."), a rate limit ("Greenhouse rate limit exceeded (HTTP
+      // 429)..."), or, for a token search() never got to after a 429,
+      // "not checked — search() stopped issuing requests after board ...
+      // was rate-limited". All three are potentially resolved by a later
+      // run, hence the shared "rerun to retry" — this is NOT "not-found":
+      // the board may be perfectly healthy, this run just couldn't
+      // confirm that.
+      return `${entry.message ?? "fetch failed (unknown error)"} — rerun to retry`;
     case "ok":
       return `${entry.postingCount} posting(s), ${entry.survivedFilter} survived filtering`;
   }

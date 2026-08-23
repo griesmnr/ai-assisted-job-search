@@ -713,9 +713,44 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
     // correlation cannot tell the two tokens apart by name alone.
     expect(coverage[0]!.survivedFilter).toBe(3);
     expect(coverage[1]!.survivedFilter).toBe(3);
-    // sum (6) != filtered.length (3) — the guard must catch this.
+    // Both checks fire independently: sum (6) != filtered.length (3), AND
+    // "Acme" is a duplicate companyName across the two entries.
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.some((call) => /sums? to 6/i.test(call[0] as string))).toBe(true);
+    expect(warn.mock.calls.some((call) => /same company name/i.test(call[0] as string))).toBe(true);
+  });
+
+  // Ticket b723fb9 review round 2 (non-blocking finding): a matching sum
+  // does NOT prove the report is correct — errors can cancel. Two tokens
+  // double-counting 2 survivors up to 4 while a third, nameless token
+  // under-counts its own 2 down to 0 nets to the same total (4 == 4), so
+  // the sum check alone stays silent. This is exactly why
+  // buildBoardCoverage also checks for duplicate companyNames
+  // independently of whether the sum happens to match.
+  it("hazard E: a double-count and an under-count can cancel in the sum, but the duplicate-name check still warns", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "acme-east", status: "ok", postingCount: 2, companyName: "Acme" }),
+      outcome({ token: "acme-west", status: "ok", postingCount: 2, companyName: "Acme" }),
+      outcome({ token: "no-name", status: "ok", postingCount: 2, companyName: undefined }),
+    ];
+    const filtered: NormalizedJob[] = [
+      { ...job("hazard-e-1", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-e-2", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-e-3", "Backend Engineer"), company: "Whoever" },
+      { ...job("hazard-e-4", "Backend Engineer"), company: "Whoever" },
+    ];
+    const warn = vi.fn();
+
+    const coverage = buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    // Sum: 2 (acme-east) + 2 (acme-west) + 0 (no-name) = 4 == filtered.length
+    // (4) — the sum check alone would stay silent here.
+    const attributedTotal = coverage.reduce((sum, e) => sum + e.survivedFilter, 0);
+    expect(attributedTotal).toBe(filtered.length);
+    // But the duplicate-name check still fires, because it doesn't depend
+    // on the sum at all.
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]![0]).toMatch(/sums? to 6/i);
+    expect(warn.mock.calls[0]![0]).toMatch(/same company name/i);
   });
 
   it("hazard C: a token with no companyName reports 0 survivors even though its postings are in the shortlist — and the invariant check warns", () => {

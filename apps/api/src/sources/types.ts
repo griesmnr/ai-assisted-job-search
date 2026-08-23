@@ -82,9 +82,12 @@ export type TokenStatus =
    * numbers side by side. */
   | "ok"
   /** The fetch for this token failed for a reason that is NOT "the token
-   * doesn't exist" — a timeout, a network error, a 5xx, a malformed
-   * response, etc. Distinct from "not-found": this token may well be a
-   * real, healthy board; this run just couldn't confirm that. See
+   * doesn't exist" — a timeout, a network error, a 5xx, a per-request WAF
+   * block (403), a rate limit (429), or — for a token `search()` never
+   * got around to attempting because an earlier 429 stopped it from
+   * issuing further requests this run — "not checked" (see `message`).
+   * Distinct from "not-found": this token may well be a real, healthy
+   * board; this run just couldn't confirm that. See
    * `GreenhouseSource#search`'s per-error-kind isolation policy for which
    * failures land here vs. abort the whole `search()` call. */
   | "error";
