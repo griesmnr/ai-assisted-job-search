@@ -14,12 +14,12 @@ Terminal on macOS, in the project root.
 Three services, but two different start commands (see below) because the
 `dev` service is opt-in:
 
-| Service    | What it is                          | Reachable from `dev` as | Reachable from Mac host as |
-|------------|--------------------------------------|--------------------------|------------------------------|
-| `postgres` | Postgres 16.4                        | `postgres:5432`          | `localhost:5432`             |
-| `rabbitmq` | RabbitMQ 3.13.7 + management plugin  | `rabbitmq:5672`           | `localhost:5672`             |
-|            | RabbitMQ management UI               | `rabbitmq:15672`          | `localhost:15672`            |
-| `dev`      | Ubuntu 24.04 + Go, Node 22, pnpm, git-bug, RTK | (this is the client) | `docker compose exec dev bash` |
+| Service    | What it is                                     | Reachable from `dev` as | Reachable from Mac host as     |
+| ---------- | ---------------------------------------------- | ----------------------- | ------------------------------ |
+| `postgres` | Postgres 16.4                                  | `postgres:5432`         | `localhost:5432`               |
+| `rabbitmq` | RabbitMQ 3.13.7 + management plugin            | `rabbitmq:5672`         | `localhost:5672`               |
+|            | RabbitMQ management UI                         | `rabbitmq:15672`        | `localhost:15672`              |
+| `dev`      | Ubuntu 24.04 + Go, Node 22, pnpm, git-bug, RTK | (this is the client)    | `docker compose exec dev bash` |
 
 Published ports are bound to `127.0.0.1` only (not `0.0.0.0`), so they're
 reachable as `localhost:<port>` from the Mac itself but not from other

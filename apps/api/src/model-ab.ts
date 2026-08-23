@@ -121,8 +121,7 @@ async function main() {
 
   const totalIn = results.reduce((s, r) => s + r.inTok, 0);
   const totalOut = results.reduce((s, r) => s + r.outTok, 0);
-  const cost = (m: string) =>
-    (totalIn / 1e6) * PRICING[m]!.in + (totalOut / 1e6) * PRICING[m]!.out;
+  const cost = (m: string) => (totalIn / 1e6) * PRICING[m]!.in + (totalOut / 1e6) * PRICING[m]!.out;
   const avgMs = Math.round(results.reduce((s, r) => s + r.ms, 0) / results.length);
 
   console.log(`\n  top-5 overlap:   ${topFiveOverlap}/5`);
