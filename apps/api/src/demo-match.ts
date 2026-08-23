@@ -594,6 +594,17 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Computed before the `maxJobs` slice, specifically so per-source
   // survivor counts below reflect what actually passed `filter`, not what
   // was left after also truncating to the shortlist size.
+  //
+  // NOTE (adversarial review): `filter` now runs over the UNION of every
+  // configured source's jobs, not one source's alone. For
+  // `filterSoftwareEngineeringJobs` specifically, that means its
+  // `${company}|${title}` dedupe (swe-filter.ts) now also collapses an
+  // identical (company, title) pair posted to TWO different sources into
+  // one survivor — previously impossible with a single source. Likely
+  // desirable (the same real opening shouldn't count twice because an
+  // employer cross-posts to Greenhouse and Lever), but it's an emergent
+  // consequence of merging before filtering, not something this ticket set
+  // out to build, and swe-filter.ts itself is unchanged.
   const filtered = filter(found);
   const shortlist = filtered.slice(0, maxJobs);
 
@@ -631,6 +642,17 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // for every job whose real dataSource differs from that one label — see
   // composite.ts's top-of-file comment for the full reasoning. Calling it
   // once per real dataSource sidesteps that entirely.
+  //
+  // NOTE (adversarial review): this also changes what `ingestJobsForSearch`'s
+  // own transaction covers. Its doc comment argues for atomicity ("either
+  // every job in this batch ends up inserted and linked, or none of it is")
+  // — that guarantee now holds PER SOURCE, not per run: if the Lever call
+  // below throws after the Greenhouse call already committed, Greenhouse's
+  // jobs stay committed and linked while Lever's are rolled back, not both
+  // rolled back together. That's the same one-source-can't-take-down-the-
+  // others isolation this ticket applies everywhere else (CompositeSource,
+  // SourceOutcome), just worth naming explicitly here since it's a real
+  // narrowing of what "atomic" meant before multiple sources existed.
   const shortlistByDataSource = new Map<string, NormalizedJob[]>();
   for (const job of shortlist) {
     const list = shortlistByDataSource.get(job.dataSource);

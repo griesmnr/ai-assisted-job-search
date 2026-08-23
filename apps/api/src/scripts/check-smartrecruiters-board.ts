@@ -25,9 +25,27 @@
  *      cheap: this is the summary LIST endpoint, not the mandatory
  *      per-posting detail fetch `SmartRecruitersSource#search` needs for
  *      `description` — see smartrecruiters.ts Finding 2/5. `title`/
- *      `location`/`company` are all present on the summary shape, which is
- *      everything `filterSoftwareEngineeringJobs` reads, so this checker
- *      never needs the expensive detail fan-out at all).
+ *      `location`/`company` are all present on the summary shape, so this
+ *      checker never needs the expensive per-posting detail fan-out (~625ms
+ *      x N requests) just to estimate survivor counts.
+ *
+ *      HONEST DIVERGENCE (ticket d8417b2 review, F4): this checker's
+ *      `survivingCount` can still differ from what a real search+filter
+ *      produces, and not just by the usual "boards change between fetches"
+ *      caveat every checker in this project already carries. A real
+ *      `SmartRecruitersSource#search()` resolves each posting's location as
+ *      `(detail.location ?? summary.location)?.fullLocation` (see
+ *      smartrecruiters.ts, `normalizeItem`) -- DETAIL preferred over
+ *      SUMMARY, not the other way around. This script only ever fetches the
+ *      summary, so a posting whose `summary.location` and
+ *      `detail.location` genuinely disagree (not verified to occur on real
+ *      data, unlike the summary/detail split for `description` itself,
+ *      which Finding 2 verified is total, not partial) would be scored
+ *      against the wrong one here. Same honest-limitation shape as
+ *      check-ashby-board.ts's own documented under-count risk (that
+ *      script's `location` doesn't fold in `address.postalAddress` either)
+ *      -- a real search is the final word, this script is a cheap first
+ *      filter, not a guarantee of matching numbers.
  *   2. If `totalFound > 0`: the identifier is proven real by having actual
  *      postings — no further check needed (mirrors
  *      `SmartRecruitersSource#searchCompany`'s own "only ambiguous when
