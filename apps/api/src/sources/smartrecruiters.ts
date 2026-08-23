@@ -649,97 +649,128 @@ export class SmartRecruitersSource implements JobSource {
   /**
    * The disambiguating check from Finding 1. Only ever called when a
    * company's postings search came back with `totalFound: 0` — see
-   * `#searchCompany`.
+   * `#searchCompany`. Delegates to the standalone `checkCareersSiteValidity`
+   * below (extracted for ticket d8417b2) so
+   * `scripts/check-smartrecruiters-board.ts` — which needs this exact same
+   * disambiguation to vet candidate employers WITHOUT paying for this
+   * adapter's mandatory per-posting detail fetch (Finding 2/5) on every
+   * candidate — shares the one real implementation instead of maintaining a
+   * second copy that could quietly drift from it.
    */
   async #checkCompanyValidity(
     company: string,
   ): Promise<{ status: "valid" } | { status: "invalid" } | { status: "unknown"; reason: string }> {
-    const url = `${this.#careersBaseUrl}/${encodeURIComponent(company)}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.#requestTimeoutMs);
+    return checkCareersSiteValidity(
+      company,
+      this.#careersBaseUrl,
+      this.#fetchImpl,
+      this.#requestTimeoutMs,
+    );
+  }
+}
 
-    let response: Response;
+/**
+ * The disambiguating check from Finding 1, standalone: hits
+ * `{careersBaseUrl}/{company}` (SmartRecruiters' public careers microsite,
+ * NOT the postings API) with `redirect: "manual"` and classifies the
+ * response. Extracted out of `SmartRecruitersSource` (ticket d8417b2) so
+ * `scripts/check-smartrecruiters-board.ts` can reuse the exact logic this
+ * adapter already relies on, rather than a second hand-copied
+ * implementation that has to be kept in sync by hand. See Finding 1 at the
+ * top of this file for the full reasoning behind why this check exists and
+ * what it distinguishes.
+ */
+export async function checkCareersSiteValidity(
+  company: string,
+  careersBaseUrl: string = DEFAULT_CAREERS_BASE_URL,
+  fetchImpl: typeof fetch = fetch,
+  requestTimeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<{ status: "valid" } | { status: "invalid" } | { status: "unknown"; reason: string }> {
+  const url = `${careersBaseUrl}/${encodeURIComponent(company)}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      // Manual, not "follow": the real careers.smartrecruiters.com/{id}
+      // response for BOTH a valid company on SmartRecruiters' own hosted
+      // domain (200) and an invalid one (302 -> the generic homepage,
+      // also ultimately 200 once followed) end up at a 200 status if
+      // redirects are followed — the distinguishing signal is the FIRST
+      // hop's status/Location header, not the final page. See Finding 1.
+      redirect: "manual",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { status: "unknown", reason: `career-site check failed: ${message}` };
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status >= 200 && response.status < 300) {
+    return { status: "valid" };
+  }
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location");
+    if (!location) {
+      return { status: "unknown", reason: "redirect (3xx) response had no Location header" };
+    }
+
+    let target: URL;
     try {
-      response = await this.#fetchImpl(url, {
-        // Manual, not "follow": the real careers.smartrecruiters.com/{id}
-        // response for BOTH a valid company on SmartRecruiters' own hosted
-        // domain (200) and an invalid one (302 -> the generic homepage,
-        // also ultimately 200 once followed) end up at a 200 status if
-        // redirects are followed — the distinguishing signal is the FIRST
-        // hop's status/Location header, not the final page. See Finding 1.
-        redirect: "manual",
-        signal: controller.signal,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { status: "unknown", reason: `career-site check failed: ${message}` };
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (response.status >= 200 && response.status < 300) {
-      return { status: "valid" };
-    }
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) {
-        return { status: "unknown", reason: "redirect (3xx) response had no Location header" };
-      }
-
-      let target: URL;
-      try {
-        target = new URL(location, url);
-      } catch {
-        return {
-          status: "unknown",
-          reason: `redirect (3xx) Location header was not a parseable URL: "${location}"`,
-        };
-      }
-
-      // FIX (adversarial review, round 1): this used to be an exact string
-      // match against the one literal redirect URL observed during
-      // development (`location === "https://jobs.smartrecruiters.com"`),
-      // with anything else assumed "valid". That silently misclassified
-      // three real variants of the SAME known-bad redirect as valid: a
-      // tracking query string appended to that exact homepage
-      // (`?utm_source=careers`), a plain-`http://` scheme instead of
-      // `https://`, and a different smartrecruiters.com host entirely
-      // (`www.smartrecruiters.com`) that isn't a company's own domain
-      // either. If SmartRecruiters ever adds a query param to that
-      // redirect or the exact scheme changes, every bogus company
-      // identifier would silently degrade back to "valid" — exactly the
-      // failure this whole ticket exists to prevent.
-      //
-      // Matching is now host + empty-path only (scheme- and
-      // query-agnostic, so the http:// and ?utm_source= variants of the
-      // known-bad target are still caught as invalid). More importantly:
-      // anything that does NOT match this exact pattern is no longer
-      // assumed "valid" by default — it falls through to "unknown"
-      // instead, the same outcome as a check that couldn't complete at
-      // all. This is deliberately conservative in both directions,
-      // including for a real company whose careers page happens to
-      // redirect to a target this adapter doesn't specifically recognize
-      // (e.g. a genuine custom-domain redirect like BoschGroup's
-      // jobs.bosch.com, IF that company's postings ever went to zero) —
-      // that case now reports "unknown" (surfaced as a skip, not silently
-      // trusted) rather than "valid". Fail toward "I don't know," never
-      // toward "valid."
-      const isKnownUnrecognizedRedirect =
-        target.hostname === UNRECOGNIZED_COMPANY_HOSTNAME &&
-        (target.pathname === "" || target.pathname === "/");
-      if (isKnownUnrecognizedRedirect) {
-        return { status: "invalid" };
-      }
+      target = new URL(location, url);
+    } catch {
       return {
         status: "unknown",
-        reason: `career-site check redirected to a target ("${location}") that doesn't match the known "unrecognized company" pattern (${UNRECOGNIZED_COMPANY_HOSTNAME} with an empty path) — not assumed valid without positive confirmation`,
+        reason: `redirect (3xx) Location header was not a parseable URL: "${location}"`,
       };
+    }
+
+    // FIX (adversarial review, round 1): this used to be an exact string
+    // match against the one literal redirect URL observed during
+    // development (`location === "https://jobs.smartrecruiters.com"`),
+    // with anything else assumed "valid". That silently misclassified
+    // three real variants of the SAME known-bad redirect as valid: a
+    // tracking query string appended to that exact homepage
+    // (`?utm_source=careers`), a plain-`http://` scheme instead of
+    // `https://`, and a different smartrecruiters.com host entirely
+    // (`www.smartrecruiters.com`) that isn't a company's own domain
+    // either. If SmartRecruiters ever adds a query param to that
+    // redirect or the exact scheme changes, every bogus company
+    // identifier would silently degrade back to "valid" — exactly the
+    // failure this whole ticket exists to prevent.
+    //
+    // Matching is now host + empty-path only (scheme- and
+    // query-agnostic, so the http:// and ?utm_source= variants of the
+    // known-bad target are still caught as invalid). More importantly:
+    // anything that does NOT match this exact pattern is no longer
+    // assumed "valid" by default — it falls through to "unknown"
+    // instead, the same outcome as a check that couldn't complete at
+    // all. This is deliberately conservative in both directions,
+    // including for a real company whose careers page happens to
+    // redirect to a target this adapter doesn't specifically recognize
+    // (e.g. a genuine custom-domain redirect like BoschGroup's
+    // jobs.bosch.com, IF that company's postings ever went to zero) —
+    // that case now reports "unknown" (surfaced as a skip, not silently
+    // trusted) rather than "valid". Fail toward "I don't know," never
+    // toward "valid."
+    const isKnownUnrecognizedRedirect =
+      target.hostname === UNRECOGNIZED_COMPANY_HOSTNAME &&
+      (target.pathname === "" || target.pathname === "/");
+    if (isKnownUnrecognizedRedirect) {
+      return { status: "invalid" };
     }
     return {
       status: "unknown",
-      reason: `career-site check returned unexpected HTTP status ${response.status}`,
+      reason: `career-site check redirected to a target ("${location}") that doesn't match the known "unrecognized company" pattern (${UNRECOGNIZED_COMPANY_HOSTNAME} with an empty path) — not assumed valid without positive confirmation`,
     };
   }
+  return {
+    status: "unknown",
+    reason: `career-site check returned unexpected HTTP status ${response.status}`,
+  };
 }
 
 function classifyErrorStatus(response: Response, describe: string): void {

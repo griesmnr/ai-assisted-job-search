@@ -1,7 +1,8 @@
 /**
  * Idempotently seeds `source_descriptors` with the ids every adapter
  * actually stamps onto the jobs it produces (`Job["dataSource"]` in
- * packages/shared — "usajobs" | "wa-state" | "greenhouse").
+ * packages/shared — "usajobs" | "wa-state" | "greenhouse" | "lever" |
+ * "ashby" | "smartrecruiters").
  *
  * `jobs.data_source` is a foreign key into this table, so inserting a job
  * under any of these ids fails with a foreign key violation until the
@@ -11,6 +12,18 @@
  * calls this before it ingests anything so a fresh database doesn't need a
  * separate manual step; it's also runnable standalone (see the `isMain`
  * block below) for `pnpm db:seed`.
+ *
+ * FIX (ticket d8417b2): this list only ever had three of the six real
+ * `dataSource` values — "lever", "ashby", and "smartrecruiters" were
+ * missing entirely. That went unnoticed as long as `demo-match.ts` only
+ * ever constructed a `GreenhouseSource`; the moment this ticket wired the
+ * other three adapters into a real search, every `jobs`/`search_sources`
+ * insert for one of them failed this exact FK constraint
+ * (`source_descriptors_id_source_descriptors_id_fk` /
+ * `search_sources_source_descriptor_id_source_descriptors_id_fk`) — caught
+ * by this ticket's own `demo-match.test.ts` multi-source tests against a
+ * real Postgres instance, not discovered by inspection. All six are listed
+ * below now.
  *
  * `onConflictDoNothing` on the primary key makes repeated calls free —
  * safe to run on every `demo-match.ts` invocation, not just once per
@@ -25,6 +38,9 @@ export const SOURCE_DESCRIPTORS: ReadonlyArray<{ id: string; displayName: string
   { id: "usajobs", displayName: "USAJOBS" },
   { id: "wa-state", displayName: "Washington State Careers" },
   { id: "greenhouse", displayName: "Greenhouse" },
+  { id: "lever", displayName: "Lever" },
+  { id: "ashby", displayName: "Ashby" },
+  { id: "smartrecruiters", displayName: "SmartRecruiters" },
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
