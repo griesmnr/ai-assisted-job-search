@@ -27,7 +27,7 @@ the evidence, and a recommended substitute for a future ticket to pick up.
 
 3. **NEOGOV's public API** — NEOGOV (the vendor behind both careers.wa.gov
    and governmentjobs.com) does advertise a REST API supporting JSON/XML.
-   That API is for NEOGOV *customers* (the agencies themselves, e.g. WA's
+   That API is for NEOGOV _customers_ (the agencies themselves, e.g. WA's
    HR system) to integrate with their own NEOGOV instance — it authenticates
    as the customer and manages their postings/applicants. It is not a public
    read endpoint a third party can query for another agency's listings, and
@@ -59,7 +59,7 @@ the evidence, and a recommended substitute for a future ticket to pick up.
 
 5. **data.wa.gov (Washington's open data portal)** — checked for a job
    postings dataset alongside careers.wa.gov. It carries labor-market
-   *statistics* (employment estimates, wage reports from the Employment
+   _statistics_ (employment estimates, wage reports from the Employment
    Security Department) but no dataset of open positions. Nothing to build
    an adapter against here either.
 
@@ -68,7 +68,7 @@ the evidence, and a recommended substitute for a future ticket to pick up.
 The ticket is explicit that finding no legitimate source is a valid, useful
 outcome, and that scraping HTML or building against something that violates
 a site's terms is not an acceptable substitute regardless of feasibility.
-That's the situation here: the data is *technically* reachable (it's a
+That's the situation here: the data is _technically_ reachable (it's a
 public website), but reachable and legitimate to build a recurring
 automated integration against are different things, and NEOGOV's terms
 close that gap explicitly for exactly this use case ("data harvesting",
@@ -99,7 +99,7 @@ Why not the others:
 
 - **Remotive** — keyless and well-documented, but it's a remote-only board
   with no state/location filtering that means anything for "Washington" —
-  a "remote" posting isn't tied to a state. Wrong shape for a *Washington*
+  a "remote" posting isn't tied to a state. Wrong shape for a _Washington_
   source specifically, though it would be a reasonable general "remote
   jobs" source for a different ticket.
 - **The Muse** — free key, and does support location filtering, but by a
@@ -108,7 +108,7 @@ Why not the others:
   thinner than Adzuna's from initial review. Second choice.
 - **USAJOBS filtered to WA** (`LocationName=Washington`) — technically the
   easiest (zero new code, already implemented, already tested against a
-  real response), but it only returns *federal* jobs located in WA, not WA
+  real response), but it only returns _federal_ jobs located in WA, not WA
   state government or private-sector jobs, which likely isn't what a
   "Washington source" is meant to mean here. Worth naming as an option
   since it requires no new adapter, but recommend against treating it as

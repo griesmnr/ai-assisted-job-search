@@ -21,8 +21,3 @@ apps/api/drizzle/meta/
 # a fixture that has been prettified is no longer evidence of what the API
 # actually returned.
 apps/api/src/sources/__fixtures__/
-
-# Active work area — other agents are editing source files on parallel branches
-# and reformatting would create merge conflicts. Will be addressed when parallel
-# work is complete.
-apps/api/src/sources/wa-state-findings.md
