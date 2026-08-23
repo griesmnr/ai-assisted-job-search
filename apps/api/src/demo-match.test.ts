@@ -5,7 +5,7 @@ import path from "node:path";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   jobMatches,
   jobs as jobsTable,
@@ -15,12 +15,20 @@ import {
   searchSources,
 } from "./db/schema.js";
 import {
+  buildBoardCoverage,
+  describeBoardOutcome,
   isTotalScoringFailure,
   runDemoMatch,
+  type BoardCoverageEntry,
   type ScoredJob,
   type ScoreJobFn,
 } from "./demo-match.js";
-import type { JobSource, NormalizedJob, SourceSearchResult } from "./sources/types.js";
+import type {
+  JobSource,
+  NormalizedJob,
+  SourceSearchResult,
+  TokenOutcome,
+} from "./sources/types.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
@@ -496,6 +504,349 @@ describe("runDemoMatch: filter hook", () => {
     expect(run.newlyScored).toBe(1);
     expect(run.results).toHaveLength(1);
     expect(run.results[0]!.title).toBe("Widget Engineer");
+  });
+});
+
+/** A FakeSource that also returns `tokenOutcomes`, for exercising the
+ * board-coverage reporting added by ticket b723fb9. Kept separate from
+ * the plain `FakeSource` above (which every pre-existing test relies on
+ * returning exactly `{ jobs, skipped: [], skipRate: 0 }`) rather than
+ * adding an optional constructor param there, so this ticket's addition
+ * can't accidentally change behavior any existing test depends on. */
+class FakeSourceWithTokenOutcomes implements JobSource {
+  readonly dataSource = DATA_SOURCE;
+  constructor(
+    private readonly jobsToReturn: NormalizedJob[],
+    private readonly tokenOutcomes: TokenOutcome[],
+  ) {}
+  async search(): Promise<SourceSearchResult> {
+    return {
+      jobs: this.jobsToReturn,
+      skipped: [],
+      skipRate: 0,
+      tokenOutcomes: this.tokenOutcomes,
+    };
+  }
+}
+
+/** Fills in the two fields ticket b723fb9's review added
+ * (`message`/`skippedCount`) with their common "nothing unusual" values, so
+ * test fixtures below can state only what varies per case. */
+function outcome(partial: Omit<TokenOutcome, "message" | "skippedCount">): TokenOutcome {
+  return { message: undefined, skippedCount: 0, ...partial };
+}
+
+describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
+  const FAKE_JOBS: NormalizedJob[] = [
+    { ...job("demo-match-coverage-1", "Backend Engineer"), company: "Acme" },
+    { ...job("demo-match-coverage-2", "Backend Engineer"), company: "Widgetco" },
+  ];
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} board-coverage ${randomUUID()}`;
+
+  beforeAll(() => {
+    allExternalIds.push(...FAKE_JOBS.map((j) => j.externalId));
+    allResumeTexts.push(RESUME_TEXT);
+  });
+
+  it("distinguishes a 404'd token, an empty board, a fetch error, a board whose postings all failed filtering, and a board with a survivor — end to end through runDemoMatch", async () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "ghost-co", status: "not-found", postingCount: 0, companyName: undefined }),
+      outcome({ token: "quiet-co", status: "empty", postingCount: 0, companyName: undefined }),
+      {
+        token: "flaky-co",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: "timed out after 15000ms",
+        skippedCount: 0,
+      },
+      outcome({ token: "widgetco", status: "ok", postingCount: 1, companyName: "Widgetco" }),
+      outcome({ token: "acme", status: "ok", postingCount: 1, companyName: "Acme" }),
+    ];
+    const source = new FakeSourceWithTokenOutcomes(FAKE_JOBS, tokenOutcomes);
+    const scorer = makeCountingScorer();
+
+    // Only Acme's posting survives — Widgetco's identical title still gets
+    // filtered out, so its board reads "ok" (real, has a posting) with
+    // zero survivors, distinct from ghost-co (404), flaky-co (fetch
+    // error), and quiet-co (real, zero postings).
+    const run = await runDemoMatch({
+      db,
+      source,
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      maxJobs: FAKE_JOBS.length,
+      outputPath,
+      log: () => {},
+      filter: (jobs) => jobs.filter((j) => j.company === "Acme"),
+    });
+
+    expect(run.boardCoverage).toEqual([
+      {
+        token: "ghost-co",
+        status: "not-found",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 0,
+      },
+      {
+        token: "quiet-co",
+        status: "empty",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 0,
+      },
+      {
+        token: "flaky-co",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: "timed out after 15000ms",
+        skippedCount: 0,
+        survivedFilter: 0,
+      },
+      {
+        token: "widgetco",
+        status: "ok",
+        postingCount: 1,
+        companyName: "Widgetco",
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 0,
+      },
+      {
+        token: "acme",
+        status: "ok",
+        postingCount: 1,
+        companyName: "Acme",
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 1,
+      },
+    ]);
+  });
+
+  it("is an empty array when the source doesn't populate tokenOutcomes (plain FakeSource)", async () => {
+    const source = new FakeSource([]);
+    const scorer = makeCountingScorer();
+
+    const run = await runDemoMatch({
+      db,
+      source,
+      resumeText: `${RESUME_TEXT_PREFIX} board-coverage-none ${randomUUID()}`,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      log: () => {},
+    });
+
+    expect(run.boardCoverage).toEqual([]);
+  });
+});
+
+describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
+  // No DB needed — pure functions.
+  it("returns [] when tokenOutcomes is undefined or empty", () => {
+    expect(buildBoardCoverage(undefined, [])).toEqual([]);
+    expect(buildBoardCoverage([], [])).toEqual([]);
+  });
+
+  it("matches survivors to a token by company name, case-insensitively, and reports 0 for a token with no companyName", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "acme", status: "ok", postingCount: 5, companyName: "ACME Inc" }),
+      outcome({ token: "no-name", status: "empty", postingCount: 0, companyName: undefined }),
+    ];
+    // "acme inc" (lowercase) must still match "ACME Inc" (companyName) —
+    // and this is the ONLY survivor, so sum(survivedFilter) == 1 ==
+    // filtered.length: no warning fires.
+    const filtered: NormalizedJob[] = [
+      { ...job("cov-1", "Backend Engineer"), company: "acme inc" },
+    ];
+    const warn = vi.fn();
+    const coverage = buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    expect(coverage).toEqual([
+      {
+        token: "acme",
+        status: "ok",
+        postingCount: 5,
+        companyName: "ACME Inc",
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 1,
+      },
+      {
+        token: "no-name",
+        status: "empty",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
+        skippedCount: 0,
+        survivedFilter: 0,
+      },
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Ticket b723fb9 review finding #1: the name correlation is latent, not
+  // safe. These two cases are the reviewer's hazards A and C, made
+  // concrete: the correlation silently mis-set survivedFilter, and this
+  // guard is what makes that visible instead of silently wrong.
+  it("hazard A: two tokens self-reporting the identical company name both claim every survivor (double-count) — and the invariant check warns", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "acme-east", status: "ok", postingCount: 2, companyName: "Acme" }),
+      outcome({ token: "acme-west", status: "ok", postingCount: 2, companyName: "Acme" }),
+    ];
+    const filtered: NormalizedJob[] = [
+      { ...job("hazard-a-1", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-a-2", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-a-3", "Backend Engineer"), company: "Acme" },
+    ];
+    const warn = vi.fn();
+
+    const coverage = buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    // Documented, not desired: both entries report all 3 survivors — the
+    // correlation cannot tell the two tokens apart by name alone.
+    expect(coverage[0]!.survivedFilter).toBe(3);
+    expect(coverage[1]!.survivedFilter).toBe(3);
+    // Both checks fire independently: sum (6) != filtered.length (3), AND
+    // "Acme" is a duplicate companyName across the two entries.
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.some((call) => /sums? to 6/i.test(call[0] as string))).toBe(true);
+    expect(warn.mock.calls.some((call) => /same company name/i.test(call[0] as string))).toBe(true);
+  });
+
+  // Ticket b723fb9 review round 2 (non-blocking finding): a matching sum
+  // does NOT prove the report is correct — errors can cancel. Two tokens
+  // double-counting 2 survivors up to 4 while a third, nameless token
+  // under-counts its own 2 down to 0 nets to the same total (4 == 4), so
+  // the sum check alone stays silent. This is exactly why
+  // buildBoardCoverage also checks for duplicate companyNames
+  // independently of whether the sum happens to match.
+  it("hazard E: a double-count and an under-count can cancel in the sum, but the duplicate-name check still warns", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "acme-east", status: "ok", postingCount: 2, companyName: "Acme" }),
+      outcome({ token: "acme-west", status: "ok", postingCount: 2, companyName: "Acme" }),
+      outcome({ token: "no-name", status: "ok", postingCount: 2, companyName: undefined }),
+    ];
+    const filtered: NormalizedJob[] = [
+      { ...job("hazard-e-1", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-e-2", "Backend Engineer"), company: "Acme" },
+      { ...job("hazard-e-3", "Backend Engineer"), company: "Whoever" },
+      { ...job("hazard-e-4", "Backend Engineer"), company: "Whoever" },
+    ];
+    const warn = vi.fn();
+
+    const coverage = buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    // Sum: 2 (acme-east) + 2 (acme-west) + 0 (no-name) = 4 == filtered.length
+    // (4) — the sum check alone would stay silent here.
+    const attributedTotal = coverage.reduce((sum, e) => sum + e.survivedFilter, 0);
+    expect(attributedTotal).toBe(filtered.length);
+    // But the duplicate-name check still fires, because it doesn't depend
+    // on the sum at all.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/same company name/i);
+  });
+
+  it("hazard C: a token with no companyName reports 0 survivors even though its postings are in the shortlist — and the invariant check warns", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "no-company-name", status: "ok", postingCount: 2, companyName: undefined }),
+    ];
+    const filtered: NormalizedJob[] = [
+      { ...job("hazard-c-1", "Backend Engineer"), company: "Whoever" },
+      { ...job("hazard-c-2", "Backend Engineer"), company: "Whoever" },
+    ];
+    const warn = vi.fn();
+
+    const coverage = buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    // The board reads as if it contributed nothing ("0 survived
+    // filtering") while its 2 postings are, in fact, in the shortlist —
+    // exactly the under-count that would get a productive token deleted.
+    expect(coverage[0]!.survivedFilter).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/sums? to 0/i);
+  });
+
+  it("does not warn when every survivor is accounted for by exactly one token", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "acme", status: "ok", postingCount: 1, companyName: "Acme" }),
+    ];
+    const filtered: NormalizedJob[] = [{ ...job("ok-1", "Backend Engineer"), company: "Acme" }];
+    const warn = vi.fn();
+
+    buildBoardCoverage(tokenOutcomes, filtered, warn);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("describeBoardOutcome names each of the four outcomes distinctly", () => {
+    const notFound: BoardCoverageEntry = {
+      token: "x",
+      status: "not-found",
+      postingCount: 0,
+      companyName: undefined,
+      message: undefined,
+      skippedCount: 0,
+      survivedFilter: 0,
+    };
+    const empty: BoardCoverageEntry = {
+      token: "x",
+      status: "empty",
+      postingCount: 0,
+      companyName: undefined,
+      message: undefined,
+      skippedCount: 0,
+      survivedFilter: 0,
+    };
+    const errored: BoardCoverageEntry = {
+      token: "x",
+      status: "error",
+      postingCount: 0,
+      companyName: undefined,
+      message: "network error",
+      skippedCount: 0,
+      survivedFilter: 0,
+    };
+    const okNoSurvivors: BoardCoverageEntry = {
+      token: "x",
+      status: "ok",
+      postingCount: 10,
+      companyName: "X",
+      message: undefined,
+      skippedCount: 0,
+      survivedFilter: 0,
+    };
+    const okWithSurvivors: BoardCoverageEntry = {
+      token: "x",
+      status: "ok",
+      postingCount: 10,
+      companyName: "X",
+      message: undefined,
+      skippedCount: 0,
+      survivedFilter: 3,
+    };
+
+    const descriptions = new Set([
+      describeBoardOutcome(notFound),
+      describeBoardOutcome(empty),
+      describeBoardOutcome(errored),
+      describeBoardOutcome(okNoSurvivors),
+      describeBoardOutcome(okWithSurvivors),
+    ]);
+    // All five must read as distinct messages — that distinction is the
+    // entire point of this ticket.
+    expect(descriptions.size).toBe(5);
+    expect(describeBoardOutcome(notFound)).toMatch(/404/);
+    expect(describeBoardOutcome(empty)).toMatch(/0 postings/);
+    expect(describeBoardOutcome(errored)).toMatch(/network error/);
+    expect(describeBoardOutcome(okNoSurvivors)).toMatch(/10 posting\(s\), 0 survived/);
+    expect(describeBoardOutcome(okWithSurvivors)).toMatch(/10 posting\(s\), 3 survived/);
   });
 });
 

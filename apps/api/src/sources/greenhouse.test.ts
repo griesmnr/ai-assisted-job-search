@@ -1,14 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import {
-  AuthFailedError,
-  ForbiddenError,
-  MalformedResponseError,
-  RateLimitedError,
-  TransientSourceError,
-  UnexpectedStatusError,
-} from "./types.js";
+import { AuthFailedError, MalformedResponseError, UnexpectedStatusError } from "./types.js";
 import { GreenhouseSource, createGreenhouseSourceFromEnv, htmlToPlainText } from "./greenhouse.js";
 
 // ---------------------------------------------------------------------------
@@ -158,6 +151,27 @@ describe("GreenhouseSource — mapping against real captured responses", () => {
     expect(skipRate).toBe(1);
     expect(skipped[0]?.reason).toMatch(/missing id/);
     expect(skipped[1]?.reason).toMatch(/unparseable first_published/);
+  });
+
+  it("attributes skippedCount to the token that produced it (ticket b723fb9 review recommendation: skipRate dilutes across a wide token list, skippedCount doesn't)", async () => {
+    const brokenJobs = [
+      { title: "Broken A", company_name: "Acme", absolute_url: "https://x/1" }, // no id
+    ];
+    const fetchImpl = fetchByToken({
+      "broken-board": () => jsonResponse({ jobs: brokenJobs }),
+      discord: () => jsonResponse(discordFixture),
+    });
+    const source = makeSource(fetchImpl, ["broken-board", "discord"]);
+
+    const { tokenOutcomes } = await source.search({});
+
+    const brokenOutcome = tokenOutcomes!.find((o) => o.token === "broken-board");
+    const discordOutcome = tokenOutcomes!.find((o) => o.token === "discord");
+    // The broken record's skip is attributed to "broken-board" alone —
+    // "discord" (a healthy board fetched in the same search()) reads 0,
+    // not diluted by the other token's failure.
+    expect(brokenOutcome?.skippedCount).toBe(1);
+    expect(discordOutcome?.skippedCount).toBe(0);
   });
 
   it("maps locationType from Airbnb's real 'Workplace Type' metadata (Remote/Hybrid/Onsite) onto the returned jobs", async () => {
@@ -449,6 +463,79 @@ describe("GreenhouseSource — merging across configured board tokens", () => {
   });
 });
 
+describe("GreenhouseSource — tokenOutcomes (ticket b723fb9)", () => {
+  // The heart of the ticket: a 404'd token, a real-but-empty board, and a
+  // real board with postings must be distinguishable from each other in
+  // the data `search()` returns, not just indistinguishable empty results.
+  it("reports 'not-found' for a 404, 'empty' for a real board with zero postings, and 'ok' with a posting count and company name for a real board with postings — all in one search()", async () => {
+    const fetchImpl = fetchByToken({
+      "does-not-exist": () => new Response("Not Found", { status: 404 }),
+      "quiet-board": () => jsonResponse({ jobs: [] }),
+      discord: () => jsonResponse(discordFixture),
+    });
+    const source = makeSource(fetchImpl, ["does-not-exist", "quiet-board", "discord"]);
+
+    const { tokenOutcomes } = await source.search({});
+
+    expect(tokenOutcomes).toEqual([
+      {
+        token: "does-not-exist",
+        status: "not-found",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "quiet-board",
+        status: "empty",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "discord",
+        status: "ok",
+        postingCount: 3,
+        companyName: "Discord",
+        message: undefined,
+        skippedCount: 0,
+      },
+    ]);
+  });
+
+  it("postingCount on an 'ok' token is the raw count before criteria filtering, not after", async () => {
+    // Two jobs, only one of which matches a keyword filter — postingCount
+    // must reflect the board's real size (2), not the post-criteria count
+    // (1). `TokenOutcome` describes the board, not a particular search.
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+    });
+    const source = makeSource(fetchImpl, ["discord"]);
+
+    // discordFixture's 3 jobs presumably don't all share one keyword; use
+    // a keyword guaranteed not to match anything so criteria filtering
+    // removes every job while postingCount still reports the board's real
+    // size.
+    const { jobs, tokenOutcomes } = await source.search({
+      keyword: "this-keyword-matches-nothing-in-the-fixture-xyz",
+    });
+
+    expect(jobs).toHaveLength(0);
+    expect(tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "ok",
+        postingCount: 3,
+        companyName: "Discord",
+        message: undefined,
+        skippedCount: 0,
+      },
+    ]);
+  });
+});
+
 describe("GreenhouseSource — error classification", () => {
   it("classifies HTTP 401 as AuthFailedError (not retryable)", async () => {
     const fetchImpl = fetchByToken({
@@ -462,50 +549,230 @@ describe("GreenhouseSource — error classification", () => {
     expect((err as AuthFailedError).retryable).toBe(false);
   });
 
-  it("classifies HTTP 403 as ForbiddenError, distinct from AuthFailedError, and retryable", async () => {
+  // ticket b723fb9 review round 2, finding #2: 403 is ISOLATED (continue),
+  // not aborted. `ForbiddenError`'s own doc comment in types.ts, and
+  // `parseResponse`'s 403 comment in this file, both already say a 403
+  // here is "not reliably permanent... a WAF rule or fingerprint can
+  // change request-to-request" — a per-request blip, exactly what the
+  // isolation branch exists for. (A first pass at this ticket grouped 403
+  // with 401 as "very likely to recur identically", contradicting both of
+  // those comments — this is the corrected boundary.)
+  it("isolates HTTP 403 to that token's outcome instead of aborting the whole search()", async () => {
     const fetchImpl = fetchByToken({
       discord: () => new Response("<html>blocked</html>", { status: 403 }),
     });
     const source = makeSource(fetchImpl, ["discord"]);
 
-    const err = await source.search({}).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ForbiddenError);
-    expect(err).not.toBeInstanceOf(AuthFailedError);
-    expect((err as ForbiddenError).retryable).toBe(true);
+    const result = await source.search({});
+
+    expect(result.jobs).toEqual([]);
+    expect(result.tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("HTTP 403"),
+        skippedCount: 0,
+      },
+    ]);
   });
 
-  it("classifies HTTP 429 as RateLimitedError (retryable) and reads Retry-After", async () => {
+  // ticket b723fb9 review round 2, finding #1: a 429 stops search() from
+  // issuing further requests (back-off preserved) but no longer throws
+  // away jobs already collected from healthy boards fetched earlier in
+  // the same call — see the big comment in GreenhouseSource#search for
+  // the full reasoning ("stop hammering" and "discard everything already
+  // fetched" are separable, and only the first follows from a 429).
+  it("a single rate-limited token resolves with an 'error' outcome instead of rejecting", async () => {
     const fetchImpl = fetchByToken({
       discord: () =>
         new Response("Too Many Requests", { status: 429, headers: { "Retry-After": "12" } }),
     });
     const source = makeSource(fetchImpl, ["discord"]);
 
-    const err = await source.search({}).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(RateLimitedError);
-    expect((err as RateLimitedError).retryable).toBe(true);
-    expect((err as RateLimitedError).retryAfterMs).toBe(12_000);
+    const result = await source.search({});
+
+    expect(result.jobs).toEqual([]);
+    expect(result.tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("retry after 12000ms"),
+        skippedCount: 0,
+      },
+    ]);
   });
 
-  it("classifies HTTP 500/503 as TransientSourceError (retryable)", async () => {
+  it("a 429 mid-batch stops issuing further requests but returns every job already fetched from healthy boards earlier in the same search() — the reviewer's exact scenario", async () => {
+    // Two healthy boards (real fixtures, not synthetic 500-posting
+    // stand-ins — proves real normalized jobs survive), then a
+    // rate-limited third token, then a fourth token that must never be
+    // requested at all.
+    const fourthTokenFetch = vi.fn(() => jsonResponse({ jobs: [] }));
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      airbnb: () => jsonResponse(airbnbFixture),
+      "rate-limited": () =>
+        new Response("Too Many Requests", { status: 429, headers: { "Retry-After": "30" } }),
+      "never-requested": fourthTokenFetch,
+    });
+    const source = makeSource(fetchImpl, ["discord", "airbnb", "rate-limited", "never-requested"]);
+
+    const result = await source.search({});
+
+    // Not rejected — resolves with a partial result.
+    expect(result.jobs.length).toBe(6); // discordFixture's 3 + airbnbFixture's 3
+    expect(fourthTokenFetch).not.toHaveBeenCalled();
+    expect(result.tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "ok",
+        postingCount: 3,
+        companyName: "Discord",
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "airbnb",
+        status: "ok",
+        postingCount: 3,
+        companyName: expect.any(String),
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "rate-limited",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("retry after 30000ms"),
+        skippedCount: 0,
+      },
+      {
+        token: "never-requested",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringMatching(/not checked.*rate-limited/),
+        skippedCount: 0,
+      },
+    ]);
+  });
+
+  // ticket b723fb9 review fix #2: a 500/503 or a network failure — both
+  // classified as TransientSourceError internally — used to abort the
+  // ENTIRE search() the same way an auth/forbidden/rate-limit/malformed
+  // error still does below. That meant one flaky board among many
+  // discarded every job already fetched from every healthy board before
+  // it. TransientSourceError is now isolated per-token exactly like a 404
+  // (see GreenhouseSource#search's doc comment for why): search() resolves
+  // with an "error" tokenOutcome for that token instead of rejecting.
+  it("isolates HTTP 500/503 to that token's outcome instead of aborting the whole search()", async () => {
     const fetchImpl = fetchByToken({
       discord: () => new Response("Service Unavailable", { status: 503 }),
     });
     const source = makeSource(fetchImpl, ["discord"]);
 
-    const err = await source.search({}).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(TransientSourceError);
-    expect((err as TransientSourceError).retryable).toBe(true);
+    const result = await source.search({});
+
+    expect(result.jobs).toEqual([]);
+    expect(result.tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("HTTP 503"),
+        skippedCount: 0,
+      },
+    ]);
   });
 
-  it("classifies a network failure (fetch rejects) as TransientSourceError", async () => {
+  it("isolates a network failure (fetch rejects) to that token's outcome instead of aborting the whole search()", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET")) as any;
     const source = makeSource(fetchImpl, ["discord"]);
 
-    const err = await source.search({}).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(TransientSourceError);
-    expect((err as TransientSourceError).cause).toBeInstanceOf(Error);
+    const result = await source.search({});
+
+    expect(result.jobs).toEqual([]);
+    expect(result.tokenOutcomes).toHaveLength(1);
+    expect(result.tokenOutcomes![0]).toMatchObject({
+      token: "discord",
+      status: "error",
+      postingCount: 0,
+      companyName: undefined,
+      skippedCount: 0,
+    });
+    expect(result.tokenOutcomes![0]!.message).toMatch(/network error/i);
+  });
+
+  it("a healthy board's jobs survive when a LATER token in the same search() has a transient error — nothing already fetched is discarded", async () => {
+    const fetchImpl = fetchByToken({
+      discord: () => jsonResponse(discordFixture),
+      "flaky-board": () => new Response("Service Unavailable", { status: 503 }),
+    });
+    const source = makeSource(fetchImpl, ["discord", "flaky-board"]);
+
+    const result = await source.search({});
+
+    expect(result.jobs.map((j) => j.externalId).sort()).toEqual(
+      ["8599937002", "8614971002", "8625545002"].sort(),
+    );
+    expect(result.tokenOutcomes).toEqual([
+      {
+        token: "discord",
+        status: "ok",
+        postingCount: 3,
+        companyName: "Discord",
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "flaky-board",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("HTTP 503"),
+        skippedCount: 0,
+      },
+    ]);
+  });
+
+  it("still aborts the whole search() for 401 (AuthFailedError), a malformed body, and an unmapped 4xx (400) — these three, and only these three, are NOT isolated", async () => {
+    // Documents the exact boundary drawn in GreenhouseSource#search's big
+    // comment: 404, TransientSourceError, ForbiddenError (403), and
+    // RateLimitedError (429) are all isolated per-token now — this test
+    // pins down what's LEFT on the aborting side, so that set doesn't
+    // silently widen (or narrow) later without a test failing to say so.
+    // (A previous version of this test asserted only 401 while claiming
+    // to cover 401/403/429/malformed — folding 403 or 429 into the
+    // isolated set, as this same review round did, would have left it
+    // green despite no longer testing its own boundary. Every status this
+    // test claims still aborts is now actually exercised below.)
+    const authFailed = fetchByToken({
+      discord: () => new Response("Unauthorized", { status: 401 }),
+    });
+    await expect(makeSource(authFailed, ["discord"]).search({})).rejects.toBeInstanceOf(
+      AuthFailedError,
+    );
+
+    const malformedJson = fetchByToken({
+      discord: () => new Response("not json{{{", { status: 200 }),
+    });
+    await expect(makeSource(malformedJson, ["discord"]).search({})).rejects.toBeInstanceOf(
+      MalformedResponseError,
+    );
+
+    const unmappedStatus = fetchByToken({
+      discord: () => new Response("Bad Request", { status: 400 }),
+    });
+    await expect(makeSource(unmappedStatus, ["discord"]).search({})).rejects.toBeInstanceOf(
+      UnexpectedStatusError,
+    );
   });
 
   it("classifies invalid JSON as MalformedResponseError (not retryable)", async () => {
@@ -543,7 +810,21 @@ describe("GreenhouseSource — error classification", () => {
     const source = makeSource(fetchImpl, ["does-not-exist"]);
 
     const result = await source.search({});
-    expect(result).toEqual({ jobs: [], skipped: [], skipRate: 0 });
+    expect(result).toEqual({
+      jobs: [],
+      skipped: [],
+      skipRate: 0,
+      tokenOutcomes: [
+        {
+          token: "does-not-exist",
+          status: "not-found",
+          postingCount: 0,
+          companyName: undefined,
+          message: undefined,
+          skippedCount: 0,
+        },
+      ],
+    });
   });
 
   it("classifies an unmapped 4xx status (400) as UnexpectedStatusError (not retryable)", async () => {

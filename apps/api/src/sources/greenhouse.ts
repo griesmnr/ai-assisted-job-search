@@ -12,6 +12,7 @@ import {
   type SearchCriteria,
   type SkippedRecord,
   type SourceSearchResult,
+  type TokenOutcome,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -139,32 +140,119 @@ export class GreenhouseSource implements JobSource {
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
+    const tokenOutcomes: TokenOutcome[] = [];
 
+    // ---------------------------------------------------------------------
+    // Per-error-kind isolation policy (ticket b723fb9, review round 2).
     // Sequential, not Promise.all: keeps this well-behaved against an
-    // unauthenticated public API shared by every Greenhouse consumer (no
-    // per-key rate limit to spend in parallel), and keeps a 429/5xx on one
-    // token from firing a burst of simultaneous requests at the others.
-    for (const token of this.#boardTokens) {
+    // unauthenticated public API shared by every Greenhouse consumer, and
+    // keeps a 429/5xx on one token from firing a burst of simultaneous
+    // requests at the others. Four outcomes for a single token's fetch,
+    // each handled differently below:
+    //
+    //   - 404 (UnexpectedStatusError, status 404): ISOLATED, continue. A
+    //     property of the token (typo, renamed company, never existed) —
+    //     permanent, and will 404 identically forever. No reason to let it
+    //     discard jobs already collected from healthy boards.
+    //
+    //   - TransientSourceError (timeout, network failure, 5xx): ISOLATED,
+    //     continue. A property of THIS request, not the whole batch — real
+    //     captured timings on the widened 25-token list showed boards
+    //     taking 5-8 real seconds against a 15s timeout, so a single slow/
+    //     flaky board is a meaningfully more likely event at 25 tokens than
+    //     it was at 4. A retry of the exact same request may well succeed.
+    //
+    //   - ForbiddenError (403): ISOLATED, continue. Per this file's own
+    //     `parseResponse` doc comment and `ForbiddenError`'s doc comment in
+    //     types.ts, a 403 here is treated as a transient edge/WAF block
+    //     ("not reliably permanent... a WAF rule or fingerprint can change
+    //     request-to-request"), not a systemic rejection — the isolation
+    //     branch that exists for exactly that kind of per-request blip.
+    //     (This is a corrected boundary — a first pass at this comment
+    //     grouped 403 with 401 as "very likely to recur identically",
+    //     which contradicted both of those pre-existing doc comments.)
+    //
+    //   - RateLimitedError (429): ISOLATED, but by `break`, not `continue`.
+    //     "Stop hammering an already-rate-limited, shared, unauthenticated
+    //     endpoint" and "discard every job already fetched from healthy
+    //     boards" are two separate decisions, and only the first follows
+    //     from a 429. `break` implements the first — no further requests
+    //     go out — while still returning everything already collected
+    //     instead of throwing it away. Every token that was never attempted
+    //     is recorded as "error" so a caller can see, per token, which
+    //     boards this run didn't get to and why, rather than a search()
+    //     that made real progress (e.g. 11 of 25 boards, thousands of
+    //     postings) surfacing to its caller as nothing at all.
+    //
+    //   - AuthFailedError (401), MalformedResponseError, any other
+    //     UnexpectedStatusError (e.g. 400): ABORT — rethrown, whole
+    //     search() rejects. A 401 means something changed globally (this
+    //     API takes no credentials; a real 401 is not a per-token fact), a
+    //     malformed response means Greenhouse's schema moved under us, and
+    //     an unmapped 4xx is unclassified — all three should fail loudly
+    //     rather than silently degrade into a per-token status buried in a
+    //     report.
+    // ---------------------------------------------------------------------
+    for (let i = 0; i < this.#boardTokens.length; i++) {
+      const token = this.#boardTokens[i]!;
       let data: GreenhouseBoardResponse;
       try {
         data = await this.#fetchBoard(token);
       } catch (err) {
-        // A 404 here means *this specific board token* doesn't exist
-        // (typo, renamed company, board taken down) — it is a property of
-        // the token, not of the Greenhouse API as a whole, and it will
-        // return the identical 404 on every future request (permanent,
-        // matching UnexpectedStatusError's non-retryable default). Unlike
-        // a 429/5xx/network failure — which likely affects every token
-        // equally and is a reason to stop and surface the error — one bad
-        // token among many configured ones shouldn't discard the jobs
-        // already collected from the healthy boards. So: skip this token
-        // and keep going, rather than aborting the whole search().
         if (err instanceof UnexpectedStatusError && err.status === 404) {
+          tokenOutcomes.push({
+            token,
+            status: "not-found",
+            postingCount: 0,
+            companyName: undefined,
+            message: undefined,
+            skippedCount: 0,
+          });
           continue;
+        }
+        if (err instanceof TransientSourceError || err instanceof ForbiddenError) {
+          tokenOutcomes.push({
+            token,
+            status: "error",
+            postingCount: 0,
+            companyName: undefined,
+            message: err.message,
+            skippedCount: 0,
+          });
+          continue;
+        }
+        if (err instanceof RateLimitedError) {
+          tokenOutcomes.push({
+            token,
+            status: "error",
+            postingCount: 0,
+            companyName: undefined,
+            message:
+              err.retryAfterMs !== undefined
+                ? `${err.message} (retry after ${err.retryAfterMs}ms)`
+                : err.message,
+            skippedCount: 0,
+          });
+          // Every remaining, never-attempted token — no request goes out
+          // for any of them this call. Recorded individually (not as one
+          // aggregate outcome) so `describeBoardOutcome` can render each
+          // one's line the same way it renders every other token.
+          for (const notAttempted of this.#boardTokens.slice(i + 1)) {
+            tokenOutcomes.push({
+              token: notAttempted,
+              status: "error",
+              postingCount: 0,
+              companyName: undefined,
+              message: `not checked — search() stopped issuing requests after board "${token}" was rate-limited (HTTP 429)`,
+              skippedCount: 0,
+            });
+          }
+          break;
         }
         throw err;
       }
 
+      let tokenSkippedCount = 0;
       for (const item of data.jobs) {
         if (!itemMatchesCriteria(item, criteria)) continue;
         const result = normalizeItem(item);
@@ -172,14 +260,30 @@ export class GreenhouseSource implements JobSource {
           jobs.push(result.job);
         } else {
           skipped.push({ externalId: result.externalId, reason: result.reason });
+          tokenSkippedCount++;
         }
       }
+
+      // Recorded before criteria filtering: `postingCount` (and the
+      // "empty" vs "ok" status it drives) describes the board itself, not
+      // what a particular search narrowed it down to — see the doc
+      // comment on `TokenOutcome`. `companyName` is read off the FIRST raw
+      // record only — see the WARNING on `TokenOutcome.companyName` for
+      // why a caller must not treat this as a stable per-token key.
+      tokenOutcomes.push({
+        token,
+        status: data.jobs.length === 0 ? "empty" : "ok",
+        postingCount: data.jobs.length,
+        companyName: data.jobs[0]?.company_name,
+        message: undefined,
+        skippedCount: tokenSkippedCount,
+      });
     }
 
     const total = jobs.length + skipped.length;
     const skipRate = total === 0 ? 0 : skipped.length / total;
 
-    return { jobs, skipped, skipRate };
+    return { jobs, skipped, skipRate, tokenOutcomes };
   }
 
   async #fetchBoard(token: string): Promise<GreenhouseBoardResponse> {

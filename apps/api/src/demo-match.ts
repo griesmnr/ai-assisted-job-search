@@ -23,8 +23,9 @@ import { Client } from "pg";
 import { seedSourceDescriptors } from "./db/seed.js";
 import { jobMatches, jobs as jobsTable, resumes, searches, searchSources } from "./db/schema.js";
 import { ingestJobsForSearch } from "./ingest/ingestJobs.js";
-import { GreenhouseSource } from "./sources/greenhouse.js";
-import type { JobSource, NormalizedJob, SearchCriteria } from "./sources/types.js";
+import { createGreenhouseSourceFromEnv } from "./sources/greenhouse.js";
+import { filterSoftwareEngineeringJobs } from "./sources/swe-filter.js";
+import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
 process.loadEnvFile();
 
@@ -162,6 +163,20 @@ export type RunDemoMatchOptions = {
   log?: (message: string) => void;
 };
 
+/**
+ * One configured token's outcome, extended with how many of its postings
+ * survived `filter` — the third distinction ticket b723fb9 asks for, that
+ * `TokenOutcome` alone (source-level) can't make: a board can be "ok"
+ * (real, has postings) and still contribute zero jobs to the funnel
+ * because none matched the title/location filter. `status`/`postingCount`
+ * describe the source; `survivedFilter` describes what THIS run's `filter`
+ * did with them. A user staring at an empty result can read this list and
+ * tell "your board token is wrong" apart from "that employer isn't
+ * hiring right now" apart from "they're hiring, just not for this" —
+ * three different problems that otherwise all look like silence.
+ */
+export type BoardCoverageEntry = TokenOutcome & { survivedFilter: number };
+
 export type RunDemoMatchResult = {
   resumeId: string;
   searchId: string;
@@ -179,6 +194,12 @@ export type RunDemoMatchResult = {
    */
   failed: number;
   results: RankedResult[];
+  /**
+   * Per-token funnel breakdown, empty when `source.search()` didn't
+   * populate `tokenOutcomes` (sources without that concept — see
+   * `SourceSearchResult.tokenOutcomes`). See `BoardCoverageEntry`.
+   */
+  boardCoverage: BoardCoverageEntry[];
 };
 
 /**
@@ -198,6 +219,132 @@ export function isTotalScoringFailure(
   result: Pick<RunDemoMatchResult, "failed" | "newlyScored">,
 ): boolean {
   return result.failed > 0 && result.newlyScored === 0;
+}
+
+/**
+ * Extends each raw `TokenOutcome` (source-level: does the token resolve,
+ * does the board have postings) with `survivedFilter` — how many of
+ * `filtered` (this run's `filter` applied to everything the source
+ * returned, before the `maxJobs` slice) came from that token's employer.
+ * Matched by `NormalizedJob.company` against `TokenOutcome.companyName`
+ * (case-insensitively) rather than by tagging every job with its token,
+ * which would mean widening `NormalizedJob` for a concern specific to this
+ * reporting. Returns `[]` when the source didn't populate `tokenOutcomes`
+ * at all (ticket b723fb9's board-coverage reporting is opt-in per source,
+ * not a requirement every `JobSource` implementation must satisfy).
+ *
+ * WARNING (ticket b723fb9 review finding #1): this correlation is by
+ * NAME, not by token, and `TokenOutcome.companyName` is free text an
+ * employer typed into a form field — see the WARNING on that field for
+ * the concrete hazards (two tokens self-reporting the same name double-
+ * counts survivors onto both; a name that differs from the survivors'
+ * `company` under-counts to zero while the board is actually healthy).
+ * None of that fires against the 25 tokens configured today, but it is
+ * real and latent, not hypothetical — `fivetran`'s real API response
+ * self-reports `"Fivetran "` with a trailing space today; only `.trim()`
+ * keeps that one matching.
+ *
+ * Rather than pretend the correlation is exact, this function runs two
+ * cheap sanity checks over its own output and calls `warn` when either
+ * fires, instead of silently returning numbers that may misattribute
+ * survivors between boards:
+ *
+ *   1. `sum(survivedFilter)` across every returned entry should equal
+ *      `filtered.length` — every survivor should be attributed to exactly
+ *      one token. A mismatch PROVES some misattribution happened
+ *      (over-counted somewhere, under-counted somewhere, or both), but a
+ *      MATCHING sum does not prove there was none: errors can cancel. Two
+ *      tokens sharing a name can double-count 2 survivors up to 4 while a
+ *      third, nameless token under-counts its own 2 down to 0 — sum stays
+ *      right (4) while every individual number is wrong. That's what
+ *      check 2 is for.
+ *   2. Two or more entries reporting the identical `companyName`
+ *      (case-insensitively) are flagged directly — this is exactly the
+ *      double-counting hazard, caught independent of whether the sum
+ *      happens to net out.
+ *
+ * Neither check proves the report is correct; both together catch every
+ * hazard this function's own review turned up. A board that's actually
+ * healthy must never silently read as "0 survived filtering" (that reads
+ * as dead and is exactly what gets a productive token deleted) without at
+ * least a `warn` alongside it.
+ */
+export function buildBoardCoverage(
+  tokenOutcomes: TokenOutcome[] | undefined,
+  filtered: NormalizedJob[],
+  warn: (message: string) => void = (message) => console.warn(message),
+): BoardCoverageEntry[] {
+  if (!tokenOutcomes || tokenOutcomes.length === 0) return [];
+
+  const survivedByCompany = new Map<string, number>();
+  for (const job of filtered) {
+    const key = job.company.trim().toLowerCase();
+    survivedByCompany.set(key, (survivedByCompany.get(key) ?? 0) + 1);
+  }
+
+  const coverage = tokenOutcomes.map((outcome) => ({
+    ...outcome,
+    survivedFilter: outcome.companyName
+      ? (survivedByCompany.get(outcome.companyName.trim().toLowerCase()) ?? 0)
+      : 0,
+  }));
+
+  const attributedTotal = coverage.reduce((sum, entry) => sum + entry.survivedFilter, 0);
+  if (attributedTotal !== filtered.length) {
+    warn(
+      `buildBoardCoverage: per-token survivedFilter counts sum to ${attributedTotal}, but ` +
+        `${filtered.length} job(s) actually survived filtering this run. TokenOutcome.companyName ` +
+        `is free text, not a stable key (two tokens can self-report the same name, or a name can ` +
+        `differ from what actually survived) — the board-coverage numbers below may misattribute ` +
+        `survivors between tokens. Do not conclude a token contributed nothing from this report alone.`,
+    );
+  }
+
+  const namesSeen = new Set<string>();
+  const duplicateNames = new Set<string>();
+  for (const entry of coverage) {
+    if (!entry.companyName) continue;
+    const key = entry.companyName.trim().toLowerCase();
+    if (namesSeen.has(key)) duplicateNames.add(key);
+    namesSeen.add(key);
+  }
+  if (duplicateNames.size > 0) {
+    warn(
+      `buildBoardCoverage: multiple tokens self-report the same company name ` +
+        `(${[...duplicateNames].join(", ")}) — each such token's survivedFilter counts every ` +
+        `survivor attributed to that name, so they are almost certainly double-counted between ` +
+        `those tokens specifically, regardless of whether the totals above happened to match.`,
+    );
+  }
+
+  return coverage;
+}
+
+/**
+ * The one-line-per-board summary ticket b723fb9 exists to make possible:
+ * outcomes that used to all look like "nothing from this employer" now
+ * read as distinct, specific problems.
+ */
+export function describeBoardOutcome(entry: BoardCoverageEntry): string {
+  switch (entry.status) {
+    case "not-found":
+      return "board does not exist (404) — check the token";
+    case "empty":
+      return "board exists, 0 postings right now";
+    case "error":
+      // `entry.message` already says what happened — a fetch failure
+      // ("Greenhouse request for board ... timed out...", "... HTTP
+      // 503..."), a rate limit ("Greenhouse rate limit exceeded (HTTP
+      // 429)..."), or, for a token search() never got to after a 429,
+      // "not checked — search() stopped issuing requests after board ...
+      // was rate-limited". All three are potentially resolved by a later
+      // run, hence the shared "rerun to retry" — this is NOT "not-found":
+      // the board may be perfectly healthy, this run just couldn't
+      // confirm that.
+      return `${entry.message ?? "fetch failed (unknown error)"} — rerun to retry`;
+    case "ok":
+      return `${entry.postingCount} posting(s), ${entry.survivedFilter} survived filtering`;
+  }
 }
 
 /**
@@ -273,10 +420,25 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   const resumeId = await getOrCreateResumeId(db, resumeText);
 
   log(`Fetching real postings from ${source.dataSource.toUpperCase()}...`);
-  const { jobs: found, skipped, skipRate } = await source.search(criteria);
+  const { jobs: found, skipped, skipRate, tokenOutcomes } = await source.search(criteria);
   log(`  ${found.length} jobs, ${skipped.length} skipped (skipRate ${skipRate.toFixed(2)})\n`);
 
-  const shortlist = filter(found).slice(0, maxJobs);
+  // Computed before the `maxJobs` slice, specifically so board-level
+  // survivor counts below reflect what actually passed `filter`, not what
+  // was left after also truncating to the shortlist size.
+  const filtered = filter(found);
+  const shortlist = filtered.slice(0, maxJobs);
+
+  const boardCoverage = buildBoardCoverage(tokenOutcomes, filtered, (message) =>
+    log(`  WARNING: ${message}`),
+  );
+  if (boardCoverage.length > 0) {
+    log("  Board coverage:");
+    for (const b of boardCoverage) {
+      log(`    ${b.token}: ${describeBoardOutcome(b)}`);
+    }
+    log("");
+  }
 
   const searchId = randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
@@ -293,7 +455,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
     fs.writeFileSync(outputPath, JSON.stringify([], null, 2));
-    return { resumeId, searchId, skipped: 0, newlyScored: 0, failed: 0, results: [] };
+    return {
+      resumeId,
+      searchId,
+      skipped: 0,
+      newlyScored: 0,
+      failed: 0,
+      results: [],
+      boardCoverage,
+    };
   }
 
   // Map linked job ids back to the NormalizedJob payload a scorer needs
@@ -440,38 +610,22 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     newlyScored: newlyScoredCount,
     failed: failedCount,
     results,
+    boardCoverage,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Shortlist filter for the real Greenhouse-backed run below. Greenhouse has
-// no server-side keyword/location query support (it always returns a whole
-// board — see sources/greenhouse.ts), so all of this narrowing has to happen
-// client-side, on `filter`, not on `criteria`.
+// Shortlist filter for the real Greenhouse-backed run below. Moved to
+// sources/swe-filter.ts (ticket b723fb9 review fix #3) so
+// check-greenhouse-board.ts can reuse the exact same filter without pulling
+// in this file's much heavier import graph (Drizzle, `pg`, the Anthropic
+// SDK, and the top-level `process.loadEnvFile()` call a few lines up, which
+// throws if no `.env` exists) — see that file's doc comment for the full
+// reasoning. Re-exported here (imported above) so every existing import of
+// `filterSoftwareEngineeringJobs` from "./demo-match.js" keeps working
+// unchanged.
 // ---------------------------------------------------------------------------
-
-// Title filter: actual software engineering roles, not adjacent ones.
-const SOFTWARE =
-  /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
-const NOT =
-  /\b(manager|director|principal|sales|marketing|recruit|intern|designer|field service|machine learning|data scientist)\b/i;
-
-// Location filter: Washington, or genuinely US-remote. Excludes the many
-// "Remote - Canada/UK/Poland" postings, which aren't applicable.
-const PLACE = /(washington|seattle|bellevue|,\s*wa\b|remote\s*-\s*us|remote,\s*usa)/i;
-
-export function filterSoftwareEngineeringJobs(jobs: NormalizedJob[]): NormalizedJob[] {
-  const seen = new Set<string>();
-  return jobs
-    .filter((j) => SOFTWARE.test(j.title) && !NOT.test(j.title))
-    .filter((j) => PLACE.test(j.location ?? ""))
-    .filter((j) => {
-      const key = `${j.company}|${j.title}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
+export { filterSoftwareEngineeringJobs };
 
 const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
@@ -490,9 +644,12 @@ async function main() {
   await client.connect();
   const db = drizzle(client);
 
-  const source = new GreenhouseSource({
-    boardTokens: ["samsara", "flexport", "smartsheet", "pushpay"],
-  });
+  // Board tokens are configuration (GREENHOUSE_BOARD_TOKENS, .env), not a
+  // literal here (ticket b723fb9) — see .env.example for the documented
+  // default list and apps/api/src/scripts/check-greenhouse-board.ts for
+  // how to check whether a candidate employer hosts on Greenhouse at all
+  // before adding its token.
+  const source = createGreenhouseSourceFromEnv();
 
   try {
     // No location/keyword in `criteria`: GreenhouseSource has no
