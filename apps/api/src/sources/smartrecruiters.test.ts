@@ -989,6 +989,183 @@ describe("SmartRecruitersSource — per-posting failure isolation (malformed rec
     expect(skipped[0]?.externalId).toBe("malformed-b");
     expect(skipped[0]?.reason).toMatch(/missing or non-string name/);
   });
+
+  // FIX (adversarial review, round 2) — the first round's fix closed the
+  // reported bug (a non-string `name`) but a further attack pass found
+  // three inputs that still destroyed a whole company's results:
+  // `content: [good, null, good]` with no location criteria (A9), the same
+  // with a location criteria set — exercising `summaryMatchesLocation`'s
+  // separate guard, not `#fetchAndNormalize`'s (A9b) — and a `summary.id`
+  // implemented as a throwing getter (A11). `parsePostingsPageShape` only
+  // validates that `content` IS an array, never that its elements are
+  // well-formed objects, so all three reach the per-record pipeline
+  // unfiltered — deliberately: see that function's own comment for why
+  // filtering them out earlier would trade a visible skip for a silent,
+  // invisible drop.
+  it("A9: a null element in content is skipped individually, not fatal to the rest of the company (no location criteria)", async () => {
+    const healthyA = { id: "healthy-a", name: "Healthy Role A", company: { name: "Acme" } };
+    const healthyC = { id: "healthy-c", name: "Healthy Role C", company: { name: "Acme" } };
+
+    function detailFor(id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { name: "Acme" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/Acme/${id}`,
+        jobAd: {
+          sections: { jobDescription: { title: "Job Description", text: `<p>Work: ${id}.</p>` } },
+        },
+      };
+    }
+
+    const fetchImpl = makeFetch({
+      postings: {
+        Acme: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 3,
+            content: [healthyA, null, healthyC],
+          }),
+      },
+      detail: {
+        Acme: {
+          "healthy-a": () => jsonResponse(detailFor("healthy-a")),
+          "healthy-c": () => jsonResponse(detailFor("healthy-c")),
+        },
+      },
+    });
+    const source = makeSource(fetchImpl, ["Acme"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(["healthy-a", "healthy-c"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.externalId).toBeUndefined();
+  });
+
+  it("A9b: a null element in content is skipped individually when a location criteria is set too (exercises summaryMatchesLocation's own guard)", async () => {
+    const healthyA = {
+      id: "healthy-a",
+      name: "Healthy Role A",
+      company: { name: "Acme" },
+      location: { fullLocation: "Remote" },
+    };
+    const healthyC = {
+      id: "healthy-c",
+      name: "Healthy Role C",
+      company: { name: "Acme" },
+      location: { fullLocation: "Remote" },
+    };
+
+    function detailFor(id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { name: "Acme" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/Acme/${id}`,
+        jobAd: {
+          sections: { jobDescription: { title: "Job Description", text: `<p>Work: ${id}.</p>` } },
+        },
+      };
+    }
+
+    const fetchImpl = makeFetch({
+      postings: {
+        Acme: () =>
+          jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: 3,
+            content: [healthyA, null, healthyC],
+          }),
+      },
+      detail: {
+        Acme: {
+          "healthy-a": () => jsonResponse(detailFor("healthy-a")),
+          "healthy-c": () => jsonResponse(detailFor("healthy-c")),
+        },
+      },
+    });
+    const source = makeSource(fetchImpl, ["Acme"]);
+
+    // Without this criteria.location, the null element never reaches
+    // summaryMatchesLocation at all (candidates === summaries verbatim) —
+    // this is the case that specifically exercises its guard, not just
+    // #fetchAndNormalize's.
+    const { jobs, skipped } = await source.search({ location: "Remote" });
+
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(["healthy-a", "healthy-c"]);
+    // The null element never reaches #fetchAndNormalize at all here (it's
+    // filtered out of `candidates` by summaryMatchesLocation returning
+    // false for it, same as any non-matching real record) — so unlike A9,
+    // there is no skip record for it specifically here. What this test
+    // actually proves is the absence of a crash: without the round-2 fix,
+    // this whole search() call would have rejected/thrown.
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("A11: a summary.id implemented as a throwing getter is skipped individually, not fatal to the rest of the company", async () => {
+    const healthyA = { id: "healthy-a", name: "Healthy Role A", company: { name: "Acme" } };
+    const healthyC = { id: "healthy-c", name: "Healthy Role C", company: { name: "Acme" } };
+    const hostile = {
+      get id(): string {
+        throw new Error("boom from id getter");
+      },
+      name: "Hostile Role",
+      company: { name: "Acme" },
+    };
+
+    function detailFor(id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { name: "Acme" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/Acme/${id}`,
+        jobAd: {
+          sections: { jobDescription: { title: "Job Description", text: `<p>Work: ${id}.</p>` } },
+        },
+      };
+    }
+
+    // Built directly as a Response-shaped stub, NOT via jsonResponse() /
+    // JSON.stringify — a throwing getter can't survive real JSON
+    // serialization (stringifying it would throw immediately, before the
+    // mock could even respond), so this constructs only the surface
+    // #request/#fetchPostingsPage actually reads.
+    const hostileResponse = {
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: async () => ({
+        offset: 0,
+        limit: 100,
+        totalFound: 3,
+        content: [healthyA, hostile, healthyC],
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const fetchImpl = makeFetch({
+      postings: { Acme: () => hostileResponse },
+      detail: {
+        Acme: {
+          "healthy-a": () => jsonResponse(detailFor("healthy-a")),
+          "healthy-c": () => jsonResponse(detailFor("healthy-c")),
+        },
+      },
+    });
+    const source = makeSource(fetchImpl, ["Acme"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(["healthy-a", "healthy-c"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.reason).toMatch(/boom from id getter/);
+  });
 });
 
 // ---------------------------------------------------------------------------

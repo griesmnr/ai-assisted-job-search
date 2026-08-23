@@ -512,7 +512,11 @@ export class SmartRecruitersSource implements JobSource {
    * `criteria.keyword`. Never throws — every failure mode is caught here
    * and turned into a per-record result, so one bad posting can never take
    * down the rest of a company's search, however many thousands of
-   * postings that company has.
+   * postings that company has. This claim holds ONLY once
+   * `summaryMatchesLocation` (used in the synchronous `.filter()` in
+   * `#searchCompany`, upstream of this function and outside any try/catch
+   * of its own) is equally defensive against a malformed `summary` — see
+   * that function's doc comment for the matching guard.
    *
    * FIX (adversarial review, round 1): the original version of this method
    * only wrapped `#fetchDetail` in try/catch — `buildDescription`, the
@@ -530,6 +534,21 @@ export class SmartRecruitersSource implements JobSource {
    * detail fetch, description assembly, filtering, and normalization — is
    * now inside one try/catch so a thrown error anywhere in this per-record
    * pipeline degrades to a single skip, never a company-wide loss.
+   *
+   * FIX (adversarial review, round 2): that first fix still had a hole —
+   * `externalId` was computed OUTSIDE the try (it has to be in scope for
+   * the `catch` block to attach it to the skip record), directly off
+   * `summary.id`. When `summary` itself is malformed — `null` in a
+   * `content` array `parsePostingsPageShape` only validates as "an array",
+   * never validating its elements, so `[good, null, good]` passes straight
+   * through — or when `summary.id` is a throwing getter, that computation
+   * threw before the try block was ever entered, escaping this function
+   * entirely and reproducing the exact same company-wide loss the first
+   * fix closed for a bad `name`. `externalId` is now declared before the
+   * try and assigned INSIDE it (with a `summary?.id` guard so the
+   * assignment itself can't throw); the actual detail fetch on the next
+   * line can still throw on a null/hostile `summary`, but by then it's
+   * inside the try and degrades to a normal per-record skip.
    */
   async #fetchAndNormalize(
     company: string,
@@ -540,10 +559,11 @@ export class SmartRecruitersSource implements JobSource {
     | { kind: "skip"; record: SkippedRecord }
     | { kind: "filtered-out" }
   > {
-    const externalId =
-      typeof summary.id === "string" && summary.id.length > 0 ? summary.id : undefined;
+    let externalId: string | undefined;
 
     try {
+      externalId =
+        typeof summary?.id === "string" && summary.id.length > 0 ? summary.id : undefined;
       const detail = await this.#fetchDetail(company, summary.id);
       const fullDescription = buildDescription(detail);
 
@@ -886,6 +906,21 @@ function parsePostingsPageShape(body: unknown, company: string): SmartRecruiters
   return body as SmartRecruitersPostingsPage;
 }
 
+// This deliberately validates only that `content` IS an array — not that
+// every element in it is a well-formed posting object. An adversarial
+// review flagged that a hostile/malformed `content: [good, null, good]`
+// therefore passes straight through, and suggested filtering non-object
+// elements out here as a "better still" companion to hardening
+// `#fetchAndNormalize`/`summaryMatchesLocation` against exactly that
+// shape. Deliberately NOT done: silently dropping a malformed element here
+// would mean it never reaches the per-record pipeline at all, and
+// therefore never produces a `SkippedRecord` — an invisible loss, which is
+// precisely the failure mode this entire ticket exists to eliminate (see
+// Finding 1). Better to let a malformed element flow through and become an
+// explicit, named skip (which `#fetchAndNormalize`'s and
+// `summaryMatchesLocation`'s guards now both guarantee it will, without
+// crashing) than to make it disappear quietly at the parsing layer.
+
 function parsePostingDetailShape(
   body: unknown,
   company: string,
@@ -908,14 +943,23 @@ function parsePostingDetailShape(
 
 function summaryMatchesLocation(summary: SmartRecruitersPostingSummary, location: string): boolean {
   const needle = location.toLowerCase();
-  // typeof-guarded: this runs inside a synchronous `.filter()` in
-  // `#searchCompany`, OUTSIDE any per-record try/catch — a throw here
-  // (e.g. from `?.toLowerCase()` on a non-string `fullLocation`, the same
-  // class of bug `#fetchAndNormalize`'s doc comment describes) would abort
-  // the whole `.filter()` call and lose every summary for the company, not
-  // just the one malformed record. A malformed location degrades to "no
-  // match" rather than a crash.
-  const raw = summary.location?.fullLocation;
+  // typeof/optional-chain-guarded on EVERY step down to `fullLocation`,
+  // including `summary` itself: this runs inside a synchronous `.filter()`
+  // in `#searchCompany`, OUTSIDE any per-record try/catch — a throw here
+  // would abort the whole `.filter()` call and lose every summary for the
+  // company, not just the one malformed record.
+  //
+  // FIX (adversarial review, round 2): the original version guarded
+  // `fullLocation`'s type but read it off `summary.location` — not
+  // `summary?.location` — so a malformed `summary` itself (e.g. a literal
+  // `null` in a `content` array; `parsePostingsPageShape` only validates
+  // that `content` IS an array, never that its elements are objects, so
+  // `[good, null, good]` passes straight through) still threw
+  // "Cannot read properties of null (reading 'location')" right here,
+  // reproducing the same company-wide loss this function's fix was
+  // supposed to close. `summary?.location?.fullLocation` guards the whole
+  // chain, not just its tail.
+  const raw = summary?.location?.fullLocation;
   const haystack = typeof raw === "string" ? raw.toLowerCase() : "";
   return haystack.includes(needle);
 }
@@ -1050,7 +1094,12 @@ function normalizeItem(
     return { ok: false, externalId, reason: `unparseable releasedDate "${postedAtRaw}"` };
   }
 
-  const location = (detail.location ?? summary.location)?.fullLocation?.trim() || undefined;
+  // `asTrimmedString`, not `?.trim()` — same reasoning as `title`/`company_`
+  // above. A bare `?.trim()` here would turn a malformed-but-otherwise-fine
+  // `fullLocation` (e.g. a stray number) into a full record skip, which
+  // directly contradicts the very next comment: an unmappable optional
+  // field is not supposed to be a skip condition.
+  const location = asTrimmedString((detail.location ?? summary.location)?.fullLocation);
   const payType = mapPayType();
   const commitment = mapCommitment(detail.typeOfEmployment ?? summary.typeOfEmployment);
   const locationType = mapLocationType(detail.location ?? summary.location);
@@ -1109,7 +1158,15 @@ function mapPayType(): Job["payType"] | undefined {
 function mapCommitment(
   typeOfEmployment: SmartRecruitersTypeOfEmployment | undefined,
 ): Job["commitment"] | undefined {
-  const id = typeOfEmployment?.id?.trim().toLowerCase();
+  // `asTrimmedString`, not `?.trim()` (adversarial review, round 2,
+  // "optional" fix): a bare `?.trim()` throws on a present-but-non-string
+  // `id` (e.g. `typeOfEmployment: {id: 3}`), which — before this fix —
+  // turned an otherwise-perfectly-good posting into a full skip. That's a
+  // correctness bug even though it can no longer crash a whole company's
+  // search (it's caught by `#fetchAndNormalize`'s try/catch either way):
+  // `commitment` is documented as optional, un-mappable-degrades-to-
+  // undefined, not skip-the-whole-record.
+  const id = asTrimmedString(typeOfEmployment?.id)?.toLowerCase();
   if (id === "permanent") return "full-time";
   if (id === "part-time") return "part-time";
   if (id === "contract") return "contract";
