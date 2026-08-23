@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
+import type { Job } from "@app/shared";
 import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -23,7 +24,11 @@ import { Client } from "pg";
 import { seedSourceDescriptors } from "./db/seed.js";
 import { jobMatches, jobs as jobsTable, resumes, searches, searchSources } from "./db/schema.js";
 import { ingestJobsForSearch } from "./ingest/ingestJobs.js";
+import { createAshbySourceFromEnv } from "./sources/ashby.js";
+import { CompositeSource, type PerSourceOutcome } from "./sources/composite.js";
 import { createGreenhouseSourceFromEnv } from "./sources/greenhouse.js";
+import { createLeverSourceFromEnv } from "./sources/lever.js";
+import { createSmartRecruitersSourceFromEnv } from "./sources/smartrecruiters.js";
 import { filterSoftwareEngineeringJobs } from "./sources/swe-filter.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
@@ -138,7 +143,17 @@ export type RankedResult = {
 export type RunDemoMatchOptions = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>;
-  source: JobSource;
+  /**
+   * Every source this run should search — Greenhouse, Lever, Ashby,
+   * SmartRecruiters, or any combination (ticket d8417b2 wired all four in;
+   * before that, this was a single `source: JobSource` and only Greenhouse
+   * was ever passed). Fanned out via `CompositeSource`
+   * (sources/composite.ts), which isolates one source's total failure from
+   * the others — see that file's top-of-file comment for why it does NOT
+   * itself pretend to be a single `JobSource`. Must be non-empty; an empty
+   * array throws rather than silently searching nothing.
+   */
+  sources: JobSource[];
   resumeText: string;
   scoreJob: ScoreJobFn;
   /**
@@ -195,9 +210,70 @@ export type RunDemoMatchResult = {
   failed: number;
   results: RankedResult[];
   /**
-   * Per-token funnel breakdown, empty when `source.search()` didn't
-   * populate `tokenOutcomes` (sources without that concept — see
-   * `SourceSearchResult.tokenOutcomes`). See `BoardCoverageEntry`.
+   * One entry per configured source (ticket d8417b2) — Greenhouse, Lever,
+   * Ashby, SmartRecruiters, whichever were passed as `sources`. Replaces
+   * what used to be a single `boardCoverage: BoardCoverageEntry[]` from
+   * back when `runDemoMatch` only ever took one `source`. See
+   * `SourceOutcome`.
+   */
+  sourceOutcomes: SourceOutcome[];
+};
+
+/**
+ * One-line-per-source funnel status, computed once per `runDemoMatch` call
+ * from `CompositeSource`'s `PerSourceOutcome[]` (sources/composite.ts) plus
+ * this run's post-`filter` survivors. Deliberately mirrors `TokenStatus`'s
+ * vocabulary (`TokenOutcome`, ticket b723fb9) one level up rather than
+ * inventing a parallel shape: `TokenOutcome` already solved "tell a bad
+ * employer TOKEN apart from a quiet employer apart from a filtered-out
+ * employer" *within* one source; this is the identical three-way
+ * distinction for a whole SOURCE within a search that now spans several —
+ * "Lever wasn't asked" (Lever simply isn't in `sources`, so it has no entry
+ * here at all — nothing to average away), "Lever returned nothing"
+ * (`status: "empty"`), and "Lever returned postings, none survived
+ * filtering" (`status: "ok"`, `survivedFilter: 0`) are three different,
+ * user-visible problems that a single skipRate merged across all four
+ * sources would collapse into one indistinguishable number. See ticket
+ * d8417b2.
+ */
+export type SourceOutcome = {
+  dataSource: Job["dataSource"];
+  /**
+   * "error": this source's own `search()` call rejected outright —
+   * `CompositeSource` isolated it so it couldn't take the other configured
+   * sources down with it (see composite.ts's `PerSourceOutcome`). "empty":
+   * `search()` succeeded and returned zero raw postings. "ok": `search()`
+   * succeeded and returned at least one raw posting — independent of
+   * whether any of them survived `filter`; see `survivedFilter` for that.
+   */
+  status: "ok" | "empty" | "error";
+  /** Raw postings this source returned, before `filter`. Always 0 for
+   * "error" — nothing was fetched. */
+  jobsFound: number;
+  /** This source's own record-level skip count — never summed across
+   * sources. */
+  skippedCount: number;
+  /** This source's OWN `skipRate` (see `SourceSearchResult.skipRate`),
+   * never averaged against any other source's. Always 0 for "error". */
+  skipRate: number;
+  /**
+   * How many of THIS source's raw postings survived `filter` this run
+   * (before the `maxJobs` slice). Computed by an exact `dataSource` match
+   * against `filtered` — unlike `BoardCoverageEntry.survivedFilter`'s
+   * company-NAME correlation (free text, a documented latent hazard — see
+   * that field's WARNING), `NormalizedJob.dataSource` is a closed enum the
+   * adapter itself stamps, so this number carries none of that
+   * misattribution risk.
+   */
+  survivedFilter: number;
+  /** Present only when `status === "error"`. */
+  errorMessage: string | undefined;
+  /**
+   * This source's own per-token/per-employer breakdown, when it populates
+   * `tokenOutcomes` (Greenhouse does, as of ticket b723fb9; Lever, Ashby,
+   * and SmartRecruiters do not yet — see this ticket's report). Empty for
+   * "error" (nothing was fetched to break down) and for any source that
+   * doesn't populate `tokenOutcomes` at all.
    */
   boardCoverage: BoardCoverageEntry[];
 };
@@ -348,6 +424,72 @@ export function describeBoardOutcome(entry: BoardCoverageEntry): string {
 }
 
 /**
+ * Builds one `SourceOutcome` per entry in `perSource` (see that type's doc
+ * comment). `filtered` is the SAME post-`filter`, pre-`maxJobs` array
+ * `buildBoardCoverage` already receives — bucketed here by exact
+ * `dataSource` before being handed to `buildBoardCoverage` per source, so a
+ * token from one source can never be credited with another source's
+ * survivors even if their `TokenOutcome.companyName`s happen to collide
+ * (e.g. two different sources both hosting a board that self-reports
+ * "Acme") — `buildBoardCoverage`'s own name-correlation hazard (see its doc
+ * comment) is scoped per-source here, not left free to cross source
+ * boundaries too.
+ */
+export function buildSourceOutcomes(
+  perSource: PerSourceOutcome[],
+  filtered: NormalizedJob[],
+  warn: (message: string) => void = (message) => console.warn(message),
+): SourceOutcome[] {
+  return perSource.map((outcome): SourceOutcome => {
+    if (outcome.status === "error") {
+      return {
+        dataSource: outcome.dataSource,
+        status: "error",
+        jobsFound: 0,
+        skippedCount: 0,
+        skipRate: 0,
+        survivedFilter: 0,
+        errorMessage: outcome.errorMessage,
+        boardCoverage: [],
+      };
+    }
+
+    const { result } = outcome;
+    const filteredForSource = filtered.filter((j) => j.dataSource === outcome.dataSource);
+
+    return {
+      dataSource: outcome.dataSource,
+      status: result.jobs.length === 0 ? "empty" : "ok",
+      jobsFound: result.jobs.length,
+      skippedCount: result.skipped.length,
+      skipRate: result.skipRate,
+      survivedFilter: filteredForSource.length,
+      errorMessage: undefined,
+      boardCoverage: buildBoardCoverage(result.tokenOutcomes, filteredForSource, warn),
+    };
+  });
+}
+
+/**
+ * The one-line-per-source summary parallel to `describeBoardOutcome` — see
+ * `SourceOutcome`'s doc comment for why the vocabulary mirrors
+ * `TokenStatus` one level up.
+ */
+export function describeSourceOutcome(entry: SourceOutcome): string {
+  switch (entry.status) {
+    case "error":
+      return `${entry.errorMessage ?? "search failed (unknown error)"} — rerun to retry`;
+    case "empty":
+      return "0 postings returned this run";
+    case "ok":
+      return (
+        `${entry.jobsFound} posting(s), ${entry.skippedCount} skipped ` +
+        `(skipRate ${entry.skipRate.toFixed(2)}), ${entry.survivedFilter} survived filtering`
+      );
+  }
+}
+
+/**
  * Deterministic content hash used as the resumes upsert key. Two identical
  * resumes hash identically regardless of process/timing, which is what
  * makes `INSERT ... ON CONFLICT (resume_hash) DO NOTHING` a correct,
@@ -401,7 +543,7 @@ async function getOrCreateResumeId(
 export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDemoMatchResult> {
   const {
     db,
-    source,
+    sources,
     resumeText,
     scoreJob,
     criteria = {},
@@ -411,6 +553,10 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     log = console.log,
   } = options;
 
+  if (sources.length === 0) {
+    throw new Error("runDemoMatch: `sources` must contain at least one JobSource.");
+  }
+
   // Idempotent and cheap (3 rows, ON CONFLICT DO NOTHING) — see
   // db/seed.ts. Ensures the FK from jobs.data_source to
   // source_descriptors doesn't reject the very first insert on a fresh
@@ -419,38 +565,111 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
 
   const resumeId = await getOrCreateResumeId(db, resumeText);
 
-  log(`Fetching real postings from ${source.dataSource.toUpperCase()}...`);
-  const { jobs: found, skipped, skipRate, tokenOutcomes } = await source.search(criteria);
-  log(`  ${found.length} jobs, ${skipped.length} skipped (skipRate ${skipRate.toFixed(2)})\n`);
+  log(
+    `Fetching real postings from ${sources.length} source(s): ` +
+      `${sources.map((s) => s.dataSource).join(", ")}...`,
+  );
+  // CompositeSource isolates one source's total failure from the others —
+  // see sources/composite.ts. It deliberately returns one PerSourceOutcome
+  // per source rather than one merged SourceSearchResult, for the same
+  // reason TokenOutcome (ticket b723fb9) exists one level down: an
+  // aggregate number across sources of very different sizes hides exactly
+  // which one is unhealthy.
+  const perSource = await new CompositeSource(sources).search(criteria);
 
-  // Computed before the `maxJobs` slice, specifically so board-level
+  const found: NormalizedJob[] = [];
+  for (const outcome of perSource) {
+    if (outcome.status === "ok") {
+      found.push(...outcome.result.jobs);
+      log(
+        `  ${outcome.dataSource}: ${outcome.result.jobs.length} jobs, ` +
+          `${outcome.result.skipped.length} skipped (skipRate ${outcome.result.skipRate.toFixed(2)})`,
+      );
+    } else {
+      log(`  ${outcome.dataSource}: FAILED — ${outcome.errorMessage} (other sources unaffected)`);
+    }
+  }
+  log("");
+
+  // Computed before the `maxJobs` slice, specifically so per-source
   // survivor counts below reflect what actually passed `filter`, not what
   // was left after also truncating to the shortlist size.
+  //
+  // NOTE (adversarial review): `filter` now runs over the UNION of every
+  // configured source's jobs, not one source's alone. For
+  // `filterSoftwareEngineeringJobs` specifically, that means its
+  // `${company}|${title}` dedupe (swe-filter.ts) now also collapses an
+  // identical (company, title) pair posted to TWO different sources into
+  // one survivor — previously impossible with a single source. Likely
+  // desirable (the same real opening shouldn't count twice because an
+  // employer cross-posts to Greenhouse and Lever), but it's an emergent
+  // consequence of merging before filtering, not something this ticket set
+  // out to build, and swe-filter.ts itself is unchanged.
   const filtered = filter(found);
   const shortlist = filtered.slice(0, maxJobs);
 
-  const boardCoverage = buildBoardCoverage(tokenOutcomes, filtered, (message) =>
+  const sourceOutcomes = buildSourceOutcomes(perSource, filtered, (message) =>
     log(`  WARNING: ${message}`),
   );
-  if (boardCoverage.length > 0) {
-    log("  Board coverage:");
-    for (const b of boardCoverage) {
-      log(`    ${b.token}: ${describeBoardOutcome(b)}`);
+  log("  Source coverage:");
+  for (const so of sourceOutcomes) {
+    log(`    ${so.dataSource}: ${describeSourceOutcome(so)}`);
+    for (const b of so.boardCoverage) {
+      log(`      ${b.token}: ${describeBoardOutcome(b)}`);
     }
-    log("");
   }
+  log("");
 
   const searchId = randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+  // One row per CONFIGURED source, not per source that actually returned
+  // jobs this run — this records what the search covered; success/failure
+  // per source lives in `sourceOutcomes`, not here. `search_sources` has
+  // always allowed multiple rows per search (no uniqueness constraint
+  // beyond its own id — see db/schema.ts); this is the first ticket that
+  // actually inserts more than one.
   await db
     .insert(searchSources)
-    .values({ id: randomUUID(), searchId, sourceDescriptorId: source.dataSource });
+    .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
 
-  // Upsert on (data_source, external_id) and link every job — new or
-  // already known — to this search. Reuses the same idempotent path the
-  // queue worker uses (ingest/ingestJobs.ts), rather than a second
-  // parallel upsert implementation.
-  const { linkedJobIds } = await ingestJobsForSearch(db, searchId, source.dataSource, shortlist);
+  // Group the shortlist by each job's OWN `dataSource` — there is no
+  // longer one single top-level "the" source to ingest under.
+  // `ingestJobsForSearch` upserts on (data_source, external_id) and, per
+  // its own doc comment, assumes every job in one call shares the
+  // `dataSource` argument passed in; a batch spanning multiple real
+  // sources under one label would upsert fine (each NormalizedJob carries
+  // its own correct dataSource) but then fail its own post-insert lookup
+  // for every job whose real dataSource differs from that one label — see
+  // composite.ts's top-of-file comment for the full reasoning. Calling it
+  // once per real dataSource sidesteps that entirely.
+  //
+  // NOTE (adversarial review): this also changes what `ingestJobsForSearch`'s
+  // own transaction covers. Its doc comment argues for atomicity ("either
+  // every job in this batch ends up inserted and linked, or none of it is")
+  // — that guarantee now holds PER SOURCE, not per run: if the Lever call
+  // below throws after the Greenhouse call already committed, Greenhouse's
+  // jobs stay committed and linked while Lever's are rolled back, not both
+  // rolled back together. That's the same one-source-can't-take-down-the-
+  // others isolation this ticket applies everywhere else (CompositeSource,
+  // SourceOutcome), just worth naming explicitly here since it's a real
+  // narrowing of what "atomic" meant before multiple sources existed.
+  const shortlistByDataSource = new Map<string, NormalizedJob[]>();
+  for (const job of shortlist) {
+    const list = shortlistByDataSource.get(job.dataSource);
+    if (list) list.push(job);
+    else shortlistByDataSource.set(job.dataSource, [job]);
+  }
+
+  const linkedJobIds: string[] = [];
+  for (const [dataSource, jobsForSource] of shortlistByDataSource) {
+    const { linkedJobIds: linked } = await ingestJobsForSearch(
+      db,
+      searchId,
+      dataSource,
+      jobsForSource,
+    );
+    linkedJobIds.push(...linked);
+  }
 
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
@@ -462,31 +681,47 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       newlyScored: 0,
       failed: 0,
       results: [],
-      boardCoverage,
+      sourceOutcomes,
     };
   }
 
   // Map linked job ids back to the NormalizedJob payload a scorer needs
   // (title/description/etc — not stored on job_matches). Looked up by
-  // (dataSource, externalId) rather than assumed positional, so this
-  // stays correct even if ingestJobsForSearch's internal ordering ever
-  // changes.
+  // (dataSource, externalId) TOGETHER — see the two-level map built below.
   const dbRows = await db
-    .select({ id: jobsTable.id, externalId: jobsTable.externalId })
+    .select({
+      id: jobsTable.id,
+      externalId: jobsTable.externalId,
+      dataSource: jobsTable.dataSource,
+    })
     .from(jobsTable)
     .where(
       and(
-        eq(jobsTable.dataSource, source.dataSource),
+        inArray(jobsTable.dataSource, [...shortlistByDataSource.keys()]),
         inArray(
           jobsTable.externalId,
           shortlist.map((j) => j.externalId),
         ),
       ),
     );
-  const jobByExternalId = new Map(shortlist.map((j) => [j.externalId, j]));
+  // A two-level lookup (dataSource -> externalId -> job), not a single
+  // joined-string key: with multiple sources in play, two different
+  // sources can plausibly reuse the same externalId format (e.g. both hand
+  // out small sequential numeric ids), and looking up by externalId alone
+  // would silently collide two unrelated jobs from different sources onto
+  // the same NormalizedJob.
+  const jobByDataSourceAndExternalId = new Map<string, Map<string, NormalizedJob>>();
+  for (const j of shortlist) {
+    let byExternalId = jobByDataSourceAndExternalId.get(j.dataSource);
+    if (!byExternalId) {
+      byExternalId = new Map();
+      jobByDataSourceAndExternalId.set(j.dataSource, byExternalId);
+    }
+    byExternalId.set(j.externalId, j);
+  }
   const normalizedJobById = new Map<string, NormalizedJob>();
   for (const row of dbRows) {
-    const nj = jobByExternalId.get(row.externalId);
+    const nj = jobByDataSourceAndExternalId.get(row.dataSource)?.get(row.externalId);
     if (nj) normalizedJobById.set(row.id, nj);
   }
 
@@ -610,7 +845,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     newlyScored: newlyScoredCount,
     failed: failedCount,
     results,
-    boardCoverage,
+    sourceOutcomes,
   };
 }
 
@@ -644,23 +879,53 @@ async function main() {
   await client.connect();
   const db = drizzle(client);
 
-  // Board tokens are configuration (GREENHOUSE_BOARD_TOKENS, .env), not a
-  // literal here (ticket b723fb9) — see .env.example for the documented
-  // default list and apps/api/src/scripts/check-greenhouse-board.ts for
-  // how to check whether a candidate employer hosts on Greenhouse at all
-  // before adding its token.
-  const source = createGreenhouseSourceFromEnv();
+  // Employer lists are configuration (GREENHOUSE_BOARD_TOKENS,
+  // LEVER_COMPANIES, ASHBY_BOARD_NAMES, SMARTRECRUITERS_COMPANIES — .env),
+  // not literals here (ticket b723fb9, extended to all four sources by
+  // ticket d8417b2) — see .env.example for the documented default lists
+  // and apps/api/src/scripts/check-{greenhouse,lever,ashby,smartrecruiters}
+  // -board.ts for how each was verified before being added.
+  //
+  // Each `createXSourceFromEnv()` throws synchronously if ITS OWN env var
+  // isn't set (a deliberate per-source design — see each function's doc
+  // comment). Built independently and caught individually here, not as one
+  // block, so Nicole not having gotten around to configuring (say) Lever
+  // yet doesn't prevent Greenhouse/Ashby/SmartRecruiters from searching —
+  // the same "one source's problem can't take the others down" principle
+  // `CompositeSource` applies at request time, applied here at
+  // configuration time too. Only "literally nothing is configured" is
+  // treated as fatal, below.
+  const sourceBuilders: Array<{ name: string; build: () => JobSource }> = [
+    { name: "greenhouse", build: createGreenhouseSourceFromEnv },
+    { name: "lever", build: createLeverSourceFromEnv },
+    { name: "ashby", build: createAshbySourceFromEnv },
+    { name: "smartrecruiters", build: createSmartRecruitersSourceFromEnv },
+  ];
+  const sources: JobSource[] = [];
+  for (const { name, build } of sourceBuilders) {
+    try {
+      sources.push(build());
+    } catch (err) {
+      console.warn(`Skipping ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (sources.length === 0) {
+    throw new Error(
+      "No job sources are configured. Set at least one of GREENHOUSE_BOARD_TOKENS, " +
+        "LEVER_COMPANIES, ASHBY_BOARD_NAMES, SMARTRECRUITERS_COMPANIES in .env — see .env.example.",
+    );
+  }
 
   try {
-    // No location/keyword in `criteria`: GreenhouseSource has no
-    // server-side query support and substring-matches criteria.location
-    // against the board's raw location string, which would incorrectly
-    // reject "Remote - US" / "Seattle, WA" / "Bellevue" postings that
-    // `filterSoftwareEngineeringJobs` (title + location regex + dedupe)
-    // is specifically written to keep.
+    // No location/keyword in `criteria`: every one of these adapters has
+    // no (or only partial) server-side query support and substring-matches
+    // criteria.location against the board's raw location string, which
+    // would incorrectly reject "Remote - US" / "Seattle, WA" / "Bellevue"
+    // postings that `filterSoftwareEngineeringJobs` (title + location
+    // regex + dedupe) is specifically written to keep.
     const result = await runDemoMatch({
       db,
-      source,
+      sources,
       resumeText,
       scoreJob: makeClaudeScorer(anthropic),
       criteria: {},

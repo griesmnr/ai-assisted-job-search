@@ -16,13 +16,17 @@ import {
 } from "./db/schema.js";
 import {
   buildBoardCoverage,
+  buildSourceOutcomes,
   describeBoardOutcome,
+  describeSourceOutcome,
   isTotalScoringFailure,
   runDemoMatch,
   type BoardCoverageEntry,
   type ScoredJob,
   type ScoreJobFn,
+  type SourceOutcome,
 } from "./demo-match.js";
+import type { PerSourceOutcome } from "./sources/composite.js";
 import type {
   JobSource,
   NormalizedJob,
@@ -279,7 +283,7 @@ describe("runDemoMatch (ticket 620ca30)", () => {
 
     const first = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -322,7 +326,7 @@ describe("runDemoMatch (ticket 620ca30)", () => {
     // --- second run: identical resume, identical candidate jobs ---
     const second = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -385,7 +389,7 @@ describe("runDemoMatch (ticket 620ca30)", () => {
 
     const run = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -420,7 +424,7 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
 
     const first = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: flaky.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -447,7 +451,7 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
     const fixed = makeCountingScorer();
     const second = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: fixed.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -491,7 +495,7 @@ describe("runDemoMatch: filter hook", () => {
     // merely as decoration on the output.
     const run = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -572,7 +576,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
     // error), and quiet-co (real, zero postings).
     const run = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
       maxJobs: FAKE_JOBS.length,
@@ -581,7 +585,20 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
       filter: (jobs) => jobs.filter((j) => j.company === "Acme"),
     });
 
-    expect(run.boardCoverage).toEqual([
+    // sourceOutcomes has exactly one entry (only one source was searched),
+    // carrying this source's own funnel numbers plus its per-token
+    // breakdown, unchanged in shape from the old top-level `boardCoverage`.
+    expect(run.sourceOutcomes).toHaveLength(1);
+    const [so] = run.sourceOutcomes;
+    expect(so).toMatchObject({
+      dataSource: DATA_SOURCE,
+      status: "ok",
+      jobsFound: FAKE_JOBS.length,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 1,
+    });
+    expect(so!.boardCoverage).toEqual([
       {
         token: "ghost-co",
         status: "not-found",
@@ -636,14 +653,311 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
 
     const run = await runDemoMatch({
       db,
-      source,
+      sources: [source],
       resumeText: `${RESUME_TEXT_PREFIX} board-coverage-none ${randomUUID()}`,
       scoreJob: scorer.scoreJob,
       outputPath,
       log: () => {},
     });
 
-    expect(run.boardCoverage).toEqual([]);
+    expect(run.sourceOutcomes).toHaveLength(1);
+    expect(run.sourceOutcomes[0]!.boardCoverage).toEqual([]);
+    // Zero jobs from this source this run -> "empty", not "ok".
+    expect(run.sourceOutcomes[0]!.status).toBe("empty");
+  });
+});
+
+describe("runDemoMatch: multiple sources (ticket d8417b2)", () => {
+  const GH_JOBS: NormalizedJob[] = [
+    { ...job("demo-match-multi-gh-1", "Backend Engineer"), dataSource: "greenhouse" },
+  ];
+  const LEVER_JOBS: NormalizedJob[] = [
+    { ...job("demo-match-multi-lv-1", "Frontend Engineer"), dataSource: "lever" },
+  ];
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} multi-source ${randomUUID()}`;
+
+  beforeAll(() => {
+    // Deliberately NOT pushed to the shared `allExternalIds` array: that
+    // array is only ever queried under `eq(jobsTable.dataSource,
+    // DATA_SOURCE)` ("usajobs") by the top-level `afterAll` below, so an
+    // externalId tagged "greenhouse"/"lever" would never match there
+    // anyway. `allResumeTexts` IS shared — resuming via resumeId/searchId
+    // is dataSource-agnostic, so the top-level afterAll's job_matches/
+    // search_results/searches/resumes cleanup still reaches these rows.
+    // Only the `jobs` rows themselves (dataSource "greenhouse"/"lever")
+    // need this describe's own cleanup, below.
+    allResumeTexts.push(RESUME_TEXT);
+  });
+
+  afterAll(async () => {
+    // Self-contained, not dependent on running before/after the top-level
+    // afterAll: resolves and deletes children before parents itself,
+    // rather than assuming the top-level afterAll's later job_matches/
+    // search_results cleanup (keyed by resumeId/searchId, not by these
+    // jobs' dataSource) will have already run. Nested `afterAll` hooks run
+    // before an outer, top-level one, so if this deleted `jobs` rows
+    // directly while a job_matches/search_results row still referenced
+    // them, the FK constraint would reject it.
+    const jobRows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
+      .where(
+        or(
+          and(
+            eq(jobsTable.dataSource, "greenhouse"),
+            inArray(
+              jobsTable.externalId,
+              GH_JOBS.map((j) => j.externalId),
+            ),
+          ),
+          and(
+            eq(jobsTable.dataSource, "lever"),
+            inArray(
+              jobsTable.externalId,
+              LEVER_JOBS.map((j) => j.externalId),
+            ),
+          ),
+        ),
+      );
+    const jobIds = jobRows.map((r) => r.id);
+    if (jobIds.length > 0) {
+      await safeDelete("multi-source search_results", () =>
+        db.delete(searchResults).where(inArray(searchResults.jobId, jobIds)),
+      );
+      await safeDelete("multi-source job_matches", () =>
+        db.delete(jobMatches).where(inArray(jobMatches.jobId, jobIds)),
+      );
+      await safeDelete("multi-source jobs", () =>
+        db.delete(jobsTable).where(inArray(jobsTable.id, jobIds)),
+      );
+    }
+  });
+
+  it("merges jobs from every configured source into one shortlist and ingests each under its own dataSource", async () => {
+    class GreenhouseFake implements JobSource {
+      readonly dataSource = "greenhouse" as const;
+      async search(): Promise<SourceSearchResult> {
+        return { jobs: GH_JOBS, skipped: [], skipRate: 0 };
+      }
+    }
+    class LeverFake implements JobSource {
+      readonly dataSource = "lever" as const;
+      async search(): Promise<SourceSearchResult> {
+        return { jobs: LEVER_JOBS, skipped: [], skipRate: 0 };
+      }
+    }
+    const scorer = makeCountingScorer();
+
+    const run = await runDemoMatch({
+      db,
+      sources: [new GreenhouseFake(), new LeverFake()],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      maxJobs: 10,
+      outputPath,
+      log: () => {},
+    });
+
+    // Both sources' jobs made it into the shortlist and got scored — not
+    // just the first source configured.
+    expect(scorer.calls()).toBe(2);
+    expect(run.newlyScored).toBe(2);
+    expect(run.results.map((r) => r.title).sort()).toEqual([
+      "Backend Engineer",
+      "Frontend Engineer",
+    ]);
+
+    // One SourceOutcome per configured source — health stays per-source,
+    // not averaged into one number.
+    expect(run.sourceOutcomes).toHaveLength(2);
+    const byDataSource = new Map(run.sourceOutcomes.map((so) => [so.dataSource, so]));
+    expect(byDataSource.get("greenhouse")).toMatchObject({ status: "ok", jobsFound: 1 });
+    expect(byDataSource.get("lever")).toMatchObject({ status: "ok", jobsFound: 1 });
+
+    // Both jobs actually landed in `jobs` under their OWN dataSource, not
+    // collapsed onto a single one.
+    const ghRows = await db
+      .select()
+      .from(jobsTable)
+      .where(
+        and(
+          eq(jobsTable.dataSource, "greenhouse"),
+          eq(jobsTable.externalId, "demo-match-multi-gh-1"),
+        ),
+      );
+    expect(ghRows).toHaveLength(1);
+    const lvRows = await db
+      .select()
+      .from(jobsTable)
+      .where(
+        and(eq(jobsTable.dataSource, "lever"), eq(jobsTable.externalId, "demo-match-multi-lv-1")),
+      );
+    expect(lvRows).toHaveLength(1);
+  });
+
+  it("one source's search() rejecting does not prevent the other configured sources from returning and scoring jobs", async () => {
+    class GreenhouseFake implements JobSource {
+      readonly dataSource = "greenhouse" as const;
+      async search(): Promise<SourceSearchResult> {
+        return { jobs: GH_JOBS, skipped: [], skipRate: 0 };
+      }
+    }
+    class BrokenLever implements JobSource {
+      readonly dataSource = "lever" as const;
+      async search(): Promise<SourceSearchResult> {
+        throw new Error("simulated total Lever outage");
+      }
+    }
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT_2 = `${RESUME_TEXT_PREFIX} multi-source-partial-failure ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT_2);
+
+    const run = await runDemoMatch({
+      db,
+      sources: [new GreenhouseFake(), new BrokenLever()],
+      resumeText: RESUME_TEXT_2,
+      scoreJob: scorer.scoreJob,
+      maxJobs: 10,
+      outputPath,
+      log: () => {},
+    });
+
+    // Greenhouse's job still made it all the way through scoring despite
+    // Lever's search() rejecting outright.
+    expect(run.newlyScored).toBe(1);
+    expect(run.results).toHaveLength(1);
+    expect(run.results[0]!.title).toBe("Backend Engineer");
+
+    // Lever's failure is visible, distinctly, not silently dropped and not
+    // indistinguishable from "Lever returned nothing".
+    const byDataSource = new Map(run.sourceOutcomes.map((so) => [so.dataSource, so]));
+    expect(byDataSource.get("greenhouse")).toMatchObject({ status: "ok", jobsFound: 1 });
+    const leverOutcome = byDataSource.get("lever")!;
+    expect(leverOutcome.status).toBe("error");
+    expect(leverOutcome.errorMessage).toBe("simulated total Lever outage");
+    expect(leverOutcome.jobsFound).toBe(0);
+  });
+
+  it("throws synchronously when called with an empty sources array", async () => {
+    const scorer = makeCountingScorer();
+    await expect(
+      runDemoMatch({
+        db,
+        sources: [],
+        resumeText: `${RESUME_TEXT_PREFIX} empty-sources ${randomUUID()}`,
+        scoreJob: scorer.scoreJob,
+        outputPath,
+        log: () => {},
+      }),
+    ).rejects.toThrow(/at least one JobSource/);
+  });
+});
+
+describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
+  // No DB needed — pure functions, mirroring buildBoardCoverage's own
+  // pure-function test suite one level up.
+  it("reports 'error' with zeroed funnel numbers and no boardCoverage when a source's search() rejected", () => {
+    const perSource: PerSourceOutcome[] = [
+      { dataSource: "lever", status: "error", errorMessage: "network unreachable" },
+    ];
+    const outcomes = buildSourceOutcomes(perSource, []);
+    expect(outcomes).toEqual([
+      {
+        dataSource: "lever",
+        status: "error",
+        jobsFound: 0,
+        skippedCount: 0,
+        skipRate: 0,
+        survivedFilter: 0,
+        errorMessage: "network unreachable",
+        boardCoverage: [],
+      },
+    ]);
+  });
+
+  it("reports 'empty' (not 'ok') when a source succeeded but returned zero jobs", () => {
+    const perSource: PerSourceOutcome[] = [
+      { dataSource: "ashby", status: "ok", result: { jobs: [], skipped: [], skipRate: 0 } },
+    ];
+    const outcomes = buildSourceOutcomes(perSource, []);
+    expect(outcomes[0]!.status).toBe("empty");
+    expect(outcomes[0]!.jobsFound).toBe(0);
+  });
+
+  it("reports 'ok' with survivedFilter 0 when a source returned postings but none survived this run's filter — distinct from 'empty'", () => {
+    const smartRecruitersJob = job("sr-1", "Sales Development Rep");
+    const perSource: PerSourceOutcome[] = [
+      {
+        dataSource: "smartrecruiters",
+        status: "ok",
+        result: { jobs: [smartRecruitersJob], skipped: [], skipRate: 0 },
+      },
+    ];
+    // Nothing survived `filter` this run (simulated: filtered is empty).
+    const outcomes = buildSourceOutcomes(perSource, []);
+    expect(outcomes[0]).toMatchObject({ status: "ok", jobsFound: 1, survivedFilter: 0 });
+  });
+
+  it("attributes survivedFilter by exact dataSource, never crediting one source's survivors to another", () => {
+    const ghJob = { ...job("gh-1", "Backend Engineer"), dataSource: "greenhouse" as const };
+    const lvJob = { ...job("lv-1", "Backend Engineer"), dataSource: "lever" as const };
+    const perSource: PerSourceOutcome[] = [
+      {
+        dataSource: "greenhouse",
+        status: "ok",
+        result: { jobs: [ghJob], skipped: [], skipRate: 0 },
+      },
+      { dataSource: "lever", status: "ok", result: { jobs: [lvJob], skipped: [], skipRate: 0 } },
+    ];
+    // Both jobs "survived" (e.g. an identity filter) — each source's own
+    // entry must credit only its own job.
+    const outcomes = buildSourceOutcomes(perSource, [ghJob, lvJob]);
+    const byDataSource = new Map(outcomes.map((o) => [o.dataSource, o]));
+    expect(byDataSource.get("greenhouse")!.survivedFilter).toBe(1);
+    expect(byDataSource.get("lever")!.survivedFilter).toBe(1);
+  });
+
+  it("describeSourceOutcome names 'ok', 'empty', and 'error' distinctly", () => {
+    const ok: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 10,
+      skippedCount: 1,
+      skipRate: 0.1,
+      survivedFilter: 3,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    const empty: SourceOutcome = {
+      dataSource: "lever",
+      status: "empty",
+      jobsFound: 0,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 0,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    const errored: SourceOutcome = {
+      dataSource: "ashby",
+      status: "error",
+      jobsFound: 0,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 0,
+      errorMessage: "timed out",
+      boardCoverage: [],
+    };
+
+    const descriptions = new Set([
+      describeSourceOutcome(ok),
+      describeSourceOutcome(empty),
+      describeSourceOutcome(errored),
+    ]);
+    expect(descriptions.size).toBe(3);
+    expect(describeSourceOutcome(ok)).toMatch(/10 posting\(s\).*3 survived/);
+    expect(describeSourceOutcome(empty)).toMatch(/0 postings/);
+    expect(describeSourceOutcome(errored)).toMatch(/timed out/);
   });
 });
 

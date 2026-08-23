@@ -667,7 +667,7 @@ describe("LeverSource — merging across configured companies", () => {
     expect(job?.description).not.toContain("&gt;");
   });
 
-  it("a 404 on one company is skipped (that company's board doesn't exist) without discarding results from healthy companies", async () => {
+  it("a 404 on one company is recorded as a SkippedRecord (that company's board doesn't exist) without discarding results from healthy companies", async () => {
     const fetchImpl = fetchByCompany({
       outreach: () => jsonResponse(outreachFixture),
       "does-not-exist": () =>
@@ -678,11 +678,20 @@ describe("LeverSource — merging across configured companies", () => {
     const { jobs, skipped } = await source.search({});
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(skipped).toHaveLength(0);
+    // FIX (ticket d8417b2, adversarial review): a 404'd company used to be
+    // silently dropped (bare `continue`) — indistinguishable from that
+    // employer having zero open postings. Now recorded, matching
+    // ashby.ts's identical case.
+    expect(skipped).toEqual([
+      {
+        externalId: undefined,
+        reason: 'Lever company "does-not-exist" has no board (HTTP 404) — check the company slug',
+      },
+    ]);
     expect(jobs).toHaveLength(3);
   });
 
-  it("reports skipRate 0, not NaN, when every configured company 404s (nothing at all was fetched)", async () => {
+  it("reports a nonzero skipRate, not 0, when every configured company 404s (nothing at all was fetched, but that fact is now visible)", async () => {
     const fetchImpl = fetchByCompany({
       "gone-1": () => new Response("Not Found", { status: 404 }),
       "gone-2": () => new Response("Not Found", { status: 404 }),
@@ -692,8 +701,23 @@ describe("LeverSource — merging across configured companies", () => {
     const { jobs, skipped, skipRate } = await source.search({});
 
     expect(jobs).toHaveLength(0);
-    expect(skipped).toHaveLength(0);
-    expect(skipRate).toBe(0);
+    // Both 404s are now recorded — this is the multi-source scenario
+    // ticket d8417b2's review flagged: without this, a search covering
+    // only dead Lever companies looked identical to a search that found
+    // nothing at all (skipRate 0, skipped: []).
+    expect(skipped).toEqual([
+      {
+        externalId: undefined,
+        reason: 'Lever company "gone-1" has no board (HTTP 404) — check the company slug',
+      },
+      {
+        externalId: undefined,
+        reason: 'Lever company "gone-2" has no board (HTTP 404) — check the company slug',
+      },
+    ]);
+    // skipped.length / (jobs.length + skipped.length) = 2 / 2 = 1, not 0 —
+    // skipRate is no longer silently masking a fully-dead configuration.
+    expect(skipRate).toBe(1);
   });
 
   it("a company with a real, legitimate empty board (HTTP 200, `[]`) contributes zero jobs without being treated as an error", async () => {
@@ -795,20 +819,32 @@ describe("LeverSource — error classification", () => {
     expect(err).toBeInstanceOf(MalformedResponseError);
   });
 
-  it("a lone 404'd company resolves to an empty (not thrown) result", async () => {
+  it("a lone 404'd company resolves to a recorded-skip (not thrown) result", async () => {
     // 404 is classified as UnexpectedStatusError (same as any other
     // unmapped 4xx — see the 400 test below), but search() specifically
     // catches status 404 at the orchestration layer and treats it as "this
     // company has no board, move on" rather than rethrowing — see the doc
     // comment in LeverSource#search. So even with only one (bad) company
-    // configured, search() resolves normally instead of rejecting.
+    // configured, search() resolves normally instead of rejecting — and
+    // (ticket d8417b2) records why via a SkippedRecord rather than
+    // resolving to a result indistinguishable from a legitimately empty
+    // search.
     const fetchImpl = fetchByCompany({
       "does-not-exist": () => new Response("Not Found", { status: 404 }),
     });
     const source = makeSource(fetchImpl, ["does-not-exist"]);
 
     const result = await source.search({});
-    expect(result).toEqual({ jobs: [], skipped: [], skipRate: 0 });
+    expect(result).toEqual({
+      jobs: [],
+      skipped: [
+        {
+          externalId: undefined,
+          reason: 'Lever company "does-not-exist" has no board (HTTP 404) — check the company slug',
+        },
+      ],
+      skipRate: 1,
+    });
   });
 
   it("classifies an unmapped 4xx status (400) as UnexpectedStatusError (not retryable)", async () => {

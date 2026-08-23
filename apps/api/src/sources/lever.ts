@@ -206,7 +206,20 @@ export class LeverSource implements JobSource {
         // the slug, not of the Lever API as a whole, and it will return the
         // identical 404 on every future request. Skip this company and keep
         // the jobs already collected from healthy ones, same as Greenhouse.
+        //
+        // FIX (ticket d8417b2, adversarial review): this used to be a bare
+        // `continue` — no `SkippedRecord`, nothing in `tokenOutcomes`
+        // (Lever doesn't populate that either). Ashby's identical 404 case
+        // pushes a `SkippedRecord` (see ashby.ts finding 7); Lever's silent
+        // version meant a configured employer leaving Lever was
+        // indistinguishable from that employer having zero open postings —
+        // invisible at every level `SourceSearchResult` exposes, not just
+        // under-broken-down. Matches ashby.ts's shape exactly.
         if (err instanceof UnexpectedStatusError && err.status === 404) {
+          skipped.push({
+            externalId: undefined,
+            reason: `Lever company "${company}" has no board (HTTP 404) — check the company slug`,
+          });
           continue;
         }
         throw err;
