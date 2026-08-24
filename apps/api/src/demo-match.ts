@@ -51,7 +51,44 @@ process.loadEnvFile();
  * Re-run `model-ab.ts` before changing this again.
  */
 export const MODEL = "claude-sonnet-5";
-export const MAX_JOBS = 12;
+
+/**
+ * Hard cap on the scorer's own response size — the JSON schema below is
+ * small (a score, a rationale, two short string arrays), so this is rarely
+ * actually reached, but it's the real, code-enforced upper bound on output
+ * tokens per call and is reused below as the worst-case input to
+ * `estimateScoringCost`'s bootstrap path.
+ */
+const MAX_OUTPUT_TOKENS = 2000;
+
+/**
+ * Spend-guard threshold (ticket 16c824a) — replaces `MAX_JOBS`, which used
+ * to silently slice the shortlist to 12 in board-iteration order. That was
+ * the bug: it went uncaught for two funnel-widening tickets (545 -> 6,038
+ * -> 11,609 postings) because nothing measured or reported the truncation.
+ *
+ * This constant is NOT a truncation-by-order cap — `runDemoMatch` no longer
+ * has one of those at all; every survivor gets ingested and is eligible to
+ * be scored. It is a SPEND guard: above this many jobs actually needing a
+ * *new* score in one run (already-scored jobs are free — ticket 620ca30),
+ * scoring stops at the threshold and says so explicitly
+ * (`"N survivors, THRESHOLD scored, M not scored (cap)"`) instead of
+ * quietly spending more than expected. Scoring the rest requires explicit
+ * opt-in (`allowAboveThreshold` / `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
+ *
+ * Pool size this assumes: comfortably under a few hundred jobs needing a
+ * new score per run. 129 total survivors (Greenhouse only) was the
+ * measurement that motivated "score everything" over a cleverer selection
+ * heuristic (git-bug 16c824a). Ticket 8d3f4a1 wires Lever, Ashby, and
+ * SmartRecruiters into the same search and may grow the pool by an unknown
+ * multiple — SmartRecruiters alone lists 4,771 postings for ONE company
+ * before filtering. If real runs start landing above this threshold
+ * routinely, that is this exact ticket's original bug recurring at 10x the
+ * scale, pointed at the bank account instead of at coverage — raise (or
+ * rethink) this number deliberately, don't just flip the opt-in on
+ * permanently.
+ */
+export const DEFAULT_SCORE_THRESHOLD = 200;
 
 const SCHEMA = {
   type: "object",
@@ -85,6 +122,15 @@ export type ScoredJob = {
   rationale: string;
   strengths: string[];
   gaps: string[];
+  /**
+   * Real token usage for this call, when the scorer can report it — the
+   * live Claude scorer below always can (`response.usage`). Used only to
+   * update the on-disk usage stats that back `estimateScoringCost`'s spend
+   * guard (ticket 16c824a); never persisted to `job_matches`. Optional so
+   * every existing `ScoreJobFn` fake (demo-match.test.ts) keeps compiling
+   * unchanged — a fake scorer has no real usage to report.
+   */
+  usage?: { inputTokens: number; outputTokens: number };
 };
 
 /** Injectable so tests can assert call counts without spending real Claude
@@ -92,38 +138,196 @@ export type ScoredJob = {
  * closed over module state. */
 export type ScoreJobFn = (job: NormalizedJob, resumeText: string) => Promise<ScoredJob>;
 
+/**
+ * The exact prompt text a real scoring call sends. Extracted so
+ * `estimateScoringCost` can measure the REAL character count of what would
+ * actually be sent — not a guessed per-job token figure — for its bootstrap
+ * estimate (see that function's doc comment).
+ */
+export function buildScoringPrompt(job: NormalizedJob, resumeText: string): string {
+  return [
+    "Score how well this candidate matches this job posting.",
+    "Be honest and calibrated — most candidates are not a 90.",
+    "",
+    "=== RESUME ===",
+    resumeText,
+    "",
+    "=== JOB POSTING ===",
+    `Title: ${job.title}`,
+    `Employer: ${job.company}`,
+    `Location: ${job.location ?? "not stated"} (${job.locationType})`,
+    `Type: ${job.payType}, ${job.commitment}`,
+    "",
+    job.description.slice(0, 6000),
+  ].join("\n");
+}
+
 export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
   return async function scoreJob(job: NormalizedJob, resumeText: string): Promise<ScoredJob> {
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 2000,
+      max_tokens: MAX_OUTPUT_TOKENS,
       output_config: { format: { type: "json_schema", schema: SCHEMA } },
-      messages: [
-        {
-          role: "user",
-          content: [
-            "Score how well this candidate matches this job posting.",
-            "Be honest and calibrated — most candidates are not a 90.",
-            "",
-            "=== RESUME ===",
-            resumeText,
-            "",
-            "=== JOB POSTING ===",
-            `Title: ${job.title}`,
-            `Employer: ${job.company}`,
-            `Location: ${job.location ?? "not stated"} (${job.locationType})`,
-            `Type: ${job.payType}, ${job.commitment}`,
-            "",
-            job.description.slice(0, 6000),
-          ].join("\n"),
-        },
-      ],
+      messages: [{ role: "user", content: buildScoringPrompt(job, resumeText) }],
     });
 
     const text = response.content.find((b) => b.type === "text");
     if (!text || text.type !== "text") throw new Error("no text block returned");
-    return JSON.parse(text.text) as ScoredJob;
+    const parsed = JSON.parse(text.text) as Omit<ScoredJob, "usage">;
+    return {
+      ...parsed,
+      usage: {
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+      },
+    };
   };
+}
+
+/**
+ * $/million tokens for `MODEL` (claude-sonnet-5) — mirrors model-ab.ts's own
+ * `PRICING` table for the same model. Duplicated rather than imported:
+ * model-ab.ts reads `prep/resume.txt` and constructs an `Anthropic` client
+ * at MODULE LOAD time (not inside its `main()`), so importing it here would
+ * make every test — and every non-scoring code path — depend on that file
+ * existing and `ANTHROPIC_API_KEY` being set. Same reason
+ * `filterSoftwareEngineeringJobs` lives in swe-filter.ts instead of here;
+ * see the re-export comment near the bottom of this file.
+ */
+const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
+
+/**
+ * ~4 characters per token is the standard rough estimate for English text
+ * (the same figure both OpenAI's and Anthropic's own tokenizer guidance
+ * cite) — used only to convert a REAL character count (this run's actual
+ * prompt text, built by the same `buildScoringPrompt` the live scorer
+ * sends) into an estimated token count. Only the conversion ratio is
+ * approximate; the character counts it's applied to are exact, not
+ * guessed.
+ */
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+
+/**
+ * Running totals of REAL per-call token usage, accumulated across live
+ * runs (see `recordUsageStats` / the end of the scoring loop in
+ * `runDemoMatch`). Read back by `estimateScoringCost` so the pre-scoring
+ * cost estimate is grounded in what scoring actually cost last time, not a
+ * one-off guess. `calls` counts real Claude calls only — a fake test
+ * scorer's `ScoredJob` has no `usage`, so test runs never pollute this.
+ */
+export type UsageStats = {
+  calls: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+};
+
+/**
+ * Reads previously recorded usage stats. Returns `undefined` — not a
+ * thrown error — when the file is missing (every project's very first
+ * scoring run, or a fresh checkout) or unparseable: a stats file existing
+ * is an optimization for the cost estimate, never a precondition for
+ * scoring to work.
+ */
+export function readUsageStats(path: string): UsageStats | undefined {
+  try {
+    const raw = fs.readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as Partial<UsageStats>;
+    if (
+      typeof parsed.calls === "number" &&
+      typeof parsed.totalInputTokens === "number" &&
+      typeof parsed.totalOutputTokens === "number" &&
+      parsed.calls > 0
+    ) {
+      return parsed as UsageStats;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Merges `added` real usage into whatever `readUsageStats(path)` currently
+ * holds (treating a missing/corrupt file as zero) and writes the result
+ * back — the running average `estimateScoringCost` reads next run. */
+export function recordUsageStats(
+  path: string,
+  added: { calls: number; totalInputTokens: number; totalOutputTokens: number },
+): void {
+  if (added.calls === 0) return;
+  const prior = readUsageStats(path) ?? { calls: 0, totalInputTokens: 0, totalOutputTokens: 0 };
+  const next: UsageStats = {
+    calls: prior.calls + added.calls,
+    totalInputTokens: prior.totalInputTokens + added.totalInputTokens,
+    totalOutputTokens: prior.totalOutputTokens + added.totalOutputTokens,
+  };
+  fs.writeFileSync(path, JSON.stringify(next, null, 2));
+}
+
+export type CostEstimate = {
+  jobCount: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostUsd: number;
+  /**
+   * "measured": both averages come from `usageStats` — real recorded calls
+   * from a prior run. "bootstrap": no recorded calls exist yet, so input is
+   * estimated from THIS run's real prompt character counts (see
+   * `CHARS_PER_TOKEN_ESTIMATE`) and output assumes the worst case,
+   * `MAX_OUTPUT_TOKENS` per job (the model's actual hard cap) — real
+   * numbers from this codebase, never an invented per-job dollar figure.
+   */
+  basis: "measured" | "bootstrap";
+};
+
+/**
+ * Estimates the cost of scoring `jobsToScore`, before any of those calls
+ * are made (ticket 16c824a). Prefers `usageStats` — real, measured
+ * input/output token averages recorded from this project's own prior live
+ * runs (see `recordUsageStats`) — over the bootstrap path, which still
+ * grounds itself in real numbers (this run's actual prompt text, and the
+ * code's own `max_tokens` cap) rather than an arbitrary guess.
+ */
+export function estimateScoringCost(
+  jobsToScore: NormalizedJob[],
+  resumeText: string,
+  usageStats: UsageStats | undefined,
+  pricePerMillionTokens: { in: number; out: number } = SONNET_PRICE_PER_MILLION_TOKENS,
+): CostEstimate {
+  const jobCount = jobsToScore.length;
+  const basis: CostEstimate["basis"] =
+    usageStats && usageStats.calls > 0 ? "measured" : "bootstrap";
+
+  if (jobCount === 0) {
+    return {
+      jobCount: 0,
+      estimatedInputTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      basis,
+    };
+  }
+
+  let estimatedInputTokens: number;
+  let estimatedOutputTokens: number;
+  if (basis === "measured") {
+    const avgInputTokens = usageStats!.totalInputTokens / usageStats!.calls;
+    const avgOutputTokens = usageStats!.totalOutputTokens / usageStats!.calls;
+    estimatedInputTokens = Math.round(avgInputTokens * jobCount);
+    estimatedOutputTokens = Math.round(avgOutputTokens * jobCount);
+  } else {
+    const totalPromptChars = jobsToScore.reduce(
+      (sum, job) => sum + buildScoringPrompt(job, resumeText).length,
+      0,
+    );
+    estimatedInputTokens = Math.round(totalPromptChars / CHARS_PER_TOKEN_ESTIMATE);
+    estimatedOutputTokens = MAX_OUTPUT_TOKENS * jobCount;
+  }
+
+  const estimatedCostUsd =
+    (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+    (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+
+  return { jobCount, estimatedInputTokens, estimatedOutputTokens, estimatedCostUsd, basis };
 }
 
 export type RankedResult = {
@@ -167,13 +371,42 @@ export type RunDemoMatchOptions = {
    */
   criteria?: SearchCriteria;
   /**
-   * Applied to everything the source returned, before truncating to
-   * `maxJobs`. Defaults to the identity function (no filtering) — callers
-   * that want title/location/dedupe narrowing (see `main()` below for the
-   * real one) pass it explicitly.
+   * Applied to everything every source returned (the union, across all
+   * configured sources). Defaults to the identity function (no filtering)
+   * — callers that want title/location/dedupe narrowing (see `main()`
+   * below for the real one) pass it explicitly. Every survivor gets
+   * ingested — ticket 16c824a removed the `maxJobs` truncation that used
+   * to slice this down in source/board iteration order before any of it
+   * reached the database. What gets SCORED (as opposed to merely ingested)
+   * is a separate, later decision — see `scoreThreshold`/`allowAboveThreshold`.
    */
   filter?: (jobs: NormalizedJob[]) => NormalizedJob[];
-  maxJobs?: number;
+  /**
+   * Spend guard (ticket 16c824a). Above this many jobs actually NEEDING a
+   * new score this run (already-scored jobs are free — ticket 620ca30),
+   * scoring stops here unless `allowAboveThreshold` is set — see
+   * `DEFAULT_SCORE_THRESHOLD`'s doc comment for the pool-size assumption
+   * and why it isn't a `maxJobs`-style truncation. Defaults to
+   * `DEFAULT_SCORE_THRESHOLD`.
+   */
+  scoreThreshold?: number;
+  /**
+   * Explicit opt-in to score MORE than `scoreThreshold` jobs in one run.
+   * Defaults to `false` — a pool above the threshold gets capped, not
+   * silently scored in full, unless a caller deliberately sets this (or,
+   * in `main()`, sets `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
+   */
+  allowAboveThreshold?: boolean;
+  /**
+   * Where real per-call token usage accumulates across runs (see
+   * `recordUsageStats`), read back by `estimateScoringCost` so the
+   * pre-scoring cost estimate is grounded in this project's own measured
+   * history rather than a one-off guess. Defaults to
+   * `"prep/scoring-usage-stats.json"` — deliberately a different file from
+   * `outputPath` (`prep/match-results.json`), which holds ranked results a
+   * user may have already applied from and must never be touched by this.
+   */
+  usageStatsPath?: string;
   outputPath?: string;
   log?: (message: string) => void;
 };
@@ -195,8 +428,8 @@ export type BoardCoverageEntry = TokenOutcome & { survivedFilter: number };
 export type RunDemoMatchResult = {
   resumeId: string;
   searchId: string;
-  /** How many of the shortlisted jobs already had a score for this resume
-   * and so were NOT sent to Claude. */
+  /** How many of the ingested candidate jobs already had a score for this
+   * resume and so were NOT sent to Claude. */
   skipped: number;
   /** How many jobs were actually scored (Claude calls made AND
    * successfully persisted) this run. */
@@ -217,6 +450,24 @@ export type RunDemoMatchResult = {
    * `SourceOutcome`.
    */
   sourceOutcomes: SourceOutcome[];
+  /**
+   * How many jobs needed a NEW score this run (ingested candidates minus
+   * `skipped`), before the spend-guard cap was applied. `newlyScored +
+   * failed + cappedCount === candidatesNeedingScore` (ticket 16c824a).
+   */
+  candidatesNeedingScore: number;
+  /**
+   * How many of `candidatesNeedingScore` were NOT scored this run because
+   * `scoreThreshold` applied and `allowAboveThreshold` wasn't set. Always 0
+   * when the pool was at/under the threshold, or the override was active.
+   * A nonzero value here means this run's `results` is a truncated view of
+   * what's scoreable, not the whole pool — callers must not present it as
+   * complete without surfacing this number.
+   */
+  cappedCount: number;
+  /** The pre-scoring cost estimate computed for whatever was actually
+   * attempted this run (i.e. after any cap) — see `estimateScoringCost`. */
+  costEstimate: CostEstimate;
 };
 
 /**
@@ -257,8 +508,8 @@ export type SourceOutcome = {
    * never averaged against any other source's. Always 0 for "error". */
   skipRate: number;
   /**
-   * How many of THIS source's raw postings survived `filter` this run
-   * (before the `maxJobs` slice). Computed by an exact `dataSource` match
+   * How many of THIS source's raw postings survived `filter` this run.
+   * Computed by an exact `dataSource` match
    * against `filtered` — unlike `BoardCoverageEntry.survivedFilter`'s
    * company-NAME correlation (free text, a documented latent hazard — see
    * that field's WARNING), `NormalizedJob.dataSource` is a closed enum the
@@ -301,7 +552,7 @@ export function isTotalScoringFailure(
  * Extends each raw `TokenOutcome` (source-level: does the token resolve,
  * does the board have postings) with `survivedFilter` — how many of
  * `filtered` (this run's `filter` applied to everything the source
- * returned, before the `maxJobs` slice) came from that token's employer.
+ * returned) came from that token's employer.
  * Matched by `NormalizedJob.company` against `TokenOutcome.companyName`
  * (case-insensitively) rather than by tagging every job with its token,
  * which would mean widening `NormalizedJob` for a concern specific to this
@@ -425,7 +676,7 @@ export function describeBoardOutcome(entry: BoardCoverageEntry): string {
 
 /**
  * Builds one `SourceOutcome` per entry in `perSource` (see that type's doc
- * comment). `filtered` is the SAME post-`filter`, pre-`maxJobs` array
+ * comment). `filtered` is the SAME post-`filter` array
  * `buildBoardCoverage` already receives — bucketed here by exact
  * `dataSource` before being handed to `buildBoardCoverage` per source, so a
  * token from one source can never be credited with another source's
@@ -548,7 +799,9 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     scoreJob,
     criteria = {},
     filter = (jobs: NormalizedJob[]) => jobs,
-    maxJobs = MAX_JOBS,
+    scoreThreshold = DEFAULT_SCORE_THRESHOLD,
+    allowAboveThreshold = false,
+    usageStatsPath = "prep/scoring-usage-stats.json",
     outputPath = "prep/match-results.json",
     log = console.log,
   } = options;
@@ -591,10 +844,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
   log("");
 
-  // Computed before the `maxJobs` slice, specifically so per-source
-  // survivor counts below reflect what actually passed `filter`, not what
-  // was left after also truncating to the shortlist size.
-  //
   // NOTE (adversarial review): `filter` now runs over the UNION of every
   // configured source's jobs, not one source's alone. For
   // `filterSoftwareEngineeringJobs` specifically, that means its
@@ -606,7 +855,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // consequence of merging before filtering, not something this ticket set
   // out to build, and swe-filter.ts itself is unchanged.
   const filtered = filter(found);
-  const shortlist = filtered.slice(0, maxJobs);
+
+  // Ticket 16c824a: no `maxJobs`-style truncation here. Every survivor gets
+  // ingested and is a scoring CANDIDATE — the old bug was slicing this list
+  // to 12 in source/board iteration order before any of it reached the
+  // database, so employers late in the token list (Coinbase, Databricks,
+  // ...) were never even ingested, let alone scored. The spend guard below
+  // (`scoreThreshold`/`allowAboveThreshold`) gates which candidates get
+  // SCORED, not which ones get persisted.
+  const candidates = filtered;
 
   const sourceOutcomes = buildSourceOutcomes(perSource, filtered, (message) =>
     log(`  WARNING: ${message}`),
@@ -632,7 +889,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     .insert(searchSources)
     .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
 
-  // Group the shortlist by each job's OWN `dataSource` — there is no
+  // Group the candidates by each job's OWN `dataSource` — there is no
   // longer one single top-level "the" source to ingest under.
   // `ingestJobsForSearch` upserts on (data_source, external_id) and, per
   // its own doc comment, assumes every job in one call shares the
@@ -653,15 +910,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // others isolation this ticket applies everywhere else (CompositeSource,
   // SourceOutcome), just worth naming explicitly here since it's a real
   // narrowing of what "atomic" meant before multiple sources existed.
-  const shortlistByDataSource = new Map<string, NormalizedJob[]>();
-  for (const job of shortlist) {
-    const list = shortlistByDataSource.get(job.dataSource);
+  const candidatesByDataSource = new Map<string, NormalizedJob[]>();
+  for (const job of candidates) {
+    const list = candidatesByDataSource.get(job.dataSource);
     if (list) list.push(job);
-    else shortlistByDataSource.set(job.dataSource, [job]);
+    else candidatesByDataSource.set(job.dataSource, [job]);
   }
 
   const linkedJobIds: string[] = [];
-  for (const [dataSource, jobsForSource] of shortlistByDataSource) {
+  for (const [dataSource, jobsForSource] of candidatesByDataSource) {
     const { linkedJobIds: linked } = await ingestJobsForSearch(
       db,
       searchId,
@@ -682,6 +939,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       failed: 0,
       results: [],
       sourceOutcomes,
+      candidatesNeedingScore: 0,
+      cappedCount: 0,
+      costEstimate: {
+        jobCount: 0,
+        estimatedInputTokens: 0,
+        estimatedOutputTokens: 0,
+        estimatedCostUsd: 0,
+        basis: "bootstrap",
+      },
     };
   }
 
@@ -697,10 +963,10 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     .from(jobsTable)
     .where(
       and(
-        inArray(jobsTable.dataSource, [...shortlistByDataSource.keys()]),
+        inArray(jobsTable.dataSource, [...candidatesByDataSource.keys()]),
         inArray(
           jobsTable.externalId,
-          shortlist.map((j) => j.externalId),
+          candidates.map((j) => j.externalId),
         ),
       ),
     );
@@ -711,7 +977,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // would silently collide two unrelated jobs from different sources onto
   // the same NormalizedJob.
   const jobByDataSourceAndExternalId = new Map<string, Map<string, NormalizedJob>>();
-  for (const j of shortlist) {
+  for (const j of candidates) {
     let byExternalId = jobByDataSourceAndExternalId.get(j.dataSource);
     if (!byExternalId) {
       byExternalId = new Map();
@@ -726,19 +992,61 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
 
   // Score only what has no score yet for this resume. This is the whole
-  // point of the ticket: a second run against the same shortlist must
+  // point of ticket 620ca30: a second run against the same candidates must
   // make zero Claude calls.
   const alreadyScoredRows = await db
     .select({ jobId: jobMatches.jobId })
     .from(jobMatches)
     .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, linkedJobIds)));
   const alreadyScoredIds = new Set(alreadyScoredRows.map((r) => r.jobId));
-  const toScoreIds = linkedJobIds.filter((id) => !alreadyScoredIds.has(id));
+  const needsScoreIds = linkedJobIds.filter((id) => !alreadyScoredIds.has(id));
+  const needsScoreJobs = needsScoreIds
+    .map((id) => normalizedJobById.get(id))
+    .filter((nj): nj is NormalizedJob => nj !== undefined);
 
+  // Spend guard (ticket 16c824a). Estimated BEFORE any scoring call is
+  // made, over every job that needs a new score — not the whole survivor
+  // pool, since already-scored jobs cost nothing to reconfirm (ticket
+  // 620ca30).
+  const usageStats = readUsageStats(usageStatsPath);
+  const preCapEstimate = estimateScoringCost(needsScoreJobs, resumeText, usageStats);
   log(
-    `Scoring ${toScoreIds.length} of ${linkedJobIds.length} candidates with ${MODEL} ` +
-      `(${alreadyScoredIds.size} already scored — skipped, saving that many Claude calls)...\n`,
+    `${filtered.length} survivor(s) after filtering; ${needsScoreIds.length} need scoring ` +
+      `(${alreadyScoredIds.size} already scored — skipped, saving that many Claude calls).`,
   );
+  log(
+    `Estimated cost to score all ${needsScoreIds.length}: ~$${preCapEstimate.estimatedCostUsd.toFixed(2)} ` +
+      `(~${preCapEstimate.estimatedInputTokens} in / ~${preCapEstimate.estimatedOutputTokens} out tokens, ` +
+      `${preCapEstimate.basis} estimate).`,
+  );
+
+  // Above `scoreThreshold`, cap here rather than score everything, unless
+  // the caller explicitly opted in. This is NOT the old `MAX_JOBS` bug
+  // resurfacing: it only ever binds above a few hundred jobs actually
+  // needing a score, it is reported plainly (never silent), and it exists
+  // purely to guard spend — see DEFAULT_SCORE_THRESHOLD's doc comment.
+  const overThreshold = needsScoreIds.length > scoreThreshold && !allowAboveThreshold;
+  const toScoreIds = overThreshold ? needsScoreIds.slice(0, scoreThreshold) : needsScoreIds;
+  const cappedCount = needsScoreIds.length - toScoreIds.length;
+
+  if (cappedCount > 0) {
+    // Literal format ticket 16c824a asks for — a truncated run must never
+    // read like a complete one.
+    log(
+      `${filtered.length} survivors, ${toScoreIds.length} scored, ${cappedCount} not scored (cap). ` +
+        `${needsScoreIds.length} jobs need scoring, above the ${scoreThreshold}-job spend-guard threshold. ` +
+        `Set allowAboveThreshold (or ALLOW_SCORE_ABOVE_THRESHOLD=true for the CLI) to score all ` +
+        `${needsScoreIds.length} on the next run.`,
+    );
+  }
+
+  const costEstimate = estimateScoringCost(
+    toScoreIds.map((id) => normalizedJobById.get(id)!),
+    resumeText,
+    usageStats,
+  );
+
+  log(`Scoring ${toScoreIds.length} of ${linkedJobIds.length} candidates with ${MODEL}...\n`);
 
   let newlyScoredCount = 0;
   let failedCount = 0;
@@ -758,7 +1066,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
         if (!nj) {
           // Should be impossible: every id in toScoreIds came from
           // linkedJobIds, which ingestJobsForSearch derived from this
-          // same shortlist.
+          // same candidate set.
           throw new Error(`runDemoMatch: no NormalizedJob found for linked job id "${jobId}"`);
         }
         const scored = await scoreJob(nj, resumeText);
@@ -779,6 +1087,20 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       }
     });
     newlyScoredCount = newlyScoredRows.length;
+
+    // Real usage from this run's successful calls feeds next run's cost
+    // estimate (ticket 16c824a) — a fake test scorer's rows have no
+    // `usage`, so test runs never write to `usageStatsPath`.
+    const rowsWithUsage = newlyScoredRows.filter(
+      (r): r is typeof r & { usage: NonNullable<ScoredJob["usage"]> } => r.usage !== undefined,
+    );
+    if (rowsWithUsage.length > 0) {
+      recordUsageStats(usageStatsPath, {
+        calls: rowsWithUsage.length,
+        totalInputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.inputTokens, 0),
+        totalOutputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.outputTokens, 0),
+      });
+    }
 
     if (newlyScoredRows.length > 0) {
       // onConflictDoNothing as defense-in-depth: two runs racing (or a
@@ -846,6 +1168,9 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     failed: failedCount,
     results,
     sourceOutcomes,
+    candidatesNeedingScore: needsScoreIds.length,
+    cappedCount,
+    costEstimate,
   };
 }
 
@@ -923,6 +1248,12 @@ async function main() {
     // would incorrectly reject "Remote - US" / "Seattle, WA" / "Bellevue"
     // postings that `filterSoftwareEngineeringJobs` (title + location
     // regex + dedupe) is specifically written to keep.
+    // Spend-guard opt-in (ticket 16c824a): unset/anything-but-"true" means
+    // a pool needing more than DEFAULT_SCORE_THRESHOLD new scores gets
+    // capped at the threshold this run, reported plainly, and requires this
+    // env var on a subsequent run to score the rest.
+    const allowAboveThreshold = process.env.ALLOW_SCORE_ABOVE_THRESHOLD === "true";
+
     const result = await runDemoMatch({
       db,
       sources,
@@ -930,8 +1261,15 @@ async function main() {
       scoreJob: makeClaudeScorer(anthropic),
       criteria: {},
       filter: filterSoftwareEngineeringJobs,
+      allowAboveThreshold,
     });
 
+    if (result.cappedCount > 0) {
+      console.error(
+        `${result.cappedCount} job(s) needing a score were NOT scored this run because the spend-guard ` +
+          `threshold applied. Set ALLOW_SCORE_ABOVE_THRESHOLD=true and re-run to score the rest.`,
+      );
+    }
     if (result.failed > 0) {
       console.error(
         `${result.failed} of ${result.failed + result.newlyScored} scoring call(s) failed this run ` +
