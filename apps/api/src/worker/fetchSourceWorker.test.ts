@@ -540,6 +540,105 @@ describe("fetchSourceWorker", () => {
     expect(rows).toHaveLength(1);
   });
 
+  // -------------------------------------------------------------------------
+  // Source-search deadline (ticket 491cd88). A source.search() call that
+  // never settles must not wedge this worker forever under prefetch(1),
+  // and must not silently vanish either — it has to go down the SAME
+  // retry/DLQ path as any other retryable failure. `sourceSearchTimeoutMs`
+  // is set tiny here (real default: DEFAULT_SOURCE_SEARCH_TIMEOUT_MS, 10
+  // minutes) so these tests don't wait on production-scale timing.
+  // -------------------------------------------------------------------------
+
+  it("a source.search() that exceeds the deadline is retried — not left unacked forever — and can still succeed on the next attempt (deadline expiry regression)", async () => {
+    const searchId = await makeSearch();
+    const externalId = `deadline-recovers-${randomUUID()}`;
+    let calls = 0;
+    const source: JobSource = {
+      dataSource: SOURCE_ID as Job["dataSource"],
+      search: async () => {
+        calls += 1;
+        if (calls === 1) {
+          // Simulates ticket 491cd88's exact failure mode: a search() call
+          // that runs long enough to blow past the worker's deadline.
+          // Deliberately never resolves on its own within this test — the
+          // worker's OWN timeout has to be what ends this attempt, not the
+          // source settling.
+          return new Promise<SourceSearchResult>(() => {});
+        }
+        return okResult([normalizedJob({ externalId })]);
+      },
+    };
+
+    const logs: string[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      retryTiers: TEST_RETRY_TIERS,
+      sourceSearchTimeoutMs: 50,
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    // This is the load-bearing assertion: the message goes down the RETRY
+    // path, not vanishing. A message truly stuck unacked forever (the
+    // pre-fix failure mode — before this ticket, nothing ever stopped
+    // waiting on the hung search()) would never reach a second attempt at
+    // all under prefetch(1); reaching score.job here is only possible if
+    // the first (hung) delivery was explicitly failed, acked, and
+    // requeued via a retry tier so a second delivery could be dispatched.
+    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 1, { timeoutMs: 5000 });
+    expect(calls).toBe(2);
+    expect(await queueCount(FETCH_SOURCE_DLQ)).toBe(0);
+
+    // Confirms it was actually the DEADLINE that triggered the retry, not
+    // some other failure path.
+    expect(logs.some((l) => l.includes("source-search-timeout"))).toBe(true);
+    expect(logs.some((l) => l.includes("did not complete within 50ms"))).toBe(true);
+
+    const rows = await db.select().from(jobs).where(eq(jobs.externalId, externalId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a source.search() that ALWAYS exceeds the deadline ends up in the DLQ after bounded attempts, not stuck unacked forever", async () => {
+    const searchId = await makeSearch();
+    const maxAttempts = 2;
+    let calls = 0;
+    const source: JobSource = {
+      dataSource: SOURCE_ID as Job["dataSource"],
+      search: async () => {
+        calls += 1;
+        return new Promise<SourceSearchResult>(() => {});
+      },
+    };
+
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      maxAttempts,
+      retryTiers: TEST_RETRY_TIERS,
+      sourceSearchTimeoutMs: 50,
+      log: () => {},
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(FETCH_SOURCE_DLQ)) === 1, { timeoutMs: 5000 });
+    expect(calls).toBe(maxAttempts);
+
+    // Give the (now-exhausted) retry path a moment to prove it stays quiet
+    // — same pattern as the plain TransientSourceError exhaustion test
+    // above — a real fix bounds this permanently, not just "eventually".
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(calls).toBe(maxAttempts);
+    expect(await queueCount(FETCH_SOURCE_DLQ)).toBe(1);
+    expect(await queueCount(FETCH_SOURCE_QUEUE)).toBe(0);
+    expect(await retryTierMessageCount(TEST_RETRY_TIERS)).toBe(0);
+  });
+
   it("uses RateLimitedError.retryAfterMs to pick a delay tier instead of guessing from attempt number (H3 regression)", async () => {
     const searchId = await makeSearch();
     const externalId = `h3-${randomUUID()}`;

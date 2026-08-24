@@ -710,6 +710,156 @@ describe("SmartRecruitersSource — pagination", () => {
 });
 
 // ---------------------------------------------------------------------------
+// maxPostings cap (ticket 491cd88) — SmartRecruiters' description text
+// requires one detail request PER posting (Finding 2/5), so an unbounded
+// board is an unbounded number of requests. This suite proves the cap
+// actually bounds the detail fan-out (not just what's returned) and that a
+// truncated result REPORTS the truncation rather than looking like a
+// clean, complete, short board — the same "partial must never impersonate
+// complete" discipline as Finding 1 above.
+// ---------------------------------------------------------------------------
+describe("SmartRecruitersSource — maxPostings cap", () => {
+  function summary(id: string) {
+    return {
+      id,
+      name: `Role ${id}`,
+      company: { identifier: "BigCo", name: "Big Co" },
+      location: { fullLocation: "Remote", remote: true, hybrid: false },
+      typeOfEmployment: { id: "permanent", label: "Full-time" },
+      releasedDate: "2026-08-01T00:00:00.000Z",
+    };
+  }
+
+  function detailFor(id: string) {
+    return {
+      id,
+      name: `Role ${id}`,
+      company: { identifier: "BigCo", name: "Big Co" },
+      location: { fullLocation: "Remote", remote: true, hybrid: false },
+      typeOfEmployment: { id: "permanent", label: "Full-time" },
+      releasedDate: "2026-08-01T00:00:00.000Z",
+      postingUrl: `https://jobs.smartrecruiters.com/BigCo/${id}`,
+      jobAd: {
+        sections: {
+          jobDescription: { title: "Job Description", text: `<p>Do the work for ${id}.</p>` },
+        },
+      },
+    };
+  }
+
+  it("truncates a board larger than maxPostings and REPORTS the truncation, rather than returning a clean short list", async () => {
+    const allIds = ["j1", "j2", "j3", "j4", "j5"];
+    const detailCalls: string[] = [];
+    const fetchImpl = makeFetch({
+      postings: {
+        BigCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 5,
+              content: allIds.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        BigCo: Object.fromEntries(
+          allIds.map((id) => [
+            id,
+            () => {
+              detailCalls.push(id);
+              return jsonResponse(detailFor(id));
+            },
+          ]),
+        ),
+      },
+    });
+    const source = makeSource(fetchImpl, ["BigCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    // The cap bounds the FAN-OUT itself, not just the final job count —
+    // only the first 3 candidates were ever fetched. Detail requests cost
+    // real time/money against a live API; a cap that let the fetches
+    // happen and only trimmed the result afterward would defeat the whole
+    // point of this ticket.
+    expect(detailCalls.sort()).toEqual(["j1", "j2", "j3"]);
+    expect(jobs).toHaveLength(3);
+
+    // The acceptance-criterion assertion: this must NOT look like a clean,
+    // complete board of 3 postings. Exactly one truncation SkippedRecord
+    // names the cap and how many postings were left unfetched, so a
+    // caller can tell "capped" apart from "this company genuinely has 3
+    // open postings".
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.externalId).toBeUndefined();
+    expect(skipped[0]?.reason).toMatch(/maxPostings=3/);
+    expect(skipped[0]?.reason).toMatch(/"BigCo"/);
+    expect(skipped[0]?.reason).toMatch(/\b5\b/); // 5 candidates found
+    expect(skipped[0]?.reason).toMatch(/\b2\b/); // 5 - 3 = 2 left unfetched
+    expect(skipped[0]?.reason.toLowerCase()).toMatch(/truncat|partial/);
+  });
+
+  it("does not truncate (and reports no truncation skip) when the board fits within maxPostings", async () => {
+    const ids = ["j1", "j2"];
+    const fetchImpl = makeFetch({
+      postings: {
+        SmallCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 2,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        SmallCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["SmallCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs).toHaveLength(2);
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("a board exactly at the cap is not reported as truncated (boundary: > not >=)", async () => {
+    const ids = ["j1", "j2", "j3"];
+    const fetchImpl = makeFetch({
+      postings: {
+        ExactCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 3,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        ExactCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["ExactCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs).toHaveLength(3);
+    expect(skipped).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mapping against real captured detail responses — commitment, locationType,
 // company, location, postedAt. See smartrecruiters.ts Finding 4.
 // ---------------------------------------------------------------------------

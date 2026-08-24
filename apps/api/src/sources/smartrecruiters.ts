@@ -264,6 +264,32 @@ const DEFAULT_MAX_PAGES = 500;
  * measurement happened to show. */
 const DEFAULT_DETAIL_CONCURRENCY = 5;
 
+/**
+ * Safety valve on the per-posting detail fan-out itself (ticket 491cd88),
+ * separate from `DEFAULT_MAX_PAGES` (which only bounds *list* pagination).
+ * SmartRecruiters' description text requires one detail request PER
+ * posting with no way around it (Finding 2/5) — at `DEFAULT_MAX_PAGES` x
+ * `MAX_PAGE_SIZE` that's up to 50,000 detail requests for one company, and
+ * even a real, currently-configured-sized board can cost minutes: measured
+ * live (2026-08-21), BoschGroup's ~4,780 postings at
+ * `DEFAULT_DETAIL_CONCURRENCY` averaged 0.148s/posting end to end, i.e.
+ * ~12 minutes for that one company, ~2.5 hours at the pagination ceiling.
+ * See fetchSourceWorker.ts's `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS` for the
+ * worker-side backstop this cap is paired with.
+ *
+ * 1,000 is chosen so ONE capped company finishes its detail-fetch phase in
+ * ~148s (1,000 x 0.148s) — comfortably inside that worker deadline even
+ * with a handful of companies configured in one adapter instance (this
+ * adapter processes its configured companies sequentially within a single
+ * `search()` call; see the per-company loop in `search()`), while still
+ * being well above every non-outlier company observed during this
+ * adapter's development (Sixt: 25 postings; every other company checked
+ * was smaller still). A company that is genuinely larger than this is
+ * truncated, not silently under-reported — see the `maxPostings` handling
+ * in `#searchCompany`.
+ */
+const DEFAULT_MAX_POSTINGS = 1_000;
+
 /** The exact, verified redirect hostname SmartRecruiters sends unrecognized
  * `careers.smartrecruiters.com/{companyId}` requests to (with an empty
  * path — see `#checkCompanyValidity`, Fix E). See Finding 1. */
@@ -294,6 +320,17 @@ export type SmartRecruitersConfig = {
    * `DEFAULT_DETAIL_CONCURRENCY`'s doc comment for the measurement behind
    * the default. */
   detailConcurrency?: number;
+  /** Caps the number of per-posting detail requests issued FOR ONE
+   * COMPANY, after location filtering (Finding 5's client-side filter,
+   * safe to apply before the cap for the same reason it's safe to apply
+   * before the detail fetch at all). A company whose filtered candidate
+   * list exceeds this is truncated to the first `maxPostings` candidates,
+   * and the truncation itself is reported as a `SkippedRecord` naming the
+   * cap — see `#searchCompany`. Applied per company, not across the whole
+   * `search()` call, matching how every other per-company knob here
+   * (`maxPages`, `detailConcurrency`) works. See `DEFAULT_MAX_POSTINGS`'s
+   * doc comment for the reasoning behind the default. */
+  maxPostings?: number;
 };
 
 /**
@@ -331,6 +368,7 @@ export class SmartRecruitersSource implements JobSource {
   readonly #pageSize: number;
   readonly #maxPages: number;
   readonly #detailConcurrency: number;
+  readonly #maxPostings: number;
 
   constructor(config: SmartRecruitersConfig) {
     if (config.companies.length === 0) {
@@ -344,6 +382,7 @@ export class SmartRecruitersSource implements JobSource {
     this.#pageSize = Math.min(config.pageSize ?? MAX_PAGE_SIZE, MAX_PAGE_SIZE);
     this.#maxPages = config.maxPages ?? DEFAULT_MAX_PAGES;
     this.#detailConcurrency = config.detailConcurrency ?? DEFAULT_DETAIL_CONCURRENCY;
+    this.#maxPostings = config.maxPostings ?? DEFAULT_MAX_POSTINGS;
   }
 
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
@@ -489,12 +528,50 @@ export class SmartRecruitersSource implements JobSource {
       ? summaries.filter((s) => summaryMatchesLocation(s, criteria.location as string))
       : summaries;
 
-    const results = await mapWithConcurrency(candidates, this.#detailConcurrency, (summary) =>
-      this.#fetchAndNormalize(company, summary, criteria),
+    // maxPostings cap (ticket 491cd88): bounds the per-posting detail
+    // fan-out below, which is this adapter's real cost (Finding 2/5) —
+    // applied to `candidates`, not `summaries`, so the cap spends its
+    // budget only on postings that survived location filtering and would
+    // otherwise actually be fetched, not ones that were always going to be
+    // filtered out.
+    //
+    // A capped result MUST say so, not silently return a clean short list
+    // that looks identical to a company that genuinely has only
+    // `maxPostings` postings — that exact failure shape (truncated
+    // indistinguishable from complete) is this file's own Finding 1, the
+    // ticket for `maxPostings` names it as "this project's defining
+    // recurring bug, now nine instances deep," and it's the same principle
+    // as `skipRate` existing at all: a caller must never have to infer
+    // "did this run stop early?" from a count alone. One summary
+    // `SkippedRecord` naming the cap and how many candidates were left
+    // unfetched does that — not one per dropped posting (which would bury
+    // the one signal that matters, "this was truncated," under thousands
+    // of near-identical entries for a capped board).
+    const truncated = candidates.length > this.#maxPostings;
+    const boundedCandidates = truncated ? candidates.slice(0, this.#maxPostings) : candidates;
+
+    const results = await mapWithConcurrency(
+      boundedCandidates,
+      this.#detailConcurrency,
+      (summary) => this.#fetchAndNormalize(company, summary, criteria),
     );
 
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
+    if (truncated) {
+      const omitted = candidates.length - this.#maxPostings;
+      skipped.push({
+        externalId: undefined,
+        reason:
+          `SmartRecruiters search for company "${company}" was truncated at ` +
+          `maxPostings=${this.#maxPostings}: ${candidates.length} candidate postings were ` +
+          `found (after location filtering) but only the first ${this.#maxPostings} were ` +
+          `fetched — ${omitted} posting${omitted === 1 ? " was" : "s were"} NOT fetched and ` +
+          `${omitted === 1 ? "is" : "are"} missing from this result. This is a partial ` +
+          `result, not a complete board — do not treat "${company}" as having only ` +
+          `${this.#maxPostings} postings.`,
+      });
+    }
     for (const result of results) {
       if (result.kind === "job") jobs.push(result.job);
       else if (result.kind === "skip") skipped.push(result.record);

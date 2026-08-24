@@ -33,6 +33,41 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * of which path a failure takes; topology.ts owns the broker-side plumbing
  * that makes the decision effective.
  *
+ * Source-search deadline (ticket 491cd88): `source.search()` runs under
+ * `channel.prefetch(1)` (see `startFetchSourceWorker`) with no timeout of
+ * its own — a delivery stays unacked, and this consumer processes nothing
+ * else, for as long as `search()` takes. A source slow enough (measured:
+ * SmartRecruiters against a large board) can run past RabbitMQ's own
+ * consumer ack timeout, which force-closes the CHANNEL rather than failing
+ * the message — every other unacked delivery on that channel is lost with
+ * it, and what comes back looks like a dropped connection, not a slow
+ * source. `withDeadline` below races `source.search()` against
+ * `sourceSearchTimeoutMs` (default `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`, see
+ * its own doc comment for how that value relates to the broker's actual
+ * timeout) and, on expiry, throws `SourceSearchTimeoutError` — which
+ * `classify()` treats as an ordinary retryable failure, riding the exact
+ * same backoff-then-DLQ path as a `TransientSourceError`.
+ *
+ * What this does NOT fix: a timed-out message is still redelivered from
+ * the top, and `source.search()` has no notion of resuming partway through
+ * — a retried attempt repeats the ENTIRE fetch, same as it always has.
+ * This deadline does not make that redo-from-scratch cost go away; nothing
+ * in this ticket adds checkpointing. What it changes is what happens
+ * around that repeat: before this, the failure mode was an *implicit*
+ * broker-side channel drop — outside this worker's own attempt counting,
+ * arriving with none of `pickRetryTier`'s deliberate backoff (a
+ * broker-requeued message goes straight back onto `fetch.source`, not
+ * through a retry tier), and capable of taking other in-flight deliveries
+ * down with it. After this, the same slow-source condition is an
+ * *explicit* failure this worker recognizes, backs off, bounds to
+ * `maxAttempts` attempts, and eventually dead-letters — the identical,
+ * accounted-for path every other retryable failure already takes. Paired
+ * with `maxPostings` (smartrecruiters.ts), which bounds what one attempt's
+ * "from scratch" actually costs, the net effect is that a slow source now
+ * fails predictably and boundedly instead of unpredictably and, in the
+ * worst case, without limit. It is a faster, safer failure — not a
+ * cheaper one.
+ *
  * On `newlyInsertedJobIds` vs `linkedJobIds`: ingestJobsForSearch reports
  * both - the DB layer's distinction between "rows this call inserted" and
  * "every job this call linked to the search" is correct and useful. What
@@ -98,6 +133,81 @@ export class UnknownSourceError extends Error {}
  * registration, so this is not retryable. */
 export class SourceMismatchError extends Error {}
 
+/** `source.search()` did not settle within `sourceSearchTimeoutMs` (see
+ * `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`). Thrown by THIS WORKER, not by the
+ * adapter - `JobSource#search` has no cancellation signal in its
+ * interface, so the original call is simply abandoned, not stopped; it
+ * keeps running until it settles on its own (bounded, in practice, by
+ * whatever per-request timeout the adapter itself uses internally - e.g.
+ * SmartRecruiters' `requestTimeoutMs` - even though this worker is no
+ * longer waiting on it) and whatever it eventually resolves or rejects
+ * with is discarded. Retryable: nothing here proves the source can never
+ * finish, only that it didn't finish in time, the same posture
+ * `TransientSourceError` takes - but this is deliberately NOT a
+ * `SourceError` subclass, since the source itself reported nothing; this
+ * is a worker-imposed policy on top of a source that may otherwise be
+ * healthy. See the module doc comment's "Source-search deadline" section
+ * for why this exists and what it does and does not fix about repeated
+ * work on retry. */
+export class SourceSearchTimeoutError extends Error {}
+
+/**
+ * How long one `source.search()` call is allowed to run before this
+ * worker gives up on it explicitly, rather than letting RabbitMQ's own
+ * consumer ack timeout force-close the channel out from under it.
+ *
+ * Not guessed: this project's `docker-compose.yml` sets no
+ * `consumer_timeout` (no `rabbitmq.conf` is mounted into the `rabbitmq`
+ * service either), so the broker - `rabbitmq:3.13.7-management` - runs on
+ * its own documented default, 30 minutes (1,800,000ms;
+ * https://www.rabbitmq.com/docs/3.13/consumers). Past that, under
+ * `prefetch(1)` (see `startFetchSourceWorker`), the broker force-closes
+ * the CHANNEL with a 406 PRECONDITION_FAILED - taking every other
+ * in-flight delivery on it down too - which is precisely the failure ticket
+ * 491cd88 measured against a real SmartRecruiters board (BoschGroup: ~12
+ * minutes for a real search, ~2.5 hours at the adapter's own configured
+ * pagination ceiling before its `maxPostings` cap existed).
+ *
+ * Set well under that 30-minute limit, not up against it, for two reasons:
+ * (1) `source.search()` is not the only work holding this delivery
+ * unacked - `ingestJobsForSearch` and the score.job publish/confirm that
+ * follow it (see `createFetchSourceHandler`) run AFTER `search()` returns,
+ * inside the SAME unacked window, and need their own headroom; (2) margin
+ * for scheduler/network jitter on top of the deadline timer itself. 10
+ * minutes leaves 3x headroom under the broker's limit for that. It is
+ * still generous per search: at SmartRecruiters' own measured rate
+ * (0.148s/posting at `detailConcurrency: 5` - see smartrecruiters.ts),
+ * 10 minutes bounds roughly 4,000 total detail fetches, well above what a
+ * `maxPostings`-capped company search needs (smartrecruiters.ts's default
+ * cap is sized to finish in ~148s on its own).
+ *
+ * Deliberately generic, not SmartRecruiters-specific: this wraps
+ * `source.search()` for every dispatched source (see `sources` on
+ * `FetchSourceWorkerOptions`), not just SmartRecruiters - any adapter
+ * could in principle hang or run long enough to reproduce the same
+ * channel-drop failure mode; SmartRecruiters is the adapter that surfaced
+ * it, not the only one this protects.
+ */
+export const DEFAULT_SOURCE_SEARCH_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Races `promise` against a `timeoutMs` timer, rejecting with
+ * `SourceSearchTimeoutError` if the timer wins. Does not, and cannot,
+ * cancel `promise` - see `SourceSearchTimeoutError`'s doc comment. Safe
+ * against an unhandled rejection from the "losing" promise: `Promise.race`
+ * attaches its own `.then`/`.catch` to every promise passed to it,
+ * including ones whose outcome it ends up discarding, so a later
+ * rejection from `promise` after the timer has already won is still a
+ * "handled" rejection as far as Node is concerned. */
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number, describe: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new SourceSearchTimeoutError(`${describe} did not complete within ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export type HighSkipRateInfo = {
   searchId: string;
   sourceId: string;
@@ -130,6 +240,14 @@ export type FetchSourceWorkerOptions = {
    * "jobs"/"fetch.source"), which `startFetchSourceWorker` checks at
    * startup (see below) rather than discovering it per-message. */
   retryTiers?: ReadonlyArray<RetryTier>;
+  /** How long a single `source.search()` call is allowed to run before
+   * this worker fails it explicitly (`SourceSearchTimeoutError`, retried
+   * like any other transient failure) instead of letting RabbitMQ's own
+   * consumer ack timeout drop the channel out from under it. Defaults to
+   * `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`; see that constant's doc comment
+   * for how the default was chosen and the module doc comment's
+   * "Source-search deadline" section for what this does and doesn't fix. */
+  sourceSearchTimeoutMs?: number;
   /** skipRate at or above this, on a non-empty result, is treated as a
    * mapper-bug/upstream-schema-change signal rather than a quiet success.
    * Defaults to 0.5. */
@@ -198,6 +316,12 @@ function classify(err: unknown): Classification {
   }
   if (err instanceof SourceMismatchError) {
     return { retryable: false, kind: "source-mismatch" };
+  }
+  if (err instanceof SourceSearchTimeoutError) {
+    // Retryable, same posture as TransientSourceError - see this class's
+    // own doc comment for why it's a distinct kind rather than folded into
+    // "unknown" below.
+    return { retryable: true, kind: "source-search-timeout" };
   }
   // Anything else (DB connection blip, a bug we didn't anticipate, ...) is
   // *not* assumed permanent - unlike SourceError's non-retryable kinds, we
@@ -309,6 +433,7 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
     sources,
     maxAttempts = 4,
     retryTiers = FETCH_SOURCE_RETRY_TIERS,
+    sourceSearchTimeoutMs = DEFAULT_SOURCE_SEARCH_TIMEOUT_MS,
     highSkipRateThreshold = 0.5,
     onHighSkipRate = defaultOnHighSkipRate,
     log = (message: string) => console.error(message),
@@ -333,7 +458,11 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         );
       }
 
-      const result = await source.search(message.criteria);
+      const result = await withDeadline(
+        source.search(message.criteria),
+        sourceSearchTimeoutMs,
+        `source.search() for sourceId "${message.sourceId}" (search "${message.searchId}")`,
+      );
 
       const total = result.jobs.length + result.skipped.length;
       if (total > 0 && result.skipRate >= highSkipRateThreshold) {
