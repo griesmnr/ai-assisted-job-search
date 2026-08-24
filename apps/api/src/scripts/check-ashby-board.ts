@@ -45,6 +45,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import type { NormalizedJob } from "../sources/types.js";
 
 const BASE_URL = "https://api.ashbyhq.com/posting-api/job-board";
 export const TIMEOUT_MS = 10_000;
@@ -54,7 +55,30 @@ type RawAshbyJob = {
   title?: string;
   location?: string;
   secondaryLocations?: RawAshbySecondaryLocation[];
+  // Present on the base list response unconditionally — unlike
+  // `compensation`, `workplaceType` is not gated behind
+  // `?includeCompensation=true` (verified against the real captured
+  // fixtures this checker's sibling test reuses). Mapped the same way
+  // ashby.ts's own `mapLocationType` does, duplicated here in miniature
+  // rather than imported, matching this file's existing convention of
+  // reading raw fields directly instead of pulling in the adapter's much
+  // heavier normalization path (see the top-of-file comment).
+  workplaceType?: string | null;
 };
+
+/** Same mapping ashby.ts's `mapLocationType` applies — ticket 4450f39:
+ * without this, every hybrid/onsite Ashby posting outside the PNW would
+ * silently fall back to text-only matching here (though not in a real
+ * search, which always has the real `NormalizedJob.locationType`), making
+ * this checker under-report survivors relative to what a real search would
+ * find. */
+function mapWorkplaceType(raw: string | null | undefined): NormalizedJob["locationType"] {
+  const value = raw?.trim().toLowerCase();
+  if (value === "remote") return "remote";
+  if (value === "hybrid") return "hybrid";
+  if (value === "onsite") return "onsite";
+  return undefined;
+}
 
 export type BoardCheckResult =
   | { boardName: string; status: "not-found" }
@@ -135,6 +159,7 @@ export async function checkBoard(
       title: j.title ?? "",
       location: locations.length > 0 ? locations.join("; ") : undefined,
       company: boardName,
+      locationType: mapWorkplaceType(j.workplaceType),
     };
   });
   const survivingCount = filterSoftwareEngineeringJobs(filterable).length;

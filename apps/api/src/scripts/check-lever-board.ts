@@ -39,6 +39,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import type { NormalizedJob } from "../sources/types.js";
 
 const BASE_URL = "https://api.lever.co/v0/postings";
 export const TIMEOUT_MS = 10_000;
@@ -46,7 +47,23 @@ export const TIMEOUT_MS = 10_000;
 type RawLeverPosting = {
   text?: string;
   categories?: { location?: string; allLocations?: string[] };
+  // Top-level field on the list response — not nested under `categories`.
+  // See lever.ts's own `mapLocationType`.
+  workplaceType?: string;
 };
+
+/** Same mapping lever.ts's `mapLocationType` applies — ticket 4450f39:
+ * without this, every hybrid/onsite Lever posting outside the PNW would
+ * silently fall back to text-only matching here (though not in a real
+ * search, which always has the real `NormalizedJob.locationType`), making
+ * this checker under-report survivors relative to what a real search would
+ * find. Normalizes "on-site"/"on site" the same way lever.ts does, since
+ * Lever's own docs and its real observed data disagree on hyphenation. */
+function mapWorkplaceType(raw: string | undefined): NormalizedJob["locationType"] {
+  const value = raw?.trim().toLowerCase().replace(/[\s-]/g, "");
+  if (value === "remote" || value === "onsite" || value === "hybrid") return value;
+  return undefined;
+}
 
 export type BoardCheckResult =
   | { slug: string; status: "not-found" }
@@ -120,6 +137,7 @@ export async function checkBoard(
       title: p.text ?? "",
       location: locations.length > 0 ? locations.join("; ") : undefined,
       company: slug,
+      locationType: mapWorkplaceType(p.workplaceType),
     };
   });
   const survivingCount = filterSoftwareEngineeringJobs(filterable).length;

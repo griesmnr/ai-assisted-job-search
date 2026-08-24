@@ -69,6 +69,7 @@
 import { pathToFileURL } from "node:url";
 import { checkCareersSiteValidity } from "../sources/smartrecruiters.js";
 import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import type { NormalizedJob } from "../sources/types.js";
 
 const BASE_URL = "https://api.smartrecruiters.com/v1/companies";
 export const TIMEOUT_MS = 10_000;
@@ -80,8 +81,28 @@ const MAX_PAGES = 500;
 
 type RawSummary = {
   name?: string;
-  location?: { fullLocation?: string };
+  // `remote`/`hybrid` are present at the summary (list) level, not just on
+  // the per-posting detail fetch — verified against the real captured
+  // fixtures (__fixtures__/smartrecruiters-real-response-bosch-postings-*)
+  // this checker's sibling test reuses.
+  location?: { fullLocation?: string; remote?: boolean; hybrid?: boolean };
 };
+
+/** Same mapping smartrecruiters.ts's `mapLocationType` applies — ticket
+ * 4450f39: without this, every hybrid/onsite SmartRecruiters posting
+ * outside the PNW would silently fall back to text-only matching here
+ * (though not in a real search, which always has the real
+ * `NormalizedJob.locationType`), making this checker under-report
+ * survivors relative to what a real search would find. */
+function mapLocationType(location: RawSummary["location"]): NormalizedJob["locationType"] {
+  if (!location) return undefined;
+  if (typeof location.remote !== "boolean" || typeof location.hybrid !== "boolean") {
+    return undefined;
+  }
+  if (location.remote) return "remote";
+  if (location.hybrid) return "hybrid";
+  return "onsite";
+}
 type RawPostingsPage = { totalFound?: number; content?: RawSummary[] };
 
 export type BoardCheckResult =
@@ -190,6 +211,7 @@ export async function checkCompany(
           title: s.name ?? "",
           location: s.location?.fullLocation,
           company,
+          locationType: mapLocationType(s.location),
         })),
       ).length,
     };
@@ -199,6 +221,7 @@ export async function checkCompany(
     title: s.name ?? "",
     location: s.location?.fullLocation,
     company,
+    locationType: mapLocationType(s.location),
   }));
   const survivingCount = filterSoftwareEngineeringJobs(filterable).length;
 
