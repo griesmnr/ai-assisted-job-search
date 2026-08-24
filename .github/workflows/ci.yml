@@ -1,0 +1,207 @@
+name: CI
+
+# Runs on every push and every pull request, per ticket 1b699b5's acceptance
+# criteria. A push to a branch that also has an open PR runs the workflow
+# twice (once per trigger) -- accepted duplication; scoping push to `main`
+# only would leave feature branches unchecked until a PR exists.
+on:
+  push:
+  pull_request:
+
+# Public repo; nothing here needs more than read access to the checked-out
+# code (no releases, no PR comments, no package publishing).
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    # The suite opens real AMQP and Postgres connections (fetchSourceWorker
+    # tests hold a live channel across several retry-tier waits) -- a wedged
+    # broker or a hung connection should fail this job in minutes, not ride
+    # GitHub's 360-minute default to a timeout nobody's watching for.
+    timeout-minutes: 15
+
+    # Two real backing services, not mocks -- this project's test suite
+    # deliberately runs migrations and queue topology against real
+    # infrastructure instead of stubbing Postgres/RabbitMQ out (see
+    # apps/api/src/db/migration-0004.test.ts's doc comment on why: a
+    # migration reviewed three times against SQL alone still shipped
+    # broken, and was only caught by running it against real data).
+    services:
+      postgres:
+        # Same major.minor as docker-compose.yml's local dev service, so
+        # "passes in CI" and "passes against docker-compose up" mean the
+        # same Postgres behavior.
+        image: postgres:16.4
+        env:
+          # CI-only, throwaway credentials -- this container exists for the
+          # ~1 minute this job runs and is never reachable from outside the
+          # runner. Not a real secret, so it lives in plain text here
+          # instead of a repository secret (see the note further down on
+          # what CI does and does not need from secrets).
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: jobsearch_ci
+        ports:
+          - 5432:5432
+        # GitHub's postgres/rabbitmq service containers don't wait on a
+        # Docker HEALTHCHECK by default (the official images don't define
+        # one) -- without this, later steps can start dialing Postgres
+        # before initdb has finished and race-fail instead of just waiting.
+        # -h 127.0.0.1 forces a real TCP check instead of the local unix
+        # socket (same reasoning as docker-compose.yml's postgres
+        # healthcheck, copied here deliberately). Without it, this reports
+        # healthy during the container's own init-time server bringup
+        # (docker_temp_server_start() runs with -c listen_addresses='',
+        # unix socket only, TCP still closed), GitHub gates step start on
+        # health status and can release the job while the published port
+        # still refuses connections -- a rare, late intermittent failure
+        # (install/lint/build already ran) that looks like flakiness
+        # instead of the missing flag it actually is.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U ci -d jobsearch_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        # Same version as docker-compose.yml (the -management tag isn't
+        # needed here -- nothing in CI talks to the management UI -- but
+        # matching the tag keeps "what CI runs" and "what Nicole runs
+        # locally" identical rather than two different RabbitMQ builds).
+        image: rabbitmq:3.13.7-management
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
+    # Consumed by drizzle.config.ts, every *.test.ts file that opens its own
+    # `pg` Client, and apps/api/src/queue/topology.ts -- all read these
+    # exact names via process.env. `localhost` (not a service-name hostname)
+    # is correct here: unlike docker-compose's `dev` container, this job
+    # itself runs directly on the runner VM, on the same network namespace
+    # the service containers publish their ports to.
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ci
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: jobsearch_ci
+      RABBITMQ_HOST: localhost
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ci
+      RABBITMQ_DEFAULT_PASS: ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match "packageManager" in package.json exactly, so a pnpm
+      # behavior change between minor versions can't make CI and local
+      # `pnpm install` disagree about the lockfile.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Frozen lockfile: CI must fail if pnpm-lock.yaml and package.json
+      # have drifted apart, not silently re-resolve and mask it.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (eslint + prettier --check)
+        run: pnpm lint
+
+      # Topological build order (shared before api/web) comes from
+      # `pnpm -r run build` itself -- see package.json's "build" script and
+      # CLAUDE.md's Commands section.
+      - name: Build
+        run: pnpm build
+
+      # --- The .env problem -----------------------------------------------
+      # Every test file that touches Postgres, plus apps/api/drizzle.config.ts,
+      # calls `process.loadEnvFile()` (Node 22's built-in .env loader) at
+      # import time. That call throws ENOENT if no .env file exists at all --
+      # it is not "no config found, fall back to defaults", it is a hard
+      # crash before a single test runs. .env is gitignored (correctly --
+      # it's where ANTHROPIC_API_KEY and USAJOBS_API_KEY live locally) and
+      # is never present on a fresh CI checkout, so without this step the
+      # entire suite would fail at import with an ENOENT, not with a useful
+      # test failure.
+      #
+      # This is NOT "supply a committed .env" (explicitly disallowed by the
+      # ticket) -- it's an empty placeholder file that only satisfies
+      # loadEnvFile's existence check. Every value the tests actually read
+      # (POSTGRES_*, RABBITMQ_*) comes from the job/service `env:` above.
+      # Confirmed locally: an already-set shell/process env var always wins
+      # over the same key in a .env file loaded via loadEnvFile(), in both
+      # its no-argument form and drizzle.config.ts's explicit-path form --
+      # so an empty .env plus job-level env vars behaves identically to a
+      # populated one, without ever writing a secret to disk.
+      - name: Create placeholder .env (see comment -- not a real config file)
+        run: touch .env
+
+      # Applies drizzle/0000-0004 against the fresh `jobsearch_ci` database
+      # so the test suite's own inserts (job_matches, resumes, etc.) have
+      # somewhere to land. migration-0004.test.ts additionally runs
+      # `CREATE DATABASE` itself, against a throwaway per-run database name --
+      # that's why POSTGRES_USER above must be able to create databases.
+      # The official postgres image's default user is a superuser (CREATEDB
+      # is implied), so no extra GRANT step is needed.
+      - name: Run database migrations
+        run: pnpm --filter @app/api run db:migrate
+
+      # --- What this suite does and does not touch -------------------------
+      # No ANTHROPIC_API_KEY, no USAJOBS_API_KEY, and no outbound calls to
+      # Greenhouse/Lever/Ashby/SmartRecruiters/USAJOBS happen here:
+      #
+      #   - apps/api/src/sources/*.test.ts and
+      #     apps/api/src/scripts/check-*-board.test.ts inject a fake
+      #     `fetchImpl` into every source/checker under test and assert
+      #     against captured fixture responses (see each file's own
+      #     "Fixtures: real, live-captured ... responses" comment) -- zero
+      #     live network calls.
+      #   - demo-match.ts's `main()` (the function that constructs a real
+      #     Anthropic client and would bill Nicole's account) only runs
+      #     under its own `isMain` guard when the file is executed directly
+      #     (`npx tsx apps/api/src/demo-match.ts`). demo-match.test.ts only
+      #     imports `runDemoMatch` and friends and calls them with a fake
+      #     scorer/fake source -- importing the module for tests never
+      #     reaches `main()`, so nothing here can ever run demo-match.ts's
+      #     real, billing path. This workflow never invokes
+      #     `tsx demo-match.ts` (or model-ab.ts/resume-ab.ts, its cousins)
+      #     under any step, deliberately.
+      #   - The board-checker CLIs (check-greenhouse-board.ts etc.) DO make
+      #     real live requests when run manually (`npx tsx
+      #     apps/api/src/scripts/check-greenhouse-board.ts <token>`), but
+      #     those .ts entrypoints aren't test files -- vitest's `include`
+      #     glob in vitest.config.ts only matches `*.test.ts` -- so they are
+      #     structurally excluded from `pnpm vitest run` regardless of what
+      #     this workflow does. Nothing needed to exclude them explicitly;
+      #     noted here so the exclusion is visible rather than an accident.
+      #
+      # Net effect: as of this ticket, the suite has NO tests that depend on
+      # live third-party APIs, so there was no live-vs-mocked tradeoff to
+      # make. If a future ticket adds one, it needs either an injected fake
+      # like the ones above (preferred -- deterministic) or a deliberate,
+      # commented opt-out from this job, matching the reasoning laid out
+      # here.
+      #
+      # A missing/unreachable database is NOT swallowed: every DB-backed
+      # test opens its own real `pg` Client with no fallback, so a broken
+      # Postgres service fails those test files outright (verified locally:
+      # stopping Postgres mid-run turns "297 passed" into failed suites and
+      # a non-zero vitest exit code, never a silent skip). Vitest's
+      # `passWithNoTests: false` (vitest.config.ts) is the same
+      # fail-loudly stance for the empty-suite case.
+      - name: Test (vitest)
+        run: pnpm vitest run

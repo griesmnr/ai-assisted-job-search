@@ -1,5 +1,7 @@
 # AI-Assisted Job Search
 
+[![CI](https://github.com/griesmnr/ai-assisted-job-search/actions/workflows/ci.yml/badge.svg)](https://github.com/griesmnr/ai-assisted-job-search/actions/workflows/ci.yml)
+
 You pick which job boards to search, paste in a resume, and get back postings
 ranked by an AI-generated match score against that resume, best match first.
 Under the hood it fans a search out across several independent, unreliable
