@@ -13,6 +13,11 @@ commit, not a projection.
 
 ## What it does, today
 
+All of this currently runs end to end as a single script
+(`apps/api/src/demo-match.ts`), not through the queue-driven architecture
+diagrammed below — that part is still being built. See
+[Current state](#current-state) for exactly what's real.
+
 - Four job-board APIs (Greenhouse, Lever, Ashby, SmartRecruiters), covering
   several dozen configured employers, searched in one pass.
 - Postings are normalized into one `Job` shape, filtered down to
@@ -21,11 +26,6 @@ commit, not a projection.
   a rationale, strengths, and gaps, not free text.
 - Jobs, resumes, and match scores are persisted, so re-running a search
   never re-pays for a score it already has.
-- All of that currently runs end to end as a single script
-  (`apps/api/src/demo-match.ts`) that calls the source adapters, Claude, and
-  Postgres directly. The REST API and the React frontend that will sit in
-  front of it are scaffolded but not built yet — see
-  [Current state](#current-state) below.
 
 ## Current state
 
@@ -49,18 +49,19 @@ Not built yet:
 - **The REST API has no routes.** `apps/api/src/index.ts` builds a bare
   Fastify instance; `POST /searches` and `GET /searches/:id/results` don't
   exist yet.
-- **The frontend is not built.** `apps/web` is an unmodified Vite + React
-  scaffold — no source toggles, no resume input, no results list.
+- **The frontend is not built.** `apps/web` is a placeholder scaffold — no
+  source toggles, no resume input, no results list.
 - **There is no `score.job` worker.** The RabbitMQ topology and the
   `fetch.source` worker are real, but scoring currently happens
   synchronously inside `demo-match.ts`, not as a queue consumer. The queue
   path for scoring is designed (see the diagram below) but not implemented.
 - **The ranked list you'd get today is missing real candidates.** Widening
-  the funnel from 4 employers to dozens (across four sources) increased the
-  pool of matching postings roughly nine-fold — and changed the actual
-  output by nothing, because the shortlist takes the first 12 survivors in
-  source-iteration order rather than the best 12. Filed as an open bug, not
-  hidden — see [What "adversarial review" actually catches](#what-adversarial-review-actually-catches)
+  the funnel from 4 employers to dozens (across four sources) took the pool
+  of matching postings from 13 survivors to 166 (about 13x) — and changed
+  the actual output by nothing, because the shortlist takes the first 12
+  survivors in source-iteration order rather than the best 12. Filed as an
+  open bug, not hidden — see
+  [What "adversarial review" actually catches](#what-adversarial-review-actually-catches)
   for the details.
 - **A fifth adapter (USAJOBS) exists but isn't wired in.** It's fully
   built and tested against recorded fixtures, but the current search only
@@ -142,12 +143,12 @@ Every adapter implements the same `JobSource` interface
 (`search(criteria) -> { jobs, skipped }`) but the four APIs behind it
 disagree about almost everything else.
 
-| Source              | What makes it awkward                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Greenhouse**      | No server-side location/keyword query support — every search downloads a whole board and filters client-side. No public directory maps a company name to its board token, so candidates have to be checked individually (`check-greenhouse-board.ts`) before being added; roughly a third of hand-guessed tokens in this project's own history turned out to be real, sizeable boards that still contributed zero postings after filtering, and about a third of guessed company names weren't on Greenhouse at all. |
-| **Lever**           | Posting content is split across a plain-text summary field and a separate `lists` field that actually holds the requirements — reading only the summary field discards the majority of a posting's real content. Location is similarly split between one canonical field and an `allLocations` array that doesn't always agree with it; reading only one silently drops real matches, and it took three review rounds to land on reading the union of both correctly.                                                |
-| **Ashby**           | Location data is spread across a primary field, a `secondaryLocations` array, and a structured `address.postalAddress` block that's absent from the API response unless you read it — missing any one of the three silently zeroes out entire cities' worth of results. Compensation data only exists at all behind an undocumented query parameter.                                                                                                                                                                 |
-| **SmartRecruiters** | Returns HTTP `200` with `totalFound: 0` for both a real employer with no current openings and a completely nonexistent company identifier — byte-identical responses. Distinguishing the two required an independent liveness check against the company's own careers-site redirect behavior. Descriptions live behind a separate per-posting detail endpoint, so a large employer can cost thousands of extra HTTP requests for one search.                                                                         |
+| Source              | What makes it awkward                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Greenhouse**      | No server-side location/keyword query support — every search downloads a whole board and filters client-side. No public directory maps a company name to its board token, so candidates have to be checked individually (`check-greenhouse-board.ts`) before being added; of 25 hand-guessed tokens in this project's own history, 7 (28%) weren't on Greenhouse at all, and 13 more (about half) resolved to real, sizeable boards that still contributed zero postings after filtering. |
+| **Lever**           | Posting content is split across a plain-text summary field and a separate `lists` field that actually holds the requirements — reading only the summary field discards the majority of a posting's real content. Location is similarly split between one canonical field and an `allLocations` array that doesn't always agree with it; reading only one silently drops real matches, and it took three review rounds to land on reading the union of both correctly.                     |
+| **Ashby**           | Location data is spread across a primary field, a `secondaryLocations` array, and a structured `address.postalAddress` block that's absent from the API response unless you read it — missing any one of the three silently zeroes out entire cities' worth of results. Compensation data only exists at all behind an undocumented query parameter.                                                                                                                                      |
+| **SmartRecruiters** | Returns HTTP `200` with `totalFound: 0` for both a real employer with no current openings and a completely nonexistent company identifier — byte-identical responses. Distinguishing the two required an independent liveness check against the company's own careers-site redirect behavior. Descriptions live behind a separate per-posting detail endpoint, so a large employer can cost thousands of extra HTTP requests for one search.                                              |
 
 ## What "adversarial review" actually catches
 
@@ -159,12 +160,15 @@ materially wrong. A few examples, verifiable in the git history:
 
 - The Lever adapter originally stored only a posting's marketing summary,
   discarding 69-74% of every posting's actual text — including every
-  requirements section. The one content assertion in its test suite
-  checked the marketing sentence, so it passed _because_ the requirements
-  were missing (`c4e51ab`).
-- The Ashby adapter left `secondaryLocations` and `address.postalAddress`
-  unread. `search({ location: "New York City" })` returned zero results
-  while 115 real postings were headquartered there (`e5ca1f1`).
+  requirements section. The suite's one content assertion checked the
+  marketing intro, which the bug left intact, so the test passed with
+  69-74% of every posting missing (`c4e51ab`).
+- Adversarial review caught that the Ashby adapter never read
+  `address.postalAddress`: `search({ location: "New York City" })`
+  returned zero results while 115 real postings were headquartered there.
+  (The adapter had already caught a related gap on its own before review
+  even started — a separate unread field, `secondaryLocations` — see
+  [Source adapters](#source-adapters).) (`e5ca1f1`)
 - A migration backfilling a resume-content hash used
   `"resume_text"::bytea`, which parses text as bytea _escape_ syntax, not
   raw bytes. A resume containing a Windows path like `C:\Users\...` aborted
@@ -193,15 +197,18 @@ never look identical to a complete one.
 
 ### Prerequisites
 
-- Node.js 22+, `pnpm` (this repo pins `pnpm@10.33.0` via `packageManager`)
-- Docker Desktop, for Postgres and RabbitMQ
-- An Anthropic API key, only if you intend to run real scoring
-  (`demo-match.ts` or the test suite's non-DB tests don't need one; the
-  scoring path does)
+- Node.js 22+. `pnpm` itself doesn't need a separate install — this repo
+  pins `pnpm@10.33.0` via `packageManager`, so `corepack enable` (ships
+  with Node 22) makes the `pnpm` command resolve to the pinned version.
+- Docker Desktop, for Postgres and RabbitMQ.
+- An Anthropic API key — not needed for `pnpm install`, migrations, or
+  `pnpm test`/`pnpm lint`, but required before step 5
+  (`demo-match.ts`); see that step for why it can't be skipped silently.
 
-### 1. Configure environment
+### 1. Enable pnpm and configure environment
 
 ```bash
+corepack enable
 [ -f .env ] || cp .env.example .env
 ```
 
@@ -241,22 +248,31 @@ pnpm lint           # eslint . && prettier --check .
 ```
 
 `vitest.config.ts` aliases `@app/shared` to its TypeScript source, so tests
-run against current source without a build step first. Some tests
-(`apps/api/src/db/migration-0004.test.ts`,
-`apps/api/src/worker/fetchSourceWorker.test.ts`) stand up real, disposable
-Postgres databases and a real RabbitMQ connection, so step 2 has to have
+run against current source without a build step first. Six test files
+connect to a real Postgres instance (`db/schema.test.ts`, `db/seed.test.ts`,
+`db/migration-0004.test.ts`, `ingest/ingestJobs.test.ts`,
+`demo-match.test.ts`, `worker/fetchSourceWorker.test.ts` — the last of
+those also needs a real RabbitMQ connection), so step 2 has to have
 happened first.
 
 ### 5. Run the end-to-end pipeline
 
-This calls live job-board APIs and, if `ANTHROPIC_API_KEY` is set, the real
-Anthropic API — it costs real API usage, not fixtures.
+`ANTHROPIC_API_KEY` must be set in `.env` before this step. The script
+constructs its Anthropic client unconditionally and doesn't check for a
+key up front, so without one it still runs the entire live fetch across
+every configured source — SmartRecruiters alone can be 500+ HTTP
+requests — and only then fails, on the first scoring call.
 
 ```bash
 mkdir -p prep
-echo "your resume text here" > prep/resume.txt   # gitignored, never committed
+[ -f prep/resume.txt ] || echo "paste your resume text here" > prep/resume.txt
+# then edit prep/resume.txt to hold your actual resume text
 npx tsx apps/api/src/demo-match.ts
 ```
+
+The guard on that `echo` matters for the same reason as the `.env` one
+above: `prep/` is gitignored, so overwriting `prep/resume.txt` by accident
+has no undo.
 
 It searches every source configured in `.env` (Greenhouse, Lever, Ashby,
 SmartRecruiters — whichever have their env var set), filters to
@@ -267,19 +283,22 @@ second run doesn't re-score anything it already has.
 ### Verified
 
 ```
-$ npx pnpm lint
+$ pnpm lint
 > job-search-app@0.0.0 lint
 > eslint . && prettier --check .
 
 Checking formatting...
 All matched files use Prettier code style!
 
-$ npx vitest run
+$ pnpm test
+> job-search-app@0.0.0 test
+> vitest run
+
  RUN  v4.1.10
 
  Test Files  20 passed (20)
       Tests  297 passed (297)
-   Duration  6.84s (transform 1.11s, setup 0ms, import 5.65s, tests 6.97s, environment 1ms)
+   Duration  7.31s (transform 1.99s, setup 0ms, import 7.64s, tests 7.44s, environment 1ms)
 ```
 
 ## Project layout
@@ -287,7 +306,7 @@ $ npx vitest run
 ```
 apps/
   api/     Fastify backend — source adapters, RabbitMQ worker, Drizzle schema/migrations
-  web/     React + Vite frontend (scaffold only, not built)
+  web/     React + Vite frontend (placeholder scaffold, not the real app)
 packages/
   shared/  Domain types (Job, Resume, JobMatch, Search, SourceDescriptor) used by both apps
 ```
