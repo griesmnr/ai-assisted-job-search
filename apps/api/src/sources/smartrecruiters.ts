@@ -277,16 +277,36 @@ const DEFAULT_DETAIL_CONCURRENCY = 5;
  * See fetchSourceWorker.ts's `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS` for the
  * worker-side backstop this cap is paired with.
  *
- * 1,000 is chosen so ONE capped company finishes its detail-fetch phase in
- * ~148s (1,000 x 0.148s) — comfortably inside that worker deadline even
- * with a handful of companies configured in one adapter instance (this
- * adapter processes its configured companies sequentially within a single
- * `search()` call; see the per-company loop in `search()`), while still
- * being well above every non-outlier company observed during this
- * adapter's development (Sixt: 25 postings; every other company checked
- * was smaller still). A company that is genuinely larger than this is
- * truncated, not silently under-reported — see the `maxPostings` handling
- * in `#searchCompany`.
+ * CORRECTION (adversarial review, ticket 491cd88, F1) — this was originally
+ * a PER-COMPANY cap, and the comment here claimed 1,000/company was "safe
+ * with a handful of companies configured." That claim did not survive
+ * arithmetic: at the measured 0.148s/posting, 4 fully-capped companies is
+ * 592s against `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`'s 600s deadline (an 8s
+ * margin, before list pagination or the post-search DB/publish work that
+ * deadline's own comment says needs headroom in the same unacked window),
+ * and 7 is ~1,036s — 73% OVER. The cap's unit (per company) and the
+ * deadline's unit (per `search()` call) didn't compose, and nothing
+ * enforced staying under whatever company count happened to make the
+ * arithmetic work — a config change (adding an 8th company) would have
+ * silently broken it.
+ *
+ * `maxPostings` is now a budget for ONE ENTIRE `search()` CALL, shared
+ * across every configured company via a running total in `search()`'s
+ * per-company loop (see `search()` and `#searchCompany`'s `maxDetailFetches`
+ * parameter) — not per company. This is what actually makes the bound
+ * independent of company count: 1,000 total detail fetches is ~148s
+ * (1,000 x 0.148s) no matter how many companies are configured, leaving
+ * the same ~148s vs. the 600s deadline's margin whether there is 1
+ * company or 20. A company whose share of the remaining budget runs out
+ * mid-list (or is already exhausted before its turn) is truncated, not
+ * silently under-reported — see the `maxPostings` handling in
+ * `#searchCompany`, which reports which specific company(ies) were
+ * affected.
+ *
+ * 1,000 itself is chosen well above every non-outlier company observed
+ * during this adapter's development (Sixt: 25 postings; every other
+ * company checked was smaller still) while keeping the whole-search
+ * budget's own cost (~148s) comfortably inside the worker deadline.
  */
 const DEFAULT_MAX_POSTINGS = 1_000;
 
@@ -320,16 +340,22 @@ export type SmartRecruitersConfig = {
    * `DEFAULT_DETAIL_CONCURRENCY`'s doc comment for the measurement behind
    * the default. */
   detailConcurrency?: number;
-  /** Caps the number of per-posting detail requests issued FOR ONE
-   * COMPANY, after location filtering (Finding 5's client-side filter,
-   * safe to apply before the cap for the same reason it's safe to apply
-   * before the detail fetch at all). A company whose filtered candidate
-   * list exceeds this is truncated to the first `maxPostings` candidates,
-   * and the truncation itself is reported as a `SkippedRecord` naming the
-   * cap — see `#searchCompany`. Applied per company, not across the whole
-   * `search()` call, matching how every other per-company knob here
-   * (`maxPages`, `detailConcurrency`) works. See `DEFAULT_MAX_POSTINGS`'s
-   * doc comment for the reasoning behind the default. */
+  /** Caps the total number of per-posting detail requests issued across
+   * this adapter instance's ENTIRE `search()` call — shared across every
+   * configured company (see `DEFAULT_MAX_POSTINGS`'s doc comment for why
+   * this is a whole-`search()` budget and not a per-company one; an
+   * earlier per-company version of this cap did not compose correctly
+   * with fetchSourceWorker.ts's deadline). Applied after location
+   * filtering (Finding 5's client-side filter, safe to apply before the
+   * cap for the same reason it's safe to apply before the detail fetch at
+   * all). Whichever company's turn in the loop exhausts the shared budget
+   * is truncated to its remaining share (possibly zero, if an earlier
+   * company already spent it all), and the truncation is reported as a
+   * `SkippedRecord` naming the cap — see `#searchCompany`.
+   *
+   * Must be a finite number >= 0; anything else (unset, `NaN`, a negative
+   * value) falls back to `DEFAULT_MAX_POSTINGS` rather than silently
+   * disabling the cap — see the constructor. */
   maxPostings?: number;
 };
 
@@ -382,7 +408,23 @@ export class SmartRecruitersSource implements JobSource {
     this.#pageSize = Math.min(config.pageSize ?? MAX_PAGE_SIZE, MAX_PAGE_SIZE);
     this.#maxPages = config.maxPages ?? DEFAULT_MAX_PAGES;
     this.#detailConcurrency = config.detailConcurrency ?? DEFAULT_DETAIL_CONCURRENCY;
-    this.#maxPostings = config.maxPostings ?? DEFAULT_MAX_POSTINGS;
+    // FIX (adversarial review, ticket 491cd88, F5): a bare `config.maxPostings
+    // ?? DEFAULT_MAX_POSTINGS` looks safe but isn't — `??` only substitutes
+    // on null/undefined, not on a NUMBER that happens to be nonsense.
+    // `maxPostings: NaN` (e.g. a misconfigured `Number(someEnvVar)` upstream
+    // of this constructor) survives `??` untouched, and `candidates.length >
+    // NaN` is `false` for every possible `candidates.length` — the cap
+    // silently disables itself, full unbounded fan-out, no truncation
+    // record, from a typo. That is exactly the failure this ticket exists
+    // to prevent. A negative value is comparatively self-announcing (caps
+    // everything to zero fetches, loudly), but still not a value anyone
+    // meant. Both fall back to the default instead.
+    this.#maxPostings =
+      typeof config.maxPostings === "number" &&
+      Number.isFinite(config.maxPostings) &&
+      config.maxPostings >= 0
+        ? config.maxPostings
+        : DEFAULT_MAX_POSTINGS;
   }
 
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
@@ -403,11 +445,31 @@ export class SmartRecruitersSource implements JobSource {
     // processing one company (list-page fetch, validity check, or the
     // detail fan-out) is caught, recorded, and the loop moves on to the
     // next company rather than discarding every other company's results.
+    // maxPostings budget (ticket 491cd88, F1): a running total across THIS
+    // WHOLE search() call, shared across every configured company — not a
+    // per-company allowance. See DEFAULT_MAX_POSTINGS's doc comment for why
+    // a per-company cap didn't compose with fetchSourceWorker.ts's deadline
+    // (its cost scales with company count; this one doesn't). Whichever
+    // company's turn exhausts what's left is truncated to its remaining
+    // share, possibly zero if an earlier company already spent it all —
+    // `#searchCompany` reports that explicitly rather than silently
+    // returning an empty/short result indistinguishable from a real one.
+    //
+    // Not decremented in the `catch` branch below: `#fetchAndNormalize` is
+    // documented (see its own doc comment) to never let a per-record
+    // failure escape as a thrown exception, so the only way `#searchCompany`
+    // itself throws is before the detail fan-out even starts (a list-page
+    // fetch or the validity check) — zero of the detail budget was actually
+    // spent, so leaving `remainingBudget` untouched here is accurate, not
+    // generous.
+    let remainingBudget = this.#maxPostings;
+
     for (const company of this.#companies) {
       try {
-        const result = await this.#searchCompany(company, criteria);
+        const result = await this.#searchCompany(company, criteria, Math.max(0, remainingBudget));
         jobs.push(...result.jobs);
         skipped.push(...result.skipped);
+        remainingBudget -= result.detailFetchesUsed;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         skipped.push({
@@ -426,7 +488,8 @@ export class SmartRecruitersSource implements JobSource {
   async #searchCompany(
     company: string,
     criteria: SearchCriteria,
-  ): Promise<{ jobs: NormalizedJob[]; skipped: SkippedRecord[] }> {
+    maxDetailFetches: number,
+  ): Promise<{ jobs: NormalizedJob[]; skipped: SkippedRecord[]; detailFetchesUsed: number }> {
     const firstPage = await this.#fetchPostingsPage(company, 0);
 
     if (firstPage.totalFound === 0) {
@@ -444,6 +507,7 @@ export class SmartRecruitersSource implements JobSource {
               reason: `SmartRecruiters company identifier "${company}" is not recognized (careers.smartrecruiters.com/${company} redirects to the generic SmartRecruiters homepage, not a company careers page or a company-specific domain) — this looks like a typo'd or defunct identifier, not a company with zero current openings`,
             },
           ],
+          detailFetchesUsed: 0,
         };
       }
       if (validity.status === "unknown") {
@@ -461,12 +525,13 @@ export class SmartRecruitersSource implements JobSource {
               reason: `SmartRecruiters company identifier "${company}" returned zero postings, and its validity could not be confirmed (${validity.reason}) — treat this result with suspicion, not as a confirmed empty board`,
             },
           ],
+          detailFetchesUsed: 0,
         };
       }
       // validity.status === "valid": a real company that currently has no
       // open postings. A legitimate empty result, same as a Greenhouse or
       // Lever board with `jobs: []` — not a skip.
-      return { jobs: [], skipped: [] };
+      return { jobs: [], skipped: [], detailFetchesUsed: 0 };
     }
 
     // Non-empty result: the identifier is proven real by having actual
@@ -513,6 +578,7 @@ export class SmartRecruitersSource implements JobSource {
             reason: `SmartRecruiters reported totalFound=${firstPage.totalFound} for company "${company}" but the postings list returned no postings — treating this as an inconsistent/malformed response, not a confirmed empty board`,
           },
         ],
+        detailFetchesUsed: 0,
       };
     }
 
@@ -528,16 +594,22 @@ export class SmartRecruitersSource implements JobSource {
       ? summaries.filter((s) => summaryMatchesLocation(s, criteria.location as string))
       : summaries;
 
-    // maxPostings cap (ticket 491cd88): bounds the per-posting detail
+    // maxPostings budget (ticket 491cd88, F1): `maxDetailFetches` is THIS
+    // company's remaining SHARE of the whole-`search()` budget when its
+    // turn came up in `search()`'s per-company loop — not a fixed
+    // per-company allowance (see DEFAULT_MAX_POSTINGS's doc comment and
+    // `search()`'s `remainingBudget`). It bounds the per-posting detail
     // fan-out below, which is this adapter's real cost (Finding 2/5) —
-    // applied to `candidates`, not `summaries`, so the cap spends its
-    // budget only on postings that survived location filtering and would
+    // applied to `candidates`, not `summaries`, so the budget is spent
+    // only on postings that survived location filtering and would
     // otherwise actually be fetched, not ones that were always going to be
-    // filtered out.
+    // filtered out. It can be zero, if earlier companies in the loop
+    // already spent the entire shared budget — that still must be
+    // reported, not silently treated as "this company has 0 postings."
     //
     // A capped result MUST say so, not silently return a clean short list
     // that looks identical to a company that genuinely has only
-    // `maxPostings` postings — that exact failure shape (truncated
+    // `maxDetailFetches` postings — that exact failure shape (truncated
     // indistinguishable from complete) is this file's own Finding 1, the
     // ticket for `maxPostings` names it as "this project's defining
     // recurring bug, now nine instances deep," and it's the same principle
@@ -547,8 +619,8 @@ export class SmartRecruitersSource implements JobSource {
     // unfetched does that — not one per dropped posting (which would bury
     // the one signal that matters, "this was truncated," under thousands
     // of near-identical entries for a capped board).
-    const truncated = candidates.length > this.#maxPostings;
-    const boundedCandidates = truncated ? candidates.slice(0, this.#maxPostings) : candidates;
+    const truncated = candidates.length > maxDetailFetches;
+    const boundedCandidates = truncated ? candidates.slice(0, maxDetailFetches) : candidates;
 
     const results = await mapWithConcurrency(
       boundedCandidates,
@@ -559,17 +631,27 @@ export class SmartRecruitersSource implements JobSource {
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
     if (truncated) {
-      const omitted = candidates.length - this.#maxPostings;
+      const omitted = candidates.length - boundedCandidates.length;
+      const budgetContext =
+        boundedCandidates.length === 0
+          ? `the shared maxPostings=${this.#maxPostings} budget for this ENTIRE search() ` +
+            `call (across every configured company) was already fully spent by an earlier ` +
+            `company before "${company}"'s turn`
+          : `only ${boundedCandidates.length} of the shared maxPostings=${this.#maxPostings} ` +
+            `budget for this ENTIRE search() call (across every configured company) remained ` +
+            `for "${company}"'s turn`;
       skipped.push({
         externalId: undefined,
         reason:
-          `SmartRecruiters search for company "${company}" was truncated at ` +
-          `maxPostings=${this.#maxPostings}: ${candidates.length} candidate postings were ` +
-          `found (after location filtering) but only the first ${this.#maxPostings} were ` +
-          `fetched — ${omitted} posting${omitted === 1 ? " was" : "s were"} NOT fetched and ` +
+          `SmartRecruiters search for company "${company}" was truncated: ${candidates.length} ` +
+          `candidate postings were found (after location filtering) but ${budgetContext} — ` +
+          `${omitted} posting${omitted === 1 ? " was" : "s were"} NOT fetched and ` +
           `${omitted === 1 ? "is" : "are"} missing from this result. This is a partial ` +
           `result, not a complete board — do not treat "${company}" as having only ` +
-          `${this.#maxPostings} postings.`,
+          `${boundedCandidates.length} postings, and note maxPostings is a budget SHARED ` +
+          `across all configured companies, so other companies processed after this one may ` +
+          `be truncated (or skipped entirely) by the same exhausted budget even if their own ` +
+          `board is small.`,
       });
     }
     for (const result of results) {
@@ -580,7 +662,7 @@ export class SmartRecruitersSource implements JobSource {
       // filtering, which never counts a non-match as a mapping failure.
     }
 
-    return { jobs, skipped };
+    return { jobs, skipped, detailFetchesUsed: boundedCandidates.length };
   }
 
   /**

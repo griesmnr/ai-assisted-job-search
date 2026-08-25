@@ -39,14 +39,29 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * else, for as long as `search()` takes. A source slow enough (measured:
  * SmartRecruiters against a large board) can run past RabbitMQ's own
  * consumer ack timeout, which force-closes the CHANNEL rather than failing
- * the message — every other unacked delivery on that channel is lost with
- * it, and what comes back looks like a dropped connection, not a slow
- * source. `withDeadline` below races `source.search()` against
+ * the message.
+ *
+ * CORRECTION (adversarial review, ticket 491cd88, F4) — this comment
+ * previously said the force-close "takes every other unacked delivery on
+ * that channel down with it." Under `prefetch(1)` there is at most ONE
+ * unacked delivery at a time, so "every other" is zero — that phrasing
+ * overstated the harm. The real harm is what `startFetchSourceWorker`'s
+ * own comment already describes correctly for a different failure mode
+ * (an unhandled rejection leaving a message unacked): the channel closing
+ * kills the consumer registration that lives on it, and this worker goes
+ * DEAF — no exception is thrown anywhere in this process, "connection up,
+ * consumer registered, no errors thrown" (that comment's own words) still
+ * reads healthy from the outside, but nothing is being delivered anymore.
+ * What comes back looks like a dropped connection, not a slow source, and
+ * (absent a supervisor that notices and restarts the process) recovers
+ * only if something reconnects the channel and re-registers the consumer.
+ * `withDeadline` below races `source.search()` against
  * `sourceSearchTimeoutMs` (default `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`, see
  * its own doc comment for how that value relates to the broker's actual
  * timeout) and, on expiry, throws `SourceSearchTimeoutError` — which
  * `classify()` treats as an ordinary retryable failure, riding the exact
- * same backoff-then-DLQ path as a `TransientSourceError`.
+ * same backoff-then-DLQ path as a `TransientSourceError`, so the channel
+ * never has a reason to hit that 30-minute limit in the first place.
  *
  * What this does NOT fix: a timed-out message is still redelivered from
  * the top, and `source.search()` has no notion of resuming partway through
@@ -57,16 +72,24 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * broker-side channel drop — outside this worker's own attempt counting,
  * arriving with none of `pickRetryTier`'s deliberate backoff (a
  * broker-requeued message goes straight back onto `fetch.source`, not
- * through a retry tier), and capable of taking other in-flight deliveries
- * down with it. After this, the same slow-source condition is an
- * *explicit* failure this worker recognizes, backs off, bounds to
- * `maxAttempts` attempts, and eventually dead-letters — the identical,
- * accounted-for path every other retryable failure already takes. Paired
- * with `maxPostings` (smartrecruiters.ts), which bounds what one attempt's
+ * through a retry tier), and risking the deaf-consumer wedge described
+ * above. After this, the same slow-source condition is an *explicit*
+ * failure this worker recognizes, backs off, bounds to `maxAttempts`
+ * attempts, and eventually dead-letters — the identical, accounted-for
+ * path every other retryable failure already takes. Paired with
+ * `maxPostings` (smartrecruiters.ts), which bounds what one attempt's
  * "from scratch" actually costs, the net effect is that a slow source now
  * fails predictably and boundedly instead of unpredictably and, in the
  * worst case, without limit. It is a faster, safer failure — not a
- * cheaper one.
+ * cheaper one. (It does, however, mean a chronically slow/hung source now
+ * burns up to `maxAttempts x sourceSearchTimeoutMs` — at the defaults,
+ * 4 x 10min = 40 minutes — of this single `prefetch(1)` consumer's time
+ * before dead-lettering, worse in wall-clock than the ~12 minutes-then-
+ * channel-drop it replaces. Defensible: bounded and accounted-for beats
+ * unpredictable, but see `SourceSearchTimeoutError`'s doc comment for why
+ * NOT every one of those attempts is necessarily doing useful work, and
+ * whether a hung-forever source deserves the full retry budget is worth
+ * revisiting.)
  *
  * On `newlyInsertedJobIds` vs `linkedJobIds`: ingestJobsForSearch reports
  * both - the DB layer's distinction between "rows this call inserted" and
@@ -99,6 +122,17 @@ export const SCORE_JOB_ROUTING_KEY = "score.job";
  * the "jobs" exchange, which knows nothing about retries), which is
  * treated as attempt 1. */
 const ATTEMPT_HEADER = "x-attempt";
+
+/** Caps how many individual `SkippedRecord.reason` lines this worker logs
+ * per message (see the "log skip reasons" block in the handler below,
+ * ticket 491cd88 F2). Not unbounded: some adapters can legitimately
+ * return hundreds of per-record skips in one `result.skipped`, and
+ * logging every one of those on every message would flood whatever this
+ * worker's `log` hook writes to. 20 is enough to see a real pattern (or
+ * the one truncation record a capped SmartRecruiters search produces)
+ * without turning a single message into a wall of log lines; anything
+ * past the cap is summarized as a count instead of dropped silently. */
+const SKIPPED_LOG_LIMIT = 20;
 
 export type FetchSourceMessage = {
   searchId: string;
@@ -137,18 +171,51 @@ export class SourceMismatchError extends Error {}
  * `DEFAULT_SOURCE_SEARCH_TIMEOUT_MS`). Thrown by THIS WORKER, not by the
  * adapter - `JobSource#search` has no cancellation signal in its
  * interface, so the original call is simply abandoned, not stopped; it
- * keeps running until it settles on its own (bounded, in practice, by
- * whatever per-request timeout the adapter itself uses internally - e.g.
- * SmartRecruiters' `requestTimeoutMs` - even though this worker is no
- * longer waiting on it) and whatever it eventually resolves or rejects
- * with is discarded. Retryable: nothing here proves the source can never
- * finish, only that it didn't finish in time, the same posture
- * `TransientSourceError` takes - but this is deliberately NOT a
- * `SourceError` subclass, since the source itself reported nothing; this
- * is a worker-imposed policy on top of a source that may otherwise be
- * healthy. See the module doc comment's "Source-search deadline" section
- * for why this exists and what it does and does not fix about repeated
- * work on retry. */
+ * keeps running as an ORPHAN in the background, and whatever it
+ * eventually resolves or rejects with is discarded.
+ *
+ * CORRECTION (adversarial review, ticket 491cd88, F3) — this comment used
+ * to wave that orphan away as "bounded, in practice, by whatever
+ * per-request timeout the adapter itself uses internally." That is an
+ * ASSUMPTION ABOUT ADAPTERS, not something `withDeadline` enforces - and
+ * this deadline is deliberately generic, wrapping every dispatched
+ * source, not only ones with a well-behaved internal timeout. Measured
+ * directly against the real SmartRecruitersSource (a probe forcing the
+ * deadline to fire mid-fetch): at the moment the deadline expired, 85
+ * detail requests had been issued; 1,500ms later, 400 had been issued -
+ * 315 MORE went out after this worker had already given up on the call
+ * and moved on to retrying/dead-lettering the message. Peak concurrent
+ * in-flight requests briefly went from the adapter's configured 5 to 10,
+ * when the RETRY's own 5 concurrent requests overlapped the still-running
+ * orphan's - which contradicts smartrecruiters.ts's own declared,
+ * measured invariant ("peak in-flight verified at exactly 5") and was
+ * undocumented anywhere before this note.
+ *
+ * For SmartRecruiters specifically this stays bounded: its detail
+ * fan-out is a finite loop with its own 15s-per-request timeout
+ * (`requestTimeoutMs`), so at most one orphaned attempt can ever overlap
+ * one live attempt before the orphan finishes settling on its own. That
+ * is a property of THIS adapter's own internal timeout, not of
+ * `withDeadline` - a source whose underlying calls can hang indefinitely
+ * (no internal timeout, or a bug that leaves a promise permanently
+ * pending) has NOTHING here stopping its orphans from accumulating: every
+ * timed-out attempt on every retried message leaves one more orphan
+ * running forever, so a chronically slow queue can retain up to
+ * `maxAttempts` orphans PER MESSAGE still in flight - O(maxAttempts x
+ * queued messages), not O(maxAttempts) - none of them ever cancelled,
+ * all of them still holding whatever connections/memory they acquired.
+ * The real fix is threading an `AbortSignal` through `JobSource#search`
+ * so a timeout can actually stop the call, not just stop waiting on it;
+ * that's a breaking interface change across all five adapters and gets
+ * its own ticket.
+ *
+ * Retryable: nothing here proves the source can never finish, only that
+ * it didn't finish in time, the same posture `TransientSourceError`
+ * takes - but this is deliberately NOT a `SourceError` subclass, since
+ * the source itself reported nothing; this is a worker-imposed policy on
+ * top of a source that may otherwise be healthy. See the module doc
+ * comment's "Source-search deadline" section for why this exists and what
+ * it does and does not fix about repeated work on retry. */
 export class SourceSearchTimeoutError extends Error {}
 
 /**
@@ -161,9 +228,12 @@ export class SourceSearchTimeoutError extends Error {}
  * service either), so the broker - `rabbitmq:3.13.7-management` - runs on
  * its own documented default, 30 minutes (1,800,000ms;
  * https://www.rabbitmq.com/docs/3.13/consumers). Past that, under
- * `prefetch(1)` (see `startFetchSourceWorker`), the broker force-closes
- * the CHANNEL with a 406 PRECONDITION_FAILED - taking every other
- * in-flight delivery on it down too - which is precisely the failure ticket
+ * `prefetch(1)` (see `startFetchSourceWorker`) there is at most one
+ * unacked delivery to begin with, but the broker still force-closes the
+ * CHANNEL with a 406 PRECONDITION_FAILED - killing the consumer
+ * registration that lives on it and leaving this worker deaf (see the
+ * module doc comment's "Source-search deadline" section for the corrected
+ * description of that harm) - which is precisely the failure ticket
  * 491cd88 measured against a real SmartRecruiters board (BoschGroup: ~12
  * minutes for a real search, ~2.5 hours at the adapter's own configured
  * pagination ceiling before its `maxPostings` cap existed).
@@ -463,6 +533,41 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         sourceSearchTimeoutMs,
         `source.search() for sourceId "${message.sourceId}" (search "${message.searchId}")`,
       );
+
+      // Log every SkippedRecord.reason at this worker boundary (ticket
+      // 491cd88, F2). Without this, `skipped[].reason` - the ONLY place a
+      // truncated/partial result (SmartRecruiters' `maxPostings`, an
+      // unrecognized company identifier, a malformed record, ...) says so
+      // in human-readable form - reaches nowhere: it isn't logged,
+      // persisted, or returned to `ingestJobsForSearch`'s caller, and
+      // `skipRate` alone doesn't reliably surface it either (a single
+      // truncation record diluted into a large `jobs` count can read as a
+      // healthy, unremarkable skipRate well under `highSkipRateThreshold`
+      // - e.g. 1 truncation record against 1,000 successfully-fetched
+      // jobs is skipRate 0.001). This is a minimum fix, not the complete
+      // one: it makes the reason text greppable in whatever this worker's
+      // `log` hook writes to, not a structured, machine-readable signal a
+      // caller could branch on without regexing prose - that's a separate,
+      // larger change (a discriminator on `SkippedRecord` itself, touching
+      // `types.ts` and all five adapters) tracked as its own ticket.
+      if (result.skipped.length > 0) {
+        const toLog = result.skipped.slice(0, SKIPPED_LOG_LIMIT);
+        for (const skip of toLog) {
+          log(
+            `[fetch.source] skipped record: source=${message.sourceId} ` +
+              `search=${message.searchId} externalId=${skip.externalId ?? "(none)"} ` +
+              `reason=${skip.reason}`,
+          );
+        }
+        const remaining = result.skipped.length - toLog.length;
+        if (remaining > 0) {
+          log(
+            `[fetch.source] ...and ${remaining} more skipped record(s) for ` +
+              `source=${message.sourceId} search=${message.searchId} not individually logged ` +
+              `(capped at ${SKIPPED_LOG_LIMIT} per message - see SKIPPED_LOG_LIMIT).`,
+          );
+        }
+      }
 
       const total = result.jobs.length + result.skipped.length;
       if (total > 0 && result.skipRate >= highSkipRateThreshold) {

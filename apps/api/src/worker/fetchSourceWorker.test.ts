@@ -805,6 +805,85 @@ describe("fetchSourceWorker", () => {
     expect(await queueCount(SCORE_JOB_QUEUE)).toBe(0);
   });
 
+  it("logs every skipped record's reason at the worker boundary, even when skipRate stays well under the alert threshold (F2 regression, ticket 491cd88)", async () => {
+    const searchId = await makeSearch();
+    // 9 successful jobs, 1 skip - skipRate 0.1, well under the default 0.5
+    // highSkipRateThreshold. Deliberately modeled on the exact scenario
+    // the review measured: a SmartRecruiters maxPostings truncation
+    // record diluted into a large, otherwise-healthy-looking result
+    // (1 truncation record against 1,000 successful jobs is skipRate
+    // 0.001) - onHighSkipRate correctly does NOT fire for a skipRate this
+    // low, so the log line below is the ONLY place this reaches.
+    const jobsFound = Array.from({ length: 9 }, (_, i) =>
+      normalizedJob({ externalId: `f2-ok-${randomUUID()}-${i}` }),
+    );
+    const truncationReason =
+      'SmartRecruiters search for company "BigCo" was truncated: 5000 candidate postings ' +
+      "were found but only 1000 of the shared maxPostings=1000 budget remained - 4000 " +
+      "postings were NOT fetched (simulated for this test)";
+    const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () =>
+      okResult(jobsFound, [{ externalId: undefined, reason: truncationReason }]),
+    );
+
+    const logs: string[] = [];
+    const alerts: HighSkipRateInfo[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      onHighSkipRate: (info) => alerts.push(info),
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 9);
+
+    // Confirms the low-skipRate premise: the alert hook genuinely does not
+    // fire here (that's correct behavior for the threshold, not a bug).
+    expect(alerts).toHaveLength(0);
+
+    // The load-bearing assertion: the truncation's own reason text reached
+    // the log stream anyway, with enough context (source, search id) to
+    // find it. Before this fix, `result.skipped` was read only for
+    // `total`/`skipRate` and then discarded - `reason` never logged,
+    // persisted, or returned anywhere - so a truncated result was
+    // indistinguishable from a complete one everywhere in the running
+    // system, machine and human alike.
+    expect(logs.some((l) => l.includes(truncationReason))).toBe(true);
+    expect(
+      logs.some((l) => l.includes(`source=${SOURCE_ID}`) && l.includes(`search=${searchId}`)),
+    ).toBe(true);
+  });
+
+  it("caps how many skipped-record reasons it logs per message, summarizing the rest by count instead of flooding the log (SKIPPED_LOG_LIMIT)", async () => {
+    const searchId = await makeSearch();
+    const manySkips = Array.from({ length: 25 }, (_, i) => ({
+      externalId: `flood-${i}`,
+      reason: `unmappable record ${i}`,
+    }));
+    const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () =>
+      okResult([], manySkips),
+    );
+
+    const logs: string[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      onHighSkipRate: () => {},
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(FETCH_SOURCE_QUEUE)) === 0);
+
+    const perRecordLines = logs.filter((l) => l.includes("skipped record:"));
+    expect(perRecordLines).toHaveLength(20);
+    expect(logs.some((l) => l.includes("...and 5 more skipped record(s)"))).toBe(true);
+  });
+
   it("retry tiers expire independently - a short-tier message is not blocked behind a long-tier one (B1 regression)", async () => {
     // Regression-tests the RabbitMQ mechanics directly, bypassing the
     // worker: publish into the LONG tier first, then the SHORT tier -
