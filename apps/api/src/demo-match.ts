@@ -67,14 +67,32 @@ const MAX_OUTPUT_TOKENS = 2000;
  * the bug: it went uncaught for two funnel-widening tickets (545 -> 6,038
  * -> 11,609 postings) because nothing measured or reported the truncation.
  *
- * This constant is NOT a truncation-by-order cap — `runDemoMatch` no longer
- * has one of those at all; every survivor gets ingested and is eligible to
- * be scored. It is a SPEND guard: above this many jobs actually needing a
+ * INGESTION has no truncation-by-order cap at all, full stop — every
+ * survivor gets ingested and is a scoring candidate (see `candidates` in
+ * `runDemoMatch`). SCORING is different, and this needs to be said
+ * precisely (ticket 16c824a review F3 caught an earlier draft of this
+ * comment overclaiming here): above this many jobs actually needing a
  * *new* score in one run (already-scored jobs are free — ticket 620ca30),
- * scoring stops at the threshold and says so explicitly
- * (`"N survivors, THRESHOLD scored, M not scored (cap)"`) instead of
- * quietly spending more than expected. Scoring the rest requires explicit
- * opt-in (`allowAboveThreshold` / `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
+ * `runDemoMatch` caps scoring at the threshold, and when that cap binds,
+ * the capped-out subset genuinely IS "the first `scoreThreshold` of
+ * `needsScoreIds` in candidate order" — the SAME SHAPE as the original
+ * `MAX_JOBS` bug, just at N=200 instead of N=12. Three things are
+ * deliberately different this time:
+ *
+ *   1. It's reported explicitly, every single time it binds — never
+ *      silent. A run log line always states it plainly:
+ *      `"N candidate(s): ... K not scored (cap)"`.
+ *   2. It bounds SPEND, not coverage: every survivor was already ingested
+ *      before this cap is even evaluated, so nothing is lost from the
+ *      database — only deferred out of THIS run's scoring.
+ *   3. It's self-draining at no extra cost. A plain rerun with no flags
+ *      sees this run's newly-scored jobs as already-scored (free, ticket
+ *      620ca30) and the cap applies to the NEXT `scoreThreshold` of what's
+ *      left — repeat until the backlog is gone, for the same total spend
+ *      `allowAboveThreshold` would have cost in one run, just spread
+ *      across runs. Scoring the whole backlog in a single run instead
+ *      requires explicit opt-in (`allowAboveThreshold` /
+ *      `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
  *
  * Pool size this assumes: comfortably under a few hundred jobs needing a
  * new score per run. 129 total survivors (Greenhouse only) was the
@@ -82,11 +100,13 @@ const MAX_OUTPUT_TOKENS = 2000;
  * heuristic (git-bug 16c824a). Ticket 8d3f4a1 wires Lever, Ashby, and
  * SmartRecruiters into the same search and may grow the pool by an unknown
  * multiple — SmartRecruiters alone lists 4,771 postings for ONE company
- * before filtering. If real runs start landing above this threshold
- * routinely, that is this exact ticket's original bug recurring at 10x the
- * scale, pointed at the bank account instead of at coverage — raise (or
- * rethink) this number deliberately, don't just flip the opt-in on
- * permanently.
+ * before filtering, and at the ~2% observed survival rate a four-source
+ * pool lands around 250, which means this cap can plausibly bind on the
+ * very first real run after those sources are wired in. If real runs start
+ * landing above this threshold routinely, that is this exact ticket's
+ * original bug recurring at 10x the scale, pointed at the bank account
+ * instead of at coverage — raise (or rethink) this number deliberately,
+ * don't just flip the opt-in on permanently.
  */
 export const DEFAULT_SCORE_THRESHOLD = 200;
 
@@ -193,6 +213,13 @@ export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
  * existing and `ANTHROPIC_API_KEY` being set. Same reason
  * `filterSoftwareEngineeringJobs` lives in swe-filter.ts instead of here;
  * see the re-export comment near the bottom of this file.
+ *
+ * NOTE (ticket 16c824a review F5): claude-sonnet-5 is running an
+ * introductory price of $2/$10 per MTok through 2026-08-31; this constant
+ * intentionally uses the $3/$15 standard rate instead (matching
+ * model-ab.ts exactly), so every estimate below is conservative on top of
+ * the bootstrap path already assuming worst-case output — see
+ * `describeCostEstimate`.
  */
 const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
 
@@ -216,6 +243,16 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
  * scorer's `ScoredJob` has no `usage`, so test runs never pollute this.
  */
 export type UsageStats = {
+  /**
+   * Which model these totals were measured against (ticket 16c824a review
+   * F5). `MODEL` has already changed once, opus -> sonnet, two days before
+   * this ticket. Averages recorded under a different model have a
+   * different typical response length AND a different price — blending
+   * them into "the" average would silently corrupt both. `readUsageStats`
+   * refuses to return stats recorded under a model other than the one it's
+   * asked about, rather than average across models.
+   */
+  model: string;
   calls: number;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -224,11 +261,16 @@ export type UsageStats = {
 /**
  * Reads previously recorded usage stats. Returns `undefined` — not a
  * thrown error — when the file is missing (every project's very first
- * scoring run, or a fresh checkout) or unparseable: a stats file existing
- * is an optimization for the cost estimate, never a precondition for
- * scoring to work.
+ * scoring run, or a fresh checkout), unparseable, or recorded under a
+ * DIFFERENT model than `expectedModel` (ticket 16c824a review F5 — see
+ * `UsageStats.model`'s doc comment): a stats file existing is an
+ * optimization for the cost estimate, never a precondition for scoring to
+ * work, and stale-model stats are worse than no stats at all.
  */
-export function readUsageStats(path: string): UsageStats | undefined {
+export function readUsageStats(
+  path: string,
+  expectedModel: string = MODEL,
+): UsageStats | undefined {
   try {
     const raw = fs.readFileSync(path, "utf8");
     const parsed = JSON.parse(raw) as Partial<UsageStats>;
@@ -236,8 +278,10 @@ export function readUsageStats(path: string): UsageStats | undefined {
       typeof parsed.calls === "number" &&
       typeof parsed.totalInputTokens === "number" &&
       typeof parsed.totalOutputTokens === "number" &&
+      typeof parsed.model === "string" &&
       parsed.calls > 0
     ) {
+      if (parsed.model !== expectedModel) return undefined;
       return parsed as UsageStats;
     }
     return undefined;
@@ -246,16 +290,36 @@ export function readUsageStats(path: string): UsageStats | undefined {
   }
 }
 
-/** Merges `added` real usage into whatever `readUsageStats(path)` currently
- * holds (treating a missing/corrupt file as zero) and writes the result
- * back — the running average `estimateScoringCost` reads next run. */
+/**
+ * Merges `added` real usage into whatever `readUsageStats(path, model)`
+ * currently holds (treating a missing/corrupt/different-model file as
+ * zero — see `readUsageStats`) and writes the result back under `model`.
+ * If `MODEL` changes again, the next call here starts a fresh average
+ * under the new model name instead of blending into the old one.
+ *
+ * Deliberately allowed to throw (ENOENT for a missing directory, EACCES,
+ * ENOSPC, ...) rather than swallowing the error itself — ticket 16c824a
+ * review F1 found this being called with nothing guarding it BEFORE the
+ * scores it's tracking were persisted, which meant a write failure here
+ * discarded already-paid-for scores along with it. The fix is entirely in
+ * the CALLER: call this only after the scores are safely in the database,
+ * and wrap the call in try/catch there (see `runDemoMatch`) so a failure
+ * here can never take persisted, already-billed scores down with it.
+ */
 export function recordUsageStats(
   path: string,
   added: { calls: number; totalInputTokens: number; totalOutputTokens: number },
+  model: string = MODEL,
 ): void {
   if (added.calls === 0) return;
-  const prior = readUsageStats(path) ?? { calls: 0, totalInputTokens: 0, totalOutputTokens: 0 };
+  const prior = readUsageStats(path, model) ?? {
+    model,
+    calls: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+  };
   const next: UsageStats = {
+    model,
     calls: prior.calls + added.calls,
     totalInputTokens: prior.totalInputTokens + added.totalInputTokens,
     totalOutputTokens: prior.totalOutputTokens + added.totalOutputTokens,
@@ -330,6 +394,36 @@ export function estimateScoringCost(
   return { jobCount, estimatedInputTokens, estimatedOutputTokens, estimatedCostUsd, basis };
 }
 
+/**
+ * Human-readable rendering of a `CostEstimate` (ticket 16c824a review F4).
+ * The "bootstrap" basis assumes `MAX_OUTPUT_TOKENS` (2000) of output for
+ * EVERY job — that constant's own doc comment says that cap is "rarely
+ * actually reached" (the JSON schema is small: a score, a rationale, two
+ * short string arrays), so a bootstrap estimate for 129 jobs comes out
+ * around $4.93 against a realistic ~$1.83. Rendered as a point estimate,
+ * that reads as far more precise — and far more expensive — than it is.
+ * The FIRST run against any given `usageStatsPath` is always bootstrap
+ * (there is no measured data yet), which means it's also the one run
+ * where this number is the user's ONLY guide before deciding whether to
+ * proceed — exactly the run where overstating it is worst. So: rendered
+ * as an explicit ceiling (`≤$…`), not a point estimate, whenever
+ * `basis === "bootstrap"`.
+ */
+export function describeCostEstimate(estimate: CostEstimate): string {
+  const tokens = `~${estimate.estimatedInputTokens} in / ~${estimate.estimatedOutputTokens} out tokens`;
+  if (estimate.jobCount === 0) {
+    return "$0.00 (nothing needs scoring)";
+  }
+  if (estimate.basis === "bootstrap") {
+    return (
+      `≤$${estimate.estimatedCostUsd.toFixed(2)} (worst case — no measured usage yet, assumes every ` +
+      `call uses its full ${MAX_OUTPUT_TOKENS}-token output budget; the realistic cost is typically ` +
+      `well under this, ${tokens})`
+    );
+  }
+  return `~$${estimate.estimatedCostUsd.toFixed(2)} (${tokens}, based on measured usage from prior runs)`;
+}
+
 export type RankedResult = {
   jobId: string;
   externalId: string;
@@ -386,8 +480,9 @@ export type RunDemoMatchOptions = {
    * new score this run (already-scored jobs are free — ticket 620ca30),
    * scoring stops here unless `allowAboveThreshold` is set — see
    * `DEFAULT_SCORE_THRESHOLD`'s doc comment for the pool-size assumption
-   * and why it isn't a `maxJobs`-style truncation. Defaults to
-   * `DEFAULT_SCORE_THRESHOLD`.
+   * and for exactly what this does and does not truncate (it bounds
+   * SCORING/spend, not ingestion, and a plain rerun drains it for free).
+   * Defaults to `DEFAULT_SCORE_THRESHOLD`.
    */
   scoreThreshold?: number;
   /**
@@ -1015,30 +1110,19 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       `(${alreadyScoredIds.size} already scored — skipped, saving that many Claude calls).`,
   );
   log(
-    `Estimated cost to score all ${needsScoreIds.length}: ~$${preCapEstimate.estimatedCostUsd.toFixed(2)} ` +
-      `(~${preCapEstimate.estimatedInputTokens} in / ~${preCapEstimate.estimatedOutputTokens} out tokens, ` +
-      `${preCapEstimate.basis} estimate).`,
+    `Estimated cost to score all ${needsScoreIds.length}: ${describeCostEstimate(preCapEstimate)}.`,
   );
 
-  // Above `scoreThreshold`, cap here rather than score everything, unless
-  // the caller explicitly opted in. This is NOT the old `MAX_JOBS` bug
-  // resurfacing: it only ever binds above a few hundred jobs actually
-  // needing a score, it is reported plainly (never silent), and it exists
-  // purely to guard spend — see DEFAULT_SCORE_THRESHOLD's doc comment.
+  // Above `scoreThreshold`, cap SCORING (not ingestion) here unless the
+  // caller explicitly opted in — see `DEFAULT_SCORE_THRESHOLD`'s doc
+  // comment for precisely what this does and does not truncate, and why a
+  // plain rerun drains a bound cap for free. The human-facing summary of
+  // what this decided is logged AFTER scoring completes, below — not here
+  // — because "how many actually got scored" isn't known until
+  // `Promise.allSettled` resolves (ticket 16c824a review F2).
   const overThreshold = needsScoreIds.length > scoreThreshold && !allowAboveThreshold;
   const toScoreIds = overThreshold ? needsScoreIds.slice(0, scoreThreshold) : needsScoreIds;
   const cappedCount = needsScoreIds.length - toScoreIds.length;
-
-  if (cappedCount > 0) {
-    // Literal format ticket 16c824a asks for — a truncated run must never
-    // read like a complete one.
-    log(
-      `${filtered.length} survivors, ${toScoreIds.length} scored, ${cappedCount} not scored (cap). ` +
-        `${needsScoreIds.length} jobs need scoring, above the ${scoreThreshold}-job spend-guard threshold. ` +
-        `Set allowAboveThreshold (or ALLOW_SCORE_ABOVE_THRESHOLD=true for the CLI) to score all ` +
-        `${needsScoreIds.length} on the next run.`,
-    );
-  }
 
   const costEstimate = estimateScoringCost(
     toScoreIds.map((id) => normalizedJobById.get(id)!),
@@ -1088,20 +1172,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     });
     newlyScoredCount = newlyScoredRows.length;
 
-    // Real usage from this run's successful calls feeds next run's cost
-    // estimate (ticket 16c824a) — a fake test scorer's rows have no
-    // `usage`, so test runs never write to `usageStatsPath`.
-    const rowsWithUsage = newlyScoredRows.filter(
-      (r): r is typeof r & { usage: NonNullable<ScoredJob["usage"]> } => r.usage !== undefined,
-    );
-    if (rowsWithUsage.length > 0) {
-      recordUsageStats(usageStatsPath, {
-        calls: rowsWithUsage.length,
-        totalInputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.inputTokens, 0),
-        totalOutputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.outputTokens, 0),
-      });
-    }
-
     if (newlyScoredRows.length > 0) {
       // onConflictDoNothing as defense-in-depth: two runs racing (or a
       // human running the script twice at once) both compute a score for
@@ -1123,6 +1193,66 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
         )
         .onConflictDoNothing({ target: [jobMatches.resumeId, jobMatches.jobId] });
     }
+
+    // Real usage from this run's successful calls feeds next run's cost
+    // estimate (ticket 16c824a) — a fake test scorer's rows have no
+    // `usage`, so test runs never write to `usageStatsPath`.
+    //
+    // Deliberately AFTER the `db.insert(jobMatches)` above, and wrapped in
+    // try/catch (ticket 16c824a review F1, reproduced live): this used to
+    // run BEFORE the insert with nothing guarding it, so an unwritable
+    // `usageStatsPath` (missing directory, read-only FS, ENOSPC, EACCES —
+    // `runDemoMatch` is exported and a future RabbitMQ scoring worker is a
+    // planned second caller with its own cwd) threw and discarded 3 of 3
+    // already-PAID-FOR scores along with it — the exact failure mode
+    // `Promise.allSettled` above exists to prevent. This write is now
+    // strictly best-effort: if it fails, the scores above are already
+    // safely in the database and stay there; the only consequence is that
+    // the NEXT run's cost estimate falls back to the bootstrap path
+    // instead of a measured one.
+    const rowsWithUsage = newlyScoredRows.filter(
+      (r): r is typeof r & { usage: NonNullable<ScoredJob["usage"]> } => r.usage !== undefined,
+    );
+    if (rowsWithUsage.length > 0) {
+      try {
+        recordUsageStats(usageStatsPath, {
+          calls: rowsWithUsage.length,
+          totalInputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.inputTokens, 0),
+          totalOutputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.outputTokens, 0),
+        });
+      } catch (err) {
+        log(
+          `  WARNING: failed to record usage stats to "${usageStatsPath}" — the ${rowsWithUsage.length} ` +
+            `score(s) above are already persisted and unaffected; only the NEXT run's cost estimate ` +
+            `will fall back to the bootstrap path. (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+    }
+  }
+
+  // Cap summary — emitted AFTER scoring, not before (ticket 16c824a review
+  // F2): "scored" must be what actually got persisted, not a prediction
+  // `Promise.allSettled` could still falsify with a failure. Base is
+  // `linkedJobIds.length`, not `filtered.length` — `linkedJobIds.length ===
+  // alreadyScoredIds.size + needsScoreIds.length` exactly (every linked id
+  // is either already-scored or needs one), and `needsScoreIds.length ===
+  // newlyScoredCount + failedCount + cappedCount` exactly (every id sent to
+  // `Promise.allSettled` either fulfills or rejects, and every id NOT sent
+  // is capped) — so the four numbers below always sum to the total with no
+  // unaccounted remainder, unlike the earlier `filtered.length`-based line
+  // this replaced.
+  if (cappedCount > 0) {
+    const nextRerunPicksUp = Math.min(cappedCount, scoreThreshold);
+    log(
+      `${linkedJobIds.length} candidate(s): ${alreadyScoredIds.size} already scored, ` +
+        `${newlyScoredCount} scored this run, ${failedCount} failed, ${cappedCount} not scored (cap). ` +
+        `${needsScoreIds.length} jobs needed scoring this run, above the ${scoreThreshold}-job ` +
+        `spend-guard threshold (estimated cost of what was actually attempted: ` +
+        `${describeCostEstimate(costEstimate)}). A plain rerun with no flags will pick up the next ` +
+        `${nextRerunPicksUp} of the remaining ${cappedCount} at no extra cost (already-scored jobs are ` +
+        `free — ticket 620ca30); set allowAboveThreshold (or ALLOW_SCORE_ABOVE_THRESHOLD=true for the ` +
+        `CLI) to score all ${cappedCount} remaining in this run instead.`,
+    );
   }
 
   // Final results come from the database, not from this run's in-memory
@@ -1250,9 +1380,17 @@ async function main() {
     // regex + dedupe) is specifically written to keep.
     // Spend-guard opt-in (ticket 16c824a): unset/anything-but-"true" means
     // a pool needing more than DEFAULT_SCORE_THRESHOLD new scores gets
-    // capped at the threshold this run, reported plainly, and requires this
-    // env var on a subsequent run to score the rest.
-    const allowAboveThreshold = process.env.ALLOW_SCORE_ABOVE_THRESHOLD === "true";
+    // capped at the threshold this run, reported plainly. Fails CLOSED on
+    // an unrecognized value (the safe direction — the spend guard stays
+    // active), but warns rather than silently guessing what was meant.
+    const rawAllowAboveThresholdFlag = process.env.ALLOW_SCORE_ABOVE_THRESHOLD;
+    const allowAboveThreshold = rawAllowAboveThresholdFlag === "true";
+    if (rawAllowAboveThresholdFlag !== undefined && !allowAboveThreshold) {
+      console.warn(
+        `ALLOW_SCORE_ABOVE_THRESHOLD is set to "${rawAllowAboveThresholdFlag}", not "true" — treating ` +
+          `as NOT opted in (the spend-guard threshold stays active). Set it to exactly "true" to opt in.`,
+      );
+    }
 
     const result = await runDemoMatch({
       db,
@@ -1267,7 +1405,9 @@ async function main() {
     if (result.cappedCount > 0) {
       console.error(
         `${result.cappedCount} job(s) needing a score were NOT scored this run because the spend-guard ` +
-          `threshold applied. Set ALLOW_SCORE_ABOVE_THRESHOLD=true and re-run to score the rest.`,
+          `threshold applied. A plain rerun (no flags) picks up the next batch at no extra cost — ` +
+          `already-scored jobs are free. Set ALLOW_SCORE_ABOVE_THRESHOLD=true instead to score all ` +
+          `${result.cappedCount} remaining in one run.`,
       );
     }
     if (result.failed > 0) {

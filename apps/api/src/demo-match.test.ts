@@ -18,10 +18,12 @@ import {
   buildBoardCoverage,
   buildSourceOutcomes,
   describeBoardOutcome,
+  describeCostEstimate,
   describeSourceOutcome,
   DEFAULT_SCORE_THRESHOLD,
   estimateScoringCost,
   isTotalScoringFailure,
+  MODEL,
   readUsageStats,
   recordUsageStats,
   runDemoMatch,
@@ -958,11 +960,152 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
     expect(scorer.calls()).toBe(2);
     expect(run.results).toHaveLength(2);
 
-    // The literal format ticket 16c824a asks for: a truncated run must
-    // never read like a complete one.
-    expect(logs.some((line) => line.includes("5 survivors, 2 scored, 3 not scored (cap)"))).toBe(
-      true,
+    // A truncated run must never read like a complete one (ticket 16c824a
+    // review F2: the numbers here must close exactly — 0 already scored +
+    // 2 scored this run + 0 failed + 3 capped === 5 candidates).
+    expect(
+      logs.some((line) =>
+        line.includes(
+          "5 candidate(s): 0 already scored, 2 scored this run, 0 failed, 3 not scored (cap)",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("F2/F3: cap arithmetic closes exactly (including already-scored jobs and a failing call), and the capped-out jobs are pinned as a recorded decision, not an accident", async () => {
+    const ALL_JOBS: NormalizedJob[] = Array.from({ length: 10 }, (_, i) =>
+      job(`demo-match-spend-guard-f2f3-${i}`, `F2F3 Engineer ${i}`),
     );
+    allExternalIds.push(...ALL_JOBS.map((j) => j.externalId));
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f2f3 ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+    const source = new FakeSource(ALL_JOBS);
+
+    // Run 0: pre-score ONLY the first 4 (indices 0-3), via a filter — these
+    // are "already scored" going into run 1 below.
+    const preScore = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+      filter: (jobs) => jobs.filter((j) => Number(j.externalId.split("-").pop()) < 4),
+    });
+    expect(preScore.newlyScored).toBe(4);
+
+    // Run 1: the FULL pool (all 10). Of the 6 needing a score (indices
+    // 4-9, in that order), a flaky scorer fails index 4 specifically, and
+    // scoreThreshold=3 caps the attempt at the first 3 of those 6 (4,5,6)
+    // — so 7,8,9 are capped out.
+    const FAILING_EXTERNAL_ID = "demo-match-spend-guard-f2f3-4";
+    const flaky = makeFlakyScorer(new Set([FAILING_EXTERNAL_ID]));
+    const logs: string[] = [];
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: flaky.scoreJob,
+      scoreThreshold: 3,
+      outputPath,
+      usageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    // The arithmetic itself (ticket 16c824a review F2): every one of the
+    // 10 linked candidates is accounted for exactly once.
+    expect(run.skipped).toBe(4);
+    expect(run.candidatesNeedingScore).toBe(6);
+    expect(run.newlyScored).toBe(2);
+    expect(run.failed).toBe(1);
+    expect(run.cappedCount).toBe(3);
+    expect(run.skipped + run.newlyScored + run.failed + run.cappedCount).toBe(10);
+
+    // WHICH jobs the cap selected is pinned, not accidental (ticket
+    // 16c824a review F3): 0-3 were pre-scored, 4 failed (will retry), 5-6
+    // were newly scored this run, and 7-9 are the ones the cap dropped.
+    const scoredTitles = run.results.map((r) => r.title);
+    for (const i of [0, 1, 2, 3, 5, 6]) {
+      expect(scoredTitles).toContain(`F2F3 Engineer ${i}`);
+    }
+    for (const i of [4, 7, 8, 9]) {
+      expect(scoredTitles).not.toContain(`F2F3 Engineer ${i}`);
+    }
+
+    // The post-scoring log line reflects what ACTUALLY happened (not a
+    // pre-scoring prediction a failure could falsify), closes arithmetically,
+    // and states that a plain rerun drains the cap for free.
+    const capLine = logs.find((l) => l.includes("not scored (cap)"));
+    expect(capLine).toBeDefined();
+    expect(capLine).toContain("10 candidate(s)");
+    expect(capLine).toContain("4 already scored");
+    expect(capLine).toContain("2 scored this run");
+    expect(capLine).toContain("1 failed");
+    expect(capLine).toContain("3 not scored (cap)");
+    expect(capLine).toMatch(/rerun/i);
+  });
+
+  it("F1: a failing usage-stats write does not discard already-persisted, already-paid-for scores", async () => {
+    const F1_JOBS: NormalizedJob[] = [
+      job("demo-match-spend-guard-f1-1", "F1 Engineer 1"),
+      job("demo-match-spend-guard-f1-2", "F1 Engineer 2"),
+      job("demo-match-spend-guard-f1-3", "F1 Engineer 3"),
+    ];
+    allExternalIds.push(...F1_JOBS.map((j) => j.externalId));
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f1 ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    // Points at a directory that does not exist — `fs.writeFileSync`
+    // inside `recordUsageStats` throws ENOENT for this, every time.
+    // Reproduces the review's live probe: 3 real (billed) scoring calls,
+    // stats write fails, must NOT lose the 3 already-persisted scores.
+    const unwritableUsageStatsPath = path.join(
+      outputDir,
+      "no-such-directory",
+      `stats-${randomUUID()}.json`,
+    );
+    const logs: string[] = [];
+
+    const run = await runDemoMatch({
+      db,
+      sources: [new FakeSource(F1_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeUsageReportingScorer(1000, 200).scoreJob,
+      outputPath,
+      usageStatsPath: unwritableUsageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    // The 3 paid-for calls are ALL persisted — this is the whole point of
+    // F1 — not discarded because the (unrelated, best-effort) stats write
+    // failed.
+    expect(run.newlyScored).toBe(3);
+    expect(run.failed).toBe(0);
+    expect(run.results).toHaveLength(3);
+
+    // A second run against the same candidates makes ZERO new scoring
+    // calls — proof the scores really did land in `job_matches`, not just
+    // in this run's in-memory return value.
+    const rerun = await runDemoMatch({
+      db,
+      sources: [new FakeSource(F1_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      outputPath,
+      usageStatsPath: unwritableUsageStatsPath,
+      log: () => {},
+    });
+    expect(rerun.newlyScored).toBe(0);
+    expect(rerun.skipped).toBe(3);
+
+    // The failure is surfaced, not swallowed silently.
+    expect(logs.some((l) => l.includes("WARNING") && l.includes("usage stats"))).toBe(true);
+    // And the stats file itself was never created (the directory doesn't
+    // exist), proving the write genuinely failed rather than trivially
+    // succeeding.
+    expect(fs.existsSync(unwritableUsageStatsPath)).toBe(false);
   });
 
   it("scores every candidate when allowAboveThreshold is set, even above scoreThreshold", async () => {
@@ -1060,7 +1203,12 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
     expect(first.costEstimate.basis).toBe("bootstrap");
 
     const statsAfterFirst = readUsageStats(measuredUsageStatsPath);
-    expect(statsAfterFirst).toEqual({ calls: 3, totalInputTokens: 3000, totalOutputTokens: 600 });
+    expect(statsAfterFirst).toEqual({
+      model: MODEL,
+      calls: 3,
+      totalInputTokens: 3000,
+      totalOutputTokens: 600,
+    });
 
     // SECOND run, different candidates (nothing already scored), same
     // usage-stats file: the cost estimate must now be grounded in run 1's
@@ -1421,7 +1569,7 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   });
 
   it("measured path: uses the exact average of usageStats, ignoring prompt text entirely", () => {
-    const stats = { calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
+    const stats = { model: MODEL, calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
     const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", stats);
     expect(estimate.basis).toBe("measured");
     // avg 1000 in / 200 out per call * 2 jobs.
@@ -1432,6 +1580,7 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
 
   it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {
     const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", {
+      model: MODEL,
       calls: 0,
       totalInputTokens: 0,
       totalOutputTokens: 0,
@@ -1456,6 +1605,7 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     recordUsageStats(statsPath, { calls: 3, totalInputTokens: 1500, totalOutputTokens: 150 });
 
     expect(readUsageStats(statsPath)).toEqual({
+      model: MODEL,
       calls: 5,
       totalInputTokens: 2500,
       totalOutputTokens: 250,
@@ -1470,6 +1620,98 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
 
   it("DEFAULT_SCORE_THRESHOLD is a positive, sane number (regression guard against an accidental 0 or negative that would cap every run to nothing)", () => {
     expect(DEFAULT_SCORE_THRESHOLD).toBeGreaterThan(0);
+  });
+
+  // Ticket 16c824a review F5: MODEL has already changed once (opus ->
+  // sonnet). Stats recorded under a different model must never blend into
+  // the current average — different model, different typical response
+  // length AND price.
+  it("readUsageStats ignores stats recorded under a different model instead of treating them as current", () => {
+    const statsPath = path.join(outputDir, `stale-model-${randomUUID()}.json`);
+    fs.writeFileSync(
+      statsPath,
+      JSON.stringify({
+        model: "claude-opus-5",
+        calls: 20,
+        totalInputTokens: 50_000,
+        totalOutputTokens: 10_000,
+      }),
+    );
+
+    // Read back under the CURRENT model (default `expectedModel`) — the
+    // opus-recorded stats must not surface as if they were sonnet's.
+    expect(readUsageStats(statsPath)).toBeUndefined();
+    // But they DO exist if asked about under their own model — this isn't
+    // corruption, it's a legitimate different-model record being filtered.
+    expect(readUsageStats(statsPath, "claude-opus-5")).toMatchObject({ calls: 20 });
+  });
+
+  it("recordUsageStats starts a fresh average instead of blending in prior stats recorded under a different model", () => {
+    const statsPath = path.join(outputDir, `model-switch-${randomUUID()}.json`);
+    recordUsageStats(
+      statsPath,
+      { calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 },
+      "claude-opus-5",
+    );
+
+    // Now record under the CURRENT model — must start fresh (10 calls),
+    // not accumulate onto opus's 10 (which would silently claim 20 calls
+    // of a mixed, meaningless average).
+    recordUsageStats(
+      statsPath,
+      { calls: 3, totalInputTokens: 3_000, totalOutputTokens: 600 },
+      MODEL,
+    );
+
+    expect(readUsageStats(statsPath, MODEL)).toEqual({
+      model: MODEL,
+      calls: 3,
+      totalInputTokens: 3_000,
+      totalOutputTokens: 600,
+    });
+    // The stale opus record is gone — superseded, not blended — once a
+    // write for the current model has happened. There's one file, one
+    // model's average in it at a time; a switch resets it rather than
+    // accumulating a second, parallel average nothing ever reads.
+    expect(readUsageStats(statsPath, "claude-opus-5")).toBeUndefined();
+  });
+});
+
+describe("describeCostEstimate (ticket 16c824a review F4)", () => {
+  // No DB needed — pure function.
+  it("renders a bootstrap estimate as an explicit ceiling (≤$…), not a point estimate", () => {
+    const description = describeCostEstimate({
+      jobCount: 129,
+      estimatedInputTokens: 100_000,
+      estimatedOutputTokens: 258_000, // 2000 * 129 — the worst-case bootstrap assumption
+      estimatedCostUsd: 4.93,
+      basis: "bootstrap",
+    });
+    expect(description).toMatch(/^≤\$4\.93/);
+    expect(description).not.toMatch(/^~\$/);
+  });
+
+  it("renders a measured estimate as a point estimate (~$…), not a ceiling — it's grounded in real prior usage, not a worst case", () => {
+    const description = describeCostEstimate({
+      jobCount: 129,
+      estimatedInputTokens: 60_000,
+      estimatedOutputTokens: 40_000,
+      estimatedCostUsd: 1.83,
+      basis: "measured",
+    });
+    expect(description).toMatch(/^~\$1\.83/);
+    expect(description).not.toMatch(/^≤/);
+  });
+
+  it("renders zero jobs distinctly, without a dollar sign implying a real (if tiny) estimate was computed", () => {
+    const description = describeCostEstimate({
+      jobCount: 0,
+      estimatedInputTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      basis: "bootstrap",
+    });
+    expect(description).toBe("$0.00 (nothing needs scoring)");
   });
 });
 
