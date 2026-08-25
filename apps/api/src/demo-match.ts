@@ -35,7 +35,7 @@ import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./s
 process.loadEnvFile();
 
 /**
- * Scoring model. Chosen by Nicole 2026-08-22 on the evidence of the A/B in
+ * Scoring model. Chosen 2026-08-22 on the evidence of the A/B in
  * `model-ab.ts`, which re-scored the same real jobs against the same real
  * resume with both models: sonnet produced the same #1, the same top-5 set,
  * and the same overall ordering as opus for roughly 40% less. That was a
@@ -43,9 +43,8 @@ process.loadEnvFile();
  * the funnel from 545 postings to 6,038) the cost difference stops being
  * theoretical.
  *
- * Note this makes new scores not strictly comparable to the opus-scored
- * rows already in `job_matches` — including the 72% and 74% Nicole applied
- * to. The A/B says the *ranking* agrees, which is what the shortlist
+ * Note this makes new scores not strictly comparable to any opus-scored
+ * rows already in `job_matches`. The A/B says the *ranking* agrees, which is what the shortlist
  * actually consumes, so mixed scales are acceptable here; re-scoring
  * history to match would cost more than the inconsistency does.
  * Re-run `model-ab.ts` before changing this again.
@@ -889,7 +888,7 @@ async function main() {
   // Each `createXSourceFromEnv()` throws synchronously if ITS OWN env var
   // isn't set (a deliberate per-source design — see each function's doc
   // comment). Built independently and caught individually here, not as one
-  // block, so Nicole not having gotten around to configuring (say) Lever
+  // block, so not having gotten around to configuring (say) Lever
   // yet doesn't prevent Greenhouse/Ashby/SmartRecruiters from searching —
   // the same "one source's problem can't take the others down" principle
   // `CompositeSource` applies at request time, applied here at

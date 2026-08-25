@@ -152,8 +152,10 @@ An AI-assisted job search web app. The user picks which job sources to search
 (airline-style toggles), supplies a resume, and gets back a ranked list of
 postings with AI-generated match scores, best match first.
 
-Chosen to mirror the DAT Software Engineer II job description, because the
-project's primary purpose is interview preparation.
+The stack was chosen to exercise a specific set of backend skills end to
+end — message-driven workflows, relational schema design and migrations,
+and a React frontend against a real REST boundary — rather than to reach
+the product by the shortest route.
 
 ## Project Stack
 
@@ -249,7 +251,7 @@ someone asks a follow-up question. So the split is:
   the Drizzle schema and migrations, the match-scoring service, the main React
   components.
 
-Tickets carry an `owner:` label (`owner:nicole` or `owner:agent`) to record
+Tickets carry an `owner:` label (`owner:human` or `owner:agent`) to record
 which side of that line they fall on. **Do not let agent throughput outrun
 comprehension.** Throughput is the easy part; it is not the constraint worth
 optimizing.
@@ -303,10 +305,10 @@ Every ticket carries **exactly one** of each of the first three:
 | `difficulty:` | `trivial`, `easy`, `moderate`, `hard`, `research` |
 | `model:` | `haiku`, `sonnet`, `opus`, `fable` |
 
-Plus **exactly one** `owner:` label — `owner:nicole` or `owner:agent` — recording
-which side of the learning constraint the ticket falls on (see Project Stack).
-`owner:nicole` tickets are never dispatched to an agent unassisted; at most an
-agent drafts and Nicole reviews line by line.
+Plus **exactly one** `owner:` label — `owner:human` or `owner:agent` — recording
+which side of the comprehension constraint the ticket falls on (see Project
+Stack). `owner:human` tickets are never dispatched to an agent unassisted; at
+most an agent drafts and the owner reviews line by line.
 
 Optional: `area:<component>`, `epic` (a parent that must be split), `blocked`.
 
