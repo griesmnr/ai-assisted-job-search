@@ -67,8 +67,8 @@ jobs:
       rabbitmq:
         # Same version as docker-compose.yml (the -management tag isn't
         # needed here -- nothing in CI talks to the management UI -- but
-        # matching the tag keeps "what CI runs" and "what Nicole runs
-        # locally" identical rather than two different RabbitMQ builds).
+        # matching the tag keeps "what CI runs" and "what runs locally"
+        # identical rather than two different RabbitMQ builds).
         image: rabbitmq:3.13.7-management
         env:
           RABBITMQ_DEFAULT_USER: ci
@@ -171,8 +171,9 @@ jobs:
       #     "Fixtures: real, live-captured ... responses" comment) -- zero
       #     live network calls.
       #   - demo-match.ts's `main()` (the function that constructs a real
-      #     Anthropic client and would bill Nicole's account) only runs
-      #     under its own `isMain` guard when the file is executed directly
+      #     Anthropic client and would bill the real account it's configured
+      #     against) only runs under its own `isMain` guard when the file is
+      #     executed directly
       #     (`npx tsx apps/api/src/demo-match.ts`). demo-match.test.ts only
       #     imports `runDemoMatch` and friends and calls them with a fake
       #     scorer/fake source -- importing the module for tests never
