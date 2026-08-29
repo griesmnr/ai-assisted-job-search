@@ -236,25 +236,36 @@ and the acceptance criteria are verified against the diff.
   ceremony. Revisit once the core features exist and there's slack to spend
   on it.
 
-### Comprehension constraint — read this before dispatching agents
+### Priorities — read this before dispatching agents
 
-The point of this project is not the repo. It is the ability to explain the
-repo. **Code the owner cannot defend is worse than code that does not
-exist** — it looks like an asset and behaves like a liability the first time
-someone asks a follow-up question. So the split is:
+**Two things matter, in this order: the app working, and the owner applying
+to jobs.** Everything else is subordinate, including the owner's own
+understanding of the code.
 
-- **Agents write** what does not need defending: scaffolding, config,
-  docker-compose, test harnesses, additional source adapters once the first
-  exists as a pattern, CI.
-- **The owner writes** — or reads and modifies line by line — anything load-
-  bearing to the design: the RabbitMQ consumer with its retry and DLQ config,
-  the Drizzle schema and migrations, the match-scoring service, the main React
-  components.
+That is a deliberate revision. This project originally required the owner to
+write or line-by-line review anything load-bearing, on the reasoning that
+code she could not defend was worse than no code — she had an interview in
+days and a specific need to explain every design decision. That interview is
+long gone, and the constraint outlived its purpose by weeks while still being
+enforced. In practice it stalled review for days at a time and slowed the two
+things that actually matter.
 
-Tickets carry an `owner:` label (`owner:human` or `owner:agent`) to record
-which side of that line they fall on. **Do not let agent throughput outrun
-comprehension.** Throughput is the easy part; it is not the constraint worth
-optimizing.
+So: **agents write everything by default.** Tickets still carry `owner:human`
+or `owner:agent`, but `owner:human` now means *"the owner asked for this one"*,
+not *"the owner is required to write this."* Assume `owner:agent` unless she
+says otherwise.
+
+**What replaces it, and why it is not a downgrade:** the code must remain
+*learnable on demand* rather than defensible on arrival. That means the
+existing standard holds unchanged — comments that explain why a decision was
+made and what evidence backed it, claims carrying measurements and dates, and
+adversarial review that reads real data rather than fixtures. Those exist so
+that anyone picking this up later — including the owner, when capacity
+allows — can reconstruct the reasoning without the author present.
+
+Teaching is now **pull, not push**. Quiz her, explain a subsystem, or walk a
+diff when she asks. Do not gate merges on her reading anything, and do not
+hand her a 700-line diff and wait.
 
 ## Model Roster and Escalation Ladder
 
