@@ -18,8 +18,14 @@ import {
   buildBoardCoverage,
   buildSourceOutcomes,
   describeBoardOutcome,
+  describeCostEstimate,
   describeSourceOutcome,
+  DEFAULT_SCORE_THRESHOLD,
+  estimateScoringCost,
   isTotalScoringFailure,
+  MODEL,
+  readUsageStats,
+  recordUsageStats,
   runDemoMatch,
   type BoardCoverageEntry,
   type ScoredJob,
@@ -100,6 +106,30 @@ function makeCountingScorer(): { scoreJob: ScoreJobFn; calls: () => number } {
   return { scoreJob, calls: () => calls };
 }
 
+/** Like makeCountingScorer, but also reports fixed, fake `usage` — the
+ * shape a real `makeClaudeScorer` call always returns (`response.usage`).
+ * Used to exercise the ticket-16c824a spend-guard cost estimate, which
+ * only ever updates `usageStatsPath` from `ScoredJob.usage` — a plain
+ * `makeCountingScorer` never reports it, so it never pollutes those
+ * tests. */
+function makeUsageReportingScorer(
+  inputTokens: number,
+  outputTokens: number,
+): { scoreJob: ScoreJobFn; calls: () => number } {
+  let calls = 0;
+  const scoreJob: ScoreJobFn = async (jobArg: NormalizedJob): Promise<ScoredJob> => {
+    calls++;
+    return {
+      matchScore: 70,
+      rationale: `fake rationale for ${jobArg.title}`,
+      strengths: [`strength for ${jobArg.title}`],
+      gaps: [`gap for ${jobArg.title}`],
+      usage: { inputTokens, outputTokens },
+    };
+  };
+  return { scoreJob, calls: () => calls };
+}
+
 /** Like makeCountingScorer, but rejects for any job whose externalId is in
  * `failFor` — used to prove a partial-batch failure doesn't throw away the
  * calls that DID succeed (ticket 620ca30 review finding #2). */
@@ -125,6 +155,12 @@ function makeFlakyScorer(failFor: ReadonlySet<string>): {
 
 const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "demo-match-test-"));
 const outputPath = path.join(outputDir, "match-results.json");
+/** Default `usageStatsPath` for every test below (ticket 16c824a) — a tmp
+ * file, never the real `prep/scoring-usage-stats.json`, so test runs can
+ * never pollute (or be polluted by) real recorded usage. Individual tests
+ * that need to exercise the "measured" cost-estimate path use their own
+ * path instead, so they don't share state with each other. */
+const usageStatsPath = path.join(outputDir, "scoring-usage-stats.json");
 
 /** Every RESUME_TEXT below is prefixed with this. `afterAll` sweeps rows by
  * exact text, which only catches what THIS run created — a hard process
@@ -286,8 +322,8 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
     firstRunResumeId = first.resumeId;
@@ -329,8 +365,8 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -392,8 +428,8 @@ describe("runDemoMatch (ticket 620ca30)", () => {
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -427,8 +463,8 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: flaky.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -454,8 +490,8 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: fixed.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -491,15 +527,14 @@ describe("runDemoMatch: filter hook", () => {
     const scorer = makeCountingScorer();
 
     // Only the posting with "Engineer" in the title survives — proves
-    // `filter` runs before scoring (and before the maxJobs slice), not
-    // merely as decoration on the output.
+    // `filter` runs before scoring, not merely as decoration on the output.
     const run = await runDemoMatch({
       db,
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
       filter: (jobs) => jobs.filter((j) => j.title.includes("Engineer")),
     });
@@ -579,8 +614,8 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: FAKE_JOBS.length,
       outputPath,
+      usageStatsPath,
       log: () => {},
       filter: (jobs) => jobs.filter((j) => j.company === "Acme"),
     });
@@ -657,6 +692,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
       resumeText: `${RESUME_TEXT_PREFIX} board-coverage-none ${randomUUID()}`,
       scoreJob: scorer.scoreJob,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -753,8 +789,8 @@ describe("runDemoMatch: multiple sources (ticket d8417b2)", () => {
       sources: [new GreenhouseFake(), new LeverFake()],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      maxJobs: 10,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -817,8 +853,8 @@ describe("runDemoMatch: multiple sources (ticket d8417b2)", () => {
       sources: [new GreenhouseFake(), new BrokenLever()],
       resumeText: RESUME_TEXT_2,
       scoreJob: scorer.scoreJob,
-      maxJobs: 10,
       outputPath,
+      usageStatsPath,
       log: () => {},
     });
 
@@ -847,9 +883,348 @@ describe("runDemoMatch: multiple sources (ticket d8417b2)", () => {
         resumeText: `${RESUME_TEXT_PREFIX} empty-sources ${randomUUID()}`,
         scoreJob: scorer.scoreJob,
         outputPath,
+        usageStatsPath,
         log: () => {},
       }),
     ).rejects.toThrow(/at least one JobSource/);
+  });
+});
+
+describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
+  // 20 candidates from one source, deliberately more than the old
+  // MAX_JOBS=12 that used to silently slice this list in source/board
+  // iteration order — this is the "employer late in the token list" the
+  // original ticket's acceptance criteria asked for a test proving.
+  const MANY_JOBS: NormalizedJob[] = Array.from({ length: 20 }, (_, i) => ({
+    ...job(`demo-match-spend-guard-order-${i}`, `Engineer ${i}`),
+    company: i === 19 ? "Last-In-Order Co" : "Test Co",
+  }));
+  const CAP_JOBS: NormalizedJob[] = Array.from({ length: 5 }, (_, i) =>
+    job(`demo-match-spend-guard-cap-${i}`, `Engineer ${i}`),
+  );
+
+  beforeAll(() => {
+    allExternalIds.push(
+      ...MANY_JOBS.map((j) => j.externalId),
+      ...CAP_JOBS.map((j) => j.externalId),
+    );
+  });
+
+  it("does not truncate by iteration order — a candidate late in a pool well under the default threshold still gets scored", async () => {
+    const source = new FakeSource(MANY_JOBS);
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-order ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+
+    expect(run.candidatesNeedingScore).toBe(MANY_JOBS.length);
+    expect(run.cappedCount).toBe(0);
+    expect(run.newlyScored).toBe(MANY_JOBS.length);
+    expect(scorer.calls()).toBe(MANY_JOBS.length);
+    // The LAST job in the source's iteration order — exactly what MAX_JOBS
+    // used to drop — made it all the way to a persisted score.
+    expect(run.results.some((r) => r.company === "Last-In-Order Co")).toBe(true);
+  });
+
+  it("caps scoring at scoreThreshold when the pool needing new scores exceeds it, and states the cap plainly", async () => {
+    const source = new FakeSource(CAP_JOBS);
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-cap ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+    const logs: string[] = [];
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      scoreThreshold: 2,
+      outputPath,
+      usageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    expect(run.candidatesNeedingScore).toBe(5);
+    expect(run.cappedCount).toBe(3);
+    expect(run.newlyScored).toBe(2);
+    expect(run.failed).toBe(0);
+    expect(scorer.calls()).toBe(2);
+    expect(run.results).toHaveLength(2);
+
+    // A truncated run must never read like a complete one (ticket 16c824a
+    // review F2: the numbers here must close exactly — 0 already scored +
+    // 2 scored this run + 0 failed + 3 capped === 5 candidates).
+    expect(
+      logs.some((line) =>
+        line.includes(
+          "5 candidate(s): 0 already scored, 2 scored this run, 0 failed, 3 not scored (cap)",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("F2/F3: cap arithmetic closes exactly (including already-scored jobs and a failing call), and the capped-out jobs are pinned as a recorded decision, not an accident", async () => {
+    const ALL_JOBS: NormalizedJob[] = Array.from({ length: 10 }, (_, i) =>
+      job(`demo-match-spend-guard-f2f3-${i}`, `F2F3 Engineer ${i}`),
+    );
+    allExternalIds.push(...ALL_JOBS.map((j) => j.externalId));
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f2f3 ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+    const source = new FakeSource(ALL_JOBS);
+
+    // Run 0: pre-score ONLY the first 4 (indices 0-3), via a filter — these
+    // are "already scored" going into run 1 below.
+    const preScore = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+      filter: (jobs) => jobs.filter((j) => Number(j.externalId.split("-").pop()) < 4),
+    });
+    expect(preScore.newlyScored).toBe(4);
+
+    // Run 1: the FULL pool (all 10). Of the 6 needing a score (indices
+    // 4-9, in that order), a flaky scorer fails index 4 specifically, and
+    // scoreThreshold=3 caps the attempt at the first 3 of those 6 (4,5,6)
+    // — so 7,8,9 are capped out.
+    const FAILING_EXTERNAL_ID = "demo-match-spend-guard-f2f3-4";
+    const flaky = makeFlakyScorer(new Set([FAILING_EXTERNAL_ID]));
+    const logs: string[] = [];
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: flaky.scoreJob,
+      scoreThreshold: 3,
+      outputPath,
+      usageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    // The arithmetic itself (ticket 16c824a review F2): every one of the
+    // 10 linked candidates is accounted for exactly once.
+    expect(run.skipped).toBe(4);
+    expect(run.candidatesNeedingScore).toBe(6);
+    expect(run.newlyScored).toBe(2);
+    expect(run.failed).toBe(1);
+    expect(run.cappedCount).toBe(3);
+    expect(run.skipped + run.newlyScored + run.failed + run.cappedCount).toBe(10);
+
+    // WHICH jobs the cap selected is pinned, not accidental (ticket
+    // 16c824a review F3): 0-3 were pre-scored, 4 failed (will retry), 5-6
+    // were newly scored this run, and 7-9 are the ones the cap dropped.
+    const scoredTitles = run.results.map((r) => r.title);
+    for (const i of [0, 1, 2, 3, 5, 6]) {
+      expect(scoredTitles).toContain(`F2F3 Engineer ${i}`);
+    }
+    for (const i of [4, 7, 8, 9]) {
+      expect(scoredTitles).not.toContain(`F2F3 Engineer ${i}`);
+    }
+
+    // The post-scoring log line reflects what ACTUALLY happened (not a
+    // pre-scoring prediction a failure could falsify), closes arithmetically,
+    // and states that a plain rerun drains the cap for free.
+    const capLine = logs.find((l) => l.includes("not scored (cap)"));
+    expect(capLine).toBeDefined();
+    expect(capLine).toContain("10 candidate(s)");
+    expect(capLine).toContain("4 already scored");
+    expect(capLine).toContain("2 scored this run");
+    expect(capLine).toContain("1 failed");
+    expect(capLine).toContain("3 not scored (cap)");
+    expect(capLine).toMatch(/rerun/i);
+  });
+
+  it("F1: a failing usage-stats write does not discard already-persisted, already-paid-for scores", async () => {
+    const F1_JOBS: NormalizedJob[] = [
+      job("demo-match-spend-guard-f1-1", "F1 Engineer 1"),
+      job("demo-match-spend-guard-f1-2", "F1 Engineer 2"),
+      job("demo-match-spend-guard-f1-3", "F1 Engineer 3"),
+    ];
+    allExternalIds.push(...F1_JOBS.map((j) => j.externalId));
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f1 ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    // Points at a directory that does not exist — `fs.writeFileSync`
+    // inside `recordUsageStats` throws ENOENT for this, every time.
+    // Reproduces the review's live probe: 3 real (billed) scoring calls,
+    // stats write fails, must NOT lose the 3 already-persisted scores.
+    const unwritableUsageStatsPath = path.join(
+      outputDir,
+      "no-such-directory",
+      `stats-${randomUUID()}.json`,
+    );
+    const logs: string[] = [];
+
+    const run = await runDemoMatch({
+      db,
+      sources: [new FakeSource(F1_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeUsageReportingScorer(1000, 200).scoreJob,
+      outputPath,
+      usageStatsPath: unwritableUsageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    // The 3 paid-for calls are ALL persisted — this is the whole point of
+    // F1 — not discarded because the (unrelated, best-effort) stats write
+    // failed.
+    expect(run.newlyScored).toBe(3);
+    expect(run.failed).toBe(0);
+    expect(run.results).toHaveLength(3);
+
+    // A second run against the same candidates makes ZERO new scoring
+    // calls — proof the scores really did land in `job_matches`, not just
+    // in this run's in-memory return value.
+    const rerun = await runDemoMatch({
+      db,
+      sources: [new FakeSource(F1_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      outputPath,
+      usageStatsPath: unwritableUsageStatsPath,
+      log: () => {},
+    });
+    expect(rerun.newlyScored).toBe(0);
+    expect(rerun.skipped).toBe(3);
+
+    // The failure is surfaced, not swallowed silently.
+    expect(logs.some((l) => l.includes("WARNING") && l.includes("usage stats"))).toBe(true);
+    // And the stats file itself was never created (the directory doesn't
+    // exist), proving the write genuinely failed rather than trivially
+    // succeeding.
+    expect(fs.existsSync(unwritableUsageStatsPath)).toBe(false);
+  });
+
+  it("scores every candidate when allowAboveThreshold is set, even above scoreThreshold", async () => {
+    const source = new FakeSource(CAP_JOBS);
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-override ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      scoreThreshold: 2,
+      allowAboveThreshold: true,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+
+    expect(run.candidatesNeedingScore).toBe(5);
+    expect(run.cappedCount).toBe(0);
+    expect(run.newlyScored).toBe(5);
+    expect(scorer.calls()).toBe(5);
+  });
+
+  it("already-scored jobs count toward neither the cap nor the cost estimate — a full rerun costs nothing regardless of scoreThreshold", async () => {
+    const source = new FakeSource(CAP_JOBS);
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-rerun-free ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    const first = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+    expect(first.newlyScored).toBe(5);
+
+    // A tiny threshold on the SECOND run must not cap anything: nothing
+    // needs a new score, so there is nothing to cap or to spend on.
+    const second = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeCountingScorer().scoreJob,
+      scoreThreshold: 1,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+
+    expect(second.candidatesNeedingScore).toBe(0);
+    expect(second.cappedCount).toBe(0);
+    expect(second.newlyScored).toBe(0);
+    expect(second.skipped).toBe(5);
+    expect(second.costEstimate).toMatchObject({ jobCount: 0, estimatedCostUsd: 0 });
+  });
+
+  it("records real usage from a usage-reporting scorer, and a later run's cost estimate becomes 'measured'", async () => {
+    const measuredUsageStatsPath = path.join(outputDir, `usage-measured-${randomUUID()}.json`);
+    const RUN1_JOBS: NormalizedJob[] = [
+      job("demo-match-spend-guard-measured-1", "Engineer 1"),
+      job("demo-match-spend-guard-measured-2", "Engineer 2"),
+      job("demo-match-spend-guard-measured-3", "Engineer 3"),
+    ];
+    const RUN2_JOBS: NormalizedJob[] = [
+      job("demo-match-spend-guard-measured-4", "Engineer 4"),
+      job("demo-match-spend-guard-measured-5", "Engineer 5"),
+      job("demo-match-spend-guard-measured-6", "Engineer 6"),
+    ];
+    allExternalIds.push(
+      ...RUN1_JOBS.map((j) => j.externalId),
+      ...RUN2_JOBS.map((j) => j.externalId),
+    );
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-measured ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    // No usage stats file exists yet for this path — the FIRST run must
+    // fall back to the bootstrap estimate, not pretend to have measured
+    // data.
+    const first = await runDemoMatch({
+      db,
+      sources: [new FakeSource(RUN1_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeUsageReportingScorer(1000, 200).scoreJob,
+      outputPath,
+      usageStatsPath: measuredUsageStatsPath,
+      log: () => {},
+    });
+    expect(first.newlyScored).toBe(3);
+    expect(first.costEstimate.basis).toBe("bootstrap");
+
+    const statsAfterFirst = readUsageStats(measuredUsageStatsPath);
+    expect(statsAfterFirst).toEqual({
+      model: MODEL,
+      calls: 3,
+      totalInputTokens: 3000,
+      totalOutputTokens: 600,
+    });
+
+    // SECOND run, different candidates (nothing already scored), same
+    // usage-stats file: the cost estimate must now be grounded in run 1's
+    // real recorded usage instead of the bootstrap fallback.
+    const second = await runDemoMatch({
+      db,
+      sources: [new FakeSource(RUN2_JOBS)],
+      resumeText: RESUME_TEXT,
+      scoreJob: makeUsageReportingScorer(1000, 200).scoreJob,
+      outputPath,
+      usageStatsPath: measuredUsageStatsPath,
+      log: () => {},
+    });
+    expect(second.costEstimate.basis).toBe("measured");
+    expect(second.costEstimate.estimatedInputTokens).toBe(3000); // avg 1000 * 3 jobs
+    expect(second.costEstimate.estimatedOutputTokens).toBe(600); // avg 200 * 3 jobs
   });
 });
 
@@ -1161,6 +1536,182 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
     expect(describeBoardOutcome(errored)).toMatch(/network error/);
     expect(describeBoardOutcome(okNoSurvivors)).toMatch(/10 posting\(s\), 0 survived/);
     expect(describeBoardOutcome(okWithSurvivors)).toMatch(/10 posting\(s\), 3 survived/);
+  });
+});
+
+describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824a)", () => {
+  // No DB needed — pure functions / plain file I/O against a tmp path.
+  const SAMPLE_JOBS: NormalizedJob[] = [
+    job("cost-estimate-1", "Backend Engineer"),
+    job("cost-estimate-2", "Frontend Engineer"),
+  ];
+
+  it("returns all zeros for an empty job list, without touching usageStats at all", () => {
+    const estimate = estimateScoringCost([], "resume text", undefined);
+    expect(estimate).toEqual({
+      jobCount: 0,
+      estimatedInputTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      basis: "bootstrap",
+    });
+  });
+
+  it("bootstrap path: derives input tokens from the REAL prompt text length (not a flat guess) and output from MAX_OUTPUT_TOKENS", () => {
+    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", undefined);
+    expect(estimate.basis).toBe("bootstrap");
+    expect(estimate.jobCount).toBe(2);
+    // Bootstrap output is the model's own hard cap (2000) per job — a real,
+    // code-enforced number, not invented.
+    expect(estimate.estimatedOutputTokens).toBe(2000 * 2);
+    expect(estimate.estimatedInputTokens).toBeGreaterThan(0);
+    expect(estimate.estimatedCostUsd).toBeGreaterThan(0);
+  });
+
+  it("measured path: uses the exact average of usageStats, ignoring prompt text entirely", () => {
+    const stats = { model: MODEL, calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
+    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", stats);
+    expect(estimate.basis).toBe("measured");
+    // avg 1000 in / 200 out per call * 2 jobs.
+    expect(estimate.estimatedInputTokens).toBe(2000);
+    expect(estimate.estimatedOutputTokens).toBe(400);
+    expect(estimate.estimatedCostUsd).toBeCloseTo((2000 / 1e6) * 3 + (400 / 1e6) * 15, 10);
+  });
+
+  it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {
+    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", {
+      model: MODEL,
+      calls: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+    });
+    expect(estimate.basis).toBe("bootstrap");
+  });
+
+  it("readUsageStats returns undefined (not a throw) for a missing file", () => {
+    const missingPath = path.join(outputDir, `does-not-exist-${randomUUID()}.json`);
+    expect(readUsageStats(missingPath)).toBeUndefined();
+  });
+
+  it("readUsageStats returns undefined (not a throw) for malformed JSON", () => {
+    const badPath = path.join(outputDir, `malformed-${randomUUID()}.json`);
+    fs.writeFileSync(badPath, "{ not valid json");
+    expect(readUsageStats(badPath)).toBeUndefined();
+  });
+
+  it("recordUsageStats accumulates across multiple calls instead of overwriting", () => {
+    const statsPath = path.join(outputDir, `accumulate-${randomUUID()}.json`);
+    recordUsageStats(statsPath, { calls: 2, totalInputTokens: 1000, totalOutputTokens: 100 });
+    recordUsageStats(statsPath, { calls: 3, totalInputTokens: 1500, totalOutputTokens: 150 });
+
+    expect(readUsageStats(statsPath)).toEqual({
+      model: MODEL,
+      calls: 5,
+      totalInputTokens: 2500,
+      totalOutputTokens: 250,
+    });
+  });
+
+  it("recordUsageStats with calls: 0 is a no-op (never creates a file for a batch with no real usage)", () => {
+    const statsPath = path.join(outputDir, `noop-${randomUUID()}.json`);
+    recordUsageStats(statsPath, { calls: 0, totalInputTokens: 0, totalOutputTokens: 0 });
+    expect(fs.existsSync(statsPath)).toBe(false);
+  });
+
+  it("DEFAULT_SCORE_THRESHOLD is a positive, sane number (regression guard against an accidental 0 or negative that would cap every run to nothing)", () => {
+    expect(DEFAULT_SCORE_THRESHOLD).toBeGreaterThan(0);
+  });
+
+  // Ticket 16c824a review F5: MODEL has already changed once (opus ->
+  // sonnet). Stats recorded under a different model must never blend into
+  // the current average — different model, different typical response
+  // length AND price.
+  it("readUsageStats ignores stats recorded under a different model instead of treating them as current", () => {
+    const statsPath = path.join(outputDir, `stale-model-${randomUUID()}.json`);
+    fs.writeFileSync(
+      statsPath,
+      JSON.stringify({
+        model: "claude-opus-5",
+        calls: 20,
+        totalInputTokens: 50_000,
+        totalOutputTokens: 10_000,
+      }),
+    );
+
+    // Read back under the CURRENT model (default `expectedModel`) — the
+    // opus-recorded stats must not surface as if they were sonnet's.
+    expect(readUsageStats(statsPath)).toBeUndefined();
+    // But they DO exist if asked about under their own model — this isn't
+    // corruption, it's a legitimate different-model record being filtered.
+    expect(readUsageStats(statsPath, "claude-opus-5")).toMatchObject({ calls: 20 });
+  });
+
+  it("recordUsageStats starts a fresh average instead of blending in prior stats recorded under a different model", () => {
+    const statsPath = path.join(outputDir, `model-switch-${randomUUID()}.json`);
+    recordUsageStats(
+      statsPath,
+      { calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 },
+      "claude-opus-5",
+    );
+
+    // Now record under the CURRENT model — must start fresh (10 calls),
+    // not accumulate onto opus's 10 (which would silently claim 20 calls
+    // of a mixed, meaningless average).
+    recordUsageStats(
+      statsPath,
+      { calls: 3, totalInputTokens: 3_000, totalOutputTokens: 600 },
+      MODEL,
+    );
+
+    expect(readUsageStats(statsPath, MODEL)).toEqual({
+      model: MODEL,
+      calls: 3,
+      totalInputTokens: 3_000,
+      totalOutputTokens: 600,
+    });
+    // The stale opus record is gone — superseded, not blended — once a
+    // write for the current model has happened. There's one file, one
+    // model's average in it at a time; a switch resets it rather than
+    // accumulating a second, parallel average nothing ever reads.
+    expect(readUsageStats(statsPath, "claude-opus-5")).toBeUndefined();
+  });
+});
+
+describe("describeCostEstimate (ticket 16c824a review F4)", () => {
+  // No DB needed — pure function.
+  it("renders a bootstrap estimate as an explicit ceiling (≤$…), not a point estimate", () => {
+    const description = describeCostEstimate({
+      jobCount: 129,
+      estimatedInputTokens: 100_000,
+      estimatedOutputTokens: 258_000, // 2000 * 129 — the worst-case bootstrap assumption
+      estimatedCostUsd: 4.93,
+      basis: "bootstrap",
+    });
+    expect(description).toMatch(/^≤\$4\.93/);
+    expect(description).not.toMatch(/^~\$/);
+  });
+
+  it("renders a measured estimate as a point estimate (~$…), not a ceiling — it's grounded in real prior usage, not a worst case", () => {
+    const description = describeCostEstimate({
+      jobCount: 129,
+      estimatedInputTokens: 60_000,
+      estimatedOutputTokens: 40_000,
+      estimatedCostUsd: 1.83,
+      basis: "measured",
+    });
+    expect(description).toMatch(/^~\$1\.83/);
+    expect(description).not.toMatch(/^≤/);
+  });
+
+  it("renders zero jobs distinctly, without a dollar sign implying a real (if tiny) estimate was computed", () => {
+    const description = describeCostEstimate({
+      jobCount: 0,
+      estimatedInputTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      basis: "bootstrap",
+    });
+    expect(description).toBe("$0.00 (nothing needs scoring)");
   });
 });
 
