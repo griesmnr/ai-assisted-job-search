@@ -503,6 +503,30 @@ export type RunDemoMatchOptions = {
   usageStatsPath?: string;
   outputPath?: string;
   log?: (message: string) => void;
+  /**
+   * Overrides the randomly generated `searches.id` this run creates.
+   * Ticket 59fdc52: the REST API's async "run a search" route needs to hand
+   * the client a pollable id *before* this (multi-minute, billed) call
+   * resolves — it generates the id, starts tracking it, kicks this off
+   * without awaiting, and needs that same id to end up on the `searches`
+   * row so a later `GET /searches/:id` can find it in the database even if
+   * the API process restarts before the run finishes (see that route's doc
+   * comment). Defaults to a fresh `randomUUID()` when omitted, exactly as
+   * before this ticket.
+   */
+  searchId?: string;
+  /**
+   * Ticket 59fdc52: fetches and ingests real postings, computes the
+   * pre-scoring cost estimate, and returns — WITHOUT calling `scoreJob` for
+   * any of them. This is what backs the REST API's `POST /searches/estimate`
+   * (decision: "a search must be able to report its cost before spending").
+   * Fetching and ingestion are free (no Claude calls), so an estimate run
+   * still grows the durable job corpus exactly like a real run does; a
+   * follow-up real run against the same resume/sources re-fetches (cheap,
+   * idempotent — `ingestJobsForSearch` upserts) and scores only what
+   * `estimateOnly` deliberately left unscored. Defaults to `false`.
+   */
+  estimateOnly?: boolean;
 };
 
 /**
@@ -858,7 +882,17 @@ function hashResumeText(resumeText: string): string {
  * winning row afterward — no duplicate `resumes` rows, and no
  * `ORDER BY`-dependent ambiguity about which one "the" row is.
  */
-async function getOrCreateResumeId(
+/**
+ * Exported (ticket 59fdc52) so the REST API's `POST /resumes` can find-or-
+ * create a resume row directly — resumes are content-addressed by
+ * `resumeHash` (ticket 620ca30), and this is the one place that hashing +
+ * upsert logic lives. Reusing it here, rather than reimplementing the same
+ * hash-then-upsert dance in a route handler, is exactly the "reuse
+ * runDemoMatch's persistence, don't reimplement it" instruction: a resume
+ * paste alone doesn't need a full `runDemoMatch` run (which also fetches
+ * and would ingest jobs) — it only needs this one step.
+ */
+export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeText: string,
@@ -885,6 +919,51 @@ async function getOrCreateResumeId(
   return rows[0]!.id;
 }
 
+/**
+ * The DB-backed ranked-results query shared by a normal run's tail (every
+ * `linkedJobId`, some newly scored this run) and `estimateOnly`'s early
+ * return (only `alreadyScoredIds` — nothing new was scored). Extracted
+ * (ticket 59fdc52) so both paths honor the same "results come from the
+ * database, not in-memory state" invariant with one implementation, not two
+ * that could drift. Returns `[]` without querying when `jobIds` is empty —
+ * an empty `inArray(...)` is a Drizzle/Postgres edge case worth avoiding
+ * explicitly rather than relying on it happening to behave.
+ */
+async function fetchRankedResults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  resumeId: string,
+  jobIds: string[],
+): Promise<RankedResult[]> {
+  if (jobIds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      jobId: jobsTable.id,
+      externalId: jobsTable.externalId,
+      title: jobsTable.title,
+      company: jobsTable.company,
+      location: jobsTable.location,
+      locationType: jobsTable.locationType,
+      applyUrl: jobsTable.linkToApply,
+      matchScore: jobMatches.matchScore,
+      rationale: jobMatches.rationale,
+      strengths: jobMatches.strengths,
+      gaps: jobMatches.gaps,
+    })
+    .from(jobMatches)
+    .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
+    .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, jobIds)));
+
+  const results: RankedResult[] = rows.map((r) => ({
+    ...r,
+    strengths: r.strengths ?? [],
+    gaps: r.gaps ?? [],
+  }));
+  results.sort((a, b) => b.matchScore - a.matchScore);
+  return results;
+}
+
 export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDemoMatchResult> {
   const {
     db,
@@ -898,6 +977,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     usageStatsPath = "prep/scoring-usage-stats.json",
     outputPath = "prep/match-results.json",
     log = console.log,
+    searchId: providedSearchId,
+    estimateOnly = false,
   } = options;
 
   if (sources.length === 0) {
@@ -971,7 +1052,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
   log("");
 
-  const searchId = randomUUID();
+  const searchId = providedSearchId ?? randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
   // One row per CONFIGURED source, not per source that actually returned
   // jobs this run — this records what the search covered; success/failure
@@ -1111,6 +1192,37 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   log(
     `Estimated cost to score all ${needsScoreIds.length}: ${describeCostEstimate(preCapEstimate)}.`,
   );
+
+  // Ticket 59fdc52: `estimateOnly` stops HERE, before any `scoreJob` call —
+  // fetching and ingestion above already happened (free), but nothing below
+  // this point that costs money runs. `preCapEstimate` (computed just above,
+  // over the FULL `needsScoreJobs`, not a threshold-capped subset) is
+  // exactly "what would scoring everything new cost", which is what
+  // `describeCostEstimate` is designed to render honestly — see that
+  // function's doc comment on why a bootstrap estimate is shown as a
+  // ceiling. `results` still comes from the database (decision: "results
+  // come from the database, not a run's in-memory state"), scoped to
+  // whatever was ALREADY scored before this call — there is nothing newly
+  // scored to add to it.
+  if (estimateOnly) {
+    log(
+      `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
+        `this run.`,
+    );
+    const results = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    return {
+      resumeId,
+      searchId,
+      skipped: alreadyScoredIds.size,
+      newlyScored: 0,
+      failed: 0,
+      results,
+      sourceOutcomes,
+      candidatesNeedingScore: needsScoreIds.length,
+      cappedCount: 0,
+      costEstimate: preCapEstimate,
+    };
+  }
 
   // Above `scoreThreshold`, cap SCORING (not ingestion) here unless the
   // caller explicitly opted in — see `DEFAULT_SCORE_THRESHOLD`'s doc
@@ -1257,30 +1369,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Final results come from the database, not from this run's in-memory
   // scores — so a second run, which scores nothing new, still prints the
   // full ranked list instead of almost nothing.
-  const finalRows = await db
-    .select({
-      jobId: jobsTable.id,
-      externalId: jobsTable.externalId,
-      title: jobsTable.title,
-      company: jobsTable.company,
-      location: jobsTable.location,
-      locationType: jobsTable.locationType,
-      applyUrl: jobsTable.linkToApply,
-      matchScore: jobMatches.matchScore,
-      rationale: jobMatches.rationale,
-      strengths: jobMatches.strengths,
-      gaps: jobMatches.gaps,
-    })
-    .from(jobMatches)
-    .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-    .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, linkedJobIds)));
-
-  const results: RankedResult[] = finalRows.map((r) => ({
-    ...r,
-    strengths: r.strengths ?? [],
-    gaps: r.gaps ?? [],
-  }));
-  results.sort((a, b) => b.matchScore - a.matchScore);
+  const results = await fetchRankedResults(db, resumeId, linkedJobIds);
 
   fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
   log(`Full JSON written to ${outputPath}\n`);

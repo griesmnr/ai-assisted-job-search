@@ -1,13 +1,67 @@
 import { pathToFileURL } from "node:url";
+import Anthropic from "@anthropic-ai/sdk";
 import Fastify from "fastify";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Client } from "pg";
+import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
+import { registerResumeRoutes } from "./routes/resumes.js";
+import { registerSearchRoutes } from "./routes/searches.js";
+import { registerSourceRoutes } from "./routes/sources.js";
+import type { buildSourceSelection } from "./sources/registry.js";
+
+export type BuildAppDeps = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>;
+  /**
+   * Lazily produces the real scorer `POST /searches` uses. A factory, not a
+   * value, so constructing the `Anthropic` client (which requires
+   * `ANTHROPIC_API_KEY`) happens on the FIRST actual paid run, not at server
+   * boot — every read-only route (GET /sources, GET /resumes/:id/results,
+   * ...) and even `POST /searches/estimate` must keep working on a machine
+   * that hasn't configured billing credentials yet. See
+   * `demo-match.ts`'s non-negotiable: its own `main()` (which reads
+   * `prep/resume.txt` off disk and constructs its own `Anthropic` client at
+   * the top of the function) must never be reachable from an HTTP request —
+   * this app only ever imports named exports from demo-match.ts
+   * (`runDemoMatch`, `makeClaudeScorer`, `getOrCreateResumeId`), never
+   * `main` itself.
+   */
+  getScoreJob: () => ScoreJobFn;
+  /**
+   * Overrides how `POST /searches` and `POST /searches/estimate` resolve
+   * requested source ids into real `JobSource`s. Defaults to the real
+   * registry (`sources/registry.ts`'s `buildSourceSelection`) when omitted
+   * — production always gets this. Route tests pass a `FakeSource`-backed
+   * stand-in so `rtk vitest` never makes a real job-board network call. See
+   * `registerSearchRoutes`'s matching parameter.
+   */
+  resolveSourceIds?: (sourceIds: string[]) => ReturnType<typeof buildSourceSelection>;
+};
 
 /**
- * Builds the Fastify instance. No routes registered yet — this is the
- * buildable entrypoint the scaffold ticket asks for; routes land on
- * follow-up tickets.
+ * Builds the Fastify instance. Routes registered here read or write the
+ * `db` passed in directly — no route constructs its own database
+ * connection — so a test can pass a real Postgres connection (see
+ * `*.test.ts` files under `routes/`) without this module caring whether
+ * it's talking to a throwaway local database or production.
  */
-export function buildApp() {
-  return Fastify({ logger: true });
+export function buildApp(deps: BuildAppDeps) {
+  const app = Fastify({
+    logger: true,
+    // A wildly oversized request body (e.g. an accidental 30 MB resume
+    // paste) must fail cleanly with 413 before Fastify even attempts to
+    // buffer/parse it as JSON — not 500 partway through. 2 MB is generous
+    // for a pasted resume (MAX_RESUME_TEXT_LENGTH in routes/resumes.ts is a
+    // tighter, resume-specific check on top of this).
+    bodyLimit: 2 * 1024 * 1024,
+  });
+
+  registerSourceRoutes(app);
+  registerResumeRoutes(app, deps.db);
+  registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
+
+  return app;
 }
 
 // pathToFileURL handles spaces/non-ASCII in the path correctly (percent-
@@ -17,12 +71,44 @@ export function buildApp() {
 const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
-if (isMain) {
-  const app = buildApp();
+async function main() {
+  process.loadEnvFile();
+
+  const client = new Client({
+    host: process.env.POSTGRES_HOST,
+    port: Number(process.env.POSTGRES_PORT),
+    user: process.env.POSTGRES_USER,
+    password: process.env.POSTGRES_PASSWORD,
+    database: process.env.POSTGRES_DB,
+  });
+  await client.connect();
+  const db = drizzle(client);
+
+  // Memoized, not reconstructed per call: the Anthropic client is cheap to
+  // reuse across every POST /searches this process handles, and there is no
+  // reason to pay connection-setup cost per search. Still only constructed
+  // on the FIRST call, not at boot — see BuildAppDeps.getScoreJob's doc
+  // comment.
+  let cachedScoreJob: ScoreJobFn | undefined;
+  const getScoreJob = (): ScoreJobFn => {
+    cachedScoreJob ??= makeClaudeScorer(new Anthropic());
+    return cachedScoreJob;
+  };
+
+  const app = buildApp({ db, getScoreJob });
   const port = Number(process.env.PORT ?? 3000);
 
-  app.listen({ port, host: "0.0.0.0" }).catch((err: unknown) => {
+  try {
+    await app.listen({ port, host: "0.0.0.0" });
+  } catch (err) {
     app.log.error(err);
+    process.exit(1);
+  }
+}
+
+if (isMain) {
+  main().catch((e: unknown) => {
+    console.error(e);
     process.exit(1);
   });
 }
