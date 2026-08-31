@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import Fastify from "fastify";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
@@ -55,6 +55,19 @@ export function buildApp(deps: BuildAppDeps) {
     // for a pasted resume (MAX_RESUME_TEXT_LENGTH in routes/resumes.ts is a
     // tighter, resume-specific check on top of this).
     bodyLimit: 2 * 1024 * 1024,
+    // Ticket 59fdc52 review round 2: Fastify's AJV instance coerces types
+    // by default (`coerceTypes: true`), so `{"resumeText": 123}` (a number)
+    // silently passed the `{ type: "string" }` body schema as the STRING
+    // "123" — a resume containing the three characters "123" got created
+    // and hashed, no 400 anywhere. `additionalProperties: false` on every
+    // route schema was never the gap; the gap was AJV rewriting the wrong
+    // type into the right one before that check ever saw it. Disabling
+    // coercion globally means a body whose JSON types don't match the
+    // schema fails validation (400) instead of being silently reshaped —
+    // no route here relies on request-body coercion (query-string values
+    // like `minScore` are read as strings and converted explicitly in the
+    // handler, not via AJV).
+    ajv: { customOptions: { coerceTypes: false } },
   });
 
   registerSourceRoutes(app);
@@ -74,15 +87,34 @@ const isMain =
 async function main() {
   process.loadEnvFile();
 
-  const client = new Client({
+  // Pool, not a single Client (ticket 59fdc52 review round 2, F2 — a real,
+  // reproduced defect): a bare `pg.Client` is ONE connection, and two
+  // overlapping `db.transaction()` calls on one connection make the
+  // second's `BEGIN` a no-op (Postgres sessions don't nest transactions),
+  // so the FIRST `COMMIT` commits both transactions' work together —
+  // `ingestJobsForSearch`'s documented all-or-nothing guarantee is void
+  // the moment two requests overlap. Reachable simply by double-clicking
+  // Search. `pg.Pool` gives drizzle a fresh connection per `transaction()`
+  // call, which is what makes concurrent transactions actually isolated
+  // from each other. `POST /searches` also gets an application-level
+  // in-flight guard (routes/searches.ts) on top of this — belt and
+  // suspenders: the guard stops the same resume from double-firing at all,
+  // the Pool is what makes ANY two concurrent transactions (even for
+  // different resumes) safe regardless.
+  const pool = new Pool({
     host: process.env.POSTGRES_HOST,
     port: Number(process.env.POSTGRES_PORT),
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
     database: process.env.POSTGRES_DB,
   });
-  await client.connect();
-  const db = drizzle(client);
+  // Fail fast on bad credentials/unreachable Postgres at boot, same as the
+  // old `client.connect()` did — a Pool otherwise only surfaces a
+  // connection failure lazily, on the first query a request happens to
+  // trigger.
+  const probe = await pool.connect();
+  probe.release();
+  const db = drizzle(pool);
 
   // Memoized, not reconstructed per call: the Anthropic client is cheap to
   // reuse across every POST /searches this process handles, and there is no

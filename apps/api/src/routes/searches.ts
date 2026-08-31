@@ -13,26 +13,33 @@
  * `getScoreJob` at all — it passes a scorer that throws if ever called, as
  * an assertion that `estimateOnly` really did stop before scoring.
  *
- * Neither route passes a `filter` to `runDemoMatch` — both take
- * `runDemoMatch`'s default (identity: every ingested job is a scoring
- * candidate), NOT `demo-match.ts`'s own `filterSoftwareEngineeringJobs`.
- * That filter's title regex (software engineer/full-stack/back-end/...) and
- * its location regex (hardcodes the Seattle/PNW + remote-US preference from
- * git-bug b723fb9) are the owner's personal criteria — exactly what the
- * "no hardcoded assumptions about one person's resume or locations" v1 bar
- * (git-bug 484889d, 2026-08-29 note) rules out for a surface meant to work
- * for anyone's resume. Real title/location fit is what the resume-vs-
- * posting scoring call is FOR; a hardcoded pre-filter ahead of it would
- * silently drop postings for every user who isn't Nicole before Claude ever
- * saw them. The tradeoff: without `filterSoftwareEngineeringJobs`'s
- * narrowing, a source with a large board (SmartRecruiters: thousands of
- * postings for one employer) ingests everything, and `DEFAULT_SCORE_THRESHOLD`
- * (demo-match.ts) is what keeps that from becoming an uncapped bill — see
- * its doc comment.
+ * QUALITY FILTER (review round 2 — read before touching `filter`): both
+ * routes compile a `SearchCriteria` (packages/shared) into a filter via
+ * `compileFilter` (sources/criteria.ts) and pass it to `runDemoMatch`. Round
+ * 1 shipped no filter at all on the (correct) premise that
+ * `filterSoftwareEngineeringJobs`'s regexes hardcode Nicole's own
+ * title/location criteria — but deleting a quality control is not the same
+ * act as making it configurable, and round 1 measured nothing. Live
+ * consequence: an unfiltered `POST /searches` against the real Greenhouse
+ * pool (6,230 postings) scores `slice(0, 200)` in board-token order — 200
+ * Samsara postings alphabetical by title, 5 of them software engineering
+ * roles, 195 things like "Accountant II" and "Account Executive,
+ * Commercial". `compileFilter(criteria)` (when `criteria` is present in the
+ * request body) or `compileFilter(undefined)` (when it's absent — which
+ * reproduces the CLI's filter EXACTLY, see criteria.ts) is what a caller
+ * gets by default now; passing an explicit empty `{}` is how a caller opts
+ * out of filtering entirely.
  */
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import type {
+  EstimateSearchResponse,
+  SearchCriteria,
+  SearchStatusResponse,
+  SkippedSource,
+  StartSearchResponse,
+} from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -43,18 +50,41 @@ import {
   type ScoreJobFn,
 } from "../demo-match.js";
 import { resumes, searches as searchesTable } from "../db/schema.js";
-import { buildSourceSelection, type SkippedSource } from "../sources/registry.js";
+import { compileFilter } from "../sources/criteria.js";
+import { buildSourceSelection } from "../sources/registry.js";
 import type { JobSource } from "../sources/types.js";
+
+const searchCriteriaSchema = {
+  type: "object",
+  properties: {
+    titleInclude: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
+    titleExclude: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
+    nearLocations: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
+    remoteOk: { type: "boolean" },
+  },
+  additionalProperties: false,
+} as const;
 
 const searchBodySchema = {
   type: "object",
   required: ["resumeId", "sourceIds"],
   properties: {
     resumeId: { type: "string", minLength: 1 },
-    sourceIds: { type: "array", items: { type: "string" }, minItems: 1 },
+    // uniqueItems (not a hand-rolled duplicate check): AJV rejects a
+    // request with a repeated sourceId as a clean 400 before the handler
+    // ever runs, rather than the handler having to detect it and build a
+    // synthetic "skipped" entry — round 1's version of that synthetic
+    // entry reported `skippedSources[0].id` as the literal string
+    // "usajobs,usajobs" (every duplicate id joined together), which is
+    // exactly the kind of malformed-looking-like-data bug a schema-level
+    // check avoids by construction.
+    sourceIds: { type: "array", items: { type: "string" }, minItems: 1, uniqueItems: true },
+    criteria: searchCriteriaSchema,
   },
   additionalProperties: false,
 } as const;
+
+type SearchBody = { resumeId: string; sourceIds: string[]; criteria?: SearchCriteria };
 
 type SearchRunState =
   | { status: "pending"; resumeId: string }
@@ -69,11 +99,51 @@ type SearchRunState =
  * but never loses the run's actual output: everything `runDemoMatch`
  * persists lands in Postgres regardless, and `GET /searches/:id` falls back
  * to querying the `searches` table directly when an id isn't in this map
- * (see below), and `GET /resumes/:id/results` always reads straight from
- * the database (decision #3: results come from the database, never from
- * in-memory state).
+ * (see below, and `searches.status` — schema.ts), and `GET
+ * /resumes/:id/results` always reads straight from the database (decision
+ * #3: results come from the database, never from in-memory state).
+ *
+ * Bounded (ticket 59fdc52 review round 2): an unbounded Map here is a slow
+ * memory leak over the life of a long-running process — every search ever
+ * run, forever. `pruneSearchRuns` evicts the oldest COMPLETE/FAILED entries
+ * (never a "pending" one — that would break an in-flight poll) once the
+ * tracker exceeds `MAX_TRACKED_SEARCHES`.
  */
 const searchRuns = new Map<string, SearchRunState>();
+const MAX_TRACKED_SEARCHES = 500;
+
+/**
+ * Exposes the module-private tracker internals to `searches.test.ts` only —
+ * exercising the 500-entry bound through 500 real `POST /searches` HTTP
+ * round trips would be slow and would mostly be testing Fastify/Postgres
+ * throughput, not the eviction logic itself. Not used by any route handler
+ * above; production code never imports this export.
+ */
+export const __testing = { searchRuns, MAX_TRACKED_SEARCHES, pruneSearchRuns };
+
+function pruneSearchRuns(): void {
+  if (searchRuns.size <= MAX_TRACKED_SEARCHES) return;
+  // Map iteration order is insertion order, so this walks oldest-first.
+  for (const [id, state] of searchRuns) {
+    if (searchRuns.size <= MAX_TRACKED_SEARCHES) break;
+    if (state.status === "pending") continue;
+    searchRuns.delete(id);
+  }
+}
+
+/**
+ * One entry per resumeId currently running a real (billed) search — the
+ * in-flight guard (ticket 59fdc52 review round 2, F2). Reproduced defect:
+ * two overlapping `POST /searches` requests (e.g. a double-clicked Search
+ * button) each start their own `runDemoMatch`, and — independent of the
+ * `pg.Pool` fix in index.ts, which makes concurrent DB transactions safe —
+ * running the same resume's search twice concurrently is wasteful (pays
+ * for scoring the same candidate set twice, since neither run can see the
+ * other's in-progress work) and confusing (which of the two searchIds is
+ * "the" search for this resume?). Guards per resumeId, not globally: two
+ * DIFFERENT resumes searching at once is fine and unrelated.
+ */
+const inFlightByResume = new Map<string, string>();
 
 function tempOutputPath(searchId: string): string {
   // Deliberately NOT prep/match-results.json — that file holds the owner's
@@ -122,23 +192,31 @@ export function registerSearchRoutes(
   ):
     | { ok: true; sources: JobSource[]; skipped: SkippedSource[] }
     | { ok: false; skipped: SkippedSource[] } {
-    const unique = new Set(sourceIds);
-    if (unique.size !== sourceIds.length) {
-      return {
-        ok: false,
-        skipped: [{ id: sourceIds.join(","), reason: "sourceIds must not contain duplicates" }],
-      };
-    }
     const { sources, skipped } = resolveSourceIds(sourceIds);
     if (sources.length === 0) return { ok: false, skipped };
     return { ok: true, sources, skipped };
   }
 
-  app.post<{ Body: { resumeId: string; sourceIds: string[] } }>(
+  /** Best-effort: if this fails, the run's actual outcome is already
+   * either persisted (success) or simply unmarked (see markSearchComplete's
+   * doc comment in demo-match.ts) — a failed marker write must never throw
+   * inside a `.catch()` handler and mask the real error. */
+  async function markSearchFailed(searchId: string): Promise<void> {
+    try {
+      await db
+        .update(searchesTable)
+        .set({ status: "failed" })
+        .where(eq(searchesTable.id, searchId));
+    } catch (err) {
+      app.log.error({ err, searchId }, "failed to mark searches.status = 'failed'");
+    }
+  }
+
+  app.post<{ Body: SearchBody }>(
     "/searches/estimate",
     { schema: { body: searchBodySchema } },
     async (request, reply) => {
-      const { resumeId, sourceIds } = request.body;
+      const { resumeId, sourceIds, criteria } = request.body;
       const resumeText = await loadResumeText(resumeId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -157,31 +235,49 @@ export function registerSearchRoutes(
         sources: resolved.sources,
         resumeText,
         scoreJob: NEVER_SCORE,
+        filter: compileFilter(criteria),
         estimateOnly: true,
         outputPath: tempOutputPath(`estimate-${randomUUID()}`),
       });
 
-      return reply.send({
+      // No `searchId` in this response (ticket 59fdc52 review round 2):
+      // this run's `searches` row is never registered in `searchRuns`, so
+      // polling it via GET /searches/:id used to fall through to the
+      // DB-fallback branch and report `status: "complete"` plus a false
+      // "process restarted" note — a frontend polling that id would render
+      // a finished search with zero results. Simplest correct fix: don't
+      // hand out an id there's no honest way to poll.
+      const response: EstimateSearchResponse = {
         resumeId,
-        searchId: result.searchId,
         costEstimate: result.costEstimate,
         costEstimateDescription: describeCostEstimate(result.costEstimate),
         candidatesNeedingScore: result.candidatesNeedingScore,
+        scoreThreshold: result.scoreThreshold,
+        cappedCount: result.cappedCount,
         alreadyScored: result.skipped,
         sourceOutcomes: result.sourceOutcomes,
         skippedSources: resolved.skipped,
-      });
+      };
+      return reply.send(response);
     },
   );
 
-  app.post<{ Body: { resumeId: string; sourceIds: string[] } }>(
+  app.post<{ Body: SearchBody }>(
     "/searches",
     { schema: { body: searchBodySchema } },
     async (request, reply) => {
-      const { resumeId, sourceIds } = request.body;
+      const { resumeId, sourceIds, criteria } = request.body;
       const resumeText = await loadResumeText(resumeId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
+      }
+
+      const inFlightId = inFlightByResume.get(resumeId);
+      if (inFlightId !== undefined) {
+        return reply.code(409).send({
+          error: `A search is already running for this resume.`,
+          searchId: inFlightId,
+        });
       }
 
       const resolved = resolveSources(sourceIds);
@@ -194,6 +290,8 @@ export function registerSearchRoutes(
 
       const searchId = randomUUID();
       searchRuns.set(searchId, { status: "pending", resumeId });
+      pruneSearchRuns();
+      inFlightByResume.set(resumeId, searchId);
 
       // Fire-and-forget: this is the one HTTP call in the whole API that
       // spends real money (real Claude calls inside runDemoMatch) and can
@@ -205,6 +303,7 @@ export function registerSearchRoutes(
         sources: resolved.sources,
         resumeText,
         scoreJob: getScoreJob(),
+        filter: compileFilter(criteria),
         searchId,
         outputPath: tempOutputPath(searchId),
       })
@@ -212,16 +311,23 @@ export function registerSearchRoutes(
           searchRuns.set(searchId, { status: "complete", resumeId, result });
         })
         .catch((err: unknown) => {
-          searchRuns.set(searchId, {
-            status: "failed",
-            resumeId,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          const message = err instanceof Error ? err.message : String(err);
+          searchRuns.set(searchId, { status: "failed", resumeId, error: message });
+          // Best-effort — see markSearchFailed's doc comment. Deliberately
+          // not awaited from inside this .catch (nothing here can un-fail
+          // this run); fire it and let it log on its own failure.
+          void markSearchFailed(searchId);
+        })
+        .finally(() => {
+          if (inFlightByResume.get(resumeId) === searchId) inFlightByResume.delete(resumeId);
         });
 
-      return reply
-        .code(202)
-        .send({ searchId, status: "pending", skippedSources: resolved.skipped });
+      const response: StartSearchResponse = {
+        searchId,
+        status: "pending",
+        skippedSources: resolved.skipped,
+      };
+      return reply.code(202).send(response);
     },
   );
 
@@ -233,39 +339,71 @@ export function registerSearchRoutes(
       // Not in the in-memory tracker: either an unknown id, or a real run
       // from before this process last restarted (the tracker doesn't
       // survive a restart — see its doc comment). Distinguish those by
-      // checking the database: a `searches` row existing means this really
-      // happened and its results are fully queryable, just without live
-      // progress tracking.
+      // checking the database, and — critically — trust `searches.status`
+      // rather than assuming a row existing means the run finished (ticket
+      // 59fdc52 review round 2): a row can exist with `status = 'running'`
+      // forever if the process died mid-scoring, and that must never be
+      // reported as "complete".
       const rows = await db
-        .select({ id: searchesTable.id, resumeId: searchesTable.resumeId })
+        .select({
+          id: searchesTable.id,
+          resumeId: searchesTable.resumeId,
+          status: searchesTable.status,
+        })
         .from(searchesTable)
         .where(eq(searchesTable.id, searchId))
         .limit(1);
       if (rows.length === 0) {
         return reply.code(404).send({ error: `No search with id "${searchId}".` });
       }
-      return reply.send({
-        searchId: rows[0]!.id,
-        resumeId: rows[0]!.resumeId,
-        status: "complete",
+      const row = rows[0]!;
+      if (row.status === "failed") {
+        const response: SearchStatusResponse = {
+          searchId: row.id,
+          resumeId: row.resumeId,
+          status: "failed",
+        };
+        return reply.send(response);
+      }
+      // "running" here means the row's own completion marker was never
+      // set — either this run is genuinely still in progress (in another
+      // process, or before this process restarted), or it died before
+      // reaching the line that sets it. Both are honestly "incomplete",
+      // never "complete".
+      const status = row.status === "complete" ? "complete" : "incomplete";
+      const response: SearchStatusResponse = {
+        searchId: row.id,
+        resumeId: row.resumeId,
+        status,
         note:
-          "This API process restarted since this search ran, so live progress info was lost. " +
-          "Its results are in the database — see GET /resumes/:id/results.",
-      });
+          status === "complete"
+            ? "This API process restarted since this search ran, so live progress info was " +
+              "lost. Its results are in the database — see GET /resumes/:id/results."
+            : "This search's completion marker was never set — it may still be running " +
+              "elsewhere, or it may have died before finishing. Results scored so far, if " +
+              "any, are in the database — see GET /resumes/:id/results.",
+      };
+      return reply.send(response);
     }
 
     if (state.status === "pending") {
-      return reply.send({ searchId, status: "pending", resumeId: state.resumeId });
+      const response: SearchStatusResponse = {
+        searchId,
+        status: "pending",
+        resumeId: state.resumeId,
+      };
+      return reply.send(response);
     }
     if (state.status === "failed") {
-      return reply.send({
+      const response: SearchStatusResponse = {
         searchId,
         status: "failed",
         resumeId: state.resumeId,
         error: state.error,
-      });
+      };
+      return reply.send(response);
     }
-    return reply.send({
+    const response: SearchStatusResponse = {
       searchId,
       status: "complete",
       resumeId: state.resumeId,
@@ -275,6 +413,7 @@ export function registerSearchRoutes(
       cappedCount: state.result.cappedCount,
       costEstimate: state.result.costEstimate,
       sourceOutcomes: state.result.sourceOutcomes,
-    });
+    };
+    return reply.send(response);
   });
 }

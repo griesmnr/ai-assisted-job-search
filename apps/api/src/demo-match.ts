@@ -583,8 +583,24 @@ export type RunDemoMatchResult = {
    * complete without surfacing this number.
    */
   cappedCount: number;
-  /** The pre-scoring cost estimate computed for whatever was actually
-   * attempted this run (i.e. after any cap) — see `estimateScoringCost`. */
+  /**
+   * The `scoreThreshold` actually in effect this run (the caller's override
+   * or `DEFAULT_SCORE_THRESHOLD`). Ticket 59fdc52 review round 2: the REST
+   * API's cost-estimate response was reporting the cost of scoring the
+   * WHOLE pool while a real run caps spend at this number — carrying the
+   * threshold itself is what lets a caller understand why `costEstimate`
+   * and `candidatesNeedingScore` disagree.
+   */
+  scoreThreshold: number;
+  /**
+   * The pre-scoring cost estimate for whatever was actually ATTEMPTED this
+   * run — i.e. after `scoreThreshold` capping, exactly like a real run's
+   * spend (see `estimateScoringCost`). `estimateOnly` computes this the
+   * same cap-aware way rather than pricing the full uncapped pool: pricing
+   * the uncapped pool overstated cost by ~30x against what a real run
+   * (which caps at `scoreThreshold`) would actually bill (ticket 59fdc52
+   * review round 2).
+   */
   costEstimate: CostEstimate;
 };
 
@@ -920,6 +936,28 @@ export async function getOrCreateResumeId(
 }
 
 /**
+ * Marks `searches.status = 'complete'` for `searchId`. Called right before
+ * EVERY successful return point in `runDemoMatch` (the empty-pool early
+ * return, the `estimateOnly` early return, and the normal end) — ticket
+ * 59fdc52 review round 2: without this, `GET /searches/:id`'s DB-fallback
+ * branch (used once an API process's in-memory tracker has lost this run —
+ * e.g. after a restart) could not tell "this run finished" apart from
+ * "this run's process died after scoring 3 of 200"; both left an identical
+ * `searches` row behind. If `runDemoMatch` itself throws before reaching
+ * one of these call sites, the row is simply never updated and stays at
+ * its `'running'` default — the honest signal, not a guess. (A caller that
+ * catches the rejection, e.g. the REST API's `POST /searches` route, is
+ * responsible for marking `'failed'` itself — see that route.)
+ */
+async function markSearchComplete(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  searchId: string,
+): Promise<void> {
+  await db.update(searches).set({ status: "complete" }).where(eq(searches.id, searchId));
+}
+
+/**
  * The DB-backed ranked-results query shared by a normal run's tail (every
  * `linkedJobId`, some newly scored this run) and `estimateOnly`'s early
  * return (only `alreadyScoredIds` — nothing new was scored). Extracted
@@ -1106,6 +1144,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
     fs.writeFileSync(outputPath, JSON.stringify([], null, 2));
+    await markSearchComplete(db, searchId);
     return {
       resumeId,
       searchId,
@@ -1116,6 +1155,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       sourceOutcomes,
       candidatesNeedingScore: 0,
       cappedCount: 0,
+      scoreThreshold,
       costEstimate: {
         jobCount: 0,
         estimatedInputTokens: 0,
@@ -1193,44 +1233,16 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     `Estimated cost to score all ${needsScoreIds.length}: ${describeCostEstimate(preCapEstimate)}.`,
   );
 
-  // Ticket 59fdc52: `estimateOnly` stops HERE, before any `scoreJob` call —
-  // fetching and ingestion above already happened (free), but nothing below
-  // this point that costs money runs. `preCapEstimate` (computed just above,
-  // over the FULL `needsScoreJobs`, not a threshold-capped subset) is
-  // exactly "what would scoring everything new cost", which is what
-  // `describeCostEstimate` is designed to render honestly — see that
-  // function's doc comment on why a bootstrap estimate is shown as a
-  // ceiling. `results` still comes from the database (decision: "results
-  // come from the database, not a run's in-memory state"), scoped to
-  // whatever was ALREADY scored before this call — there is nothing newly
-  // scored to add to it.
-  if (estimateOnly) {
-    log(
-      `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
-        `this run.`,
-    );
-    const results = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
-    return {
-      resumeId,
-      searchId,
-      skipped: alreadyScoredIds.size,
-      newlyScored: 0,
-      failed: 0,
-      results,
-      sourceOutcomes,
-      candidatesNeedingScore: needsScoreIds.length,
-      cappedCount: 0,
-      costEstimate: preCapEstimate,
-    };
-  }
-
   // Above `scoreThreshold`, cap SCORING (not ingestion) here unless the
   // caller explicitly opted in — see `DEFAULT_SCORE_THRESHOLD`'s doc
   // comment for precisely what this does and does not truncate, and why a
-  // plain rerun drains a bound cap for free. The human-facing summary of
-  // what this decided is logged AFTER scoring completes, below — not here
-  // — because "how many actually got scored" isn't known until
-  // `Promise.allSettled` resolves (ticket 16c824a review F2).
+  // plain rerun drains a bound cap for free. Computed BEFORE the
+  // `estimateOnly` check below (ticket 59fdc52 review round 2, "estimate is
+  // wrong by ~30x"): a real run never spends more than this cap allows in
+  // one call, so an estimate that priced `preCapEstimate` — the FULL
+  // uncapped pool — was answering a different question than "what will
+  // POST /searches actually bill me". `costEstimate` from here on is
+  // cap-aware: exactly what would be attempted (and billed) this run.
   const overThreshold = needsScoreIds.length > scoreThreshold && !allowAboveThreshold;
   const toScoreIds = overThreshold ? needsScoreIds.slice(0, scoreThreshold) : needsScoreIds;
   const cappedCount = needsScoreIds.length - toScoreIds.length;
@@ -1240,6 +1252,37 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     resumeText,
     usageStats,
   );
+
+  // Ticket 59fdc52: `estimateOnly` stops HERE, before any `scoreJob` call —
+  // fetching and ingestion above already happened (free), but nothing below
+  // this point that costs money runs. `costEstimate`/`cappedCount` are the
+  // SAME cap-aware numbers a real run would compute (see above) — this is
+  // "what would POST /searches actually spend and defer if run right now",
+  // not the full pool's price. `results` still comes from the database
+  // (decision: "results come from the database, not a run's in-memory
+  // state"), scoped to whatever was ALREADY scored before this call — there
+  // is nothing newly scored to add to it.
+  if (estimateOnly) {
+    log(
+      `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
+        `this run.`,
+    );
+    const results = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    await markSearchComplete(db, searchId);
+    return {
+      resumeId,
+      searchId,
+      skipped: alreadyScoredIds.size,
+      newlyScored: 0,
+      failed: 0,
+      results,
+      sourceOutcomes,
+      candidatesNeedingScore: needsScoreIds.length,
+      cappedCount,
+      scoreThreshold,
+      costEstimate,
+    };
+  }
 
   log(`Scoring ${toScoreIds.length} of ${linkedJobIds.length} candidates with ${MODEL}...\n`);
 
@@ -1378,6 +1421,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     log(`  ${String(j.matchScore).padStart(3)}%  ${j.title}  —  ${j.company}`);
   }
 
+  await markSearchComplete(db, searchId);
+
   return {
     resumeId,
     searchId,
@@ -1388,6 +1433,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     sourceOutcomes,
     candidatesNeedingScore: needsScoreIds.length,
     cappedCount,
+    scoreThreshold,
     costEstimate,
   };
 }

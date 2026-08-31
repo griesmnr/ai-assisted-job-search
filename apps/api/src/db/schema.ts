@@ -80,12 +80,31 @@ export const jobMatches = pgTable(
   (table) => [unique().on(table.resumeId, table.jobId)],
 );
 
+// Ticket 59fdc52 review round 2, finding "the restart fallback can't report
+// complete for a run that died after scoring 3 of 200": without a
+// completion marker, GET /searches/:id's DB-fallback branch (used once the
+// in-memory tracker has lost this run — e.g. after an API process restart)
+// had no way to tell "this run finished" apart from "this run's process
+// died mid-scoring" — a `searches` row existing looked identical either
+// way, so the fallback always claimed `status: "complete"` regardless.
+export const searchStatusEnum = pgEnum("search_status", ["running", "complete", "failed"]);
+
 export const searches = pgTable("searches", {
   id: text("id").primaryKey(),
   resumeId: text("resume_id")
     .notNull()
     .references(() => resumes.id),
   searchedAt: timestamp("searched_at").notNull(),
+  // Defaults to "running" so the row looks in-flight from the moment
+  // runDemoMatch inserts it (before any scoring happens), not after some
+  // later step remembers to say so. demo-match.ts's `runDemoMatch` sets
+  // this to "complete" right before it returns (both the `estimateOnly`
+  // early return and the normal end) — if the process dies before that
+  // line runs, the row is left at "running" forever, which is the honest
+  // signal ("never confirmed complete"), not a guess. The REST API's
+  // POST /searches route sets it to "failed" in its own catch handler when
+  // the whole run rejects.
+  status: searchStatusEnum("status").notNull().default("running"),
 });
 
 export const searchResults = pgTable(

@@ -18,15 +18,31 @@ const client = new Client({
 });
 const db = drizzle(client);
 
-const DATA_SOURCE = "resumes-route-test-source";
+// A real, canonical dataSource id (see db/seed.ts's SOURCE_DESCRIPTORS) —
+// NOT a made-up test-only id. Ticket 59fdc52 review round 2 added
+// server-side validation that ?source= on GET /resumes/:id/results must be
+// one of the six real ids (a 400 on anything else, so a typo doesn't
+// silently read as "zero results"), so this test's fixture data has to use
+// a real one too, exactly like searches.test.ts's DATA_SOURCE already does.
+const DATA_SOURCE = "usajobs" as const;
+// A second real id, used only to prove "queried a DIFFERENT real source
+// with no matching jobs" is a valid, non-400 "empty" result — as opposed
+// to an unrecognized source id, which is the case the 400 check exists for.
+const OTHER_REAL_DATA_SOURCE = "greenhouse" as const;
 const resumeIds: string[] = [];
 const jobIds: string[] = [];
 
 beforeAll(async () => {
   await client.connect();
+  // Real, permanent setup data (identical to what runDemoMatch's own
+  // seedSourceDescriptors produces) — deliberately NOT deleted in afterAll,
+  // matching demo-match.test.ts's own convention for the same id.
   await db
     .insert(sourceDescriptors)
-    .values({ id: DATA_SOURCE, displayName: "Resumes Route Test Source" })
+    .values([
+      { id: DATA_SOURCE, displayName: "USAJOBS" },
+      { id: OTHER_REAL_DATA_SOURCE, displayName: "Greenhouse" },
+    ])
     .onConflictDoNothing({ target: sourceDescriptors.id });
 });
 
@@ -93,6 +109,26 @@ describe("POST /resumes", () => {
     const app = buildTestApp();
     const response = await app.inject({ method: "POST", url: "/resumes", payload: {} });
     expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects a non-string resumeText (400) rather than silently coercing it to a string", async () => {
+    // Ticket 59fdc52 review round 2: Fastify's AJV coerces types by
+    // default, so `{"resumeText": 123}` used to pass the `{ type: "string"
+    // }` schema as the STRING "123" — a resume literally containing the
+    // three characters "123" got created and hashed, no 400 anywhere.
+    // `ajv: { customOptions: { coerceTypes: false } }` (index.ts) is the
+    // fix; this proves it end to end rather than just at the unit level.
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: 123 },
+    });
+    expect(response.statusCode).toBe(400);
+
+    // And, just as importantly: no resume containing "123" got created.
+    const rows = await db.select().from(resumes).where(eq(resumes.resumeText, "123"));
+    expect(rows).toHaveLength(0);
   });
 
   it("rejects a resumeText over the length ceiling with 400, not 500", async () => {
@@ -204,11 +240,29 @@ describe("GET /resumes/:id/results", () => {
     });
     expect((matching.json() as { results: unknown[] }).results).toHaveLength(1);
 
+    // A real, known source id with no matching rows for this resume is a
+    // valid, honest "empty" result (200) — distinct from an unrecognized
+    // source id, which the next test covers.
     const nonMatching = await app.inject({
       method: "GET",
-      url: `/resumes/${resumeId}/results?source=some-other-source`,
+      url: `/resumes/${resumeId}/results?source=${OTHER_REAL_DATA_SOURCE}`,
     });
+    expect(nonMatching.statusCode).toBe(200);
     expect((nonMatching.json() as { results: unknown[] }).results).toHaveLength(0);
+  });
+
+  it("400s on an unrecognized source id rather than silently returning empty", async () => {
+    const app = buildTestApp();
+    const resumeText = `Unknown-source resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+    resumeIds.push(resumeId);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/resumes/${resumeId}/results?source=not-a-real-source`,
+    });
+    expect(response.statusCode).toBe(400);
   });
 
   it("404s for an unknown resume id", async () => {

@@ -13,7 +13,7 @@
  * used to seed the `source_descriptors` table) rather than a third
  * hand-maintained copy.
  */
-import type { Job } from "@app/shared";
+import type { Job, SkippedSource, SourceHealth } from "@app/shared";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 import { createAshbySourceFromEnv } from "./ashby.js";
 import { createGreenhouseSourceFromEnv } from "./greenhouse.js";
@@ -35,17 +35,6 @@ const BUILDERS: Partial<Record<Job["dataSource"], () => JobSource>> = {
   lever: createLeverSourceFromEnv,
   ashby: createAshbySourceFromEnv,
   smartrecruiters: createSmartRecruitersSourceFromEnv,
-};
-
-export type SourceHealth = {
-  id: Job["dataSource"];
-  displayName: string;
-  /** True when this source has an adapter AND its `createXSourceFromEnv()`
-   * succeeded (required env vars are set). False either way otherwise —
-   * `error` says which. */
-  configured: boolean;
-  /** Why `configured` is false. `undefined` when `configured` is true. */
-  error: string | undefined;
 };
 
 /**
@@ -75,8 +64,6 @@ export function checkSourceHealth(): SourceHealth[] {
     }
   });
 }
-
-export type SkippedSource = { id: string; reason: string };
 
 /**
  * Builds real `JobSource` instances for exactly the requested ids, isolating

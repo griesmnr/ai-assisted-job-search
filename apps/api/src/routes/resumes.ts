@@ -16,11 +16,17 @@
  * joined to `jobs`; it has no path to a `ScoreJobFn` or a `JobSource` at
  * all, so there is no way for a filter change to accidentally spend money.
  */
+import type {
+  CreateResumeResponse,
+  GetResumeResponse,
+  GetResumeResultsResponse,
+} from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { getOrCreateResumeId } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes } from "../db/schema.js";
+import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 
 /**
  * Generous ceiling for a pasted resume — well above any real resume, well
@@ -68,7 +74,8 @@ export function registerResumeRoutes(
       // genuinely new resume gets a new id whose scores start empty (no
       // job_matches rows exist for it yet — see GET /resumes/:id/results).
       const id = await getOrCreateResumeId(db, resumeText);
-      return reply.code(200).send({ id });
+      const response: CreateResumeResponse = { id };
+      return reply.code(200).send(response);
     },
   );
 
@@ -82,7 +89,8 @@ export function registerResumeRoutes(
     if (rows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${request.params.id}".` });
     }
-    return reply.send(rows[0]);
+    const response: GetResumeResponse = rows[0]!;
+    return reply.send(response);
   });
 
   app.get<{
@@ -113,6 +121,20 @@ export function registerResumeRoutes(
       .limit(1);
     if (resumeRows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
+    }
+
+    // Ticket 59fdc52 review round 2: an unknown ?source= used to silently
+    // return an empty result set — indistinguishable from "this resume
+    // genuinely has zero matches from a real source", the exact
+    // make-broken-look-different-from-empty failure the DLQ/source-health
+    // design (git-bug 59fdc52's Notes) exists to avoid elsewhere. Validated
+    // against the same canonical id list `GET /sources` and the ingestion
+    // FK both use, not redeclared.
+    const knownSourceIds = new Set(SOURCE_DESCRIPTORS.map((d) => d.id as string));
+    if (source !== undefined && !knownSourceIds.has(source)) {
+      return reply.code(400).send({
+        error: `Unknown source "${source}" (known ids: ${[...knownSourceIds].join(", ")}).`,
+      });
     }
 
     let minScoreNum: number | undefined;
@@ -166,10 +188,11 @@ export function registerResumeRoutes(
       hiddenBelowFloor = hiddenRows[0]?.count ?? 0;
     }
 
-    return reply.send({
+    const response: GetResumeResultsResponse = {
       resumeId,
       results: rows.map((r) => ({ ...r, strengths: r.strengths ?? [], gaps: r.gaps ?? [] })),
       hiddenBelowFloor,
-    });
+    };
+    return reply.send(response);
   });
 }
