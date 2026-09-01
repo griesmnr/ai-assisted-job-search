@@ -546,6 +546,72 @@ describe("runDemoMatch: filter hook", () => {
   });
 });
 
+describe("runDemoMatch: the searches row survives a rejection during fetch/filter (ticket 59fdc52 review round 3, N2)", () => {
+  const FAKE_JOBS: NormalizedJob[] = [job("demo-match-n2-1", "Widget Engineer")];
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} n2-filter-throws ${randomUUID()}`;
+
+  beforeAll(() => {
+    allResumeTexts.push(RESUME_TEXT);
+    // Deliberately NOT pushing FAKE_JOBS' externalIds to allExternalIds:
+    // a throwing filter (below) means `runDemoMatch` never reaches
+    // ingestion, so no `jobs` row is ever created for this test — nothing
+    // there needs cleanup registration.
+  });
+
+  it("creates the searches row BEFORE fetch/filter run, so a throw there still leaves it findable", async () => {
+    // Previously, the `searches` row was inserted AFTER
+    // `CompositeSource#search` and `filter` both ran — either of which can
+    // reject (a caller-supplied `filter`, in particular, is arbitrary
+    // code). If it did, `runDemoMatch`'s promise rejected before any
+    // `searches` row existed at all. The REST API's `POST /searches` catch
+    // handler (`markSearchFailed`, routes/searches.ts) does
+    // `UPDATE searches SET status = 'failed' WHERE id = searchId` — against
+    // a row that was never created, that UPDATE silently matches zero rows,
+    // and the id 404s on every later `GET /searches/:id`, even immediately,
+    // even before any restart. This test proves the row exists regardless
+    // of where in fetch/filter the rejection happens.
+    const source = new FakeSource(FAKE_JOBS);
+    const scorer = makeCountingScorer();
+    const throwingFilter = (): NormalizedJob[] => {
+      throw new Error("simulated filter bug (N2 regression test)");
+    };
+
+    await expect(
+      runDemoMatch({
+        db,
+        sources: [source],
+        resumeText: RESUME_TEXT,
+        scoreJob: scorer.scoreJob,
+        outputPath,
+        usageStatsPath,
+        log: () => {},
+        filter: throwingFilter,
+      }),
+    ).rejects.toThrow("simulated filter bug (N2 regression test)");
+
+    // The scorer was never reached — the throw happened well before
+    // scoring, which is exactly why the OLD searches-row-insert-after-
+    // filter ordering left nothing behind for a caller to mark failed.
+    expect(scorer.calls()).toBe(0);
+
+    const resumeRows = await db
+      .select({ id: resumes.id })
+      .from(resumes)
+      .where(eq(resumes.resumeText, RESUME_TEXT));
+    expect(resumeRows).toHaveLength(1);
+
+    const searchRows = await db
+      .select({ id: searches.id, status: searches.status })
+      .from(searches)
+      .where(eq(searches.resumeId, resumeRows[0]!.id));
+    expect(searchRows).toHaveLength(1);
+    // Never reached markSearchComplete (demo-match.ts) — the row is exactly
+    // where a caller's own failure handler needs to find it: existing, and
+    // still at its 'running' default, ready to be marked 'failed'.
+    expect(searchRows[0]!.status).toBe("running");
+  });
+});
+
 /** A FakeSource that also returns `tokenOutcomes`, for exercising the
  * board-coverage reporting added by ticket b723fb9. Kept separate from
  * the plain `FakeSource` above (which every pre-existing test relies on
