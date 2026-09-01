@@ -82,6 +82,26 @@ describe("compileFilter — explicit criteria", () => {
     expect(filter(jobs).map((j) => j.externalId)).toEqual(["2"]);
   });
 
+  it("matches a title phrase that starts or ends on a non-word character (ticket 59fdc52 review round 3, N5)", () => {
+    // Regression: an unconditional \b on BOTH ends of "c++" or ".net"
+    // silently matched nothing — no error, just an always-empty result —
+    // because \b has no meaning between two non-word characters (the "+"
+    // at the end of "c++" and whatever follows it, e.g. a space, are both
+    // non-word). makePhraseMatcher only anchors an end that IS itself a
+    // word character.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Senior C++ Engineer", company: "Cpp Co" }),
+      job({ externalId: "2", title: "Senior .NET Developer", company: "Dotnet Co" }),
+      job({ externalId: "3", title: "Senior Java Engineer", company: "Java Co" }),
+    ];
+    const filter = compileFilter({ titleInclude: ["c++", ".net"] });
+    expect(
+      filter(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
   it("nearLocations passes regardless of work arrangement; remoteOk requires confirmed remote", () => {
     const jobs: NormalizedJob[] = [
       job({

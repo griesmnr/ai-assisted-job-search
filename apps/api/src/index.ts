@@ -67,7 +67,21 @@ export function buildApp(deps: BuildAppDeps) {
     // no route here relies on request-body coercion (query-string values
     // like `minScore` are read as strings and converted explicitly in the
     // handler, not via AJV).
-    ajv: { customOptions: { coerceTypes: false } },
+    //
+    // Ticket 59fdc52 review round 3, F1 (blocking, live-verified): Fastify's
+    // AJV defaults ALSO include `removeAdditional: true`, which this object
+    // only overrode `coerceTypes` on — so `additionalProperties: false` on
+    // `searchCriteriaSchema` (routes/searches.ts) never actually rejected an
+    // unrecognized field; AJV silently DELETED it first, "validating"
+    // whatever was left. `POST /searches {"criteria":{"titleInclud":[...]}}`
+    // (one typo'd key) 202'd, AJV stripped the bad key, `criteria` became
+    // `{}` — this codebase's own sentinel for "opt out of filtering
+    // entirely" (sources/criteria.ts) — and the run scored ~200 postings in
+    // board order at ~$7.68 for ~5 relevant results: exactly the behavior
+    // review round 2 rejected this branch for, reachable by a single typo
+    // with no error anywhere. `removeAdditional: false` makes an unknown
+    // field a real 400 instead of a silent, wrong-shaped success.
+    ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
   });
 
   registerSourceRoutes(app);

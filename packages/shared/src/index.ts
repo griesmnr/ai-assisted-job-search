@@ -233,13 +233,38 @@ export type StartSearchResponse = {
 };
 
 /**
- * `GET /searches/:id`. "incomplete" is distinct from "failed": it means
- * this API process lost live progress tracking for the run (e.g. a
- * restart) and the `searches` row's own completion marker says it never
- * reached completion either — so it may still be running in another
- * process, or it may have died. Never reported as "complete" unless the
- * row's marker says so (ticket 59fdc52 review round 2, F "restart fallback
- * can't report complete for a run that died after scoring 3 of 200").
+ * `GET /searches/:id`. Every member has its OWN `status` literal (ticket
+ * 59fdc52 review round 3, F3 — blocking): an earlier version reused
+ * `status: "complete"` for both the live, in-memory-tracked result AND the
+ * restart-fallback case (a `searches` row found in the database, but this
+ * API process's own in-memory tracker never heard of the run), which meant
+ * the two members were NOT distinguishable by `status` alone — TypeScript
+ * can only narrow a union by a discriminant that is unique per member, so
+ * `if (r.status === "complete") { r.newlyScored }` failed to compile
+ * (`r` narrowed to the UNION of both "complete" members, and only one of
+ * them has `newlyScored`). A frontend hitting that would have had to
+ * reverse-engineer the shape (e.g. `!("note" in r)`) instead of narrowing
+ * on `status` the normal way — exactly what AC3 (response types come from
+ * `@app/shared`, not redeclared) exists to prevent.
+ *
+ * - `"pending"` / `"failed"` / `"complete"` — live, in-memory-tracked
+ *   status for a run this API process started and is still tracking (or
+ *   just finished tracking).
+ * - `"complete-details-unavailable"` — the `searches` row's own completion
+ *   marker (schema.ts's `searchStatusEnum`) says `'complete'`, but this API
+ *   process's in-memory tracker has lost the run (e.g. a restart) so the
+ *   rich per-run details (`newlyScored`, `costEstimate`, ...) aren't
+ *   available — only that it finished. Results are still fully queryable
+ *   via `GET /resumes/:id/results` regardless (decision: results come from
+ *   the database, never from in-memory state).
+ * - `"incomplete"` — the row's own marker was never set to `'complete'`
+ *   (still at `'running'`, or explicitly `'failed'` with no live error
+ *   detail available). Distinct from `"failed"`: it means "this API
+ *   process cannot confirm what happened" — it may still be running
+ *   elsewhere, or it may have died mid-scoring — never presented as
+ *   `"complete"` just because a row exists (ticket 59fdc52 review round 2,
+ *   "restart fallback can't report complete for a run that died after
+ *   scoring 3 of 200").
  */
 export type SearchStatusResponse =
   | { searchId: string; status: "pending"; resumeId: string }
@@ -257,7 +282,13 @@ export type SearchStatusResponse =
     }
   | {
       searchId: string;
-      status: "complete" | "incomplete";
+      status: "complete-details-unavailable";
+      resumeId: string;
+      note: string;
+    }
+  | {
+      searchId: string;
+      status: "incomplete";
       resumeId: string;
       note: string;
     };

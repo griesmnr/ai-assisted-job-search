@@ -288,6 +288,38 @@ export function registerSearchRoutes(
         });
       }
 
+      // Ticket 59fdc52 review round 3, F2 (blocking, live-verified):
+      // `getScoreJob()` is called HERE — before the in-flight guard and the
+      // `searchRuns` tracker are touched at all — not inline inside the
+      // `runDemoMatch({...})` argument object below. Production's factory
+      // is `() => makeClaudeScorer(new Anthropic())` (index.ts), and `new
+      // Anthropic()` throws SYNCHRONOUSLY when `ANTHROPIC_API_KEY` is
+      // unset — a real, supported state (every read-only route and even
+      // `POST /searches/estimate` must keep working without billing
+      // credentials configured; see `BuildAppDeps.getScoreJob`'s doc
+      // comment). Calling it inline, past the point where `searchRuns.set`
+      // and `inFlightByResume.set` already ran, meant that throw happened
+      // AFTER this resume was marked in-flight and BEFORE the
+      // `.then/.catch/.finally` chain that would ever clear either — the
+      // request handler itself would throw (Fastify 500s it), but nothing
+      // ever ran to release the guard or resolve the tracker entry. Every
+      // subsequent `POST /searches` for that resume then 409'd forever
+      // (until a process restart), and the `searchRuns` entry sat at
+      // `pending` forever too — `pruneSearchRuns` never evicts a pending
+      // entry (correctly, since a REAL in-flight search must never be
+      // evicted mid-run), which made this an unevictable leak per wedged
+      // resume in the "bounded" tracker. Resolving it here, before either
+      // map is touched, means a thrown `getScoreJob()` never leaves
+      // tracking state behind to clean up.
+      let scoreJob: ScoreJobFn;
+      try {
+        scoreJob = getScoreJob();
+      } catch (err) {
+        return reply.code(500).send({
+          error: `Cannot start a search: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+
       const searchId = randomUUID();
       searchRuns.set(searchId, { status: "pending", resumeId });
       pruneSearchRuns();
@@ -302,7 +334,7 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
-        scoreJob: getScoreJob(),
+        scoreJob,
         filter: compileFilter(criteria),
         searchId,
         outputPath: tempOutputPath(searchId),
@@ -369,20 +401,28 @@ export function registerSearchRoutes(
       // set — either this run is genuinely still in progress (in another
       // process, or before this process restarted), or it died before
       // reaching the line that sets it. Both are honestly "incomplete",
-      // never "complete".
-      const status = row.status === "complete" ? "complete" : "incomplete";
-      const response: SearchStatusResponse = {
-        searchId: row.id,
-        resumeId: row.resumeId,
-        status,
-        note:
-          status === "complete"
-            ? "This API process restarted since this search ran, so live progress info was " +
-              "lost. Its results are in the database — see GET /resumes/:id/results."
-            : "This search's completion marker was never set — it may still be running " +
-              "elsewhere, or it may have died before finishing. Results scored so far, if " +
-              "any, are in the database — see GET /resumes/:id/results.",
-      };
+      // never "complete" — and, per F3 above, never the SAME `status`
+      // literal as the live "complete" case either, since this branch can
+      // never supply `newlyScored`/`costEstimate`/etc.
+      const response: SearchStatusResponse =
+        row.status === "complete"
+          ? {
+              searchId: row.id,
+              resumeId: row.resumeId,
+              status: "complete-details-unavailable",
+              note:
+                "This API process restarted since this search ran, so live progress info " +
+                "was lost. Its results are in the database — see GET /resumes/:id/results.",
+            }
+          : {
+              searchId: row.id,
+              resumeId: row.resumeId,
+              status: "incomplete",
+              note:
+                "This search's completion marker was never set — it may still be running " +
+                "elsewhere, or it may have died before finishing. Results scored so far, if " +
+                "any, are in the database — see GET /resumes/:id/results.",
+            };
       return reply.send(response);
     }
 

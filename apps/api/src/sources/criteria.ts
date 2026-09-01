@@ -44,46 +44,6 @@ import type { NormalizedJob } from "./types.js";
 
 export type { SearchCriteria };
 
-/**
- * Documentation/introspection only — NOT fed through the generic compiler
- * below. Describes, in the new four-field vocabulary, what
- * `filterSoftwareEngineeringJobs` conceptually does, for API responses that
- * want to echo back "what criteria were actually applied" when a caller
- * supplied none. The compiled behavior for "no criteria supplied" always
- * comes from delegating directly to `filterSoftwareEngineeringJobs` (see
- * `compileFilter`), never from compiling this object — so an edit here
- * can never silently change actual filtering behavior.
- */
-export const DEFAULT_SEARCH_CRITERIA_DESCRIPTION: Required<SearchCriteria> = {
-  titleInclude: [
-    "software engineer",
-    "full-stack",
-    "fullstack",
-    "back-end",
-    "backend",
-    "front-end",
-    "frontend",
-    "web engineer",
-    "senior engineer",
-    "staff engineer",
-  ],
-  titleExclude: [
-    "manager",
-    "director",
-    "principal",
-    "sales",
-    "marketing",
-    "recruit",
-    "intern",
-    "designer",
-    "field service",
-    "machine learning",
-    "data scientist",
-  ],
-  nearLocations: ["seattle", "bellevue", "washington"],
-  remoteOk: true,
-};
-
 /** Escapes regex metacharacters in a plain, caller-supplied string so it
  * can be safely embedded in a `\b...\b` pattern — this is what keeps
  * "substring/word-boundary matching" from becoming "the caller writes
@@ -100,9 +60,27 @@ function escapeForRegex(phrase: string): string {
  * "us" substring match would fire on "Houston"/"Austin"/"Columbus" without
  * `\b`) — multi-word phrases (e.g. "software engineer") get `\b` at each
  * end, which is the correct generalization.
+ *
+ * `\b` only fires at a transition between a `\w` character and a non-`\w`
+ * character (or a string edge) — it has no meaning between two non-`\w`
+ * characters. A phrase that STARTS or ENDS on a non-word character (ticket
+ * 59fdc52 review round 3, N5: "c++", ".net") would, with an unconditional
+ * `\b` on both ends, silently match NOTHING: "Senior C++ Engineer" has no
+ * boundary between the second "+" and the space after it (both non-`\w`),
+ * so `/\bc\+\+\b/i` fails on real, correctly-spelled input — no error, just
+ * a criteria phrase that quietly excludes everything. Anchoring each end
+ * with `\b` only when THAT end of the phrase is itself a word character
+ * fixes it: "c++" anchors only its leading "c" (`\bc\+\+`, matching "C++"
+ * as a plain trailing substring, no boundary required after "+"); ".net"
+ * anchors only its trailing "t" (`\.net\b`). A phrase that's word-
+ * characters on both ends (the common case — "software engineer",
+ * "seattle") is unaffected: both anchors still apply, exactly as before.
  */
 function makePhraseMatcher(phrase: string): (haystack: string) => boolean {
-  const pattern = new RegExp(`\\b${escapeForRegex(phrase)}\\b`, "i");
+  const escaped = escapeForRegex(phrase);
+  const leftBoundary = /^\w/.test(phrase) ? "\\b" : "";
+  const rightBoundary = /\w$/.test(phrase) ? "\\b" : "";
+  const pattern = new RegExp(`${leftBoundary}${escaped}${rightBoundary}`, "i");
   return (haystack: string) => pattern.test(haystack);
 }
 

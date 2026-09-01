@@ -445,6 +445,89 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     const { searchId: thirdId } = third.json() as { searchId: string };
     await pollUntilDone(app, thirdId);
   });
+
+  it("400s a typo'd criteria field instead of silently stripping it (ticket 59fdc52 review round 3, F1)", async () => {
+    // Live-verified defect: Fastify's AJV defaults include
+    // `removeAdditional: true`; overriding only `coerceTypes` (round 2)
+    // left it in effect, so `additionalProperties: false` on
+    // searchCriteriaSchema silently DELETED an unrecognized key instead of
+    // rejecting the request — "titleInclud" (missing the trailing "e")
+    // silently became `criteria: {}`, this codebase's own "opt out of
+    // filtering entirely" sentinel. `removeAdditional: false` (index.ts) is
+    // the fix; this proves the typo now fails loudly instead of quietly
+    // defeating the whole quality-filter default.
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [matchingJob(`typo-${randomUUID()}`)]),
+    });
+    const resumeId = await createResume(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        // Deliberate typo: "titleInclud", not "titleInclude".
+        criteria: { titleInclud: ["software engineer"] },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+
+    // And the same typo on the free (never-spends-money) estimate route.
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: { titleInclud: ["x"] } },
+    });
+    expect(estimateResponse.statusCode).toBe(400);
+  });
+
+  it("a synchronous throw from getScoreJob() never wedges the resume's in-flight guard (ticket 59fdc52 review round 3, F2)", async () => {
+    // Live-verified defect: getScoreJob() used to be called INLINE while
+    // building runDemoMatch's argument object, AFTER inFlightByResume.set
+    // and searchRuns.set had already run. Production's factory
+    // (`() => makeClaudeScorer(new Anthropic())`) throws synchronously
+    // without ANTHROPIC_API_KEY — a real, supported "no billing configured
+    // yet" state — which meant that throw left the guard permanently set
+    // (every later POST /searches for that resume 409'd forever) and the
+    // searchRuns entry stuck at "pending" forever (pruneSearchRuns
+    // correctly never evicts a pending entry, so this was an unevictable
+    // leak). getScoreJob() is now called BEFORE either map is touched, in
+    // its own try/catch.
+    let calls = 0;
+    const app = buildApp({
+      db,
+      getScoreJob: () => {
+        calls++;
+        if (calls === 1) throw new Error("ANTHROPIC_API_KEY missing (simulated)");
+        return makeFakeScorer();
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [matchingJob(`f2-${randomUUID()}`)]),
+    });
+    const resumeId = await createResume(app);
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(first.statusCode).toBe(500);
+
+    // The critical assertion: the resume must NOT be wedged as "in-flight"
+    // by the failed attempt — a second POST /searches must be able to
+    // proceed normally (202), not 409 forever.
+    const second = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(second.statusCode).toBe(202);
+    const { searchId } = second.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+    expect(body.status).toBe("complete");
+  });
 });
 
 describe("POST /searches — default vs explicit criteria selection (ticket 59fdc52 review round 2)", () => {
@@ -575,7 +658,11 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
     expect(body.status).not.toBe("complete");
   });
 
-  it("a row with status='complete' is reported complete, with a note", async () => {
+  it("a row with status='complete' is reported complete-details-unavailable, with a note — never bare 'complete'", async () => {
+    // Ticket 59fdc52 review round 3, F3: this case must NOT share the
+    // `status: "complete"` literal the live, in-memory-tracked case uses —
+    // see SearchStatusResponse's doc comment (packages/shared) for why a
+    // shared literal broke TypeScript narrowing for API consumers.
     const app = buildApp({
       db,
       getScoreJob: () => {
@@ -586,7 +673,8 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
 
     const response = await app.inject({ method: "GET", url: `/searches/${searchId}` });
     const body = response.json() as { status: string; note?: string };
-    expect(body.status).toBe("complete");
+    expect(body.status).toBe("complete-details-unavailable");
+    expect(body.status).not.toBe("complete");
     expect(body.note).toBeDefined();
   });
 

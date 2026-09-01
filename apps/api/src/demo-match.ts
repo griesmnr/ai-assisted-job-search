@@ -1031,6 +1031,32 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
 
   const resumeId = await getOrCreateResumeId(db, resumeText);
 
+  // Ticket 59fdc52 review round 3, N2: the `searches` row (and its
+  // `search_sources` links) used to be inserted AFTER fetch+filter below —
+  // both of which run arbitrary code (`CompositeSource#search`, and a
+  // caller-supplied `filter`) that can reject. If either did, this
+  // function's promise rejected before a `searches` row ever existed, so
+  // the REST API's `POST /searches` catch handler's `markSearchFailed`
+  // (routes/searches.ts) — an `UPDATE searches SET status = 'failed' WHERE
+  // id = searchId` — silently matched ZERO rows, and `searchId` (already
+  // handed to the client in the 202 response) would 404 forever on a later
+  // `GET /searches/:id`, even after a restart, rather than surfacing as
+  // "failed". Both `searchId` and `sources` are already known at this
+  // point — nothing below needs fetch or filter to have run first — so the
+  // row (and its per-source links) are created here instead, before either
+  // of those can throw.
+  const searchId = providedSearchId ?? randomUUID();
+  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+  // One row per CONFIGURED source, not per source that actually returned
+  // jobs this run — this records what the search covered; success/failure
+  // per source lives in `sourceOutcomes`, not here. `search_sources` has
+  // always allowed multiple rows per search (no uniqueness constraint
+  // beyond its own id — see db/schema.ts); this is the first ticket that
+  // actually inserts more than one.
+  await db
+    .insert(searchSources)
+    .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
+
   log(
     `Fetching real postings from ${sources.length} source(s): ` +
       `${sources.map((s) => s.dataSource).join(", ")}...`,
@@ -1089,18 +1115,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     }
   }
   log("");
-
-  const searchId = providedSearchId ?? randomUUID();
-  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
-  // One row per CONFIGURED source, not per source that actually returned
-  // jobs this run — this records what the search covered; success/failure
-  // per source lives in `sourceOutcomes`, not here. `search_sources` has
-  // always allowed multiple rows per search (no uniqueness constraint
-  // beyond its own id — see db/schema.ts); this is the first ticket that
-  // actually inserts more than one.
-  await db
-    .insert(searchSources)
-    .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
 
   // Group the candidates by each job's OWN `dataSource` — there is no
   // longer one single top-level "the" source to ingest under.
