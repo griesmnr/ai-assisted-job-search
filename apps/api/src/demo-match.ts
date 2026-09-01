@@ -503,6 +503,30 @@ export type RunDemoMatchOptions = {
   usageStatsPath?: string;
   outputPath?: string;
   log?: (message: string) => void;
+  /**
+   * Overrides the randomly generated `searches.id` this run creates.
+   * Ticket 59fdc52: the REST API's async "run a search" route needs to hand
+   * the client a pollable id *before* this (multi-minute, billed) call
+   * resolves — it generates the id, starts tracking it, kicks this off
+   * without awaiting, and needs that same id to end up on the `searches`
+   * row so a later `GET /searches/:id` can find it in the database even if
+   * the API process restarts before the run finishes (see that route's doc
+   * comment). Defaults to a fresh `randomUUID()` when omitted, exactly as
+   * before this ticket.
+   */
+  searchId?: string;
+  /**
+   * Ticket 59fdc52: fetches and ingests real postings, computes the
+   * pre-scoring cost estimate, and returns — WITHOUT calling `scoreJob` for
+   * any of them. This is what backs the REST API's `POST /searches/estimate`
+   * (decision: "a search must be able to report its cost before spending").
+   * Fetching and ingestion are free (no Claude calls), so an estimate run
+   * still grows the durable job corpus exactly like a real run does; a
+   * follow-up real run against the same resume/sources re-fetches (cheap,
+   * idempotent — `ingestJobsForSearch` upserts) and scores only what
+   * `estimateOnly` deliberately left unscored. Defaults to `false`.
+   */
+  estimateOnly?: boolean;
 };
 
 /**
@@ -559,8 +583,24 @@ export type RunDemoMatchResult = {
    * complete without surfacing this number.
    */
   cappedCount: number;
-  /** The pre-scoring cost estimate computed for whatever was actually
-   * attempted this run (i.e. after any cap) — see `estimateScoringCost`. */
+  /**
+   * The `scoreThreshold` actually in effect this run (the caller's override
+   * or `DEFAULT_SCORE_THRESHOLD`). Ticket 59fdc52 review round 2: the REST
+   * API's cost-estimate response was reporting the cost of scoring the
+   * WHOLE pool while a real run caps spend at this number — carrying the
+   * threshold itself is what lets a caller understand why `costEstimate`
+   * and `candidatesNeedingScore` disagree.
+   */
+  scoreThreshold: number;
+  /**
+   * The pre-scoring cost estimate for whatever was actually ATTEMPTED this
+   * run — i.e. after `scoreThreshold` capping, exactly like a real run's
+   * spend (see `estimateScoringCost`). `estimateOnly` computes this the
+   * same cap-aware way rather than pricing the full uncapped pool: pricing
+   * the uncapped pool overstated cost by ~30x against what a real run
+   * (which caps at `scoreThreshold`) would actually bill (ticket 59fdc52
+   * review round 2).
+   */
   costEstimate: CostEstimate;
 };
 
@@ -858,7 +898,17 @@ function hashResumeText(resumeText: string): string {
  * winning row afterward — no duplicate `resumes` rows, and no
  * `ORDER BY`-dependent ambiguity about which one "the" row is.
  */
-async function getOrCreateResumeId(
+/**
+ * Exported (ticket 59fdc52) so the REST API's `POST /resumes` can find-or-
+ * create a resume row directly — resumes are content-addressed by
+ * `resumeHash` (ticket 620ca30), and this is the one place that hashing +
+ * upsert logic lives. Reusing it here, rather than reimplementing the same
+ * hash-then-upsert dance in a route handler, is exactly the "reuse
+ * runDemoMatch's persistence, don't reimplement it" instruction: a resume
+ * paste alone doesn't need a full `runDemoMatch` run (which also fetches
+ * and would ingest jobs) — it only needs this one step.
+ */
+export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeText: string,
@@ -885,6 +935,73 @@ async function getOrCreateResumeId(
   return rows[0]!.id;
 }
 
+/**
+ * Marks `searches.status = 'complete'` for `searchId`. Called right before
+ * EVERY successful return point in `runDemoMatch` (the empty-pool early
+ * return, the `estimateOnly` early return, and the normal end) — ticket
+ * 59fdc52 review round 2: without this, `GET /searches/:id`'s DB-fallback
+ * branch (used once an API process's in-memory tracker has lost this run —
+ * e.g. after a restart) could not tell "this run finished" apart from
+ * "this run's process died after scoring 3 of 200"; both left an identical
+ * `searches` row behind. If `runDemoMatch` itself throws before reaching
+ * one of these call sites, the row is simply never updated and stays at
+ * its `'running'` default — the honest signal, not a guess. (A caller that
+ * catches the rejection, e.g. the REST API's `POST /searches` route, is
+ * responsible for marking `'failed'` itself — see that route.)
+ */
+async function markSearchComplete(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  searchId: string,
+): Promise<void> {
+  await db.update(searches).set({ status: "complete" }).where(eq(searches.id, searchId));
+}
+
+/**
+ * The DB-backed ranked-results query shared by a normal run's tail (every
+ * `linkedJobId`, some newly scored this run) and `estimateOnly`'s early
+ * return (only `alreadyScoredIds` — nothing new was scored). Extracted
+ * (ticket 59fdc52) so both paths honor the same "results come from the
+ * database, not in-memory state" invariant with one implementation, not two
+ * that could drift. Returns `[]` without querying when `jobIds` is empty —
+ * an empty `inArray(...)` is a Drizzle/Postgres edge case worth avoiding
+ * explicitly rather than relying on it happening to behave.
+ */
+async function fetchRankedResults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  resumeId: string,
+  jobIds: string[],
+): Promise<RankedResult[]> {
+  if (jobIds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      jobId: jobsTable.id,
+      externalId: jobsTable.externalId,
+      title: jobsTable.title,
+      company: jobsTable.company,
+      location: jobsTable.location,
+      locationType: jobsTable.locationType,
+      applyUrl: jobsTable.linkToApply,
+      matchScore: jobMatches.matchScore,
+      rationale: jobMatches.rationale,
+      strengths: jobMatches.strengths,
+      gaps: jobMatches.gaps,
+    })
+    .from(jobMatches)
+    .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
+    .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, jobIds)));
+
+  const results: RankedResult[] = rows.map((r) => ({
+    ...r,
+    strengths: r.strengths ?? [],
+    gaps: r.gaps ?? [],
+  }));
+  results.sort((a, b) => b.matchScore - a.matchScore);
+  return results;
+}
+
 export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDemoMatchResult> {
   const {
     db,
@@ -898,6 +1015,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     usageStatsPath = "prep/scoring-usage-stats.json",
     outputPath = "prep/match-results.json",
     log = console.log,
+    searchId: providedSearchId,
+    estimateOnly = false,
   } = options;
 
   if (sources.length === 0) {
@@ -911,6 +1030,32 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   await seedSourceDescriptors(db);
 
   const resumeId = await getOrCreateResumeId(db, resumeText);
+
+  // Ticket 59fdc52 review round 3, N2: the `searches` row (and its
+  // `search_sources` links) used to be inserted AFTER fetch+filter below —
+  // both of which run arbitrary code (`CompositeSource#search`, and a
+  // caller-supplied `filter`) that can reject. If either did, this
+  // function's promise rejected before a `searches` row ever existed, so
+  // the REST API's `POST /searches` catch handler's `markSearchFailed`
+  // (routes/searches.ts) — an `UPDATE searches SET status = 'failed' WHERE
+  // id = searchId` — silently matched ZERO rows, and `searchId` (already
+  // handed to the client in the 202 response) would 404 forever on a later
+  // `GET /searches/:id`, even after a restart, rather than surfacing as
+  // "failed". Both `searchId` and `sources` are already known at this
+  // point — nothing below needs fetch or filter to have run first — so the
+  // row (and its per-source links) are created here instead, before either
+  // of those can throw.
+  const searchId = providedSearchId ?? randomUUID();
+  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+  // One row per CONFIGURED source, not per source that actually returned
+  // jobs this run — this records what the search covered; success/failure
+  // per source lives in `sourceOutcomes`, not here. `search_sources` has
+  // always allowed multiple rows per search (no uniqueness constraint
+  // beyond its own id — see db/schema.ts); this is the first ticket that
+  // actually inserts more than one.
+  await db
+    .insert(searchSources)
+    .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
 
   log(
     `Fetching real postings from ${sources.length} source(s): ` +
@@ -971,18 +1116,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
   log("");
 
-  const searchId = randomUUID();
-  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
-  // One row per CONFIGURED source, not per source that actually returned
-  // jobs this run — this records what the search covered; success/failure
-  // per source lives in `sourceOutcomes`, not here. `search_sources` has
-  // always allowed multiple rows per search (no uniqueness constraint
-  // beyond its own id — see db/schema.ts); this is the first ticket that
-  // actually inserts more than one.
-  await db
-    .insert(searchSources)
-    .values(sources.map((s) => ({ id: randomUUID(), searchId, sourceDescriptorId: s.dataSource })));
-
   // Group the candidates by each job's OWN `dataSource` — there is no
   // longer one single top-level "the" source to ingest under.
   // `ingestJobsForSearch` upserts on (data_source, external_id) and, per
@@ -1025,6 +1158,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
     fs.writeFileSync(outputPath, JSON.stringify([], null, 2));
+    await markSearchComplete(db, searchId);
     return {
       resumeId,
       searchId,
@@ -1035,6 +1169,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       sourceOutcomes,
       candidatesNeedingScore: 0,
       cappedCount: 0,
+      scoreThreshold,
       costEstimate: {
         jobCount: 0,
         estimatedInputTokens: 0,
@@ -1115,10 +1250,13 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Above `scoreThreshold`, cap SCORING (not ingestion) here unless the
   // caller explicitly opted in — see `DEFAULT_SCORE_THRESHOLD`'s doc
   // comment for precisely what this does and does not truncate, and why a
-  // plain rerun drains a bound cap for free. The human-facing summary of
-  // what this decided is logged AFTER scoring completes, below — not here
-  // — because "how many actually got scored" isn't known until
-  // `Promise.allSettled` resolves (ticket 16c824a review F2).
+  // plain rerun drains a bound cap for free. Computed BEFORE the
+  // `estimateOnly` check below (ticket 59fdc52 review round 2, "estimate is
+  // wrong by ~30x"): a real run never spends more than this cap allows in
+  // one call, so an estimate that priced `preCapEstimate` — the FULL
+  // uncapped pool — was answering a different question than "what will
+  // POST /searches actually bill me". `costEstimate` from here on is
+  // cap-aware: exactly what would be attempted (and billed) this run.
   const overThreshold = needsScoreIds.length > scoreThreshold && !allowAboveThreshold;
   const toScoreIds = overThreshold ? needsScoreIds.slice(0, scoreThreshold) : needsScoreIds;
   const cappedCount = needsScoreIds.length - toScoreIds.length;
@@ -1128,6 +1266,37 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     resumeText,
     usageStats,
   );
+
+  // Ticket 59fdc52: `estimateOnly` stops HERE, before any `scoreJob` call —
+  // fetching and ingestion above already happened (free), but nothing below
+  // this point that costs money runs. `costEstimate`/`cappedCount` are the
+  // SAME cap-aware numbers a real run would compute (see above) — this is
+  // "what would POST /searches actually spend and defer if run right now",
+  // not the full pool's price. `results` still comes from the database
+  // (decision: "results come from the database, not a run's in-memory
+  // state"), scoped to whatever was ALREADY scored before this call — there
+  // is nothing newly scored to add to it.
+  if (estimateOnly) {
+    log(
+      `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
+        `this run.`,
+    );
+    const results = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    await markSearchComplete(db, searchId);
+    return {
+      resumeId,
+      searchId,
+      skipped: alreadyScoredIds.size,
+      newlyScored: 0,
+      failed: 0,
+      results,
+      sourceOutcomes,
+      candidatesNeedingScore: needsScoreIds.length,
+      cappedCount,
+      scoreThreshold,
+      costEstimate,
+    };
+  }
 
   log(`Scoring ${toScoreIds.length} of ${linkedJobIds.length} candidates with ${MODEL}...\n`);
 
@@ -1257,30 +1426,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Final results come from the database, not from this run's in-memory
   // scores — so a second run, which scores nothing new, still prints the
   // full ranked list instead of almost nothing.
-  const finalRows = await db
-    .select({
-      jobId: jobsTable.id,
-      externalId: jobsTable.externalId,
-      title: jobsTable.title,
-      company: jobsTable.company,
-      location: jobsTable.location,
-      locationType: jobsTable.locationType,
-      applyUrl: jobsTable.linkToApply,
-      matchScore: jobMatches.matchScore,
-      rationale: jobMatches.rationale,
-      strengths: jobMatches.strengths,
-      gaps: jobMatches.gaps,
-    })
-    .from(jobMatches)
-    .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-    .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, linkedJobIds)));
-
-  const results: RankedResult[] = finalRows.map((r) => ({
-    ...r,
-    strengths: r.strengths ?? [],
-    gaps: r.gaps ?? [],
-  }));
-  results.sort((a, b) => b.matchScore - a.matchScore);
+  const results = await fetchRankedResults(db, resumeId, linkedJobIds);
 
   fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
   log(`Full JSON written to ${outputPath}\n`);
@@ -1288,6 +1434,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   for (const j of results) {
     log(`  ${String(j.matchScore).padStart(3)}%  ${j.title}  —  ${j.company}`);
   }
+
+  await markSearchComplete(db, searchId);
 
   return {
     resumeId,
@@ -1299,6 +1447,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     sourceOutcomes,
     candidatesNeedingScore: needsScoreIds.length,
     cappedCount,
+    scoreThreshold,
     costEstimate,
   };
 }
