@@ -946,16 +946,109 @@ describe("SmartRecruitersSource — maxPostings cap", () => {
     expect(jobs).toHaveLength(5);
 
     // CoA was never truncated (4 candidates fit inside its share of the
-    // budget at the time, which was still the full 5). CoB and CoC both
-    // were truncated, for two DIFFERENTLY-WORDED reasons: CoB had exactly
-    // 1 slot left; CoC had none left at all, purely because of what CoA
-    // and CoB already spent — that distinction has to be visible in the
-    // reason text, not just inferred from a job count of zero.
+    // budget at the time, which was still the full 5). CoB and CoC are
+    // skipped by two genuinely DIFFERENT MECHANISMS, not just two wordings
+    // of the same one: CoB had exactly 1 slot left, so it was enumerated
+    // (list pages fetched, candidates collected) and then TRUNCATED down to
+    // that 1 slot. CoC had 0 slots left on its turn, so the short-circuit in
+    // `#searchCompany` (ticket 491cd88, round 2) skips it before any
+    // list-page request is made at all — its board is never enumerated,
+    // not truncated after partial enumeration. Both still show up as
+    // `skipped`, but the reason text has to say which mechanism it was —
+    // "truncated" vs. "never enumerated" — not just infer it from a job
+    // count of zero. See the dedicated test below (round 3) that asserts
+    // CoC's list endpoint is never called, which is what actually
+    // discriminates these two mechanisms.
     expect(skipped).toHaveLength(2);
     const coBSkip = skipped.find((s) => s.reason.includes('"CoB"'));
     const coCSkip = skipped.find((s) => s.reason.includes('"CoC"'));
     expect(coBSkip?.reason).toMatch(/only 1 of the shared maxPostings=5 budget/);
     expect(coCSkip?.reason).toMatch(/already fully spent by an earlier company/);
+  });
+
+  it("short-circuits BEFORE issuing any list-page request when a company's budget share is exactly zero on its turn — does not just truncate after enumerating (regression, ticket 491cd88 round 3: mutation-tested — disabling the short-circuit made all prior tests pass because the pre-existing zero-candidates-truncated wording is identical text)", async () => {
+    function summaryFor(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+      };
+    }
+    function detailForCo(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/${company}/${id}`,
+        jobAd: {
+          sections: {
+            jobDescription: { title: "Job Description", text: `<p>Do the work for ${id}.</p>` },
+          },
+        },
+      };
+    }
+
+    const coAIds = ["a1", "a2", "a3"];
+    // A spy standing in for CoC's list endpoint. It THROWS if ever called —
+    // there is no offset at which calling it is correct once CoC's budget
+    // share is 0, because the whole point of the short-circuit is that
+    // pagination never starts. This is what makes the test fail against the
+    // old/disabled-short-circuit behavior: that code path calls
+    // `#fetchPostingsPage` unconditionally, which would invoke this spy,
+    // throw, and produce a generic "search failed for company" skip instead
+    // of the short-circuit's distinct wording — flipping both assertions
+    // below.
+    const coCListSpy = vi.fn((offset: number) => {
+      throw new Error(`CoC's postings list endpoint must never be called (offset ${offset})`);
+    });
+
+    const fetchImpl = makeFetch({
+      postings: {
+        CoA: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: coAIds.length,
+              content: coAIds.map((id) => summaryFor("CoA", id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset} for CoA`);
+        },
+        CoC: coCListSpy,
+      },
+      detail: {
+        CoA: Object.fromEntries(
+          coAIds.map((id) => [id, () => jsonResponse(detailForCo("CoA", id))]),
+        ),
+      },
+    });
+
+    // Global budget: 3, spent entirely by CoA's 3 postings. CoC's share on
+    // its turn is exactly 0 — not "small", zero — which is precisely the
+    // case the short-circuit exists for.
+    const source = makeSource(fetchImpl, ["CoA", "CoC"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    // (a) CoC's list endpoint is never called at all.
+    expect(coCListSpy).not.toHaveBeenCalled();
+
+    expect(jobs).toHaveLength(3);
+    expect(skipped).toHaveLength(1);
+    const coCSkip = skipped.find((s) => s.reason.includes('"CoC"'));
+    // (b) The skip reason is distinguishable from the pre-existing
+    // "boundedCandidates.length === 0" truncation wording (which describes
+    // a board that WAS enumerated down to zero survivors) — the
+    // short-circuit's wording instead says the board was never enumerated
+    // at all, because pagination never ran.
+    expect(coCSkip?.reason).toMatch(/never enumerated/i);
   });
 
   it("falls back to the default cap (not a silently-broken clamp) when maxPostings is negative (F5: config validation)", async () => {
