@@ -1014,12 +1014,24 @@ async function fetchRankedResults(
 
   // Ticket 0c319b2. Applied here — on the ranked list every caller renders,
   // shared by the normal run's tail and `estimateOnly`'s early return — and
-  // NOT on `candidates`/`needsScoreIds` above. Two reasons: an applied job
-  // is almost always already scored (that is how it got applied to), so
-  // excluding it earlier would save no Claude call it isn't already saving;
-  // and ingestion stays complete, so the row and its score remain in the
+  // NOT on `candidates`/`needsScoreIds` above (computed earlier in
+  // `runDemoMatch`, keyed only on `jobMatches.resumeId`, with no
+  // applied-status check). That is a real, accepted tradeoff, not a free
+  // lunch: an applied job usually already has a `job_matches` row for the
+  // resume that applied to it, but not for every resume — rewrite the
+  // resume to a new version and re-search while the job is still open, and
+  // it has no row under the new `resumeId`, so it lands in `needsScoreIds`
+  // and consumes one real Claude call even though it's already applied to
+  // (see `user-job-statuses.test.ts`'s v2MatchForX case, which exercises
+  // exactly this). Filtering it out of `needsScoreIds` instead would close
+  // that gap, but this ticket's scope is deliberately a small, additive
+  // presentation filter — it doesn't thread applied-status into the
+  // scoring-decision path, which stays resume-version-agnostic and is
+  // shared with ticket aff284b's scoring-loop work. Ingestion and scoring
+  // stay complete either way, so the row and its score remain in the
   // database for a future "jobs I applied to" view. This is presentation
-  // filtering, not corpus filtering.
+  // filtering, not corpus filtering — accept the occasional extra scoring
+  // call as the cost of keeping it that way.
   const appliedJobIds = await fetchAppliedJobIds(db, jobIds);
 
   const rows = await db
