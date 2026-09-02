@@ -160,9 +160,36 @@ export type SearchCriteria = {
   remoteOk?: boolean;
 };
 
+/**
+ * Ticket aff284b review R1: `estimatedInputTokens` alone is NOT the whole
+ * prompt post-caching — it mirrors the Claude API's own `input_tokens`
+ * field, which is only the UNCACHED remainder of a prompt once a run's
+ * scoring calls share a cached prefix (see
+ * `apps/api/src/demo-match.ts`'s `buildCachedPrefix`/`makeClaudeScorer`).
+ * A real 200-job run measured `estimatedInputTokens` understating the
+ * actual number of prompt tokens sent by ~90% when read as "the" input
+ * count. `estimatedCacheReadTokens`/`estimatedCacheCreationTokens` carry
+ * the rest of what was actually sent — total tokens sent for a call is
+ * always `estimatedInputTokens + estimatedCacheReadTokens +
+ * estimatedCacheCreationTokens`. Every caller that renders this to a user
+ * (`describeCostEstimate` in demo-match.ts) must show that total, or label
+ * `estimatedInputTokens` explicitly as "uncached" — never present it bare
+ * as though it were the whole prompt.
+ */
 export type CostEstimate = {
   jobCount: number;
+  /** Uncached input tokens only — the API's `input_tokens`. See this
+   * type's own doc comment; do not treat this as the whole prompt. */
   estimatedInputTokens: number;
+  /** Cache-read tokens (billed at 0.1x the input rate). 0 on the
+   * "bootstrap" basis, which has no way to know the run-time cache-hit
+   * split in advance — see `estimateScoringCost`'s doc comment. */
+  estimatedCacheReadTokens: number;
+  /** Cache-creation (cache-write) tokens (billed at 1.25x the input rate,
+   * default 5-minute TTL), counted ONCE per run regardless of job count —
+   * a run writes its cache exactly once (ticket aff284b review S1). 0 on
+   * the "bootstrap" basis, same reasoning as `estimatedCacheReadTokens`. */
+  estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
   estimatedCostUsd: number;
   basis: "measured" | "bootstrap";
