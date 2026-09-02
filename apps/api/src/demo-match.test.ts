@@ -178,6 +178,18 @@ const usageStatsPath = path.join(outputDir, "scoring-usage-stats.json");
  * each other. */
 const RESUME_TEXT_PREFIX = "ticket-620ca30-demo-match-test:";
 
+/**
+ * Filler long enough that `RESUME_TEXT_PREFIX + " " + <id> + " " +
+ * LONG_RESUME_FILLER` clears `CACHE_MIN_PREFIX_TOKENS` (1,024) once run
+ * through `buildCachedPrefix`/`CHARS_PER_TOKEN_ESTIMATE` — ticket aff284b
+ * review round 3 F4 makes `estimateScoringCost`'s "measured" path branch on
+ * real prefix length, so any test asserting the NORMAL (caching-assumed)
+ * measured-cost formulas needs resume text that actually clears the
+ * minimum, not an arbitrarily short placeholder string. 6,400 chars is
+ * comfortably over the ~4,100-char threshold with room to spare.
+ */
+const LONG_RESUME_FILLER = "Experienced software engineer. ".repeat(200);
+
 // What this test FILE owns. Populated by each describe block's own
 // `beforeAll` (see below) — which run at suite start, before any `it` in
 // that describe, not from any `it`'s outcome — so these arrays are
@@ -1255,7 +1267,11 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
       ...RUN1_JOBS.map((j) => j.externalId),
       ...RUN2_JOBS.map((j) => j.externalId),
     );
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-measured ${randomUUID()}`;
+    // Long enough to clear CACHE_MIN_PREFIX_TOKENS (see LONG_RESUME_FILLER's
+    // doc comment) — this test asserts the NORMAL measured-basis formula
+    // (avg * jobCount), which only applies once a resume's prefix actually
+    // qualifies for caching.
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-measured ${randomUUID()} ${LONG_RESUME_FILLER}`;
     allResumeTexts.push(RESUME_TEXT);
 
     // No usage stats file exists yet for this path — the FIRST run must
@@ -1739,7 +1755,11 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   });
 
   it("measured path: uses the exact average of usageStats for input/output tokens, ignoring prompt text for those two fields", () => {
-    const RESUME_TEXT = "resume text";
+    // Long enough to clear CACHE_MIN_PREFIX_TOKENS (see LONG_RESUME_FILLER's
+    // doc comment) — ticket aff284b review round 3 F4 makes the measured
+    // path branch on real prefix length, and this test exercises the
+    // NORMAL (caching) branch.
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} cost-estimate-avg ${LONG_RESUME_FILLER}`;
     const stats = { model: MODEL, calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
     const estimate = estimateScoringCost(SAMPLE_JOBS, RESUME_TEXT, stats);
     expect(estimate.basis).toBe("measured");
@@ -1748,19 +1768,21 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     expect(estimate.estimatedOutputTokens).toBe(400);
     // `stats` carries no cache fields at all here (this test predates
     // ticket aff284b's cache tracking). `estimatedCostUsd` is NOT purely
-    // input/output-average-driven though: ticket aff284b review round 2
-    // S2 made cache-creation cost measured directly from the real
-    // `RESUME_TEXT` prefix regardless of what (if anything) `stats` says
-    // about cache usage — see `estimateScoringCost`'s inline comment — so
-    // a nonzero one-time cache-write cost is included here even though
-    // `stats` never mentions caching. `estimatedCacheReadTokens` still
-    // correctly comes out 0 (no `totalCacheReadTokens` on `stats`, `?? 0`
-    // applies).
-    expect(estimate.estimatedCacheReadTokens).toBe(0);
-    const cacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
-    expect(estimate.estimatedCacheCreationTokens).toBe(cacheCreationTokens);
+    // input/output-average-driven though: ticket aff284b review round 2 S2
+    // (cache-creation) and round 3 F3 (cache-read) both made cache cost
+    // measured directly from THIS run's real cached prefix
+    // (`buildCachedPrefix(RESUME_TEXT)`) — see `estimateScoringCost`'s
+    // inline comments — independent of what, if anything, `stats` says
+    // about cache usage. So BOTH cache buckets come out nonzero here even
+    // though `stats` never mentions caching at all.
+    const prefixTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+    expect(estimate.estimatedCacheCreationTokens).toBe(prefixTokens);
+    expect(estimate.estimatedCacheReadTokens).toBe(prefixTokens * (SAMPLE_JOBS.length - 1));
     const expectedCost =
-      (2000 / 1e6) * 3 + (400 / 1e6) * 15 + (cacheCreationTokens / 1e6) * 3 * 1.25;
+      (2000 / 1e6) * 3 +
+      (400 / 1e6) * 15 +
+      (prefixTokens / 1e6) * 3 * 1.25 +
+      (estimate.estimatedCacheReadTokens / 1e6) * 3 * 0.1;
     expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
   });
 
@@ -1769,8 +1791,9 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   // CACHE_READ_PRICE_MULTIPLIER/CACHE_WRITE_PRICE_MULTIPLIER's doc
   // comment), not blend them into the flat input-token cost the way this
   // function did before this ticket.
-  it("measured path: prices cache-read and cache-creation tokens at their own rate, not the flat input rate", () => {
-    const RESUME_TEXT = "resume text";
+  it("measured path: prices cache-read and cache-creation tokens at their own rate, not the flat input rate, and computes both directly from this run's real prefix (not stats)", () => {
+    // Long enough to clear CACHE_MIN_PREFIX_TOKENS — see LONG_RESUME_FILLER.
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} cost-estimate-rates ${LONG_RESUME_FILLER}`;
     const stats = {
       model: MODEL,
       calls: 10,
@@ -1785,29 +1808,28 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     // accounting; only estimatedCostUsd changes.
     expect(estimate.estimatedInputTokens).toBe(2000);
     expect(estimate.estimatedOutputTokens).toBe(400);
-    // Cache READS scale per job like input/output: avg 10,000/call * 2
-    // jobs = 20,000.
-    expect(estimate.estimatedCacheReadTokens).toBe(20_000);
+    // Ticket aff284b review round 3 F3: cache READS are no longer a
+    // historical average either — like cache-creation (S2), they're
+    // computed directly from this run's real prefix:
+    // `prefixTokens * (jobCount - 1)`, since every job after the first
+    // reads the cache once (the first call is the WRITE, not a read).
+    // `stats.totalCacheReadTokens: 100_000` above is intentionally left in
+    // the fixture and intentionally NOT reflected below, to prove it's
+    // ignored — same as `totalCacheCreationTokens` already was as of S2.
+    const prefixTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+    const expectedCacheReadTokens = prefixTokens * (SAMPLE_JOBS.length - 1);
+    expect(estimate.estimatedCacheReadTokens).toBe(expectedCacheReadTokens);
+    expect(estimate.estimatedCacheReadTokens).not.toBe(20_000); // old avg(100_000/10)*2 formula
     // Cache CREATION does NOT scale by jobCount (ticket aff284b review
     // S1 — a run writes its cache exactly once regardless of job count),
     // and — ticket aff284b review round 2 S2 — it is no longer derived
-    // from `stats.totalCacheCreationTokens` at all: `totalCacheCreationTokens
-    // / calls` is NOT the per-run write cost except by coincidence (see
-    // the inline comment in `estimateScoringCost`), so this stat is
-    // deliberately ignored here and the estimate instead measures THIS
-    // run's real cached prefix (`buildCachedPrefix(RESUME_TEXT)`)
-    // directly, the same char-per-token conversion the bootstrap path
-    // uses elsewhere in this file. `stats.totalCacheCreationTokens: 1_000`
-    // above is intentionally left in the fixture and intentionally NOT
-    // reflected in `expectedCacheCreationTokens` below, to prove it's
-    // ignored.
-    const expectedCacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
-    expect(estimate.estimatedCacheCreationTokens).toBe(expectedCacheCreationTokens);
+    // from `stats.totalCacheCreationTokens` at all.
+    expect(estimate.estimatedCacheCreationTokens).toBe(prefixTokens);
     expect(estimate.estimatedCacheCreationTokens).not.toBe(100); // the old (wrong) per-call average
     const expectedCost =
       (2000 / 1e6) * 3 + // ordinary input, full rate
-      (20_000 / 1e6) * 3 * 0.1 + // cache read, 0.1x
-      (expectedCacheCreationTokens / 1e6) * 3 * 1.25 + // cache creation, 1.25x, ONCE per run
+      (expectedCacheReadTokens / 1e6) * 3 * 0.1 + // cache read, 0.1x
+      (prefixTokens / 1e6) * 3 * 1.25 + // cache creation, 1.25x, ONCE per run
       (400 / 1e6) * 15; // output, unaffected by caching
     expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
     // Sanity check against the PRE-aff284b flat-rate formula: caching must
@@ -1815,7 +1837,7 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     // -price input token, or the "savings" this ticket exists to capture
     // would not actually show up in the estimate at all.
     const flatRateCost =
-      ((2000 + 20_000 + expectedCacheCreationTokens) / 1e6) * 3 + (400 / 1e6) * 15;
+      ((2000 + expectedCacheReadTokens + prefixTokens) / 1e6) * 3 + (400 / 1e6) * 15;
     expect(estimate.estimatedCostUsd).toBeLessThan(flatRateCost);
   });
 
@@ -1840,8 +1862,9 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   // (`buildCachedPrefix`) instead of the old (wrong) historical average,
   // and separately proves that average is no longer even consulted for
   // this field.
-  it("S1/S2: cache-creation cost is charged ONCE per run (not multiplied by jobCount) and is measured from the real cached prefix, not a historical per-call average", () => {
-    const RESUME_TEXT = "resume text";
+  it("S1/S2/F3: cache-creation is charged ONCE per run and cache-read scales by (jobCount - 1), both measured from the real cached prefix, not a historical average", () => {
+    // Long enough to clear CACHE_MIN_PREFIX_TOKENS — see LONG_RESUME_FILLER.
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} cost-estimate-s1s2f3 ${LONG_RESUME_FILLER}`;
     const MANY_SAMPLE_JOBS: NormalizedJob[] = Array.from({ length: 50 }, (_, i) =>
       job(`s1-cost-estimate-${i}`, `Engineer ${i}`),
     );
@@ -1854,25 +1877,123 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       totalCacheCreationTokens: 2_113, // 1 of 5 historical calls was the one write
     };
     const estimate = estimateScoringCost(MANY_SAMPLE_JOBS, RESUME_TEXT, stats);
+    const prefixTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
 
-    // Cache READ legitimately scales with jobCount: avg (8,452/5) * 50.
-    expect(estimate.estimatedCacheReadTokens).toBe(Math.round((8_452 / 5) * 50));
+    // Cache READ (ticket aff284b review round 3 F3): `prefixTokens *
+    // (jobCount - 1)`, NOT the historical average this used to be —
+    // `stats.totalCacheReadTokens: 8_452` above is intentionally left in
+    // the fixture and intentionally NOT reflected below, to prove it's
+    // ignored.
+    const oldHistoricalAverage = Math.round((8_452 / 5) * 50); // = 84,520, the now-removed formula
+    expect(estimate.estimatedCacheReadTokens).toBe(prefixTokens * (MANY_SAMPLE_JOBS.length - 1));
+    expect(estimate.estimatedCacheReadTokens).not.toBe(oldHistoricalAverage);
 
     // Cache CREATION must NOT scale with jobCount, AND must not come from
     // `stats.totalCacheCreationTokens` at all — it's measured directly
-    // from this run's real cached prefix instead. (This fixture's short
-    // "resume text" doesn't itself reach 2,113 tokens — that figure is
-    // the ticket's separate real-resume measurement cited in the comment
-    // above, not something this small fixture reproduces; what this test
-    // proves is that `totalCacheCreationTokens: 2_113` in `stats` is
-    // ignored, not that this fixture recreates that exact number.)
+    // from this run's real cached prefix instead.
     const oldWrongPerCallAverage = Math.round(2_113 / 5); // = 423
     const oldWrongPerJobMultiple = Math.round((2_113 / 5) * 50); // = 21,130
-    const expectedCacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
-
-    expect(estimate.estimatedCacheCreationTokens).toBe(expectedCacheCreationTokens);
+    expect(estimate.estimatedCacheCreationTokens).toBe(prefixTokens);
     expect(estimate.estimatedCacheCreationTokens).not.toBe(oldWrongPerCallAverage);
     expect(estimate.estimatedCacheCreationTokens).not.toBe(oldWrongPerJobMultiple);
+  });
+
+  // Ticket aff284b review round 3 F4: a resume whose cached prefix falls
+  // under CACHE_MIN_PREFIX_TOKENS never actually creates a cache entry (see
+  // `buildCachedPrefix`'s doc comment) — every call sends the FULL prompt
+  // (prefix + suffix) at the flat rate, nothing discounted, nothing
+  // written. Before this fix the measured path still priced this scenario
+  // as though caching happened, treating `avgInputTokens` (a per-call
+  // average of the UNCACHED REMAINDER from historical, cache-qualifying
+  // runs) as though it covered the whole prompt — the reviewer's own live
+  // measurement found this produced an estimate roughly HALF the real cost
+  // ($0.0426 estimated vs. ~$0.088 real for a 10-job short-resume run),
+  // the non-conservative direction this file's cost estimates otherwise
+  // avoid.
+  it("F4: a resume too short to cache falls back to full per-job prompt pricing, not an illusory cache split", () => {
+    // Long enough to be a realistic "just under the minimum" resume (not a
+    // one-line placeholder) — chosen so its heuristic-estimated prefix
+    // token count is comfortably under CACHE_MIN_PREFIX_TOKENS (1,024).
+    const SHORT_RESUME = "Cache-minimum probe resume text. ".repeat(115);
+    const prefixTokens = Math.round(buildCachedPrefix(SHORT_RESUME).length / 4);
+    expect(prefixTokens).toBeLessThan(1024); // guards the fixture itself
+
+    const JOB_DESCRIPTION_FILLER =
+      "Requires distributed systems, cloud infra, and cross-team collaboration experience. ".repeat(
+        20,
+      );
+    const JOBS_10: NormalizedJob[] = Array.from({ length: 10 }, (_, i) => ({
+      ...job(`f4-short-resume-${i}`, `Engineer ${i}`),
+      description: JOB_DESCRIPTION_FILLER,
+    }));
+
+    // Historical stats from a DIFFERENT (long-resume, cache-qualifying)
+    // run — proves the short-resume branch doesn't blend a caching-shaped
+    // historical average into a run that cannot itself cache. `avgInputTokens`
+    // here mirrors a realistic per-job SUFFIX-only figure (what a normal
+    // caching run's uncached remainder looks like for a similarly-sized job
+    // description), so the "illusory cache" comparison below is
+    // apples-to-apples, not an arbitrary round number.
+    const suffixTokensPerCall = Math.round(
+      buildScoringPrompt(JOBS_10[0]!, SHORT_RESUME).length / 4 - prefixTokens,
+    );
+    const stats = {
+      model: MODEL,
+      calls: 10,
+      totalInputTokens: suffixTokensPerCall * 10, // per-call UNCACHED REMAINDER from a caching run
+      totalOutputTokens: 2_000,
+      totalCacheReadTokens: 80_000,
+      totalCacheCreationTokens: 2_113,
+    };
+    const estimate = estimateScoringCost(JOBS_10, SHORT_RESUME, stats);
+
+    expect(estimate.basis).toBe("measured");
+    expect(estimate.estimatedCacheReadTokens).toBe(0);
+    expect(estimate.estimatedCacheCreationTokens).toBe(0);
+
+    // Full real prompt (prefix + suffix) for every job, priced at the flat
+    // input rate — the same char-count approach the bootstrap path uses.
+    const totalPromptChars = JOBS_10.reduce(
+      (sum, j) => sum + buildScoringPrompt(j, SHORT_RESUME).length,
+      0,
+    );
+    const expectedInputTokens = Math.round(totalPromptChars / 4);
+    expect(estimate.estimatedInputTokens).toBe(expectedInputTokens);
+
+    const expectedCost =
+      (expectedInputTokens / 1e6) * 3 + (estimate.estimatedOutputTokens / 1e6) * 15;
+    expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
+
+    // The fix must move the estimate in the CONSERVATIVE direction
+    // (higher), not lower: pricing the whole prompt uncached, every job, is
+    // more expensive than the (wrong) illusory-cache formula it replaced
+    // (avgInputTokens * jobCount, plus a discounted cache read/write split
+    // that never actually happens for a resume this short).
+    const illusoryCachedCost =
+      ((suffixTokensPerCall * 10) / 1e6) * 3 +
+      ((prefixTokens * 9) / 1e6) * 3 * 0.1 +
+      (prefixTokens / 1e6) * 3 * 1.25 +
+      (estimate.estimatedOutputTokens / 1e6) * 15;
+    expect(estimate.estimatedCostUsd).toBeGreaterThan(illusoryCachedCost);
+  });
+
+  // Ticket aff284b review round 3 F4: a single-job run has no second job to
+  // ever read a warm cache — only the one call happens, and that call is
+  // the cache WRITE, not a read. This holds even when the resume's prefix
+  // comfortably clears CACHE_MIN_PREFIX_TOKENS.
+  it("F4: a single-job run estimates zero cache-read tokens (only the one call's write happens), even when the prefix qualifies for caching", () => {
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} cost-estimate-single-job ${LONG_RESUME_FILLER}`;
+    const ONE_JOB: NormalizedJob[] = [job("f4-single-job", "Solo Engineer")];
+    const stats = { model: MODEL, calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
+    const estimate = estimateScoringCost(ONE_JOB, RESUME_TEXT, stats);
+
+    expect(estimate.basis).toBe("measured");
+    expect(estimate.estimatedCacheReadTokens).toBe(0);
+    // The write still happens — jobCount === 1 doesn't mean nothing is
+    // cached, only that nothing reads it back within this run.
+    const prefixTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+    expect(estimate.estimatedCacheCreationTokens).toBe(prefixTokens);
+    expect(estimate.estimatedCacheCreationTokens).toBeGreaterThan(0);
   });
 
   it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {

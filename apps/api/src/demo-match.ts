@@ -195,19 +195,30 @@ const SCORING_PREAMBLE = [
  * `cache_control`-marked content block; `buildJobSuffix` (below, varies
  * every call) is a second, unmarked block after it.
  *
- * Minimum cacheable prefix for `claude-sonnet-5` (`MODEL`) is 1,024 tokens
- * — verified live against
+ * Minimum cacheable prefix for `claude-sonnet-5` (`MODEL`) is
+ * `CACHE_MIN_PREFIX_TOKENS` (1,024) tokens — verified live against
  * platform.claude.com/docs/en/build-with-claude/prompt-caching.md on
  * 2026-08-31 (matches the `claude-api` skill's own cached table). A resume
  * short enough to put this whole prefix under that minimum does NOT
  * error: `cache_control` on a too-short prefix silently creates no cache
  * entry (`cache_creation_input_tokens: 0` in the response) and the call is
  * scored normally at full price — see the "degrades gracefully for a short
- * resume" coverage in demo-match.test.ts.
+ * resume" coverage in demo-match.test.ts. `estimateScoringCost` (ticket
+ * aff284b review round 3 F4) checks a run's real prefix against this same
+ * threshold before assuming caching will happen at all.
  */
 export function buildCachedPrefix(resumeText: string): string {
   return [SCORING_PREAMBLE, "", "=== RESUME ===", resumeText].join("\n");
 }
+
+/**
+ * See `buildCachedPrefix`'s doc comment above. A prefix below this many
+ * tokens never actually creates a cache entry — the API silently no-ops
+ * `cache_control` instead of erroring — so any code deciding whether a run
+ * WILL cache (as opposed to code that just builds the prompt regardless)
+ * must check against this same number.
+ */
+const CACHE_MIN_PREFIX_TOKENS = 1024;
 
 /**
  * The per-job suffix — the only part of a scoring prompt that varies
@@ -589,11 +600,27 @@ export type CostEstimate = {
   estimatedInputTokens: number;
   /**
    * Cache-read tokens (billed at `CACHE_READ_PRICE_MULTIPLIER`, 0.1x the
-   * input rate) — every job after the run's first read a warm cache. 0 on
+   * input rate) — every job after the run's first reads a warm cache. 0 on
    * the "bootstrap" basis (see `basis` below): with no recorded history,
    * `estimateScoringCost` has no way to know the run-time cache-hit split
    * in advance, so it prices bootstrap conservatively at the flat input
    * rate instead of guessing a split.
+   *
+   * Ticket aff284b review round 3 F3: on the "measured" basis this is now
+   * computed the same direct way as `estimatedCacheCreationTokens` below —
+   * this run's real prefix token count (`buildCachedPrefix(resumeText)`,
+   * heuristically estimated — see that field's doc comment on the
+   * estimate's accuracy) times `jobCount - 1`, since every job after the
+   * first (which is the cache WRITE, not a read) reads the cache exactly
+   * once. This replaced an earlier historical-average approach
+   * (`avgCacheReadTokens * jobCount`) that both diluted the per-read figure
+   * with each historical run's one non-reading write call, and multiplied
+   * by the full `jobCount` instead of `jobCount - 1` — so it also came out
+   * wrong (nonzero) for a single-job run, where there is no second job to
+   * ever read the cache. 0 for `jobCount === 1` and for any prefix under
+   * `CACHE_MIN_PREFIX_TOKENS` (ticket aff284b review round 3 F4 — a prefix
+   * that short never creates a cache entry at all; see
+   * `buildCachedPrefix`'s doc comment).
    */
   estimatedCacheReadTokens: number;
   /**
@@ -602,8 +629,7 @@ export type CostEstimate = {
    * TTL). Ticket aff284b review S1: a run writes its cache exactly ONCE
    * regardless of job count (`runDemoMatch`'s first-then-batch pre-warm —
    * see the comment on `toScoreIds`/`firstId` there), so this must never be
-   * multiplied by `jobCount` the way `estimatedCacheReadTokens` correctly
-   * is.
+   * multiplied by `jobCount` the way `estimatedCacheReadTokens` is.
    *
    * Ticket aff284b review round 2 S2: on the "measured" basis this is NOT
    * a historical per-run average — an earlier version of this comment (and
@@ -612,12 +638,35 @@ export type CostEstimate = {
    * `estimateScoringCost` for the math and the live-stats measurement that
    * caught it: a 5x undercount). It's computed directly from THIS run's
    * real cached prefix (`buildCachedPrefix(resumeText)`, converted to
-   * tokens the same way the bootstrap path converts prompt text below),
-   * which is knowable exactly right now with no averaging needed. 0 on the
-   * "bootstrap" basis — see `estimatedCacheReadTokens` and
-   * `estimateScoringCost`'s own doc comment for why bootstrap prices the
-   * whole prompt (prefix included) at the flat input rate instead of
-   * splitting out a separate cache-write estimate.
+   * tokens via `CHARS_PER_TOKEN_ESTIMATE`, the same character-count
+   * heuristic the bootstrap path uses for a whole prompt below) instead of
+   * averaged from history.
+   *
+   * Ticket aff284b review round 3 F1/F2 (correcting an overclaim in an
+   * earlier version of this comment and of `estimateScoringCost`'s inline
+   * comments): that conversion is an ESTIMATE, not an exact token count —
+   * `buildCachedPrefix(resumeText).length / CHARS_PER_TOKEN_ESTIMATE` is
+   * the same chars/4 heuristic used everywhere else in this file, and it is
+   * NOT what the API actually tokenizes to. Measured directly against this
+   * project's own real resume (`prep/resume.txt`, 4,914 chars, live
+   * `claude-sonnet-5` call, 2026-09-02 — see `CACHE_READ_PRICE_MULTIPLIER`'s
+   * doc comment above): the resulting 5,043-char prefix estimates to 1,261
+   * tokens by this heuristic, but the real, measured
+   * `cache_creation_input_tokens` on that call was 2,113 — the heuristic
+   * undercounts real tokenization of resume-style text by roughly 40%.
+   * Still a large improvement over the S2 fix's predecessor (a 5x
+   * undercount from averaging across a differently-shaped historical
+   * figure), and still directly grounded in this run's real prompt text
+   * rather than an invented number — but not exact, and no per-run
+   * measurement performed before the call is made ever can be (there is no
+   * way to know the API's real tokenization without asking the API, and
+   * `estimateScoringCost` must produce a number before any call happens).
+   * 0 on the "bootstrap" basis and for a prefix under
+   * `CACHE_MIN_PREFIX_TOKENS` (ticket aff284b review round 3 F4) — see
+   * `estimatedCacheReadTokens` above and `estimateScoringCost`'s own doc
+   * comment for why bootstrap prices the whole prompt (prefix included) at
+   * the flat input rate instead of splitting out a separate cache-write
+   * estimate.
    */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
@@ -670,14 +719,29 @@ export type CostEstimate = {
  * averaging problem entirely instead of trying to track a `runs` counter
  * through `UsageStats`.
  *
- * Cache-READ scaling (`avgCacheReadTokens * jobCount`, below) has a
- * smaller version of the same averaging bias — the historical average is
- * diluted by each run's one non-reading write call — left unfixed here
- * because it's roughly a 20% undercount (not the 5x-200x range S2 fixes)
- * and a correct fix needs either a `runs`-per-file counter (a stats-file
- * schema migration `recordUsageStats` doesn't currently support) or
- * threading each historical run's own `jobCount` through; see the inline
- * comment on `estimatedCacheReadTokens` below.
+ * Cache-READ scaling (ticket aff284b review round 3 F3) now uses the same
+ * direct-measurement approach as cache-creation instead of a historical
+ * average: `prefixTokens * (jobCount - 1)`, where `prefixTokens` is this
+ * run's real prefix (`buildCachedPrefix(resumeText)`, same heuristic
+ * estimate as cache-creation — see `CostEstimate.estimatedCacheCreationTokens`
+ * on its accuracy) and `jobCount - 1` because the run's first call is the
+ * cache WRITE, not a read. This replaced an earlier historical-average
+ * approach (`avgCacheReadTokens * jobCount`) that was previously left
+ * unfixed on the reasoning that a correct fix would need either a
+ * `runs`-per-file counter (a stats-file schema migration) or threading
+ * each historical run's own `jobCount` through `recordUsageStats`. Neither
+ * turned out to be necessary: once the prefix token count is computed
+ * directly (as cache-creation already did as of S2), the same figure times
+ * `jobCount - 1` is the whole fix, with no new state. The old approach's
+ * error was also previously mis-stated as a flat ~20% undercount; the real
+ * picture is two separate errors that happen to partially cancel at one
+ * specific ratio: (a) dividing by every historical call (including each
+ * run's one non-reading write) understates the per-read figure, while (b)
+ * multiplying by the full `jobCount` instead of `jobCount - 1` overstates
+ * it — for a single-job run specifically, (b) alone used to produce a
+ * nonzero cache-read estimate for a call that can never read anything
+ * (there is no second job). See the inline comment on
+ * `estimatedCacheReadTokens` below for the current computation.
  */
 export function estimateScoringCost(
   jobsToScore: NormalizedJob[],
@@ -710,75 +774,79 @@ export function estimateScoringCost(
   if (basis === "measured") {
     const avgInputTokens = usageStats!.totalInputTokens / usageStats!.calls;
     const avgOutputTokens = usageStats!.totalOutputTokens / usageStats!.calls;
-    // `?? 0`: usageStats may come from a caller-constructed literal (as
-    // several tests do) rather than `readUsageStats`, so these fields
-    // can genuinely be `undefined` here even though `readUsageStats`
-    // itself always normalizes them to a number — see `UsageStats`'s doc
-    // comment.
-    const avgCacheReadTokens = (usageStats!.totalCacheReadTokens ?? 0) / usageStats!.calls;
-
-    estimatedInputTokens = Math.round(avgInputTokens * jobCount);
     estimatedOutputTokens = Math.round(avgOutputTokens * jobCount);
-    // Cache READS scale per job — every job after the run's first reads
-    // the warm cache, so `avgCacheReadTokens` (per CALL) times `jobCount`
-    // is the right projection, same as input/output above.
-    //
-    // Known imprecision (ticket aff284b review round 2 S2, left unfixed —
-    // see the reasoning in this function's own doc comment above):
-    // `avgCacheReadTokens` divides by EVERY historical call, including
-    // each run's one non-reading write call, so it understates the
-    // per-read figure by roughly 1/(calls per run) — e.g. a 5-call run (4
-    // reads, 1 write) divides by 5 instead of 4, an ~20% undercount.
-    // Measured against this ticket's own live stats: ~1,690 estimated
-    // vs. a real ~2,113 tokens/job. Left as a historical average rather
-    // than switched to the same real-prefix measurement used for
-    // cache-creation below, because unlike creation this error is small
-    // (~20%, not the 5x-200x range S2 fixes) and a real fix needs either a
-    // `runs`-per-file counter (a stats-file schema change) or threading
-    // each historical run's own `jobCount` through `recordUsageStats`,
-    // neither of which this ticket's scope calls for.
-    estimatedCacheReadTokens = Math.round(avgCacheReadTokens * jobCount);
-    // Cache CREATION does NOT scale per job (ticket aff284b review S1): a
-    // run writes its cache exactly ONCE, regardless of how many jobs get
-    // scored (`runDemoMatch`'s first-then-batch pre-warm — score job #1
-    // alone, which is the run's one cache WRITE, then every job after it
-    // is a cache READ).
-    //
-    // CORRECTION (ticket aff284b review round 2 S2): the S1 fix above
-    // computed this as `totalCacheCreationTokens / calls`, reasoning that
-    // this was "already the average PER-RUN write cost, since only 1-in-N
-    // historical calls was ever actually a write." That's wrong: with R
-    // historical runs each writing W tokens once, across sum(N_r) total
-    // calls, totalCacheCreationTokens / calls = R*W / sum(N_r) = W /
-    // avg(calls per run) — NOT W. It only equals W when every historical
-    // run happened to score exactly one job. Verified against this
-    // ticket's own live stats (5 calls, 2,113 real cache-creation tokens
-    // from ONE write): the old formula estimated Math.round(2113/5) = 423
-    // for a 200-job projection — a 5x UNDERCOUNT of the real one-time
-    // write cost, in the direction this file's own cost-estimate comments
-    // call the worst one (an underestimate, not the conservative
-    // overestimate this file otherwise aims for).
-    //
-    // Fixed by not averaging at all: the cached prefix (preamble +
-    // resume, `buildCachedPrefix`) is knowable EXACTLY for THIS run,
-    // right now, from the real `resumeText` being scored — no per-run vs.
-    // per-call ambiguity to get wrong. Same character-count-based
-    // estimation the bootstrap path below already uses for a whole
-    // prompt (`CHARS_PER_TOKEN_ESTIMATE`), applied here to just the
-    // cached prefix instead of a full per-job prompt — see the S1 test in
-    // demo-match.test.ts, updated alongside this fix to assert against
-    // the real prefix length instead of the old (wrong) 423 figure.
-    estimatedCacheCreationTokens = Math.round(
+
+    // This run's real cached-prefix (preamble + resume, `buildCachedPrefix`)
+    // token count, ESTIMATED directly from THIS run's real `resumeText`
+    // rather than averaged from history — same character-count heuristic
+    // (`CHARS_PER_TOKEN_ESTIMATE`) the bootstrap path below uses for a
+    // whole prompt, applied here to just the cached prefix. Not an exact
+    // token count — see `CostEstimate.estimatedCacheCreationTokens`'s doc
+    // comment (ticket aff284b review round 3 F1/F2) for the measured ~40%
+    // undercount against this project's own real resume, and why an exact
+    // pre-call count isn't obtainable at all.
+    const prefixTokens = Math.round(
       buildCachedPrefix(resumeText).length / CHARS_PER_TOKEN_ESTIMATE,
     );
 
-    estimatedCostUsd =
-      (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
-      (estimatedCacheReadTokens / 1e6) * pricePerMillionTokens.in * CACHE_READ_PRICE_MULTIPLIER +
-      (estimatedCacheCreationTokens / 1e6) *
-        pricePerMillionTokens.in *
-        CACHE_WRITE_PRICE_MULTIPLIER +
-      (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+    if (prefixTokens < CACHE_MIN_PREFIX_TOKENS) {
+      // Ticket aff284b review round 3 F4: a prefix this short never
+      // actually creates a cache entry at all (`buildCachedPrefix`'s doc
+      // comment / `CACHE_MIN_PREFIX_TOKENS`) — every call sends the FULL
+      // prompt (prefix + suffix) at the flat input rate, nothing
+      // discounted, nothing written. `avgInputTokens` above is the wrong
+      // basis here: it's a per-call average of the UNCACHED REMAINDER from
+      // historical calls whose prefix *did* clear the minimum, i.e. it
+      // reflects roughly one job-suffix's worth of tokens, not a whole
+      // prompt. Using it would silently assume caching that cannot happen
+      // for this resume, understating the real cost (reviewer measured
+      // ~2x too low — $0.0426 estimated vs. ~$0.088 real — for a 10-job
+      // short-resume scenario) in the non-conservative direction this
+      // file's cost estimates otherwise avoid. Instead, price every job's
+      // real full prompt directly, the same char-count approach the
+      // bootstrap path uses below.
+      const totalPromptChars = jobsToScore.reduce(
+        (sum, job) => sum + buildScoringPrompt(job, resumeText).length,
+        0,
+      );
+      estimatedInputTokens = Math.round(totalPromptChars / CHARS_PER_TOKEN_ESTIMATE);
+      estimatedCacheReadTokens = 0;
+      estimatedCacheCreationTokens = 0;
+      estimatedCostUsd =
+        (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+        (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+    } else {
+      estimatedInputTokens = Math.round(avgInputTokens * jobCount);
+      // Cache READS scale per job — every job AFTER the run's first reads
+      // the warm cache once (the first call is the cache WRITE, not a
+      // read), so `prefixTokens * (jobCount - 1)` is the right projection
+      // — NOT `* jobCount`, and NOT the historical `avgCacheReadTokens`
+      // this used to be (ticket aff284b review round 3 F3; see this
+      // function's own doc comment above for what was wrong with that and
+      // why it's fixed here rather than left as a documented imprecision).
+      // For `jobCount === 1` this is naturally 0: a single-job run has no
+      // second job to ever read the cache (only the write happens) —
+      // ticket aff284b review round 3 F4.
+      estimatedCacheReadTokens = prefixTokens * (jobCount - 1);
+      // Cache CREATION does NOT scale per job (ticket aff284b review S1): a
+      // run writes its cache exactly ONCE, regardless of how many jobs get
+      // scored (`runDemoMatch`'s first-then-batch pre-warm — score job #1
+      // alone, which is the run's one cache WRITE, then every job after it
+      // is a cache READ). Computed directly from `prefixTokens` above
+      // rather than averaged from history — see
+      // `CostEstimate.estimatedCacheCreationTokens`'s doc comment for the
+      // S2 fix this followed and the F1/F2 accuracy correction on top of
+      // it.
+      estimatedCacheCreationTokens = prefixTokens;
+
+      estimatedCostUsd =
+        (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+        (estimatedCacheReadTokens / 1e6) * pricePerMillionTokens.in * CACHE_READ_PRICE_MULTIPLIER +
+        (estimatedCacheCreationTokens / 1e6) *
+          pricePerMillionTokens.in *
+          CACHE_WRITE_PRICE_MULTIPLIER +
+        (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+    }
   } else {
     const totalPromptChars = jobsToScore.reduce(
       (sum, job) => sum + buildScoringPrompt(job, resumeText).length,
