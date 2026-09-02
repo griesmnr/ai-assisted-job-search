@@ -125,6 +125,123 @@ export const searchResults = pgTable(
   (table) => [unique().on(table.searchId, table.jobId)],
 );
 
+/**
+ * The user's own status toward a job (ticket 0c319b2).
+ *
+ * WHY A SEPARATE TABLE, NOT COLUMNS ON `job_matches`: `job_matches` is a
+ * derived cache. Every column on it (match_score, rationale, strengths,
+ * gaps) is recomputable — delete the whole table and a rerun of
+ * `runDemoMatch` reproduces it for the price of the Claude calls. "I
+ * applied to this job" is the opposite: an authored, irreversible fact
+ * about something the user did in the world, which nothing in this system
+ * can reconstruct once lost. Putting an authored fact in a recomputable
+ * table means any future "just re-score from scratch" / "drop the stale
+ * cache" operation silently destroys it. Different lifetimes, different
+ * tables.
+ *
+ * WHY THE NAME IS NOT `JobStatus`: `jobs` will plausibly grow its own
+ * `status` column for the POSTING's lifecycle (open / filled / expired) —
+ * a fact about the employer's listing, not about the user. Two different
+ * things called "job status" one join apart is a bug waiting to be typed.
+ * `user_job_statuses` names whose status it is, which is the whole
+ * distinction. (`job_pipeline` was the other candidate; rejected because
+ * "pipeline" implies the multi-stage post-application funnel this table
+ * deliberately does NOT model — see the boundary note below.)
+ *
+ * The Postgres enum is singular (`user_job_status`, the status VALUE) and
+ * the table plural (`user_job_statuses`, the rows), matching the repo's
+ * plural table convention (`jobs`, `resumes`, `job_matches`,
+ * `search_results`) and, more practically, avoiding an outright collision:
+ * a table and a type cannot share a name in Postgres, since `CREATE TABLE`
+ * also creates a composite type of that name.
+ *
+ * WHERE THE LIFECYCLE STOPS, AND WHY: exactly four statuses, ending at
+ * `applied`. `rejected` / `interviewing` / `offer` / `ghosted` are
+ * deliberately NOT modelled. Everything up to and including `applied` is
+ * something THIS app observes directly — it showed the posting, it helped
+ * optimize the resume against it, the user hit apply from here. Everything
+ * after `applied` happens in the user's inbox, on the phone, in someone
+ * else's ATS; this app has no signal for any of it and would be reduced to
+ * asking the user to hand-maintain a status field. That is a job-tracker
+ * product, and it is a separate one. The value of this table is narrow and
+ * real: don't show me a job I already dealt with, and tell me when I
+ * applied. Adding post-application states would make every row a
+ * maintenance burden and every stale row a lie.
+ */
+export const userJobStatusEnum = pgEnum("user_job_status", [
+  // Bookmarked. The user wants this one back, no action taken yet.
+  "saved",
+  // The user has tailored a resume against this specific posting (the
+  // workflow `resume-ab.ts` measures), but has not sent it.
+  "resume_optimized",
+  // Sent. Terminal as far as this app is concerned — see the boundary note
+  // above.
+  "applied",
+  // Explicitly rejected by the user. Kept as a row rather than deleted so
+  // a later search doesn't resurface it as if it were new.
+  "dismissed",
+]);
+
+export const userJobStatuses = pgTable(
+  "user_job_statuses",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    status: userJobStatusEnum("status").notNull(),
+    /**
+     * WHICH resume was in hand when this status was recorded. An attribute,
+     * deliberately NOT part of the uniqueness key (see the constraint
+     * below) — worth knowing ("I applied to Samsara with the tailored
+     * version, not the generic one"), never worth keying on.
+     *
+     * Nullable for two honest reasons: a `saved` or `dismissed` row can
+     * predate any resume being involved at all, and a backfilled row may
+     * record a real application whose resume version is no longer
+     * identifiable. A guessed resume_id is worse than a NULL one.
+     */
+    resumeId: text("resume_id").references(() => resumes.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    /**
+     * When the application was actually sent — the one question this table
+     * exists to answer beyond "did I". Separate from `created_at`/
+     * `updated_at` because those are row bookkeeping: a row can be created
+     * as `saved` weeks before it becomes `applied`, and a backfilled row's
+     * `created_at` is when the migration ran, not when the user applied.
+     * NULL for every status other than `applied`.
+     */
+    appliedAt: timestamp("applied_at"),
+  },
+  /**
+   * THE KEY IS THE JOB, NOT (RESUME, JOB). This is the entire point of
+   * ticket 0c319b2 and the one thing that must not be "simplified" later
+   * into mirroring `job_matches`'s `(resume_id, job_id)`.
+   *
+   * The failing scenario, concretely: the user applies to job X with
+   * resume v1. She then rewrites her resume — `resumes` is content-
+   * addressed by `resume_hash` (ticket 620ca30), so v2 is a genuinely
+   * different row with a different id, not an edit of v1. She searches
+   * again; X is still open, gets re-ingested and re-scored under v2. If
+   * this table were keyed `(resume_id, job_id)`, the lookup "have I applied
+   * to X?" made under v2 finds nothing — the only row is filed under v1 —
+   * and the app cheerfully recommends she apply to a job she already
+   * applied to. Worse, a second application would insert a SECOND row for
+   * the same job, so the table can no longer answer "did I apply to X"
+   * with one row.
+   *
+   * "I applied to X" is a fact about (person, job). It must survive every
+   * resume rewrite, and it does exactly when the resume is not in the key.
+   *
+   * There is no `users` table yet (single-user app today), so `job_id`
+   * alone IS the effective (user, job) key. WHEN A `users` TABLE LANDS:
+   * widen this to `unique().on(table.userId, table.jobId)` and add the
+   * `user_id` column — do NOT add `resume_id` to it at that time.
+   */
+  (table) => [unique().on(table.jobId)],
+);
+
 export const searchSources = pgTable("search_sources", {
   id: text("id").primaryKey(),
   searchId: text("search_id")

@@ -22,7 +22,14 @@ import { and, eq, inArray } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { seedSourceDescriptors } from "./db/seed.js";
-import { jobMatches, jobs as jobsTable, resumes, searches, searchSources } from "./db/schema.js";
+import {
+  jobMatches,
+  jobs as jobsTable,
+  resumes,
+  searches,
+  searchSources,
+  userJobStatuses,
+} from "./db/schema.js";
 import { ingestJobsForSearch } from "./ingest/ingestJobs.js";
 import { createAshbySourceFromEnv } from "./sources/ashby.js";
 import { CompositeSource, type PerSourceOutcome } from "./sources/composite.js";
@@ -967,6 +974,36 @@ async function markSearchComplete(
  * an empty `inArray(...)` is a Drizzle/Postgres edge case worth avoiding
  * explicitly rather than relying on it happening to behave.
  */
+/**
+ * Job ids among `jobIds` the user has already APPLIED to (ticket 0c319b2).
+ * Read-only; this function never writes a status row — recording an
+ * application is a user action, not something a scoring run infers.
+ *
+ * Keyed on `job_id` alone, with no `resume_id` in the query at ALL. That is
+ * deliberate and is the whole reason `user_job_statuses` is keyed the way it
+ * is (see its comment in db/schema.ts): this lookup happens during a search
+ * run, which is scoped to ONE resume — and the resume in hand today is
+ * routinely not the resume an application was sent with. Filtering by resume
+ * here would make "have I applied to X?" answer "no" the moment the user
+ * rewrites her resume, which is exactly the bug the table's key exists to
+ * prevent.
+ *
+ * Only `applied` is excluded, not `dismissed`/`saved`/`resume_optimized` —
+ * acting on those is a UI concern and explicitly out of this ticket's scope.
+ */
+export async function fetchAppliedJobIds(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  jobIds: string[],
+): Promise<Set<string>> {
+  if (jobIds.length === 0) return new Set();
+  const rows = await db
+    .select({ jobId: userJobStatuses.jobId })
+    .from(userJobStatuses)
+    .where(and(eq(userJobStatuses.status, "applied"), inArray(userJobStatuses.jobId, jobIds)));
+  return new Set(rows.map((r) => r.jobId));
+}
+
 async function fetchRankedResults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
@@ -974,6 +1011,28 @@ async function fetchRankedResults(
   jobIds: string[],
 ): Promise<RankedResult[]> {
   if (jobIds.length === 0) return [];
+
+  // Ticket 0c319b2. Applied here — on the ranked list every caller renders,
+  // shared by the normal run's tail and `estimateOnly`'s early return — and
+  // NOT on `candidates`/`needsScoreIds` above (computed earlier in
+  // `runDemoMatch`, keyed only on `jobMatches.resumeId`, with no
+  // applied-status check). That is a real, accepted tradeoff, not a free
+  // lunch: an applied job usually already has a `job_matches` row for the
+  // resume that applied to it, but not for every resume — rewrite the
+  // resume to a new version and re-search while the job is still open, and
+  // it has no row under the new `resumeId`, so it lands in `needsScoreIds`
+  // and consumes one real Claude call even though it's already applied to
+  // (see `user-job-statuses.test.ts`'s v2MatchForX case, which exercises
+  // exactly this). Filtering it out of `needsScoreIds` instead would close
+  // that gap, but this ticket's scope is deliberately a small, additive
+  // presentation filter — it doesn't thread applied-status into the
+  // scoring-decision path, which stays resume-version-agnostic and is
+  // shared with ticket aff284b's scoring-loop work. Ingestion and scoring
+  // stay complete either way, so the row and its score remain in the
+  // database for a future "jobs I applied to" view. This is presentation
+  // filtering, not corpus filtering — accept the occasional extra scoring
+  // call as the cost of keeping it that way.
+  const appliedJobIds = await fetchAppliedJobIds(db, jobIds);
 
   const rows = await db
     .select({
@@ -993,11 +1052,13 @@ async function fetchRankedResults(
     .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
     .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, jobIds)));
 
-  const results: RankedResult[] = rows.map((r) => ({
-    ...r,
-    strengths: r.strengths ?? [],
-    gaps: r.gaps ?? [],
-  }));
+  const results: RankedResult[] = rows
+    .filter((r) => !appliedJobIds.has(r.jobId))
+    .map((r) => ({
+      ...r,
+      strengths: r.strengths ?? [],
+      gaps: r.gaps ?? [],
+    }));
   results.sort((a, b) => b.matchScore - a.matchScore);
   return results;
 }
