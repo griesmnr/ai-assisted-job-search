@@ -601,10 +601,23 @@ export type CostEstimate = {
    * `CACHE_WRITE_PRICE_MULTIPLIER`, 1.25x the input rate, default 5-minute
    * TTL). Ticket aff284b review S1: a run writes its cache exactly ONCE
    * regardless of job count (`runDemoMatch`'s first-then-batch pre-warm —
-   * see the comment on `toScoreIds`/`firstId` there), so this is the
-   * measured PER-RUN average, not multiplied by `jobCount` the way
-   * `estimatedCacheReadTokens` correctly is. 0 on the "bootstrap" basis,
-   * same reasoning as `estimatedCacheReadTokens`.
+   * see the comment on `toScoreIds`/`firstId` there), so this must never be
+   * multiplied by `jobCount` the way `estimatedCacheReadTokens` correctly
+   * is.
+   *
+   * Ticket aff284b review round 2 S2: on the "measured" basis this is NOT
+   * a historical per-run average — an earlier version of this comment (and
+   * of `estimateScoringCost`) claimed `totalCacheCreationTokens / calls`
+   * already *was* that average, which is wrong (see the inline comment in
+   * `estimateScoringCost` for the math and the live-stats measurement that
+   * caught it: a 5x undercount). It's computed directly from THIS run's
+   * real cached prefix (`buildCachedPrefix(resumeText)`, converted to
+   * tokens the same way the bootstrap path converts prompt text below),
+   * which is knowable exactly right now with no averaging needed. 0 on the
+   * "bootstrap" basis — see `estimatedCacheReadTokens` and
+   * `estimateScoringCost`'s own doc comment for why bootstrap prices the
+   * whole prompt (prefix included) at the flat input rate instead of
+   * splitting out a separate cache-write estimate.
    */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
@@ -642,6 +655,29 @@ export type CostEstimate = {
  * is CONSERVATIVE (an overestimate, never an underestimate) rather than
  * silently wrong — the same reasoning `describeCostEstimate` already
  * documents for `MAX_OUTPUT_TOKENS`'s worst-case assumption below.
+ *
+ * Cache-CREATION specifically (ticket aff284b review round 2 S2) is not
+ * priced off `usageStats` at all on the measured path, even though the
+ * other three buckets are: a run writes its cache exactly once regardless
+ * of `jobCount` (see `CostEstimate.estimatedCacheCreationTokens`), and
+ * averaging a "total tokens written across all historical calls" figure
+ * by a "total historical calls" denominator does not recover "tokens
+ * written per run" unless every historical run happened to score exactly
+ * one job — see the inline comment at this function's `estimatedCacheCreationTokens`
+ * assignment below for the arithmetic and the measurement that caught it
+ * (a 5x undercount against this ticket's own live stats). Measuring the
+ * real prefix directly from `resumeText` sidesteps that per-run-vs-per-call
+ * averaging problem entirely instead of trying to track a `runs` counter
+ * through `UsageStats`.
+ *
+ * Cache-READ scaling (`avgCacheReadTokens * jobCount`, below) has a
+ * smaller version of the same averaging bias — the historical average is
+ * diluted by each run's one non-reading write call — left unfixed here
+ * because it's roughly a 20% undercount (not the 5x-200x range S2 fixes)
+ * and a correct fix needs either a `runs`-per-file counter (a stats-file
+ * schema migration `recordUsageStats` doesn't currently support) or
+ * threading each historical run's own `jobCount` through; see the inline
+ * comment on `estimatedCacheReadTokens` below.
  */
 export function estimateScoringCost(
   jobsToScore: NormalizedJob[],
@@ -686,25 +722,54 @@ export function estimateScoringCost(
     // Cache READS scale per job — every job after the run's first reads
     // the warm cache, so `avgCacheReadTokens` (per CALL) times `jobCount`
     // is the right projection, same as input/output above.
+    //
+    // Known imprecision (ticket aff284b review round 2 S2, left unfixed —
+    // see the reasoning in this function's own doc comment above):
+    // `avgCacheReadTokens` divides by EVERY historical call, including
+    // each run's one non-reading write call, so it understates the
+    // per-read figure by roughly 1/(calls per run) — e.g. a 5-call run (4
+    // reads, 1 write) divides by 5 instead of 4, an ~20% undercount.
+    // Measured against this ticket's own live stats: ~1,690 estimated
+    // vs. a real ~2,113 tokens/job. Left as a historical average rather
+    // than switched to the same real-prefix measurement used for
+    // cache-creation below, because unlike creation this error is small
+    // (~20%, not the 5x-200x range S2 fixes) and a real fix needs either a
+    // `runs`-per-file counter (a stats-file schema change) or threading
+    // each historical run's own `jobCount` through `recordUsageStats`,
+    // neither of which this ticket's scope calls for.
     estimatedCacheReadTokens = Math.round(avgCacheReadTokens * jobCount);
     // Cache CREATION does NOT scale per job (ticket aff284b review S1): a
     // run writes its cache exactly ONCE, regardless of how many jobs get
     // scored (`runDemoMatch`'s first-then-batch pre-warm — score job #1
     // alone, which is the run's one cache WRITE, then every job after it
-    // is a cache READ). `usageStats.totalCacheCreationTokens / calls` is
-    // already the average PER-RUN write cost (since only 1-in-N historical
-    // calls was ever actually a write), so multiplying it by `jobCount`
-    // again — as this function did before this fix — charged a 200-job
-    // estimate 200x the actual one-time write cost (reviewer measured:
-    // 84,520 estimated cache-creation tokens / $0.317 phantom cost vs a
-    // real 2,113 tokens / $0.0079 for the same run). Conservative
-    // direction (overestimate, not under), but wrong, and it inflated
-    // exactly the number this ticket exists to lower. Charged once per
-    // run whenever there's at least one job to score; the average itself
-    // (not a per-job multiple of it) already reflects "how much a run
-    // typically writes on its one cache-creating call".
+    // is a cache READ).
+    //
+    // CORRECTION (ticket aff284b review round 2 S2): the S1 fix above
+    // computed this as `totalCacheCreationTokens / calls`, reasoning that
+    // this was "already the average PER-RUN write cost, since only 1-in-N
+    // historical calls was ever actually a write." That's wrong: with R
+    // historical runs each writing W tokens once, across sum(N_r) total
+    // calls, totalCacheCreationTokens / calls = R*W / sum(N_r) = W /
+    // avg(calls per run) — NOT W. It only equals W when every historical
+    // run happened to score exactly one job. Verified against this
+    // ticket's own live stats (5 calls, 2,113 real cache-creation tokens
+    // from ONE write): the old formula estimated Math.round(2113/5) = 423
+    // for a 200-job projection — a 5x UNDERCOUNT of the real one-time
+    // write cost, in the direction this file's own cost-estimate comments
+    // call the worst one (an underestimate, not the conservative
+    // overestimate this file otherwise aims for).
+    //
+    // Fixed by not averaging at all: the cached prefix (preamble +
+    // resume, `buildCachedPrefix`) is knowable EXACTLY for THIS run,
+    // right now, from the real `resumeText` being scored — no per-run vs.
+    // per-call ambiguity to get wrong. Same character-count-based
+    // estimation the bootstrap path below already uses for a whole
+    // prompt (`CHARS_PER_TOKEN_ESTIMATE`), applied here to just the
+    // cached prefix instead of a full per-job prompt — see the S1 test in
+    // demo-match.test.ts, updated alongside this fix to assert against
+    // the real prefix length instead of the old (wrong) 423 figure.
     estimatedCacheCreationTokens = Math.round(
-      (usageStats!.totalCacheCreationTokens ?? 0) / usageStats!.calls,
+      buildCachedPrefix(resumeText).length / CHARS_PER_TOKEN_ESTIMATE,
     );
 
     estimatedCostUsd =

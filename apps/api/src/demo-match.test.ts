@@ -1738,14 +1738,30 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     expect(estimate.estimatedCostUsd).toBeGreaterThan(0);
   });
 
-  it("measured path: uses the exact average of usageStats, ignoring prompt text entirely", () => {
+  it("measured path: uses the exact average of usageStats for input/output tokens, ignoring prompt text for those two fields", () => {
+    const RESUME_TEXT = "resume text";
     const stats = { model: MODEL, calls: 10, totalInputTokens: 10_000, totalOutputTokens: 2_000 };
-    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", stats);
+    const estimate = estimateScoringCost(SAMPLE_JOBS, RESUME_TEXT, stats);
     expect(estimate.basis).toBe("measured");
     // avg 1000 in / 200 out per call * 2 jobs.
     expect(estimate.estimatedInputTokens).toBe(2000);
     expect(estimate.estimatedOutputTokens).toBe(400);
-    expect(estimate.estimatedCostUsd).toBeCloseTo((2000 / 1e6) * 3 + (400 / 1e6) * 15, 10);
+    // `stats` carries no cache fields at all here (this test predates
+    // ticket aff284b's cache tracking). `estimatedCostUsd` is NOT purely
+    // input/output-average-driven though: ticket aff284b review round 2
+    // S2 made cache-creation cost measured directly from the real
+    // `RESUME_TEXT` prefix regardless of what (if anything) `stats` says
+    // about cache usage — see `estimateScoringCost`'s inline comment — so
+    // a nonzero one-time cache-write cost is included here even though
+    // `stats` never mentions caching. `estimatedCacheReadTokens` still
+    // correctly comes out 0 (no `totalCacheReadTokens` on `stats`, `?? 0`
+    // applies).
+    expect(estimate.estimatedCacheReadTokens).toBe(0);
+    const cacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+    expect(estimate.estimatedCacheCreationTokens).toBe(cacheCreationTokens);
+    const expectedCost =
+      (2000 / 1e6) * 3 + (400 / 1e6) * 15 + (cacheCreationTokens / 1e6) * 3 * 1.25;
+    expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
   });
 
   // Ticket aff284b: the measured path must price cache reads/writes at
@@ -1754,6 +1770,7 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   // comment), not blend them into the flat input-token cost the way this
   // function did before this ticket.
   it("measured path: prices cache-read and cache-creation tokens at their own rate, not the flat input rate", () => {
+    const RESUME_TEXT = "resume text";
     const stats = {
       model: MODEL,
       calls: 10,
@@ -1762,41 +1779,69 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       totalCacheReadTokens: 100_000,
       totalCacheCreationTokens: 1_000,
     };
-    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", stats);
+    const estimate = estimateScoringCost(SAMPLE_JOBS, RESUME_TEXT, stats);
     expect(estimate.basis).toBe("measured");
     // avg 1000 in / 100 (2 jobs) — token AVERAGES are unaffected by cache
     // accounting; only estimatedCostUsd changes.
     expect(estimate.estimatedInputTokens).toBe(2000);
     expect(estimate.estimatedOutputTokens).toBe(400);
     // Cache READS scale per job like input/output: avg 10,000/call * 2
-    // jobs = 20,000. Cache CREATION does NOT scale by jobCount (ticket
-    // aff284b review S1 — a run writes its cache exactly once regardless
-    // of job count): it's the flat per-run average, avg 1,000/10 calls =
-    // 100, NOT further multiplied by the 2 jobs in this estimate.
+    // jobs = 20,000.
     expect(estimate.estimatedCacheReadTokens).toBe(20_000);
-    expect(estimate.estimatedCacheCreationTokens).toBe(100);
+    // Cache CREATION does NOT scale by jobCount (ticket aff284b review
+    // S1 — a run writes its cache exactly once regardless of job count),
+    // and — ticket aff284b review round 2 S2 — it is no longer derived
+    // from `stats.totalCacheCreationTokens` at all: `totalCacheCreationTokens
+    // / calls` is NOT the per-run write cost except by coincidence (see
+    // the inline comment in `estimateScoringCost`), so this stat is
+    // deliberately ignored here and the estimate instead measures THIS
+    // run's real cached prefix (`buildCachedPrefix(RESUME_TEXT)`)
+    // directly, the same char-per-token conversion the bootstrap path
+    // uses elsewhere in this file. `stats.totalCacheCreationTokens: 1_000`
+    // above is intentionally left in the fixture and intentionally NOT
+    // reflected in `expectedCacheCreationTokens` below, to prove it's
+    // ignored.
+    const expectedCacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+    expect(estimate.estimatedCacheCreationTokens).toBe(expectedCacheCreationTokens);
+    expect(estimate.estimatedCacheCreationTokens).not.toBe(100); // the old (wrong) per-call average
     const expectedCost =
       (2000 / 1e6) * 3 + // ordinary input, full rate
       (20_000 / 1e6) * 3 * 0.1 + // cache read, 0.1x
-      (100 / 1e6) * 3 * 1.25 + // cache creation, 1.25x, ONCE per run
+      (expectedCacheCreationTokens / 1e6) * 3 * 1.25 + // cache creation, 1.25x, ONCE per run
       (400 / 1e6) * 15; // output, unaffected by caching
     expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
     // Sanity check against the PRE-aff284b flat-rate formula: caching must
     // make the estimate cheaper than treating every cache token as a full
     // -price input token, or the "savings" this ticket exists to capture
     // would not actually show up in the estimate at all.
-    const flatRateCost = ((2000 + 20_000 + 100) / 1e6) * 3 + (400 / 1e6) * 15;
+    const flatRateCost =
+      ((2000 + 20_000 + expectedCacheCreationTokens) / 1e6) * 3 + (400 / 1e6) * 15;
     expect(estimate.estimatedCostUsd).toBeLessThan(flatRateCost);
   });
 
-  // Ticket aff284b review S1: the defect this test pins down directly —
-  // before the fix, cache-creation was multiplied by jobCount just like
-  // cache-read, which charged a large job count N times the actual
-  // one-time cache-write cost. Uses a job count large enough (50) that the
-  // old (wrong) N-multiplied behavior and the fixed once-per-run behavior
-  // produce clearly different numbers, not numbers that could coincidentally
-  // match.
-  it("S1: cache-creation cost is charged ONCE per run, not multiplied by jobCount, while cache-read correctly scales per job", () => {
+  // Ticket aff284b review S1: the defect this test originally pinned down
+  // — before the S1 fix, cache-creation was multiplied by jobCount just
+  // like cache-read, which charged a large job count N times the actual
+  // one-time cache-write cost. Uses a job count large enough (50) that a
+  // per-job-multiplied behavior and a correct once-per-run behavior
+  // produce clearly different numbers, not numbers that could
+  // coincidentally match.
+  //
+  // CORRECTED (ticket aff284b review round 2 S2): this test used to also
+  // assert that `Math.round(2_113 / 5) = 423` was the CORRECT projected
+  // cache-creation estimate for this fixture. It is not — see the inline
+  // comment in `estimateScoringCost` for the math (totalCacheCreationTokens
+  // / calls only equals the real per-run write cost when every historical
+  // run scored exactly one job) and the CostEstimate.estimatedCacheCreationTokens
+  // doc comment. The reviewer verified this directly against this
+  // ticket's own live stats: 5 calls, 1 real cache write of 2,113 tokens
+  // — the real per-run write cost is 2,113, not 423. This test now
+  // asserts the estimate matches the real cached-prefix measurement
+  // (`buildCachedPrefix`) instead of the old (wrong) historical average,
+  // and separately proves that average is no longer even consulted for
+  // this field.
+  it("S1/S2: cache-creation cost is charged ONCE per run (not multiplied by jobCount) and is measured from the real cached prefix, not a historical per-call average", () => {
+    const RESUME_TEXT = "resume text";
     const MANY_SAMPLE_JOBS: NormalizedJob[] = Array.from({ length: 50 }, (_, i) =>
       job(`s1-cost-estimate-${i}`, `Engineer ${i}`),
     );
@@ -1808,16 +1853,26 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       totalCacheReadTokens: 8_452, // 4 of 5 historical calls were reads
       totalCacheCreationTokens: 2_113, // 1 of 5 historical calls was the one write
     };
-    const estimate = estimateScoringCost(MANY_SAMPLE_JOBS, "resume text", stats);
+    const estimate = estimateScoringCost(MANY_SAMPLE_JOBS, RESUME_TEXT, stats);
 
     // Cache READ legitimately scales with jobCount: avg (8,452/5) * 50.
     expect(estimate.estimatedCacheReadTokens).toBe(Math.round((8_452 / 5) * 50));
-    // Cache CREATION must NOT scale with jobCount: the per-run average
-    // (2,113/5), not that times 50. The wrong (pre-fix) formula would have
-    // produced Math.round((2_113 / 5) * 50) = 21,130 here instead.
-    const perRunAvgCacheCreation = Math.round(2_113 / 5);
-    expect(estimate.estimatedCacheCreationTokens).toBe(perRunAvgCacheCreation);
-    expect(estimate.estimatedCacheCreationTokens).not.toBe(Math.round((2_113 / 5) * 50));
+
+    // Cache CREATION must NOT scale with jobCount, AND must not come from
+    // `stats.totalCacheCreationTokens` at all — it's measured directly
+    // from this run's real cached prefix instead. (This fixture's short
+    // "resume text" doesn't itself reach 2,113 tokens — that figure is
+    // the ticket's separate real-resume measurement cited in the comment
+    // above, not something this small fixture reproduces; what this test
+    // proves is that `totalCacheCreationTokens: 2_113` in `stats` is
+    // ignored, not that this fixture recreates that exact number.)
+    const oldWrongPerCallAverage = Math.round(2_113 / 5); // = 423
+    const oldWrongPerJobMultiple = Math.round((2_113 / 5) * 50); // = 21,130
+    const expectedCacheCreationTokens = Math.round(buildCachedPrefix(RESUME_TEXT).length / 4);
+
+    expect(estimate.estimatedCacheCreationTokens).toBe(expectedCacheCreationTokens);
+    expect(estimate.estimatedCacheCreationTokens).not.toBe(oldWrongPerCallAverage);
+    expect(estimate.estimatedCacheCreationTokens).not.toBe(oldWrongPerJobMultiple);
   });
 
   it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {
@@ -2246,12 +2301,20 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
     expect(description).toBe("$0.00 (nothing needs scoring)");
   });
 
-  // Ticket aff284b review R1: this is the exact defect the reviewer
-  // reproduced — a 200-job measured estimate whose `estimatedInputTokens`
-  // alone (49,120 uncached) understated the real total tokens sent
-  // (91,160 cache-read + 331,440 cache-creation on top of it — summing to
-  // 471,720) by ~89.6% when rendered bare. The rendered string must show
-  // the real total, not the uncached figure alone.
+  // Ticket aff284b review R1: a pure rendering test — this `estimate` is a
+  // hand-built `CostEstimate` literal, not the output of
+  // `estimateScoringCost`. Only two of its numbers are genuinely traceable
+  // to the reviewer's reproduction: the 49,120 uncached figure and the
+  // 471,720 real total. The 91,160 cache-read and 331,440 cache-creation
+  // splits are illustrative fill-ins to reach that total and reviewer's
+  // own arithmetic, NOT reproduced measurements (ticket aff284b review
+  // round 2 N1 — an earlier version of this comment overclaimed both were
+  // "the exact defect reproduced"; per S2's fix above, cache-creation in
+  // particular could never legitimately reach 331,440 for a 200-job run,
+  // since it's now a one-time prefix measurement, not something that
+  // scales with job count). What matters for this test is only that
+  // `describeCostEstimate` renders the sum of all three buckets, not
+  // `estimatedInputTokens` alone — see the assertions below.
   it("R1: shows the REAL total tokens sent (uncached + cache-read + cache-creation), not the uncached remainder alone", () => {
     const estimate = {
       jobCount: 200,
