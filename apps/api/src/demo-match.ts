@@ -329,14 +329,46 @@ const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
  * of input cost at this constant's rate. AFTER (this ticket's two-block
  * prompt, first call alone then the rest) totaled 1,228 uncached input +
  * 8,452 cache-read + 2,113 cache-creation tokens, $0.014143 of input cost
- * — a 59.2% reduction in input cost on this small set (every call after
- * the first hit a warm cache: 4 of 5 calls were reads, a higher hit ratio
- * than the ~25% estimate's 200-call/1-write baseline, which is why this
- * set's percentage saving reads higher). `cache_read_input_tokens` was
- * confirmed nonzero in the raw API response on every call after the
+ * — a 59.2% reduction in input cost on this small set. `cache_read_input_tokens`
+ * was confirmed nonzero in the raw API response on every call after the
  * first, and 0 on the first call and on a resume too short to cache — see
  * `buildCachedPrefix`'s doc comment for that case. Full commit message has
  * the per-call numbers.
+ *
+ * CORRECTION (ticket aff284b review R4, 2026-09-02, same day as the
+ * measurement above): an earlier version of this comment claimed the 59.2%
+ * figure beat the ticket's ~25% estimate "because a 5-call run has a much
+ * higher cache-hit ratio (4/5) than the production 200-call/1-write case."
+ * That explanation is backwards and has been deleted, not merely
+ * softened: a 200-call run's hit ratio is 199/200 = 99.5%, HIGHER than
+ * this set's 4/5 = 80%, so if hit ratio alone explained the saving, the
+ * LARGER run would save MORE, not less — the opposite of what the old
+ * comment claimed.
+ *
+ * The real reason, traced from this measurement's own numbers: this
+ * 5-job set's cached prefix (preamble + resume) measured 2,113 tokens —
+ * the AFTER run's `cache_creation_input_tokens` on call 1 — about 1.7x
+ * the ticket's assumed ~1,230 tokens. Meanwhile its AFTER run's uncached
+ * input totaled 1,228 tokens across all 5 calls, i.e. ~246 tokens of
+ * per-job SUFFIX on average (1,228 / 5) — unusually small next to the
+ * real production baseline measured 2026-08-31, whose per-job suffix
+ * (the job-posting text `buildJobSuffix` sends, capped at 6,000 chars)
+ * runs closer to ~1,762 tokens. A bigger-than-assumed cached prefix and a
+ * much smaller-than-typical uncached suffix both push this small set's
+ * percentage saving UP relative to a normal run, independent of call
+ * count or hit ratio: the cached (discounted) share of each prompt is
+ * larger, and the always-full-price uncached share is smaller.
+ *
+ * Projected onto the production-scale baseline instead of this small
+ * set's own suffix size (N=200 jobs, prefix=2,113 tokens written once,
+ * suffix≈1,762 tokens/job, this constant's multipliers): BEFORE cost ≈
+ * 200 × (2,113 + 1,762) tokens × $3/MTok ≈ $2.325; AFTER cost ≈
+ * (200 × 1,762 uncached + 199 × 2,113 cache-read × 0.1 + 2,113
+ * cache-creation × 1.25) tokens priced at $3/MTok ≈ $1.191 — a ~49%
+ * reduction, not 59.2%. Still roughly 2x the ticket's ~25% estimate
+ * (genuinely good news, and the reason this ticket shipped), but the
+ * 59.2% headline above is specific to this small, suffix-light test set,
+ * not representative of a real 200-job run.
  */
 const CACHE_READ_PRICE_MULTIPLIER = 0.1;
 const CACHE_WRITE_PRICE_MULTIPLIER = 1.25;
@@ -378,14 +410,23 @@ export type UsageStats = {
    * Real recorded cache-read / cache-write tokens, accumulated separately
    * from `totalInputTokens` (ticket aff284b) for the same reason
    * `ScoredJob.usage.cacheReadTokens` is separate from `inputTokens` — see
-   * that field's doc comment. Optional, not because a post-aff284b write
-   * ever omits them (`recordUsageStats` always writes concrete numbers,
-   * 0 if unknown), but so a stats file written by a PRE-aff284b build of
-   * this project — shape `{model, calls, totalInputTokens,
-   * totalOutputTokens}`, no cache fields at all — still parses as a valid
-   * `UsageStats` instead of getting rejected: `readUsageStats` treats a
-   * missing field as 0 rather than failing the shape check, so upgrading
-   * this code doesn't discard an existing on-disk average. Total prompt
+   * that field's doc comment. Optional on the TYPE only so a
+   * caller-constructed literal (several tests build one directly, without
+   * going through `recordUsageStats`) can omit them; `recordUsageStats`
+   * itself always writes concrete numbers, 0 if unknown, never omits them.
+   *
+   * A stats file written by a PRE-aff284b build of this project — shape
+   * `{model, calls, totalInputTokens, totalOutputTokens}`, no cache fields
+   * at all — is NOT treated as a valid current-shape `UsageStats` (ticket
+   * aff284b review R2, reversing an earlier draft of this comment that
+   * claimed otherwise): `totalInputTokens` meant "the whole prompt" under
+   * that old shape and means "the uncached remainder only" under this one
+   * — the same field name, two incompatible meanings — so defaulting the
+   * missing cache fields to 0 and blending the old average in would
+   * silently corrupt it (reviewer measured ~7x overestimate in one
+   * reconstructed scenario). `readUsageStats` detects "missing both cache
+   * fields" and discards such a file (returns `undefined`) instead of
+   * reading it as current — see that function's doc comment. Total prompt
    * size for any one call = inputTokens + cacheReadTokens +
    * cacheCreationTokens (shared/prompt-caching.md).
    */
@@ -396,16 +437,30 @@ export type UsageStats = {
 /**
  * Reads previously recorded usage stats. Returns `undefined` — not a
  * thrown error — when the file is missing (every project's very first
- * scoring run, or a fresh checkout), unparseable, or recorded under a
+ * scoring run, or a fresh checkout), unparseable, recorded under a
  * DIFFERENT model than `expectedModel` (ticket 16c824a review F5 — see
- * `UsageStats.model`'s doc comment): a stats file existing is an
- * optimization for the cost estimate, never a precondition for scoring to
- * work, and stale-model stats are worse than no stats at all.
+ * `UsageStats.model`'s doc comment), or — as of ticket aff284b review R2 —
+ * missing BOTH cache-related keys, meaning it predates prompt caching
+ * entirely: a stats file existing is an optimization for the cost
+ * estimate, never a precondition for scoring to work, and stale stats
+ * (wrong model, OR pre-caching shape) are worse than no stats at all.
  *
- * The two cache-token fields (ticket aff284b) are normalized to 0 when
- * absent from the file on disk — a PRE-aff284b stats file has no such
- * keys at all, and that must keep reading as "zero cache activity
- * measured yet", not as a parse failure. See `UsageStats`'s doc comment.
+ * Why a pre-aff284b file can't just default its missing cache fields to 0
+ * and be treated as current (which is what this function did before R2):
+ * `totalInputTokens` meant "the WHOLE prompt" under the pre-caching code
+ * and means "the UNCACHED remainder only" under the current code (see
+ * `UsageStats`'s doc comment) — the SAME field name, two incompatible
+ * meanings. A same-model file written before this ticket would otherwise
+ * silently blend a "whole prompt" average into a "remainder only" running
+ * total as if they measured the same thing, corrupting the average
+ * (reviewer measured roughly a 7x overestimate in one reconstructed
+ * scenario). Detecting "predates caching" by the presence of the cache
+ * keys themselves — rather than, say, a schema version field this
+ * codebase never had — is what's available on disk today; every file
+ * `recordUsageStats` writes now carries both keys together (concrete
+ * numbers, 0 if unknown — see that function), so "has neither key" is an
+ * unambiguous signal of "written by an older build", not a coincidence of
+ * a partially-written file.
  */
 export function readUsageStats(
   path: string,
@@ -422,6 +477,25 @@ export function readUsageStats(
       parsed.calls > 0
     ) {
       if (parsed.model !== expectedModel) return undefined;
+      // Ticket aff284b review R2: a file that predates this ticket has
+      // NEITHER cache-related key at all (the pre-aff284b `UsageStats`
+      // shape was exactly `{model, calls, totalInputTokens,
+      // totalOutputTokens}`). Before this fix, such a file was silently
+      // treated as "0 cache tokens measured yet" and its
+      // `totalInputTokens` — which meant "the WHOLE prompt" under the old
+      // code — got blended straight into the SAME field's new meaning
+      // ("the UNCACHED remainder only", see `UsageStats`'s doc comment) as
+      // if they were commensurable. They are not: blending them silently
+      // corrupted the average (reviewer measured ~7x overestimate in one
+      // scenario). Same treatment as a model mismatch above — stale data
+      // is worse than no data — except the trigger here is "predates
+      // caching" rather than "wrong model": a file missing BOTH cache keys
+      // is stale regardless of `model` matching, and gets discarded rather
+      // than blended.
+      const hasAnyCacheField =
+        typeof parsed.totalCacheReadTokens === "number" ||
+        typeof parsed.totalCacheCreationTokens === "number";
+      if (!hasAnyCacheField) return undefined;
       return {
         model: parsed.model,
         calls: parsed.calls,
@@ -495,9 +569,44 @@ export function recordUsageStats(
   fs.writeFileSync(path, JSON.stringify(next, null, 2));
 }
 
+/**
+ * Ticket aff284b review R1: `estimatedInputTokens` mirrors the Claude API's
+ * own `input_tokens` field, which post-caching is only the UNCACHED
+ * remainder of a prompt — NOT the whole thing (see `buildCachedPrefix` /
+ * `makeClaudeScorer` above). A real 200-job run measured
+ * `estimatedInputTokens` alone understating actual prompt tokens sent by
+ * ~90% (roughly 49,120 + 91,160 shown vs ~471,720 actually sent) when a
+ * caller rendered it as though it were the whole prompt. Total tokens sent
+ * for a call is always `estimatedInputTokens + estimatedCacheReadTokens +
+ * estimatedCacheCreationTokens` — see those two fields, and
+ * `describeCostEstimate` below, which renders the total rather than
+ * `estimatedInputTokens` alone.
+ */
 export type CostEstimate = {
   jobCount: number;
+  /** Uncached input tokens only. Do not present this alone as "the" input
+   * token count — see this type's own doc comment. */
   estimatedInputTokens: number;
+  /**
+   * Cache-read tokens (billed at `CACHE_READ_PRICE_MULTIPLIER`, 0.1x the
+   * input rate) — every job after the run's first read a warm cache. 0 on
+   * the "bootstrap" basis (see `basis` below): with no recorded history,
+   * `estimateScoringCost` has no way to know the run-time cache-hit split
+   * in advance, so it prices bootstrap conservatively at the flat input
+   * rate instead of guessing a split.
+   */
+  estimatedCacheReadTokens: number;
+  /**
+   * Cache-creation (cache-write) tokens (billed at
+   * `CACHE_WRITE_PRICE_MULTIPLIER`, 1.25x the input rate, default 5-minute
+   * TTL). Ticket aff284b review S1: a run writes its cache exactly ONCE
+   * regardless of job count (`runDemoMatch`'s first-then-batch pre-warm —
+   * see the comment on `toScoreIds`/`firstId` there), so this is the
+   * measured PER-RUN average, not multiplied by `jobCount` the way
+   * `estimatedCacheReadTokens` correctly is. 0 on the "bootstrap" basis,
+   * same reasoning as `estimatedCacheReadTokens`.
+   */
+  estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
   estimatedCostUsd: number;
   /**
@@ -548,6 +657,8 @@ export function estimateScoringCost(
     return {
       jobCount: 0,
       estimatedInputTokens: 0,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       basis,
@@ -555,6 +666,8 @@ export function estimateScoringCost(
   }
 
   let estimatedInputTokens: number;
+  let estimatedCacheReadTokens: number;
+  let estimatedCacheCreationTokens: number;
   let estimatedOutputTokens: number;
   let estimatedCostUsd: number;
 
@@ -567,12 +680,32 @@ export function estimateScoringCost(
     // itself always normalizes them to a number — see `UsageStats`'s doc
     // comment.
     const avgCacheReadTokens = (usageStats!.totalCacheReadTokens ?? 0) / usageStats!.calls;
-    const avgCacheCreationTokens = (usageStats!.totalCacheCreationTokens ?? 0) / usageStats!.calls;
 
     estimatedInputTokens = Math.round(avgInputTokens * jobCount);
     estimatedOutputTokens = Math.round(avgOutputTokens * jobCount);
-    const estimatedCacheReadTokens = Math.round(avgCacheReadTokens * jobCount);
-    const estimatedCacheCreationTokens = Math.round(avgCacheCreationTokens * jobCount);
+    // Cache READS scale per job — every job after the run's first reads
+    // the warm cache, so `avgCacheReadTokens` (per CALL) times `jobCount`
+    // is the right projection, same as input/output above.
+    estimatedCacheReadTokens = Math.round(avgCacheReadTokens * jobCount);
+    // Cache CREATION does NOT scale per job (ticket aff284b review S1): a
+    // run writes its cache exactly ONCE, regardless of how many jobs get
+    // scored (`runDemoMatch`'s first-then-batch pre-warm — score job #1
+    // alone, which is the run's one cache WRITE, then every job after it
+    // is a cache READ). `usageStats.totalCacheCreationTokens / calls` is
+    // already the average PER-RUN write cost (since only 1-in-N historical
+    // calls was ever actually a write), so multiplying it by `jobCount`
+    // again — as this function did before this fix — charged a 200-job
+    // estimate 200x the actual one-time write cost (reviewer measured:
+    // 84,520 estimated cache-creation tokens / $0.317 phantom cost vs a
+    // real 2,113 tokens / $0.0079 for the same run). Conservative
+    // direction (overestimate, not under), but wrong, and it inflated
+    // exactly the number this ticket exists to lower. Charged once per
+    // run whenever there's at least one job to score; the average itself
+    // (not a per-job multiple of it) already reflects "how much a run
+    // typically writes on its one cache-creating call".
+    estimatedCacheCreationTokens = Math.round(
+      (usageStats!.totalCacheCreationTokens ?? 0) / usageStats!.calls,
+    );
 
     estimatedCostUsd =
       (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
@@ -587,13 +720,26 @@ export function estimateScoringCost(
       0,
     );
     estimatedInputTokens = Math.round(totalPromptChars / CHARS_PER_TOKEN_ESTIMATE);
+    // Bootstrap has no recorded cache history to split from — see this
+    // function's own doc comment on why the bootstrap path prices
+    // everything at the flat input rate instead of guessing a split.
+    estimatedCacheReadTokens = 0;
+    estimatedCacheCreationTokens = 0;
     estimatedOutputTokens = MAX_OUTPUT_TOKENS * jobCount;
     estimatedCostUsd =
       (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
       (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
   }
 
-  return { jobCount, estimatedInputTokens, estimatedOutputTokens, estimatedCostUsd, basis };
+  return {
+    jobCount,
+    estimatedInputTokens,
+    estimatedCacheReadTokens,
+    estimatedCacheCreationTokens,
+    estimatedOutputTokens,
+    estimatedCostUsd,
+    basis,
+  };
 }
 
 /**
@@ -610,9 +756,26 @@ export function estimateScoringCost(
  * proceed — exactly the run where overstating it is worst. So: rendered
  * as an explicit ceiling (`≤$…`), not a point estimate, whenever
  * `basis === "bootstrap"`.
+ *
+ * Ticket aff284b review R1: the token figure shown here is now the REAL
+ * total tokens a call actually sends (`estimatedInputTokens +
+ * estimatedCacheReadTokens + estimatedCacheCreationTokens`), broken down
+ * by bucket, rather than `estimatedInputTokens` alone — which, post
+ * caching, is only the uncached remainder and understated real usage by
+ * ~90% on a real 200-job run when shown bare (see `CostEstimate`'s own doc
+ * comment for that measurement). `estimatedCostUsd` already priced every
+ * bucket correctly before this fix (see `estimateScoringCost`); only this
+ * rendering was misleading.
  */
 export function describeCostEstimate(estimate: CostEstimate): string {
-  const tokens = `~${estimate.estimatedInputTokens} in / ~${estimate.estimatedOutputTokens} out tokens`;
+  const totalInputTokens =
+    estimate.estimatedInputTokens +
+    estimate.estimatedCacheReadTokens +
+    estimate.estimatedCacheCreationTokens;
+  const tokens =
+    `~${totalInputTokens} in tokens total (${estimate.estimatedInputTokens} uncached + ` +
+    `${estimate.estimatedCacheReadTokens} cache-read + ${estimate.estimatedCacheCreationTokens} ` +
+    `cache-write) / ~${estimate.estimatedOutputTokens} out tokens`;
   if (estimate.jobCount === 0) {
     return "$0.00 (nothing needs scoring)";
   }
@@ -1376,6 +1539,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       costEstimate: {
         jobCount: 0,
         estimatedInputTokens: 0,
+        estimatedCacheReadTokens: 0,
+        estimatedCacheCreationTokens: 0,
         estimatedOutputTokens: 0,
         estimatedCostUsd: 0,
         basis: "bootstrap",

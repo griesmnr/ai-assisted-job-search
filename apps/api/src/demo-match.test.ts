@@ -1304,6 +1304,98 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
   });
 });
 
+describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b review R3)", () => {
+  // The single mechanism the entire caching saving depends on: a cache
+  // entry isn't readable until the WRITING call's response begins (see the
+  // "do NOT collapse this back" comment on `[firstId, ...restIds]` in
+  // demo-match.ts). Before this test, that shape was guarded only by a
+  // comment — nothing here would have failed if someone collapsed it back
+  // into a single `Promise.allSettled(toScoreIds.map(scoreOne))`.
+  const PREWARM_JOBS: NormalizedJob[] = Array.from({ length: 4 }, (_, i) =>
+    job(`demo-match-prewarm-${i}`, `Prewarm Engineer ${i}`),
+  );
+  const RESUME_TEXT = `${RESUME_TEXT_PREFIX} prewarm-ordering ${randomUUID()}`;
+
+  beforeAll(() => {
+    allExternalIds.push(...PREWARM_JOBS.map((j) => j.externalId));
+    allResumeTexts.push(RESUME_TEXT);
+  });
+
+  /**
+   * Records a `start:<id>` event the instant it's invoked (synchronously,
+   * before any await) and a `resolve:<id>` event only after an artificial
+   * delay — long enough that a batch of calls fired essentially
+   * synchronously (the collapsed, buggy shape) will ALL have logged their
+   * `start` event before any of them can log `resolve`, while calls fired
+   * one-at-a-time-then-batch (the correct shape) cannot interleave a
+   * second call's `start` before the first call's `resolve`, because
+   * nothing invokes the second call until the first call's own
+   * `Promise.allSettled` has already resolved.
+   */
+  function makeOrderTrackingScorer(): { scoreJob: ScoreJobFn; events: string[] } {
+    const events: string[] = [];
+    const scoreJob: ScoreJobFn = async (jobArg: NormalizedJob): Promise<ScoredJob> => {
+      events.push(`start:${jobArg.externalId}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      events.push(`resolve:${jobArg.externalId}`);
+      return {
+        matchScore: 50,
+        rationale: `fake rationale for ${jobArg.title}`,
+        strengths: [],
+        gaps: [],
+      };
+    };
+    return { scoreJob, events };
+  }
+
+  it("awaits the first job's call to completion before any other job's call starts — fails if the two-phase structure is collapsed back into one batch", async () => {
+    const source = new FakeSource(PREWARM_JOBS);
+    const { scoreJob, events } = makeOrderTrackingScorer();
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+
+    // Sanity: every job really was scored (this test is about ORDERING,
+    // not merely about all jobs eventually completing).
+    expect(run.newlyScored).toBe(PREWARM_JOBS.length);
+    expect(events.filter((e) => e.startsWith("start:"))).toHaveLength(PREWARM_JOBS.length);
+    expect(events.filter((e) => e.startsWith("resolve:"))).toHaveLength(PREWARM_JOBS.length);
+
+    // The very first event must be some job starting.
+    expect(events[0]).toMatch(/^start:/);
+    const firstJobId = events[0]!.slice("start:".length);
+
+    // The SECOND event must be that SAME job resolving — nothing else can
+    // have started in between, because phase 1 awaits
+    // `Promise.allSettled([scoreOne(firstId)])` alone before phase 2 ever
+    // calls `scoreOne` for any other job. If the two-phase structure were
+    // collapsed into one `Promise.allSettled(toScoreIds.map(scoreOne))`,
+    // every job's `start` event would be pushed synchronously before any
+    // `resolve` event (the 20ms delay guarantees the timers can't fire
+    // until the synchronous `.map()` call finishes), so `events[1]` would
+    // be another job's `start:...`, not this job's `resolve:...` — this
+    // assertion is exactly what would catch that regression.
+    expect(events[1]).toBe(`resolve:${firstJobId}`);
+
+    // Every OTHER job's `start` event occurs strictly after the first
+    // job's own `resolve` event (index 1) — i.e. after the cache-writing
+    // call has already completed.
+    const otherStartIndices = PREWARM_JOBS.filter((j) => j.externalId !== firstJobId).map((j) =>
+      events.indexOf(`start:${j.externalId}`),
+    );
+    for (const idx of otherStartIndices) {
+      expect(idx).toBeGreaterThan(1);
+    }
+  });
+});
+
 describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
   // No DB needed — pure functions, mirroring buildBoardCoverage's own
   // pure-function test suite one level up.
@@ -1627,6 +1719,8 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     expect(estimate).toEqual({
       jobCount: 0,
       estimatedInputTokens: 0,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       basis: "bootstrap",
@@ -1674,20 +1768,56 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     // accounting; only estimatedCostUsd changes.
     expect(estimate.estimatedInputTokens).toBe(2000);
     expect(estimate.estimatedOutputTokens).toBe(400);
-    // avg cache-read 10,000/call * 2 jobs = 20,000; avg cache-creation
-    // 100/call * 2 jobs = 200.
+    // Cache READS scale per job like input/output: avg 10,000/call * 2
+    // jobs = 20,000. Cache CREATION does NOT scale by jobCount (ticket
+    // aff284b review S1 — a run writes its cache exactly once regardless
+    // of job count): it's the flat per-run average, avg 1,000/10 calls =
+    // 100, NOT further multiplied by the 2 jobs in this estimate.
+    expect(estimate.estimatedCacheReadTokens).toBe(20_000);
+    expect(estimate.estimatedCacheCreationTokens).toBe(100);
     const expectedCost =
       (2000 / 1e6) * 3 + // ordinary input, full rate
       (20_000 / 1e6) * 3 * 0.1 + // cache read, 0.1x
-      (200 / 1e6) * 3 * 1.25 + // cache creation, 1.25x
+      (100 / 1e6) * 3 * 1.25 + // cache creation, 1.25x, ONCE per run
       (400 / 1e6) * 15; // output, unaffected by caching
     expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
     // Sanity check against the PRE-aff284b flat-rate formula: caching must
     // make the estimate cheaper than treating every cache token as a full
     // -price input token, or the "savings" this ticket exists to capture
     // would not actually show up in the estimate at all.
-    const flatRateCost = ((2000 + 20_000 + 200) / 1e6) * 3 + (400 / 1e6) * 15;
+    const flatRateCost = ((2000 + 20_000 + 100) / 1e6) * 3 + (400 / 1e6) * 15;
     expect(estimate.estimatedCostUsd).toBeLessThan(flatRateCost);
+  });
+
+  // Ticket aff284b review S1: the defect this test pins down directly —
+  // before the fix, cache-creation was multiplied by jobCount just like
+  // cache-read, which charged a large job count N times the actual
+  // one-time cache-write cost. Uses a job count large enough (50) that the
+  // old (wrong) N-multiplied behavior and the fixed once-per-run behavior
+  // produce clearly different numbers, not numbers that could coincidentally
+  // match.
+  it("S1: cache-creation cost is charged ONCE per run, not multiplied by jobCount, while cache-read correctly scales per job", () => {
+    const MANY_SAMPLE_JOBS: NormalizedJob[] = Array.from({ length: 50 }, (_, i) =>
+      job(`s1-cost-estimate-${i}`, `Engineer ${i}`),
+    );
+    const stats = {
+      model: MODEL,
+      calls: 5,
+      totalInputTokens: 5_000,
+      totalOutputTokens: 1_000,
+      totalCacheReadTokens: 8_452, // 4 of 5 historical calls were reads
+      totalCacheCreationTokens: 2_113, // 1 of 5 historical calls was the one write
+    };
+    const estimate = estimateScoringCost(MANY_SAMPLE_JOBS, "resume text", stats);
+
+    // Cache READ legitimately scales with jobCount: avg (8,452/5) * 50.
+    expect(estimate.estimatedCacheReadTokens).toBe(Math.round((8_452 / 5) * 50));
+    // Cache CREATION must NOT scale with jobCount: the per-run average
+    // (2,113/5), not that times 50. The wrong (pre-fix) formula would have
+    // produced Math.round((2_113 / 5) * 50) = 21,130 here instead.
+    const perRunAvgCacheCreation = Math.round(2_113 / 5);
+    expect(estimate.estimatedCacheCreationTokens).toBe(perRunAvgCacheCreation);
+    expect(estimate.estimatedCacheCreationTokens).not.toBe(Math.round((2_113 / 5) * 50));
   });
 
   it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {
@@ -1709,6 +1839,86 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     const badPath = path.join(outputDir, `malformed-${randomUUID()}.json`);
     fs.writeFileSync(badPath, "{ not valid json");
     expect(readUsageStats(badPath)).toBeUndefined();
+  });
+
+  // Ticket aff284b review R2: a PRE-aff284b stats file — same shape
+  // `{model, calls, totalInputTokens, totalOutputTokens}`, no cache keys
+  // at all — must be treated as STALE (same as a model mismatch), not
+  // silently accepted with its missing cache fields defaulted to 0. The
+  // pre-aff284b `totalInputTokens` meant "the whole prompt"; the current
+  // code's `totalInputTokens` means "the uncached remainder only" — same
+  // field name, incompatible meanings, so blending them would silently
+  // corrupt the average (reviewer measured ~7x overestimate in one
+  // reconstructed scenario). This is the regression test the review
+  // explicitly asked for.
+  it("R2: a pre-aff284b stats file (no cache fields at all) is treated as stale and discarded, not blended in as current", () => {
+    const statsPath = path.join(outputDir, `pre-aff284b-shape-${randomUUID()}.json`);
+    // Exact pre-aff284b UsageStats shape — same MODEL, so a model check
+    // alone would NOT catch this; only the missing cache keys do.
+    fs.writeFileSync(
+      statsPath,
+      JSON.stringify({
+        model: MODEL,
+        calls: 50,
+        totalInputTokens: 500_000,
+        totalOutputTokens: 50_000,
+      }),
+    );
+
+    // Must read as stale/absent, exactly like a model mismatch — not as a
+    // valid 50-call average with 0 cache activity.
+    expect(readUsageStats(statsPath)).toBeUndefined();
+
+    // Concretely: estimateScoringCost must fall back to "bootstrap" for
+    // this path's data, not silently treat the old average as "measured".
+    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", readUsageStats(statsPath));
+    expect(estimate.basis).toBe("bootstrap");
+
+    // And recordUsageStats, called against this same path, must start a
+    // FRESH average (treating the old file as though it didn't exist) —
+    // not accumulate the old whole-prompt-meaning totals into the new
+    // uncached-remainder-meaning field.
+    recordUsageStats(statsPath, {
+      calls: 3,
+      totalInputTokens: 3_000,
+      totalOutputTokens: 600,
+      totalCacheReadTokens: 9_000,
+      totalCacheCreationTokens: 500,
+    });
+    expect(readUsageStats(statsPath)).toEqual({
+      model: MODEL,
+      calls: 3, // NOT 53 — the old 50 calls were discarded, not blended
+      totalInputTokens: 3_000, // NOT 503_000
+      totalOutputTokens: 600,
+      totalCacheReadTokens: 9_000,
+      totalCacheCreationTokens: 500,
+    });
+  });
+
+  // A file that DOES carry at least one cache field (the shape every
+  // post-aff284b `recordUsageStats` write produces) is current, not stale
+  // — only a file missing BOTH cache fields is treated as pre-aff284b.
+  it("a stats file with cache fields present (even if 0) is treated as current, not stale", () => {
+    const statsPath = path.join(outputDir, `post-aff284b-shape-${randomUUID()}.json`);
+    fs.writeFileSync(
+      statsPath,
+      JSON.stringify({
+        model: MODEL,
+        calls: 5,
+        totalInputTokens: 1_000,
+        totalOutputTokens: 500,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+      }),
+    );
+    expect(readUsageStats(statsPath)).toEqual({
+      model: MODEL,
+      calls: 5,
+      totalInputTokens: 1_000,
+      totalOutputTokens: 500,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+    });
   });
 
   it("recordUsageStats accumulates across multiple calls instead of overwriting", () => {
@@ -1747,6 +1957,12 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
   // length AND price.
   it("readUsageStats ignores stats recorded under a different model instead of treating them as current", () => {
     const statsPath = path.join(outputDir, `stale-model-${randomUUID()}.json`);
+    // Carries cache fields (post-aff284b shape) deliberately, so this
+    // fixture isolates the MODEL-mismatch dimension only — without them,
+    // ticket aff284b review R2's "missing both cache fields" staleness
+    // check (see the test above/below named "R2: ...") would ALSO reject
+    // this file, for a different reason, and this test would no longer be
+    // testing what its name says.
     fs.writeFileSync(
       statsPath,
       JSON.stringify({
@@ -1754,6 +1970,8 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
         calls: 20,
         totalInputTokens: 50_000,
         totalOutputTokens: 10_000,
+        totalCacheReadTokens: 5_000,
+        totalCacheCreationTokens: 500,
       }),
     );
 
@@ -1991,6 +2209,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
     const description = describeCostEstimate({
       jobCount: 129,
       estimatedInputTokens: 100_000,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 258_000, // 2000 * 129 — the worst-case bootstrap assumption
       estimatedCostUsd: 4.93,
       basis: "bootstrap",
@@ -2003,6 +2223,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
     const description = describeCostEstimate({
       jobCount: 129,
       estimatedInputTokens: 60_000,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 40_000,
       estimatedCostUsd: 1.83,
       basis: "measured",
@@ -2015,11 +2237,43 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
     const description = describeCostEstimate({
       jobCount: 0,
       estimatedInputTokens: 0,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       basis: "bootstrap",
     });
     expect(description).toBe("$0.00 (nothing needs scoring)");
+  });
+
+  // Ticket aff284b review R1: this is the exact defect the reviewer
+  // reproduced — a 200-job measured estimate whose `estimatedInputTokens`
+  // alone (49,120 uncached) understated the real total tokens sent
+  // (91,160 cache-read + 331,440 cache-creation on top of it — summing to
+  // 471,720) by ~89.6% when rendered bare. The rendered string must show
+  // the real total, not the uncached figure alone.
+  it("R1: shows the REAL total tokens sent (uncached + cache-read + cache-creation), not the uncached remainder alone", () => {
+    const estimate = {
+      jobCount: 200,
+      estimatedInputTokens: 49_120,
+      estimatedCacheReadTokens: 91_160,
+      estimatedCacheCreationTokens: 331_440,
+      estimatedOutputTokens: 100_000,
+      estimatedCostUsd: 1.93,
+      basis: "measured" as const,
+    };
+    const description = describeCostEstimate(estimate);
+
+    const realTotal = 49_120 + 91_160 + 331_440;
+    expect(realTotal).toBe(471_720);
+    // The old bug: the description used to show only 49,120 as "in
+    // tokens" — an ~89.6% understatement of what was actually sent.
+    expect(description).toContain(`${realTotal}`);
+    expect(description).not.toMatch(/~49120 in\b/);
+    // The uncached remainder is still visible, but labeled, not bare.
+    expect(description).toMatch(/49120 uncached/);
+    expect(description).toMatch(/91160 cache-read/);
+    expect(description).toMatch(/331440 cache-write/);
   });
 });
 
