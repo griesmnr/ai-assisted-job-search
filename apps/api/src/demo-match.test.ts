@@ -185,8 +185,9 @@ const RESUME_TEXT_PREFIX = "ticket-620ca30-demo-match-test:";
  * review round 3 F4 makes `estimateScoringCost`'s "measured" path branch on
  * real prefix length, so any test asserting the NORMAL (caching-assumed)
  * measured-cost formulas needs resume text that actually clears the
- * minimum, not an arbitrarily short placeholder string. 6,400 chars is
- * comfortably over the ~4,100-char threshold with room to spare.
+ * minimum, not an arbitrarily short placeholder string. 6,200 chars
+ * (measured: 200 reps of a 31-char string) is comfortably over the
+ * ~4,100-char threshold with room to spare.
  */
 const LONG_RESUME_FILLER = "Experienced software engineer. ".repeat(200);
 

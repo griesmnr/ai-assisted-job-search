@@ -205,7 +205,15 @@ const SCORING_PREAMBLE = [
  * scored normally at full price — see the "degrades gracefully for a short
  * resume" coverage in demo-match.test.ts. `estimateScoringCost` (ticket
  * aff284b review round 3 F4) checks a run's real prefix against this same
- * threshold before assuming caching will happen at all.
+ * threshold before assuming caching will happen at all -- but it can only
+ * check its own heuristic ESTIMATE of the prefix's token count (see
+ * `CHARS_PER_TOKEN_ESTIMATE`, measured ~40% under real tokenization for
+ * this project's resume text), not the true count the live API would see.
+ * The misclassification band this leaves (round 4 finding R2) errs toward
+ * assuming no caching when real caching would in fact happen -- the
+ * conservative direction this file's cost estimates otherwise favor -- so
+ * a resume estimated just under the minimum may still cache for real,
+ * making the estimate somewhat high rather than dangerously low.
  */
 export function buildCachedPrefix(resumeText: string): string {
   return [SCORING_PREAMBLE, "", "=== RESUME ===", resumeText].join("\n");
@@ -790,9 +798,13 @@ export function estimateScoringCost(
     );
 
     if (prefixTokens < CACHE_MIN_PREFIX_TOKENS) {
-      // Ticket aff284b review round 3 F4: a prefix this short never
-      // actually creates a cache entry at all (`buildCachedPrefix`'s doc
-      // comment / `CACHE_MIN_PREFIX_TOKENS`) — every call sends the FULL
+      // Ticket aff284b review round 3 F4 (refined round 4 R2): prefixTokens
+      // is this run's ESTIMATE of the prefix, not a measured count, so this
+      // branch can misclassify a prefix that would actually clear the real
+      // minimum -- see `buildCachedPrefix`'s doc comment. When it does
+      // trigger correctly, though, a prefix this short never actually
+      // creates a cache entry at all (`CACHE_MIN_PREFIX_TOKENS`) -- every
+      // call sends the FULL
       // prompt (prefix + suffix) at the flat input rate, nothing
       // discounted, nothing written. `avgInputTokens` above is the wrong
       // basis here: it's a per-call average of the UNCACHED REMAINDER from
@@ -1929,9 +1941,14 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
           calls: rowsWithUsage.length,
           totalInputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.inputTokens, 0),
           totalOutputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.outputTokens, 0),
-          // Ticket aff284b: recorded separately so future runs' cost
-          // estimates can price cache reads/writes at their own rate
-          // instead of the flat input rate — see estimateScoringCost.
+          // Ticket aff284b: recorded separately from totalInputTokens so a
+          // stats file written before this ticket (which has neither field)
+          // is detectably stale and gets discarded rather than blended --
+          // see readUsageStats's staleness check. As of review round 4 F3,
+          // estimateScoringCost prices cache reads/writes by measuring the
+          // CURRENT run's real resume directly rather than reading these
+          // fields back out, but they stay recorded: they're the raw data
+          // any future recalibration of that estimate would need.
           totalCacheReadTokens: rowsWithUsage.reduce(
             (sum, r) => sum + (r.usage.cacheReadTokens ?? 0),
             0,
