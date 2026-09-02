@@ -293,15 +293,40 @@ const DEFAULT_DETAIL_CONCURRENCY = 5;
  * `maxPostings` is now a budget for ONE ENTIRE `search()` CALL, shared
  * across every configured company via a running total in `search()`'s
  * per-company loop (see `search()` and `#searchCompany`'s `maxDetailFetches`
- * parameter) — not per company. This is what actually makes the bound
- * independent of company count: 1,000 total detail fetches is ~148s
- * (1,000 x 0.148s) no matter how many companies are configured, leaving
- * the same ~148s vs. the 600s deadline's margin whether there is 1
- * company or 20. A company whose share of the remaining budget runs out
- * mid-list (or is already exhausted before its turn) is truncated, not
- * silently under-reported — see the `maxPostings` handling in
- * `#searchCompany`, which reports which specific company(ies) were
- * affected.
+ * parameter) — not per company. This bounds the per-posting DETAIL
+ * fan-out only: 1,000 total detail fetches is ~148s (1,000 x 0.148s) no
+ * matter how many companies are configured. A company whose share of the
+ * remaining budget runs out mid-list (or is already exhausted before its
+ * turn) is truncated, not silently under-reported — see the `maxPostings`
+ * handling in `#searchCompany`, which reports which specific company(ies)
+ * were affected.
+ *
+ * CORRECTION (adversarial review round 2, ticket 491cd88, required fix 1)
+ * — the previous version of this comment claimed the ~148s detail-fetch
+ * figure was "no matter how many companies are configured... whether there
+ * is 1 company or 20." That was false: it silently equated the whole
+ * search's cost with the detail-fetch cost alone. LIST PAGINATION IS NOT
+ * BOUNDED BY THIS BUDGET AT ALL — it is bounded only by `#maxPages`
+ * (`DEFAULT_MAX_PAGES`, 500), runs sequentially per company, and a company
+ * whose detail-fetch share has already hit zero still enumerated its
+ * entire board via list requests before this round's fix. Proven live:
+ * two companies, maxPostings 2, first company spends the whole budget,
+ * second company still issued 10 sequential list requests for its
+ * 1,000-posting board with zero detail fetches. At BoschGroup scale
+ * (4,771 postings = 48 pages) across 20 companies that's ~960 unbudgeted
+ * list requests (~710s at ~0.74s/request) — past the 600s deadline before
+ * a single detail fetch happens on the later companies.
+ *
+ * `#searchCompany` now short-circuits and skips list pagination entirely
+ * when a company's share of the remaining budget is exactly zero (see the
+ * short-circuit at the top of `#searchCompany`), which closes the gap for
+ * that case. It does NOT close the gap for a company with a small but
+ * nonzero remaining share — that company still enumerates its whole board
+ * via list requests before the detail cap is applied to the result. So the
+ * accurate statement is: `maxPostings` bounds the detail fan-out for every
+ * company whose share hits zero before its turn; list pagination for a
+ * company with ANY nonzero share remains O(maxPages) per company,
+ * unbounded by this budget.
  *
  * 1,000 itself is chosen well above every non-outlier company observed
  * during this adapter's development (Sixt: 25 postings; every other
@@ -490,6 +515,51 @@ export class SmartRecruitersSource implements JobSource {
     criteria: SearchCriteria,
     maxDetailFetches: number,
   ): Promise<{ jobs: NormalizedJob[]; skipped: SkippedRecord[]; detailFetchesUsed: number }> {
+    // Short-circuit (adversarial review round 2, ticket 491cd88, required
+    // fix 1): if the whole-`search()` budget was already fully spent by an
+    // earlier company before this company's turn, do NOT enumerate this
+    // company's board at all. List pagination is NOT bounded by
+    // `maxDetailFetches` — only by `#maxPages`, and it runs sequentially,
+    // per company, regardless of remaining budget — so without this
+    // short-circuit a zero-budget company still pays the full list-
+    // pagination cost of its board for zero detail fetches. Proven live: two
+    // companies, maxPostings 2, first company spends the whole budget,
+    // second company (0 remaining) still issued 10 sequential list requests
+    // for its 1,000-posting board with zero detail fetches. At BoschGroup
+    // scale (4,771 postings = 48 pages) across 20 companies that's ~960
+    // unbudgeted list requests — ~710s at ~0.74s/request — past the 600s
+    // worker deadline before a single detail fetch happens on the later
+    // companies. See `DEFAULT_MAX_POSTINGS`'s doc comment for the budget
+    // model this short-circuit closes the gap in.
+    //
+    // This only covers the zero-share case. A company with a small but
+    // nonzero remaining share (e.g. CoB in the "shares the budget ACROSS
+    // companies" test) still enumerates its whole board before the
+    // detail-fetch cap is applied — that narrower gap is unchanged by this
+    // fix; see the same doc comment for why zero is the case worth
+    // short-circuiting.
+    if (maxDetailFetches <= 0) {
+      return {
+        jobs: [],
+        skipped: [
+          {
+            externalId: undefined,
+            reason:
+              `SmartRecruiters search for company "${company}" was skipped entirely: the shared ` +
+              `maxPostings=${this.#maxPostings} budget for this ENTIRE search() call (across every ` +
+              `configured company) was already fully spent by an earlier company before "${company}"'s ` +
+              `turn — this company's board was NEVER ENUMERATED (no list-page requests were made for ` +
+              `it), so its true posting count is unknown, not zero. This is a partial result, not a ` +
+              `complete board — do not treat "${company}" as having no postings, and note maxPostings ` +
+              `is a budget SHARED across all configured companies, so other companies processed after ` +
+              `this one may be skipped entirely (or truncated) by the same exhausted budget even if ` +
+              `their own board is small.`,
+          },
+        ],
+        detailFetchesUsed: 0,
+      };
+    }
+
     const firstPage = await this.#fetchPostingsPage(company, 0);
 
     if (firstPage.totalFound === 0) {

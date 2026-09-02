@@ -81,15 +81,42 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * "from scratch" actually costs, the net effect is that a slow source now
  * fails predictably and boundedly instead of unpredictably and, in the
  * worst case, without limit. It is a faster, safer failure — not a
- * cheaper one. (It does, however, mean a chronically slow/hung source now
- * burns up to `maxAttempts x sourceSearchTimeoutMs` — at the defaults,
- * 4 x 10min = 40 minutes — of this single `prefetch(1)` consumer's time
- * before dead-lettering, worse in wall-clock than the ~12 minutes-then-
- * channel-drop it replaces. Defensible: bounded and accounted-for beats
- * unpredictable, but see `SourceSearchTimeoutError`'s doc comment for why
- * NOT every one of those attempts is necessarily doing useful work, and
- * whether a hung-forever source deserves the full retry budget is worth
- * revisiting.)
+ * cheaper one.
+ *
+ * The real cost, stated plainly (adversarial review round 2, ticket
+ * 491cd88, required fix 3 — the version of this paragraph before this
+ * round only described the hung message's OWN fate, which understated
+ * what it costs everyone else): a chronically slow/hung source burns up
+ * to `maxAttempts x sourceSearchTimeoutMs` — at the defaults, 4 x 10min =
+ * 40 minutes — before dead-lettering, worse in wall-clock than the ~12
+ * minutes-then-channel-drop it replaces. Two things that number leaves out:
+ *
+ * (a) Under `prefetch(1)` (see `startFetchSourceWorker`), this consumer
+ * holds exactly one unacked delivery at a time. For the full 40 minutes,
+ * NO OTHER user's `fetch.source` message is delivered on this consumer -
+ * this is not just the hung message's own cost, it is HEAD-OF-LINE
+ * BLOCKING of every other, unrelated search queued behind it. A single
+ * chronically-hung source degrades service for every user whose search
+ * happens to fan out through the same consumer while it's stuck, not just
+ * the one search that hit the bad source.
+ *
+ * (b) The retry backoff tiers (`FETCH_SOURCE_RETRY_TIERS`, topology.ts —
+ * roughly 1s/2s/4s) give essentially zero relief here. They were sized
+ * for fast-failing conditions - 429s, connection blips - three orders of
+ * magnitude smaller than a 10-minute detection latency. The real sequence
+ * for a permanently-hung source is ~40 minutes of near-continuous queue
+ * stall, interrupted by about 7 seconds of backoff breathing room total
+ * across all four attempts. The backoff tiers are not doing meaningful
+ * work in this failure mode.
+ *
+ * Defensible as a first cut - bounded and accounted-for beats
+ * unpredictable and unbounded - but this is worse for other users than
+ * the single-message framing above suggests, and worth weighing against
+ * that cost, not just against the message's own wall-clock fate. See
+ * `SourceSearchTimeoutError`'s doc comment for why NOT every one of those
+ * attempts is necessarily doing useful work, and whether a hung-forever
+ * source deserves the full retry budget - or a dedicated, faster-timeout
+ * queue so it stops blocking healthy searches - is worth revisiting.
  *
  * On `newlyInsertedJobIds` vs `linkedJobIds`: ingestJobsForSearch reports
  * both - the DB layer's distinction between "rows this call inserted" and
@@ -181,15 +208,32 @@ export class SourceMismatchError extends Error {}
  * this deadline is deliberately generic, wrapping every dispatched
  * source, not only ones with a well-behaved internal timeout. Measured
  * directly against the real SmartRecruitersSource (a probe forcing the
- * deadline to fire mid-fetch): at the moment the deadline expired, 85
- * detail requests had been issued; 1,500ms later, 400 had been issued -
- * 315 MORE went out after this worker had already given up on the call
- * and moved on to retrying/dead-lettering the message. Peak concurrent
- * in-flight requests briefly went from the adapter's configured 5 to 10,
- * when the RETRY's own 5 concurrent requests overlapped the still-running
- * orphan's - which contradicts smartrecruiters.ts's own declared,
- * measured invariant ("peak in-flight verified at exactly 5") and was
- * undocumented anywhere before this note.
+ * deadline to fire mid-fetch), existing unverified claim now dated for
+ * the first time (adversarial review round 2, ticket 491cd88, required
+ * fix 2) rather than re-measured this round — verified-live date 2026-09-02
+ * is when the date was added, not when the probe was re-run: at the moment
+ * the deadline expired, 85 detail requests had been issued; 1,500ms later,
+ * 400 had been issued - 315 MORE went out after this worker had already
+ * given up on the call and moved on to retrying/dead-lettering the
+ * message. Peak concurrent in-flight requests briefly went from the
+ * adapter's configured 5 to 10, when the RETRY's own 5 concurrent requests
+ * overlapped the still-running orphan's.
+ *
+ * CORRECTION (adversarial review round 2, ticket 491cd88, required fix 2)
+ * — the previous version of this comment claimed that peak-of-10 violated
+ * "smartrecruiters.ts's own declared, measured invariant ('peak in-flight
+ * verified at exactly 5')." That quote does not exist anywhere in
+ * smartrecruiters.ts (grepped to confirm) - it was fabricated. What
+ * `DEFAULT_DETAIL_CONCURRENCY`'s doc comment in smartrecruiters.ts
+ * actually declares is the opposite posture: "30 concurrent detail
+ * fetches against BoschGroup completed with zero 429s or errors. Kept
+ * well below that observed-safe ceiling." A transient peak of 10 violates
+ * nothing - it is comfortably inside that file's own measured-safe
+ * ceiling of 30. The orphan-overlap finding above is still real and still
+ * worth documenting (it is genuine extra load nobody had accounted for
+ * before this ticket), it just is not a broken invariant - it is a
+ * documented deviation from the steady-state concurrency of 5, well
+ * inside the real measured-safe ceiling.
  *
  * For SmartRecruiters specifically this stays bounded: its detail
  * fan-out is a finite loop with its own 15s-per-request timeout
