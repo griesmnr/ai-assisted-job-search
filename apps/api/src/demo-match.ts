@@ -59,6 +59,15 @@ process.loadEnvFile();
 export const MODEL = "claude-sonnet-5";
 
 /**
+ * Minimum match score (0-100) to display in the ranked list (ticket 1b9f81e).
+ * Jobs scoring below this are still scored and persisted in the database, but
+ * hidden from the printed/returned ranked list. This is a display filter only,
+ * not a scoring or persistence filter — the threshold can be retuned later
+ * without re-paying to score anything already in the database.
+ */
+export const MATCH_SCORE_FLOOR = 55;
+
+/**
  * Hard cap on the scorer's own response size — the JSON schema below is
  * small (a score, a rationale, two short string arrays), so this is rarely
  * actually reached, but it's the real, code-enforced upper bound on output
@@ -1574,6 +1583,21 @@ async function fetchRankedResults(
   return results;
 }
 
+/**
+ * Filters ranked results to exclude jobs below the match score floor
+ * (ticket 1b9f81e). Returns both the filtered results and the count of
+ * jobs that were below the floor. The floor is a display filter only — the
+ * jobs remain persisted in the database with their scores.
+ */
+export function applyMatchScoreFloor(results: RankedResult[]): {
+  displayed: RankedResult[];
+  belowFloorCount: number;
+} {
+  const displayed = results.filter((r) => r.matchScore >= MATCH_SCORE_FLOOR);
+  const belowFloorCount = results.length - displayed.length;
+  return { displayed, belowFloorCount };
+}
+
 export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDemoMatchResult> {
   const {
     db,
@@ -1855,7 +1879,11 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
         `this run.`,
     );
-    const results = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    const fetchedResults = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    const { displayed: results, belowFloorCount } = applyMatchScoreFloor(fetchedResults);
+    if (belowFloorCount > 0) {
+      log(`${results.length} shown, ${belowFloorCount} below ${MATCH_SCORE_FLOOR}%`);
+    }
     await markSearchComplete(db, searchId);
     return {
       resumeId,
@@ -2057,13 +2085,17 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Final results come from the database, not from this run's in-memory
   // scores — so a second run, which scores nothing new, still prints the
   // full ranked list instead of almost nothing.
-  const results = await fetchRankedResults(db, resumeId, linkedJobIds);
+  const fetchedResults = await fetchRankedResults(db, resumeId, linkedJobIds);
+  const { displayed: results, belowFloorCount } = applyMatchScoreFloor(fetchedResults);
 
   fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
   log(`Full JSON written to ${outputPath}\n`);
   log("─── ranked ───");
   for (const j of results) {
     log(`  ${String(j.matchScore).padStart(3)}%  ${j.title}  —  ${j.company}`);
+  }
+  if (belowFloorCount > 0) {
+    log(`\n${results.length} shown, ${belowFloorCount} below ${MATCH_SCORE_FLOOR}%`);
   }
 
   await markSearchComplete(db, searchId);

@@ -16,6 +16,7 @@ import {
   searchSources,
 } from "./db/schema.js";
 import {
+  applyMatchScoreFloor,
   buildBoardCoverage,
   buildCachedPrefix,
   buildJobSuffix,
@@ -28,11 +29,13 @@ import {
   estimateScoringCost,
   isTotalScoringFailure,
   makeClaudeScorer,
+  MATCH_SCORE_FLOOR,
   MODEL,
   readUsageStats,
   recordUsageStats,
   runDemoMatch,
   type BoardCoverageEntry,
+  type RankedResult,
   type ScoredJob,
   type ScoreJobFn,
   type SourceOutcome,
@@ -2477,5 +2480,81 @@ describe("isTotalScoringFailure (ticket 620ca30 review finding B3)", () => {
 
   it("is false on a partial failure — some scores still succeeded", () => {
     expect(isTotalScoringFailure({ failed: 1, newlyScored: 2 })).toBe(false);
+  });
+});
+
+describe("applyMatchScoreFloor (ticket 1b9f81e)", () => {
+  // Pure function tests — no DB needed.
+  function makeRankedResult(matchScore: number, title: string): RankedResult {
+    return {
+      jobId: `job-${title}`,
+      externalId: `ext-${title}`,
+      title,
+      company: "Test Co",
+      location: "Remote",
+      locationType: "remote",
+      applyUrl: "https://example.com",
+      matchScore,
+      rationale: "test rationale",
+      strengths: [],
+      gaps: [],
+    };
+  }
+
+  it("excludes all jobs when all are below the floor", () => {
+    const results = [
+      makeRankedResult(40, "Job 1"),
+      makeRankedResult(50, "Job 2"),
+      makeRankedResult(54, "Job 3"),
+    ];
+    const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
+    expect(displayed).toHaveLength(0);
+    expect(belowFloorCount).toBe(3);
+  });
+
+  it("includes all jobs when all are at or above the floor", () => {
+    const results = [
+      makeRankedResult(55, "Job 1"),
+      makeRankedResult(75, "Job 2"),
+      makeRankedResult(100, "Job 3"),
+    ];
+    const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
+    expect(displayed).toHaveLength(3);
+    expect(belowFloorCount).toBe(0);
+  });
+
+  it("filters mixed results: includes above-floor, excludes below-floor", () => {
+    const results = [
+      makeRankedResult(100, "Job 1"),
+      makeRankedResult(40, "Job 2"),
+      makeRankedResult(75, "Job 3"),
+      makeRankedResult(50, "Job 4"),
+      makeRankedResult(60, "Job 5"),
+    ];
+    const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
+    expect(displayed).toHaveLength(3);
+    expect(belowFloorCount).toBe(2);
+    // Verify the correct jobs were included
+    expect(displayed.map((r) => r.matchScore).sort((a, b) => b - a)).toEqual([
+      100, 75, 60,
+    ]);
+  });
+
+  it("includes jobs exactly at the floor (55%)", () => {
+    const results = [
+      makeRankedResult(54, "Below"),
+      makeRankedResult(55, "AtFloor"),
+      makeRankedResult(56, "Above"),
+    ];
+    const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
+    expect(displayed).toHaveLength(2);
+    expect(belowFloorCount).toBe(1);
+    expect(displayed.map((r) => r.title)).toEqual(["AtFloor", "Above"]);
+  });
+
+  it("handles empty input", () => {
+    const { displayed, belowFloorCount } = applyMatchScoreFloor([]);
+    expect(displayed).toHaveLength(0);
+    expect(belowFloorCount).toBe(0);
   });
 });
