@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
@@ -16,6 +17,9 @@ import {
 } from "./db/schema.js";
 import {
   buildBoardCoverage,
+  buildCachedPrefix,
+  buildJobSuffix,
+  buildScoringPrompt,
   buildSourceOutcomes,
   describeBoardOutcome,
   describeCostEstimate,
@@ -23,6 +27,7 @@ import {
   DEFAULT_SCORE_THRESHOLD,
   estimateScoringCost,
   isTotalScoringFailure,
+  makeClaudeScorer,
   MODEL,
   readUsageStats,
   recordUsageStats,
@@ -1274,6 +1279,11 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
       calls: 3,
       totalInputTokens: 3000,
       totalOutputTokens: 600,
+      // makeUsageReportingScorer reports plain {inputTokens, outputTokens}
+      // usage (no cache fields) — ticket aff284b's recordUsageStats still
+      // always writes concrete numbers, 0 here, not undefined.
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
     });
 
     // SECOND run, different candidates (nothing already scored), same
@@ -1644,6 +1654,42 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     expect(estimate.estimatedCostUsd).toBeCloseTo((2000 / 1e6) * 3 + (400 / 1e6) * 15, 10);
   });
 
+  // Ticket aff284b: the measured path must price cache reads/writes at
+  // their OWN rate (0.1x / 1.25x of the input price — see
+  // CACHE_READ_PRICE_MULTIPLIER/CACHE_WRITE_PRICE_MULTIPLIER's doc
+  // comment), not blend them into the flat input-token cost the way this
+  // function did before this ticket.
+  it("measured path: prices cache-read and cache-creation tokens at their own rate, not the flat input rate", () => {
+    const stats = {
+      model: MODEL,
+      calls: 10,
+      totalInputTokens: 10_000,
+      totalOutputTokens: 2_000,
+      totalCacheReadTokens: 100_000,
+      totalCacheCreationTokens: 1_000,
+    };
+    const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", stats);
+    expect(estimate.basis).toBe("measured");
+    // avg 1000 in / 100 (2 jobs) — token AVERAGES are unaffected by cache
+    // accounting; only estimatedCostUsd changes.
+    expect(estimate.estimatedInputTokens).toBe(2000);
+    expect(estimate.estimatedOutputTokens).toBe(400);
+    // avg cache-read 10,000/call * 2 jobs = 20,000; avg cache-creation
+    // 100/call * 2 jobs = 200.
+    const expectedCost =
+      (2000 / 1e6) * 3 + // ordinary input, full rate
+      (20_000 / 1e6) * 3 * 0.1 + // cache read, 0.1x
+      (200 / 1e6) * 3 * 1.25 + // cache creation, 1.25x
+      (400 / 1e6) * 15; // output, unaffected by caching
+    expect(estimate.estimatedCostUsd).toBeCloseTo(expectedCost, 10);
+    // Sanity check against the PRE-aff284b flat-rate formula: caching must
+    // make the estimate cheaper than treating every cache token as a full
+    // -price input token, or the "savings" this ticket exists to capture
+    // would not actually show up in the estimate at all.
+    const flatRateCost = ((2000 + 20_000 + 200) / 1e6) * 3 + (400 / 1e6) * 15;
+    expect(estimate.estimatedCostUsd).toBeLessThan(flatRateCost);
+  });
+
   it("a usageStats object with calls: 0 is treated as no data (bootstrap), not a measured average of zero", () => {
     const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", {
       model: MODEL,
@@ -1675,6 +1721,13 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       calls: 5,
       totalInputTokens: 2500,
       totalOutputTokens: 250,
+      // Ticket aff284b: neither call above reported cache usage, so these
+      // accumulate to 0 — but they're still concrete numbers on the
+      // returned object, not absent keys (see readUsageStats's doc
+      // comment), so a plain `toEqual` against the pre-aff284b 4-key shape
+      // would fail here.
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
     });
   });
 
@@ -1734,12 +1787,201 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       calls: 3,
       totalInputTokens: 3_000,
       totalOutputTokens: 600,
+      // Ticket aff284b — see the identical note on the "accumulates"
+      // test above.
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
     });
     // The stale opus record is gone — superseded, not blended — once a
     // write for the current model has happened. There's one file, one
     // model's average in it at a time; a switch resets it rather than
     // accumulating a second, parallel average nothing ever reads.
     expect(readUsageStats(statsPath, "claude-opus-5")).toBeUndefined();
+  });
+});
+
+/** Minimal shape of what `makeClaudeScorer` actually sends/reads on
+ * `anthropic.messages.create` — just enough to assert on cache_control
+ * placement and to feed back a synthetic `usage`. Cast to `Anthropic`
+ * with `as unknown as Anthropic` (never `any`) so this fake doesn't need
+ * to satisfy the real SDK's full, heavily-overloaded `create` signature. */
+type FakeCreateParams = {
+  model: string;
+  max_tokens: number;
+  messages: Array<{
+    role: string;
+    content: Array<{ type: string; text: string; cache_control?: { type: string } }>;
+  }>;
+};
+type FakeUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+};
+
+/** Fakes just enough of an `Anthropic` client for `makeClaudeScorer`
+ * (ticket aff284b): captures every `create` call's params (so tests can
+ * assert on cache_control/block placement) and returns a scorable JSON
+ * response carrying caller-supplied `usage`. No real network, no
+ * ANTHROPIC_API_KEY required — unlike the live measurement behind this
+ * ticket's before/after numbers (see the commit message), this is a pure
+ * unit test of the request/response WIRING, not of real cache behavior. */
+function makeFakeAnthropicClient(usage: FakeUsage): {
+  anthropic: Anthropic;
+  capturedParams: FakeCreateParams[];
+} {
+  const capturedParams: FakeCreateParams[] = [];
+  const fakeClient = {
+    messages: {
+      create: async (params: FakeCreateParams) => {
+        capturedParams.push(params);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                matchScore: 77,
+                rationale: "fake rationale",
+                strengths: ["fake strength"],
+                gaps: ["fake gap"],
+              }),
+            },
+          ],
+          usage,
+        };
+      },
+    },
+  };
+  return { anthropic: fakeClient as unknown as Anthropic, capturedParams };
+}
+
+describe("makeClaudeScorer prompt caching (ticket aff284b)", () => {
+  const RESUME_TEXT =
+    "Jane Doe. Senior Backend Engineer. 6 years Node.js, TypeScript, Postgres, RabbitMQ. " +
+    "Built message-driven services with retries, DLQs, and idempotent consumers. " +
+    "Led a migration from a monolith to a queue-based fan-out/fan-in architecture. " +
+    "Comfortable with schema design and migrations against a real relational database. " +
+    "Contributed to a React/TypeScript frontend against a REST API boundary. " +
+    "Prior roles: Acme Corp (2019-2023), Globex (2016-2019). BS Computer Science.";
+  const JOB = job("caching-test-1", "Staff Backend Engineer");
+
+  it("sends the cached prefix as the FIRST content block, with cache_control ephemeral, and the job suffix as a second, unmarked block", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient({
+      input_tokens: 50,
+      output_tokens: 40,
+      cache_read_input_tokens: null,
+      cache_creation_input_tokens: null,
+    });
+    const scoreJob = makeClaudeScorer(anthropic);
+    await scoreJob(JOB, RESUME_TEXT);
+
+    expect(capturedParams).toHaveLength(1);
+    const content = capturedParams[0]!.messages[0]!.content;
+    expect(content).toHaveLength(2);
+
+    // Block 1: the cached prefix, byte-identical to buildCachedPrefix's
+    // own output, cache_control-marked, and FIRST in the array — caching
+    // is a prefix match, so anything after this block is what varies.
+    expect(content[0]!.text).toBe(buildCachedPrefix(RESUME_TEXT));
+    expect(content[0]!.cache_control).toEqual({ type: "ephemeral" });
+
+    // Block 2: the per-job suffix, byte-identical to buildJobSuffix's own
+    // output, with NO cache_control — this is the part that legitimately
+    // varies from call to call and must never be inside the cached region.
+    expect(content[1]!.text).toBe(buildJobSuffix(JOB));
+    expect(content[1]!.cache_control).toBeUndefined();
+
+    // The two blocks concatenated reproduce buildScoringPrompt's combined
+    // string exactly — same invariant that function's own doc comment
+    // documents.
+    expect(content[0]!.text + content[1]!.text).toBe(buildScoringPrompt(JOB, RESUME_TEXT));
+  });
+
+  it("buildCachedPrefix folds the instruction preamble in ahead of the resume, so the whole cacheable region is covered by one cache_control breakpoint", () => {
+    const prefix = buildCachedPrefix(RESUME_TEXT);
+    const preambleIndex = prefix.indexOf("Score how well this candidate matches this job posting.");
+    const resumeMarkerIndex = prefix.indexOf("=== RESUME ===");
+    const resumeIndex = prefix.indexOf(RESUME_TEXT);
+
+    expect(preambleIndex).toBeGreaterThanOrEqual(0);
+    expect(resumeMarkerIndex).toBeGreaterThan(preambleIndex);
+    expect(resumeIndex).toBeGreaterThan(resumeMarkerIndex);
+    // Nothing job-specific (title/company/description) leaks into the
+    // cached prefix — that's buildJobSuffix's job, and it must stay out
+    // of the cache_control-marked block.
+    expect(prefix).not.toContain(JOB.title);
+    expect(prefix).not.toContain(JOB.description);
+  });
+
+  it("propagates real cache-read/cache-creation usage from the API response into ScoredJob.usage, separately from inputTokens", async () => {
+    const { anthropic } = makeFakeAnthropicClient({
+      input_tokens: 317,
+      output_tokens: 486,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 2113,
+    });
+    const scoreJob = makeClaudeScorer(anthropic);
+    const scored = await scoreJob(JOB, RESUME_TEXT);
+
+    expect(scored.usage).toEqual({
+      inputTokens: 317,
+      outputTokens: 486,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 2113,
+    });
+  });
+
+  it("a real cache READ (subsequent call against a warm cache) reports nonzero cacheReadTokens and zero cacheCreationTokens", async () => {
+    const { anthropic } = makeFakeAnthropicClient({
+      input_tokens: 215,
+      output_tokens: 362,
+      cache_read_input_tokens: 2113,
+      cache_creation_input_tokens: 0,
+    });
+    const scoreJob = makeClaudeScorer(anthropic);
+    const scored = await scoreJob(JOB, RESUME_TEXT);
+
+    expect(scored.usage?.cacheReadTokens).toBe(2113);
+    expect(scored.usage?.cacheCreationTokens).toBe(0);
+  });
+
+  // Ticket aff284b acceptance criterion: "A resume too short to cache
+  // still scores correctly." Per the live API docs (see buildCachedPrefix's
+  // doc comment), a prefix under the ~1,024-token minimum simply never
+  // creates a cache entry — cache_creation_input_tokens comes back 0, the
+  // call is billed and scored normally, and NOTHING errors. This test
+  // reproduces that response shape against the fake client; the actual
+  // live behavior (a short resume genuinely producing a 0/0 cache
+  // response, with no error) is confirmed with a real API call in the
+  // ticket's commit message.
+  it("a resume too short to cache still scores correctly — cache_control is sent regardless, and a 0/0 (no cache created) response does not error", async () => {
+    const SHORT_RESUME = "Software engineer. 3 years experience. TypeScript, Node, Postgres.";
+    const { anthropic, capturedParams } = makeFakeAnthropicClient({
+      input_tokens: 210,
+      output_tokens: 120,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    });
+    const scoreJob = makeClaudeScorer(anthropic);
+    const scored = await scoreJob(JOB, SHORT_RESUME);
+
+    // cache_control is still sent unconditionally — makeClaudeScorer does
+    // not special-case resume length, the API itself decides whether the
+    // prefix qualifies.
+    const content = capturedParams[0]!.messages[0]!.content;
+    expect(content[0]!.cache_control).toEqual({ type: "ephemeral" });
+
+    // The call still scores correctly — no throw, a real matchScore comes
+    // back — and the cache fields both report 0 rather than null/undefined
+    // or an error.
+    expect(scored.matchScore).toBe(77);
+    expect(scored.usage).toEqual({
+      inputTokens: 210,
+      outputTokens: 120,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
   });
 });
 

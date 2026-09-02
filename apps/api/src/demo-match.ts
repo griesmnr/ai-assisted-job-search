@@ -149,7 +149,22 @@ export type ScoredJob = {
    * every existing `ScoreJobFn` fake (demo-match.test.ts) keeps compiling
    * unchanged — a fake scorer has no real usage to report.
    */
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    /**
+     * Real cache-read / cache-write tokens for this call (ticket aff284b),
+     * kept separate from `inputTokens` — the API's own `input_tokens` is
+     * the UNCACHED remainder only (shared/prompt-caching.md in the
+     * claude-api skill: "input_tokens is the uncached remainder only").
+     * Optional so a fake scorer that reports plain `{inputTokens,
+     * outputTokens}` usage (demo-match.test.ts's `makeUsageReportingScorer`)
+     * keeps compiling unchanged; `makeClaudeScorer` always sets both,
+     * defaulting the SDK's nullable fields to 0.
+     */
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 };
 
 /** Injectable so tests can assert call counts without spending real Claude
@@ -158,27 +173,79 @@ export type ScoredJob = {
 export type ScoreJobFn = (job: NormalizedJob, resumeText: string) => Promise<ScoredJob>;
 
 /**
- * The exact prompt text a real scoring call sends. Extracted so
- * `estimateScoringCost` can measure the REAL character count of what would
- * actually be sent — not a guessed per-job token figure — for its bootstrap
- * estimate (see that function's doc comment).
+ * Instruction preamble — byte-identical across every scoring call in a run,
+ * exactly like the resume (ticket aff284b). Folded into the CACHED PREFIX
+ * below alongside the resume rather than left as a separate uncached block:
+ * both are constant for the life of a run, so one cache_control breakpoint
+ * covering both is strictly better than two (max 4 breakpoints per
+ * request; this project uses exactly one) with no functional difference,
+ * since neither ever varies independently of the other.
+ */
+const SCORING_PREAMBLE = [
+  "Score how well this candidate matches this job posting.",
+  "Be honest and calibrated — most candidates are not a 90.",
+].join("\n");
+
+/**
+ * The CACHED PREFIX (ticket aff284b): preamble + resume, byte-identical
+ * across every `scoreJob` call sharing one `resumeText`. Must be sent
+ * FIRST — prompt caching is a prefix match, and only bytes AHEAD of a
+ * cache_control breakpoint are what gets cached (shared/prompt-caching.md
+ * in the claude-api skill). `makeClaudeScorer` sends this as one
+ * `cache_control`-marked content block; `buildJobSuffix` (below, varies
+ * every call) is a second, unmarked block after it.
+ *
+ * Minimum cacheable prefix for `claude-sonnet-5` (`MODEL`) is 1,024 tokens
+ * — verified live against
+ * platform.claude.com/docs/en/build-with-claude/prompt-caching.md on
+ * 2026-08-31 (matches the `claude-api` skill's own cached table). A resume
+ * short enough to put this whole prefix under that minimum does NOT
+ * error: `cache_control` on a too-short prefix silently creates no cache
+ * entry (`cache_creation_input_tokens: 0` in the response) and the call is
+ * scored normally at full price — see the "degrades gracefully for a short
+ * resume" coverage in demo-match.test.ts.
+ */
+export function buildCachedPrefix(resumeText: string): string {
+  return [SCORING_PREAMBLE, "", "=== RESUME ===", resumeText].join("\n");
+}
+
+/**
+ * The per-job suffix — the only part of a scoring prompt that varies
+ * across calls sharing one `resumeText`. Placed AFTER the cache_control
+ * breakpoint (`buildCachedPrefix`) so a new job posting never invalidates
+ * the cached prefix ahead of it. Leading `"\n\n"` (rather than joining
+ * through an array, as `buildCachedPrefix` does) reproduces the exact
+ * blank-line separator `buildScoringPrompt` sent before this ticket when
+ * concatenated directly onto `buildCachedPrefix`'s output with no
+ * separator of its own.
+ */
+export function buildJobSuffix(job: NormalizedJob): string {
+  return (
+    "\n\n" +
+    [
+      "=== JOB POSTING ===",
+      `Title: ${job.title}`,
+      `Employer: ${job.company}`,
+      `Location: ${job.location ?? "not stated"} (${job.locationType})`,
+      `Type: ${job.payType}, ${job.commitment}`,
+      "",
+      job.description.slice(0, 6000),
+    ].join("\n")
+  );
+}
+
+/**
+ * The exact combined prompt text a real scoring call sends — the cached
+ * prefix (`buildCachedPrefix`) followed by the per-job suffix
+ * (`buildJobSuffix`). `makeClaudeScorer` itself sends these as TWO
+ * separate content blocks (the first `cache_control`-marked), not this one
+ * concatenated string — see that function. This combined form still
+ * exists because `estimateScoringCost`'s bootstrap path needs the REAL
+ * total character count of what a call sends, and total length is
+ * identical whether measured as one string or as two concatenated blocks.
  */
 export function buildScoringPrompt(job: NormalizedJob, resumeText: string): string {
-  return [
-    "Score how well this candidate matches this job posting.",
-    "Be honest and calibrated — most candidates are not a 90.",
-    "",
-    "=== RESUME ===",
-    resumeText,
-    "",
-    "=== JOB POSTING ===",
-    `Title: ${job.title}`,
-    `Employer: ${job.company}`,
-    `Location: ${job.location ?? "not stated"} (${job.locationType})`,
-    `Type: ${job.payType}, ${job.commitment}`,
-    "",
-    job.description.slice(0, 6000),
-  ].join("\n");
+  return buildCachedPrefix(resumeText) + buildJobSuffix(job);
 }
 
 export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
@@ -187,7 +254,24 @@ export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
       model: MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
       output_config: { format: { type: "json_schema", schema: SCHEMA } },
-      messages: [{ role: "user", content: buildScoringPrompt(job, resumeText) }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: buildCachedPrefix(resumeText),
+              // Ticket aff284b: everything up to and including this block
+              // is the cache breakpoint. Default TTL (5 minutes — no `ttl`
+              // override) is what CACHE_WRITE_PRICE_MULTIPLIER below
+              // assumes; see buildCachedPrefix's doc comment for the
+              // minimum-length/graceful-degradation behavior.
+              cache_control: { type: "ephemeral" },
+            },
+            { type: "text", text: buildJobSuffix(job) },
+          ],
+        },
+      ],
     });
 
     const text = response.content.find((b) => b.type === "text");
@@ -198,6 +282,13 @@ export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
+        // Ticket aff284b — the whole point: 0 on a cache MISS (the run's
+        // first call, or a resume too short to cache) and nonzero on every
+        // call after the cache is warm. Nullable per the SDK's `Usage`
+        // type; defaulted to 0 here so `ScoredJob.usage` always reports
+        // real numbers, never `null`.
+        cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
       },
     };
   };
@@ -221,6 +312,34 @@ export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
  * `describeCostEstimate`.
  */
 const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
+
+/**
+ * Prompt-cache pricing multipliers (ticket aff284b), applied to the
+ * relevant `pricePerMillionTokens.in` rate. Verified live against
+ * platform.claude.com/docs/en/build-with-claude/prompt-caching.md,
+ * 2026-08-31: a cache READ costs 0.1x the base input price; a cache WRITE
+ * under the default 5-minute TTL costs 1.25x (a 1-hour TTL write would be
+ * 2x instead, but `makeClaudeScorer` never passes a `ttl` override, so 5
+ * minutes — and 1.25x — is what this project actually pays).
+ *
+ * MEASURED, not assumed (ticket aff284b acceptance criteria) — live
+ * `claude-sonnet-5` run, 2026-09-02, same 5-job set scored twice, real
+ * `prep/resume.txt` (4,914 chars): BEFORE (pre-ticket single-block prompt,
+ * no `cache_control`) totaled 11,563 input tokens across 5 calls, $0.034689
+ * of input cost at this constant's rate. AFTER (this ticket's two-block
+ * prompt, first call alone then the rest) totaled 1,228 uncached input +
+ * 8,452 cache-read + 2,113 cache-creation tokens, $0.014143 of input cost
+ * — a 59.2% reduction in input cost on this small set (every call after
+ * the first hit a warm cache: 4 of 5 calls were reads, a higher hit ratio
+ * than the ~25% estimate's 200-call/1-write baseline, which is why this
+ * set's percentage saving reads higher). `cache_read_input_tokens` was
+ * confirmed nonzero in the raw API response on every call after the
+ * first, and 0 on the first call and on a resume too short to cache — see
+ * `buildCachedPrefix`'s doc comment for that case. Full commit message has
+ * the per-call numbers.
+ */
+const CACHE_READ_PRICE_MULTIPLIER = 0.1;
+const CACHE_WRITE_PRICE_MULTIPLIER = 1.25;
 
 /**
  * ~4 characters per token is the standard rough estimate for English text
@@ -255,6 +374,23 @@ export type UsageStats = {
   calls: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  /**
+   * Real recorded cache-read / cache-write tokens, accumulated separately
+   * from `totalInputTokens` (ticket aff284b) for the same reason
+   * `ScoredJob.usage.cacheReadTokens` is separate from `inputTokens` — see
+   * that field's doc comment. Optional, not because a post-aff284b write
+   * ever omits them (`recordUsageStats` always writes concrete numbers,
+   * 0 if unknown), but so a stats file written by a PRE-aff284b build of
+   * this project — shape `{model, calls, totalInputTokens,
+   * totalOutputTokens}`, no cache fields at all — still parses as a valid
+   * `UsageStats` instead of getting rejected: `readUsageStats` treats a
+   * missing field as 0 rather than failing the shape check, so upgrading
+   * this code doesn't discard an existing on-disk average. Total prompt
+   * size for any one call = inputTokens + cacheReadTokens +
+   * cacheCreationTokens (shared/prompt-caching.md).
+   */
+  totalCacheReadTokens?: number;
+  totalCacheCreationTokens?: number;
 };
 
 /**
@@ -265,6 +401,11 @@ export type UsageStats = {
  * `UsageStats.model`'s doc comment): a stats file existing is an
  * optimization for the cost estimate, never a precondition for scoring to
  * work, and stale-model stats are worse than no stats at all.
+ *
+ * The two cache-token fields (ticket aff284b) are normalized to 0 when
+ * absent from the file on disk — a PRE-aff284b stats file has no such
+ * keys at all, and that must keep reading as "zero cache activity
+ * measured yet", not as a parse failure. See `UsageStats`'s doc comment.
  */
 export function readUsageStats(
   path: string,
@@ -281,7 +422,16 @@ export function readUsageStats(
       parsed.calls > 0
     ) {
       if (parsed.model !== expectedModel) return undefined;
-      return parsed as UsageStats;
+      return {
+        model: parsed.model,
+        calls: parsed.calls,
+        totalInputTokens: parsed.totalInputTokens,
+        totalOutputTokens: parsed.totalOutputTokens,
+        totalCacheReadTokens:
+          typeof parsed.totalCacheReadTokens === "number" ? parsed.totalCacheReadTokens : 0,
+        totalCacheCreationTokens:
+          typeof parsed.totalCacheCreationTokens === "number" ? parsed.totalCacheCreationTokens : 0,
+      };
     }
     return undefined;
   } catch {
@@ -296,6 +446,14 @@ export function readUsageStats(
  * If `MODEL` changes again, the next call here starts a fresh average
  * under the new model name instead of blending into the old one.
  *
+ * `totalCacheReadTokens`/`totalCacheCreationTokens` on `added` are
+ * optional (ticket aff284b) so existing call sites that only ever tracked
+ * `{calls, totalInputTokens, totalOutputTokens}` keep compiling unchanged;
+ * omitted is treated as 0, same as `readUsageStats` treats their absence
+ * on disk. The written file always carries concrete numbers for both
+ * (0 if nothing was added), not `undefined` — once any run has passed
+ * through this code, the stats file is self-describing.
+ *
  * Deliberately allowed to throw (ENOENT for a missing directory, EACCES,
  * ENOSPC, ...) rather than swallowing the error itself — ticket 16c824a
  * review F1 found this being called with nothing guarding it BEFORE the
@@ -307,7 +465,13 @@ export function readUsageStats(
  */
 export function recordUsageStats(
   path: string,
-  added: { calls: number; totalInputTokens: number; totalOutputTokens: number },
+  added: {
+    calls: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCacheReadTokens?: number;
+    totalCacheCreationTokens?: number;
+  },
   model: string = MODEL,
 ): void {
   if (added.calls === 0) return;
@@ -316,12 +480,17 @@ export function recordUsageStats(
     calls: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreationTokens: 0,
   };
   const next: UsageStats = {
     model,
     calls: prior.calls + added.calls,
     totalInputTokens: prior.totalInputTokens + added.totalInputTokens,
     totalOutputTokens: prior.totalOutputTokens + added.totalOutputTokens,
+    totalCacheReadTokens: (prior.totalCacheReadTokens ?? 0) + (added.totalCacheReadTokens ?? 0),
+    totalCacheCreationTokens:
+      (prior.totalCacheCreationTokens ?? 0) + (added.totalCacheCreationTokens ?? 0),
   };
   fs.writeFileSync(path, JSON.stringify(next, null, 2));
 }
@@ -345,10 +514,25 @@ export type CostEstimate = {
 /**
  * Estimates the cost of scoring `jobsToScore`, before any of those calls
  * are made (ticket 16c824a). Prefers `usageStats` — real, measured
- * input/output token averages recorded from this project's own prior live
- * runs (see `recordUsageStats`) — over the bootstrap path, which still
- * grounds itself in real numbers (this run's actual prompt text, and the
- * code's own `max_tokens` cap) rather than an arbitrary guess.
+ * input/output (and, as of ticket aff284b, cache-read/cache-write) token
+ * averages recorded from this project's own prior live runs (see
+ * `recordUsageStats`) — over the bootstrap path, which still grounds
+ * itself in real numbers (this run's actual prompt text, and the code's
+ * own `max_tokens` cap) rather than an arbitrary guess.
+ *
+ * Cache pricing (ticket aff284b): the MEASURED path prices each token
+ * bucket at its own rate — cache reads at `CACHE_READ_PRICE_MULTIPLIER`,
+ * cache writes at `CACHE_WRITE_PRICE_MULTIPLIER`, both against
+ * `pricePerMillionTokens.in` — rather than blending everything into the
+ * flat input price the way this function did before this ticket. The
+ * BOOTSTRAP path deliberately does NOT do this: with no recorded history
+ * yet, this function has no way to know how many of `jobCount` calls will
+ * actually hit a warm cache versus pay the write premium (that depends on
+ * run-time ordering — see `runDemoMatch`'s cache pre-warm), so it prices
+ * every token at the full input rate, same as before this ticket. That
+ * is CONSERVATIVE (an overestimate, never an underestimate) rather than
+ * silently wrong — the same reasoning `describeCostEstimate` already
+ * documents for `MAX_OUTPUT_TOKENS`'s worst-case assumption below.
  */
 export function estimateScoringCost(
   jobsToScore: NormalizedJob[],
@@ -372,11 +556,31 @@ export function estimateScoringCost(
 
   let estimatedInputTokens: number;
   let estimatedOutputTokens: number;
+  let estimatedCostUsd: number;
+
   if (basis === "measured") {
     const avgInputTokens = usageStats!.totalInputTokens / usageStats!.calls;
     const avgOutputTokens = usageStats!.totalOutputTokens / usageStats!.calls;
+    // `?? 0`: usageStats may come from a caller-constructed literal (as
+    // several tests do) rather than `readUsageStats`, so these fields
+    // can genuinely be `undefined` here even though `readUsageStats`
+    // itself always normalizes them to a number — see `UsageStats`'s doc
+    // comment.
+    const avgCacheReadTokens = (usageStats!.totalCacheReadTokens ?? 0) / usageStats!.calls;
+    const avgCacheCreationTokens = (usageStats!.totalCacheCreationTokens ?? 0) / usageStats!.calls;
+
     estimatedInputTokens = Math.round(avgInputTokens * jobCount);
     estimatedOutputTokens = Math.round(avgOutputTokens * jobCount);
+    const estimatedCacheReadTokens = Math.round(avgCacheReadTokens * jobCount);
+    const estimatedCacheCreationTokens = Math.round(avgCacheCreationTokens * jobCount);
+
+    estimatedCostUsd =
+      (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+      (estimatedCacheReadTokens / 1e6) * pricePerMillionTokens.in * CACHE_READ_PRICE_MULTIPLIER +
+      (estimatedCacheCreationTokens / 1e6) *
+        pricePerMillionTokens.in *
+        CACHE_WRITE_PRICE_MULTIPLIER +
+      (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
   } else {
     const totalPromptChars = jobsToScore.reduce(
       (sum, job) => sum + buildScoringPrompt(job, resumeText).length,
@@ -384,11 +588,10 @@ export function estimateScoringCost(
     );
     estimatedInputTokens = Math.round(totalPromptChars / CHARS_PER_TOKEN_ESTIMATE);
     estimatedOutputTokens = MAX_OUTPUT_TOKENS * jobCount;
+    estimatedCostUsd =
+      (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+      (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
   }
-
-  const estimatedCostUsd =
-    (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
-    (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
 
   return { jobCount, estimatedInputTokens, estimatedOutputTokens, estimatedCostUsd, basis };
 }
@@ -1312,19 +1515,60 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     // re-pay for) all of them, including the ones that already succeeded.
     // allSettled keeps every fulfilled result so only the actual failures
     // get retried next time.
-    const settled = await Promise.allSettled(
-      toScoreIds.map(async (jobId) => {
-        const nj = normalizedJobById.get(jobId);
-        if (!nj) {
-          // Should be impossible: every id in toScoreIds came from
-          // linkedJobIds, which ingestJobsForSearch derived from this
-          // same candidate set.
-          throw new Error(`runDemoMatch: no NormalizedJob found for linked job id "${jobId}"`);
-        }
-        const scored = await scoreJob(nj, resumeText);
-        return { jobId, ...scored };
-      }),
-    );
+    const scoreOne = async (jobId: string): Promise<{ jobId: string } & ScoredJob> => {
+      const nj = normalizedJobById.get(jobId);
+      if (!nj) {
+        // Should be impossible: every id in toScoreIds came from
+        // linkedJobIds, which ingestJobsForSearch derived from this same
+        // candidate set.
+        throw new Error(`runDemoMatch: no NormalizedJob found for linked job id "${jobId}"`);
+      }
+      const scored = await scoreJob(nj, resumeText);
+      return { jobId, ...scored };
+    };
+
+    // Ticket aff284b: score the FIRST job alone and await it before firing
+    // the rest concurrently — do NOT collapse this back into a single
+    // `Promise.allSettled(toScoreIds.map(scoreOne))`. Every call in this
+    // loop sends a byte-identical cached prefix (preamble + resume — see
+    // makeClaudeScorer), but per Anthropic's own docs (verified live
+    // 2026-08-31, platform.claude.com/docs/en/build-with-claude/
+    // prompt-caching.md): "a cache entry only becomes available after the
+    // first response begins ... If you need cache hits for parallel
+    // requests, wait for the first response before sending subsequent
+    // requests." Firing every one of `toScoreIds` at once — this loop's
+    // shape before this ticket — means none of them can read a cache
+    // entry the others are simultaneously racing to write, which would
+    // make this entire ticket's saving zero on the real 200-job run it
+    // exists for, silently, since `Promise.allSettled` reports only one
+    // batch result and never distinguishes "every call missed the cache"
+    // from "caching isn't in play." Scoring #1 alone first makes it the
+    // run's one cache WRITE; every concurrent call after it is a cache
+    // READ. Costs one extra network round trip of latency before the
+    // batch starts — real, but negligible next to a 200-call run, and
+    // the only way the promised ~25% saving is actually realized instead
+    // of merely intended.
+    //
+    // Cache LIFETIME across a long run (ticket aff284b requirement:
+    // "confirm behavior and whether refreshes are automatic") — verified
+    // live 2026-09-02, platform.claude.com/docs/en/build-with-claude/
+    // prompt-caching.md: "The cache is refreshed for no additional cost
+    // each time the cached content is used," measured from the START of
+    // each request, not its completion. So every READ automatically
+    // extends the 5-minute default TTL for free — no explicit re-warm
+    // call needed. In THIS shape that makes the concern close to moot
+    // anyway: `restIds` below fires as one concurrent batch immediately
+    // after the single warming call above, not job-by-job — every call in
+    // a run, including a 200-job one, starts within the same handful of
+    // seconds, nowhere near the 5-minute boundary. The auto-refresh matters
+    // for a hypothetically slower or more sequential caller of
+    // `makeClaudeScorer`; it is not something this run shape currently
+    // depends on to stay warm.
+    const [firstId, ...restIds] = toScoreIds;
+    const settled: PromiseSettledResult<{ jobId: string } & ScoredJob>[] = [
+      ...(await Promise.allSettled([scoreOne(firstId)])),
+      ...(await Promise.allSettled(restIds.map((jobId) => scoreOne(jobId)))),
+    ];
 
     const newlyScoredRows: Array<{ jobId: string } & ScoredJob> = [];
     settled.forEach((result, i) => {
@@ -1387,6 +1631,17 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
           calls: rowsWithUsage.length,
           totalInputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.inputTokens, 0),
           totalOutputTokens: rowsWithUsage.reduce((sum, r) => sum + r.usage.outputTokens, 0),
+          // Ticket aff284b: recorded separately so future runs' cost
+          // estimates can price cache reads/writes at their own rate
+          // instead of the flat input rate — see estimateScoringCost.
+          totalCacheReadTokens: rowsWithUsage.reduce(
+            (sum, r) => sum + (r.usage.cacheReadTokens ?? 0),
+            0,
+          ),
+          totalCacheCreationTokens: rowsWithUsage.reduce(
+            (sum, r) => sum + (r.usage.cacheCreationTokens ?? 0),
+            0,
+          ),
         });
       } catch (err) {
         log(
