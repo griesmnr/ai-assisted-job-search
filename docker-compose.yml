@@ -78,7 +78,7 @@ services:
     # Not started by a plain `docker compose up -d` -- only postgres and
     # rabbitmq are (the profiles list on THIS service, not on the others).
     # Building this image compiles git-bug from source at a pinned tag
-    # (v0.10.1, see Dockerfile.dev), which involves Go downloading its own
+    # (v0.10.1, see Dockerfile), which involves Go downloading its own
     # newer toolchain (~100-150MB) on a cold cache -- no webui/Vite build is
     # involved at this tag. Still worth keeping off the default `up -d` path:
     # gating Postgres/RabbitMQ behind any image build would be a bad first
@@ -88,7 +88,7 @@ services:
     profiles: ["dev"]
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
       - .env

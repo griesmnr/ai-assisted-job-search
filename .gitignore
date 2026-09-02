@@ -27,3 +27,9 @@ backups/
 
 # Claude Code local settings (per-machine, not shared)
 .claude/settings.local.json*
+
+# Local helper, not part of the project
+push.sh
+
+# Local launcher, not part of the project
+start.sh

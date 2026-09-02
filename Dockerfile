@@ -37,6 +37,14 @@
 # download needs working CA certs (reason ca-certificates is installed
 # first) and network access, and can add a few minutes to the first
 # `docker compose build`. This is normal, not a hang.
+#
+# Claude Code ships in this image (added 2026-09-02, ticket 69608fc): the
+# ticket originally scoped this out as "disruptive mid-project", but Nicole
+# is now actively running Claude Code from inside a hand-built container
+# with no reproducible source, which is the exact gap this ticket exists to
+# close. Installed after the verification RUN below so a broken npm registry
+# fetch for the (occasionally-updated) Claude Code package can't mask a
+# failure in the toolchain steps that came before it.
 
 FROM ubuntu:24.04
 
@@ -107,6 +115,10 @@ RUN git clone --branch "${GIT_BUG_VERSION}" --depth 1 \
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# --- Claude Code ---
+# npm package requires Node 22+ as of v2.1.198, which we already have above.
+RUN npm install -g @anthropic-ai/claude-code
+
 # --- Build-time verification ---
 # Fail the build here, in CI/on this machine, rather than leaving Nicole to
 # discover a broken tool on her Mac with no diagnostic. Every tool this
@@ -116,7 +128,8 @@ RUN node --version \
     && go version \
     && git-bug version \
     && rtk --version \
-    && pg_isready --version
+    && pg_isready --version \
+    && claude --version
 
 WORKDIR /workspace
 
