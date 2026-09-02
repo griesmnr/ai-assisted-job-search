@@ -540,6 +540,105 @@ describe("fetchSourceWorker", () => {
     expect(rows).toHaveLength(1);
   });
 
+  // -------------------------------------------------------------------------
+  // Source-search deadline (ticket 491cd88). A source.search() call that
+  // never settles must not wedge this worker forever under prefetch(1),
+  // and must not silently vanish either — it has to go down the SAME
+  // retry/DLQ path as any other retryable failure. `sourceSearchTimeoutMs`
+  // is set tiny here (real default: DEFAULT_SOURCE_SEARCH_TIMEOUT_MS, 10
+  // minutes) so these tests don't wait on production-scale timing.
+  // -------------------------------------------------------------------------
+
+  it("a source.search() that exceeds the deadline is retried — not left unacked forever — and can still succeed on the next attempt (deadline expiry regression)", async () => {
+    const searchId = await makeSearch();
+    const externalId = `deadline-recovers-${randomUUID()}`;
+    let calls = 0;
+    const source: JobSource = {
+      dataSource: SOURCE_ID as Job["dataSource"],
+      search: async () => {
+        calls += 1;
+        if (calls === 1) {
+          // Simulates ticket 491cd88's exact failure mode: a search() call
+          // that runs long enough to blow past the worker's deadline.
+          // Deliberately never resolves on its own within this test — the
+          // worker's OWN timeout has to be what ends this attempt, not the
+          // source settling.
+          return new Promise<SourceSearchResult>(() => {});
+        }
+        return okResult([normalizedJob({ externalId })]);
+      },
+    };
+
+    const logs: string[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      retryTiers: TEST_RETRY_TIERS,
+      sourceSearchTimeoutMs: 50,
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    // This is the load-bearing assertion: the message goes down the RETRY
+    // path, not vanishing. A message truly stuck unacked forever (the
+    // pre-fix failure mode — before this ticket, nothing ever stopped
+    // waiting on the hung search()) would never reach a second attempt at
+    // all under prefetch(1); reaching score.job here is only possible if
+    // the first (hung) delivery was explicitly failed, acked, and
+    // requeued via a retry tier so a second delivery could be dispatched.
+    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 1, { timeoutMs: 5000 });
+    expect(calls).toBe(2);
+    expect(await queueCount(FETCH_SOURCE_DLQ)).toBe(0);
+
+    // Confirms it was actually the DEADLINE that triggered the retry, not
+    // some other failure path.
+    expect(logs.some((l) => l.includes("source-search-timeout"))).toBe(true);
+    expect(logs.some((l) => l.includes("did not complete within 50ms"))).toBe(true);
+
+    const rows = await db.select().from(jobs).where(eq(jobs.externalId, externalId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a source.search() that ALWAYS exceeds the deadline ends up in the DLQ after bounded attempts, not stuck unacked forever", async () => {
+    const searchId = await makeSearch();
+    const maxAttempts = 2;
+    let calls = 0;
+    const source: JobSource = {
+      dataSource: SOURCE_ID as Job["dataSource"],
+      search: async () => {
+        calls += 1;
+        return new Promise<SourceSearchResult>(() => {});
+      },
+    };
+
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      maxAttempts,
+      retryTiers: TEST_RETRY_TIERS,
+      sourceSearchTimeoutMs: 50,
+      log: () => {},
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(FETCH_SOURCE_DLQ)) === 1, { timeoutMs: 5000 });
+    expect(calls).toBe(maxAttempts);
+
+    // Give the (now-exhausted) retry path a moment to prove it stays quiet
+    // — same pattern as the plain TransientSourceError exhaustion test
+    // above — a real fix bounds this permanently, not just "eventually".
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(calls).toBe(maxAttempts);
+    expect(await queueCount(FETCH_SOURCE_DLQ)).toBe(1);
+    expect(await queueCount(FETCH_SOURCE_QUEUE)).toBe(0);
+    expect(await retryTierMessageCount(TEST_RETRY_TIERS)).toBe(0);
+  });
+
   it("uses RateLimitedError.retryAfterMs to pick a delay tier instead of guessing from attempt number (H3 regression)", async () => {
     const searchId = await makeSearch();
     const externalId = `h3-${randomUUID()}`;
@@ -704,6 +803,85 @@ describe("fetchSourceWorker", () => {
     expect(alerts[0]).toMatchObject({ searchId, sourceId: SOURCE_ID, skipRate: 1 });
     // A 100% skip rate legitimately produced zero jobs - no score.job to publish.
     expect(await queueCount(SCORE_JOB_QUEUE)).toBe(0);
+  });
+
+  it("logs every skipped record's reason at the worker boundary, even when skipRate stays well under the alert threshold (F2 regression, ticket 491cd88)", async () => {
+    const searchId = await makeSearch();
+    // 9 successful jobs, 1 skip - skipRate 0.1, well under the default 0.5
+    // highSkipRateThreshold. Deliberately modeled on the exact scenario
+    // the review measured: a SmartRecruiters maxPostings truncation
+    // record diluted into a large, otherwise-healthy-looking result
+    // (1 truncation record against 1,000 successful jobs is skipRate
+    // 0.001) - onHighSkipRate correctly does NOT fire for a skipRate this
+    // low, so the log line below is the ONLY place this reaches.
+    const jobsFound = Array.from({ length: 9 }, (_, i) =>
+      normalizedJob({ externalId: `f2-ok-${randomUUID()}-${i}` }),
+    );
+    const truncationReason =
+      'SmartRecruiters search for company "BigCo" was truncated: 5000 candidate postings ' +
+      "were found but only 1000 of the shared maxPostings=1000 budget remained - 4000 " +
+      "postings were NOT fetched (simulated for this test)";
+    const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () =>
+      okResult(jobsFound, [{ externalId: undefined, reason: truncationReason }]),
+    );
+
+    const logs: string[] = [];
+    const alerts: HighSkipRateInfo[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      onHighSkipRate: (info) => alerts.push(info),
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(SCORE_JOB_QUEUE)) === 9);
+
+    // Confirms the low-skipRate premise: the alert hook genuinely does not
+    // fire here (that's correct behavior for the threshold, not a bug).
+    expect(alerts).toHaveLength(0);
+
+    // The load-bearing assertion: the truncation's own reason text reached
+    // the log stream anyway, with enough context (source, search id) to
+    // find it. Before this fix, `result.skipped` was read only for
+    // `total`/`skipRate` and then discarded - `reason` never logged,
+    // persisted, or returned anywhere - so a truncated result was
+    // indistinguishable from a complete one everywhere in the running
+    // system, machine and human alike.
+    expect(logs.some((l) => l.includes(truncationReason))).toBe(true);
+    expect(
+      logs.some((l) => l.includes(`source=${SOURCE_ID}`) && l.includes(`search=${searchId}`)),
+    ).toBe(true);
+  });
+
+  it("caps how many skipped-record reasons it logs per message, summarizing the rest by count instead of flooding the log (SKIPPED_LOG_LIMIT)", async () => {
+    const searchId = await makeSearch();
+    const manySkips = Array.from({ length: 25 }, (_, i) => ({
+      externalId: `flood-${i}`,
+      reason: `unmappable record ${i}`,
+    }));
+    const source = new ScriptedSource(SOURCE_ID as Job["dataSource"], () =>
+      okResult([], manySkips),
+    );
+
+    const logs: string[] = [];
+    activeConsumerTag = await startFetchSourceWorker({
+      channel,
+      db,
+      sources: { [SOURCE_ID]: source },
+      onHighSkipRate: () => {},
+      log: (m) => logs.push(m),
+    });
+
+    publishFetchSource({ searchId, sourceId: SOURCE_ID, criteria: {} });
+
+    await waitFor(async () => (await queueCount(FETCH_SOURCE_QUEUE)) === 0);
+
+    const perRecordLines = logs.filter((l) => l.includes("skipped record:"));
+    expect(perRecordLines).toHaveLength(20);
+    expect(logs.some((l) => l.includes("...and 5 more skipped record(s)"))).toBe(true);
   });
 
   it("retry tiers expire independently - a short-tier message is not blocked behind a long-tier one (B1 regression)", async () => {

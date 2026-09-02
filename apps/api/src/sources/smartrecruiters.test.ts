@@ -710,6 +710,427 @@ describe("SmartRecruitersSource — pagination", () => {
 });
 
 // ---------------------------------------------------------------------------
+// maxPostings cap (ticket 491cd88) — SmartRecruiters' description text
+// requires one detail request PER posting (Finding 2/5), so an unbounded
+// board is an unbounded number of requests. This suite proves the cap
+// actually bounds the detail fan-out (not just what's returned) and that a
+// truncated result REPORTS the truncation rather than looking like a
+// clean, complete, short board — the same "partial must never impersonate
+// complete" discipline as Finding 1 above.
+// ---------------------------------------------------------------------------
+describe("SmartRecruitersSource — maxPostings cap", () => {
+  function summary(id: string) {
+    return {
+      id,
+      name: `Role ${id}`,
+      company: { identifier: "BigCo", name: "Big Co" },
+      location: { fullLocation: "Remote", remote: true, hybrid: false },
+      typeOfEmployment: { id: "permanent", label: "Full-time" },
+      releasedDate: "2026-08-01T00:00:00.000Z",
+    };
+  }
+
+  function detailFor(id: string) {
+    return {
+      id,
+      name: `Role ${id}`,
+      company: { identifier: "BigCo", name: "Big Co" },
+      location: { fullLocation: "Remote", remote: true, hybrid: false },
+      typeOfEmployment: { id: "permanent", label: "Full-time" },
+      releasedDate: "2026-08-01T00:00:00.000Z",
+      postingUrl: `https://jobs.smartrecruiters.com/BigCo/${id}`,
+      jobAd: {
+        sections: {
+          jobDescription: { title: "Job Description", text: `<p>Do the work for ${id}.</p>` },
+        },
+      },
+    };
+  }
+
+  it("truncates a board larger than maxPostings and REPORTS the truncation, rather than returning a clean short list", async () => {
+    const allIds = ["j1", "j2", "j3", "j4", "j5"];
+    const detailCalls: string[] = [];
+    const fetchImpl = makeFetch({
+      postings: {
+        BigCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 5,
+              content: allIds.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        BigCo: Object.fromEntries(
+          allIds.map((id) => [
+            id,
+            () => {
+              detailCalls.push(id);
+              return jsonResponse(detailFor(id));
+            },
+          ]),
+        ),
+      },
+    });
+    const source = makeSource(fetchImpl, ["BigCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    // The cap bounds the FAN-OUT itself, not just the final job count —
+    // only the first 3 candidates were ever fetched. Detail requests cost
+    // real time/money against a live API; a cap that let the fetches
+    // happen and only trimmed the result afterward would defeat the whole
+    // point of this ticket.
+    expect(detailCalls.sort()).toEqual(["j1", "j2", "j3"]);
+    expect(jobs).toHaveLength(3);
+
+    // The acceptance-criterion assertion: this must NOT look like a clean,
+    // complete board of 3 postings. Exactly one truncation SkippedRecord
+    // names the cap and how many postings were left unfetched, so a
+    // caller can tell "capped" apart from "this company genuinely has 3
+    // open postings".
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.externalId).toBeUndefined();
+    expect(skipped[0]?.reason).toMatch(/maxPostings=3/);
+    expect(skipped[0]?.reason).toMatch(/"BigCo"/);
+    expect(skipped[0]?.reason).toMatch(/\b5\b/); // 5 candidates found
+    expect(skipped[0]?.reason).toMatch(/\b2\b/); // 5 - 3 = 2 left unfetched
+    expect(skipped[0]?.reason.toLowerCase()).toMatch(/truncat|partial/);
+  });
+
+  it("does not truncate (and reports no truncation skip) when the board fits within maxPostings", async () => {
+    const ids = ["j1", "j2"];
+    const fetchImpl = makeFetch({
+      postings: {
+        SmallCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 2,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        SmallCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["SmallCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs).toHaveLength(2);
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("a board exactly at the cap is not reported as truncated (boundary: > not >=)", async () => {
+    const ids = ["j1", "j2", "j3"];
+    const fetchImpl = makeFetch({
+      postings: {
+        ExactCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: 3,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        ExactCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["ExactCo"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(jobs).toHaveLength(3);
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("shares the budget ACROSS companies as a running total, not a per-company allowance — an earlier company can leave nothing for a later one (F1 fix: whole-search() budget)", async () => {
+    function summaryFor(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+      };
+    }
+    function detailForCo(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/${company}/${id}`,
+        jobAd: {
+          sections: {
+            jobDescription: { title: "Job Description", text: `<p>Do the work for ${id}.</p>` },
+          },
+        },
+      };
+    }
+    function postingsResponder(company: string, ids: string[]) {
+      return (offset: number) => {
+        if (offset === 0) {
+          return jsonResponse({
+            offset: 0,
+            limit: 100,
+            totalFound: ids.length,
+            content: ids.map((id) => summaryFor(company, id)),
+          });
+        }
+        throw new Error(`unexpected offset ${offset} for ${company}`);
+      };
+    }
+    function detailResponders(company: string, ids: string[], detailCalls: string[]) {
+      return Object.fromEntries(
+        ids.map((id) => [
+          id,
+          () => {
+            detailCalls.push(id);
+            return jsonResponse(detailForCo(company, id));
+          },
+        ]),
+      );
+    }
+
+    const coAIds = ["a1", "a2", "a3", "a4"];
+    const coBIds = ["b1", "b2", "b3", "b4"];
+    const coCIds = ["c1", "c2"];
+    const detailCalls: string[] = [];
+
+    const fetchImpl = makeFetch({
+      postings: {
+        CoA: postingsResponder("CoA", coAIds),
+        CoB: postingsResponder("CoB", coBIds),
+        CoC: postingsResponder("CoC", coCIds),
+      },
+      detail: {
+        CoA: detailResponders("CoA", coAIds, detailCalls),
+        CoB: detailResponders("CoB", coBIds, detailCalls),
+        CoC: detailResponders("CoC", coCIds, detailCalls),
+      },
+    });
+
+    // Global budget: 5, spent in company-loop order (CoA, CoB, CoC). CoA
+    // (4 postings) goes first and uses 4 of it, leaving 1. CoB (4
+    // postings) only gets that 1 remaining slot, leaving 0. CoC (2
+    // postings) gets 0 — the budget was already fully spent before its
+    // turn, not because CoC itself is large. If this were still a
+    // PER-COMPANY cap (the pre-F1 behavior), all three companies would
+    // fetch up to 5 each — 11 total, not 5.
+    const source = makeSource(fetchImpl, ["CoA", "CoB", "CoC"], { maxPostings: 5 });
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(detailCalls).toHaveLength(5);
+    expect(detailCalls.filter((id) => id.startsWith("a"))).toHaveLength(4);
+    expect(detailCalls.filter((id) => id.startsWith("b"))).toHaveLength(1);
+    expect(detailCalls.filter((id) => id.startsWith("c"))).toHaveLength(0);
+    expect(jobs).toHaveLength(5);
+
+    // CoA was never truncated (4 candidates fit inside its share of the
+    // budget at the time, which was still the full 5). CoB and CoC are
+    // skipped by two genuinely DIFFERENT MECHANISMS, not just two wordings
+    // of the same one: CoB had exactly 1 slot left, so it was enumerated
+    // (list pages fetched, candidates collected) and then TRUNCATED down to
+    // that 1 slot. CoC had 0 slots left on its turn, so the short-circuit in
+    // `#searchCompany` (ticket 491cd88, round 2) skips it before any
+    // list-page request is made at all — its board is never enumerated,
+    // not truncated after partial enumeration. Both still show up as
+    // `skipped`, but the reason text has to say which mechanism it was —
+    // "truncated" vs. "never enumerated" — not just infer it from a job
+    // count of zero. See the dedicated test below (round 3) that asserts
+    // CoC's list endpoint is never called, which is what actually
+    // discriminates these two mechanisms.
+    expect(skipped).toHaveLength(2);
+    const coBSkip = skipped.find((s) => s.reason.includes('"CoB"'));
+    const coCSkip = skipped.find((s) => s.reason.includes('"CoC"'));
+    expect(coBSkip?.reason).toMatch(/only 1 of the shared maxPostings=5 budget/);
+    expect(coCSkip?.reason).toMatch(/already fully spent by an earlier company/);
+  });
+
+  it("short-circuits BEFORE issuing any list-page request when a company's budget share is exactly zero on its turn — does not just truncate after enumerating (regression, ticket 491cd88 round 3: mutation-tested — disabling the short-circuit made all prior tests pass because the pre-existing zero-candidates-truncated wording is identical text)", async () => {
+    function summaryFor(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+      };
+    }
+    function detailForCo(company: string, id: string) {
+      return {
+        id,
+        name: `Role ${id}`,
+        company: { identifier: company, name: company },
+        location: { fullLocation: "Remote", remote: true, hybrid: false },
+        typeOfEmployment: { id: "permanent", label: "Full-time" },
+        releasedDate: "2026-08-01T00:00:00.000Z",
+        postingUrl: `https://jobs.smartrecruiters.com/${company}/${id}`,
+        jobAd: {
+          sections: {
+            jobDescription: { title: "Job Description", text: `<p>Do the work for ${id}.</p>` },
+          },
+        },
+      };
+    }
+
+    const coAIds = ["a1", "a2", "a3"];
+    // A spy standing in for CoC's list endpoint. It THROWS if ever called —
+    // there is no offset at which calling it is correct once CoC's budget
+    // share is 0, because the whole point of the short-circuit is that
+    // pagination never starts. This is what makes the test fail against the
+    // old/disabled-short-circuit behavior: that code path calls
+    // `#fetchPostingsPage` unconditionally, which would invoke this spy,
+    // throw, and produce a generic "search failed for company" skip instead
+    // of the short-circuit's distinct wording — flipping both assertions
+    // below.
+    const coCListSpy = vi.fn((offset: number) => {
+      throw new Error(`CoC's postings list endpoint must never be called (offset ${offset})`);
+    });
+
+    const fetchImpl = makeFetch({
+      postings: {
+        CoA: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: coAIds.length,
+              content: coAIds.map((id) => summaryFor("CoA", id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset} for CoA`);
+        },
+        CoC: coCListSpy,
+      },
+      detail: {
+        CoA: Object.fromEntries(
+          coAIds.map((id) => [id, () => jsonResponse(detailForCo("CoA", id))]),
+        ),
+      },
+    });
+
+    // Global budget: 3, spent entirely by CoA's 3 postings. CoC's share on
+    // its turn is exactly 0 — not "small", zero — which is precisely the
+    // case the short-circuit exists for.
+    const source = makeSource(fetchImpl, ["CoA", "CoC"], { maxPostings: 3 });
+
+    const { jobs, skipped } = await source.search({});
+
+    // (a) CoC's list endpoint is never called at all.
+    expect(coCListSpy).not.toHaveBeenCalled();
+
+    expect(jobs).toHaveLength(3);
+    expect(skipped).toHaveLength(1);
+    const coCSkip = skipped.find((s) => s.reason.includes('"CoC"'));
+    // (b) The skip reason is distinguishable from the pre-existing
+    // "boundedCandidates.length === 0" truncation wording (which describes
+    // a board that WAS enumerated down to zero survivors) — the
+    // short-circuit's wording instead says the board was never enumerated
+    // at all, because pagination never ran.
+    expect(coCSkip?.reason).toMatch(/never enumerated/i);
+  });
+
+  it("falls back to the default cap (not a silently-broken clamp) when maxPostings is negative (F5: config validation)", async () => {
+    const ids = ["n1", "n2", "n3", "n4", "n5"];
+    const fetchImpl = makeFetch({
+      postings: {
+        NegCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: ids.length,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        NegCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["NegCo"], { maxPostings: -1 });
+
+    const { jobs, skipped } = await source.search({});
+
+    // -1 is invalid input, not "cap everything to zero" and NOT "drop the
+    // last posting via a raw Array.prototype.slice(0, -1)" — which is what
+    // an UNVALIDATED `candidates.slice(0, this.#maxPostings)` would have
+    // done to EVERY board however small (`[1,2,3,4,5].slice(0, -1)` drops
+    // only the last element, silently, on every search). Falling back to
+    // the default cap instead means a normal 5-posting board is
+    // unaffected — this is the test that actually discriminates the fix
+    // from the bug at a tractable scale (unlike NaN below, whose only
+    // dangerous behavior — silently disabling the cap — only shows up
+    // past 1,000 candidates).
+    expect(jobs).toHaveLength(5);
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("falls back to the default cap when maxPostings is NaN, rather than silently disabling the cap entirely (F5: config validation)", async () => {
+    const ids = ["m1", "m2", "m3"];
+    const fetchImpl = makeFetch({
+      postings: {
+        NanCo: (offset) => {
+          if (offset === 0) {
+            return jsonResponse({
+              offset: 0,
+              limit: 100,
+              totalFound: ids.length,
+              content: ids.map((id) => summary(id)),
+            });
+          }
+          throw new Error(`unexpected offset ${offset}`);
+        },
+      },
+      detail: {
+        NanCo: Object.fromEntries(ids.map((id) => [id, () => jsonResponse(detailFor(id))])),
+      },
+    });
+    const source = makeSource(fetchImpl, ["NanCo"], { maxPostings: NaN });
+
+    const { jobs, skipped } = await source.search({});
+
+    // `candidates.length > NaN` is always `false`, so an unguarded
+    // `config.maxPostings ?? DEFAULT_MAX_POSTINGS` (NaN is neither null
+    // nor undefined, so `??` never substitutes) silently disables the cap
+    // entirely — full unbounded fan-out, no truncation record, exactly the
+    // failure this ticket exists to prevent, from a typo. A board this
+    // small can't, on its own, distinguish "fell back to the 1,000
+    // default" from "disabled entirely" (both let 3 candidates through
+    // untruncated) — that discrimination is the constructor-level
+    // `Number.isFinite` guard itself (see its comment), covered directly
+    // by the negative-value test above using the same code path. This
+    // test's job is narrower: prove NaN doesn't crash or otherwise corrupt
+    // a normal, small, non-truncated result.
+    expect(jobs).toHaveLength(3);
+    expect(skipped).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mapping against real captured detail responses — commitment, locationType,
 // company, location, postedAt. See smartrecruiters.ts Finding 4.
 // ---------------------------------------------------------------------------
