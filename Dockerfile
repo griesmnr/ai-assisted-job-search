@@ -59,6 +59,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOTOOLCHAIN=auto
 
+# Nicole's local timezone, not the base image's UTC default (added
+# 2026-09-02, after the running container's bare-UTC clock and Nicole's
+# actual local time drifted 7 hours apart -- an America/Los_Angeles offset
+# from UTC that matched exactly). tzdata ships in Ubuntu 24.04 already;
+# this just points /etc/localtime at it instead of leaving it on UTC.
+ENV TZ=America/Los_Angeles
+RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
+    && echo "${TZ}" > /etc/timezone
+
 # Pin what we build/install from moving targets, so a rebuild next month
 # doesn't silently pick up a different git-bug or rtk release.
 ENV GIT_BUG_VERSION=v0.10.1

@@ -93,6 +93,10 @@ services:
     env_file:
       - .env
     environment:
+      # Nicole's local timezone (also baked into the image itself via
+      # Dockerfile's TZ -- set here too so it wins even against a stale
+      # cached layer).
+      TZ: America/Los_Angeles
       # Service-name endpoints for reaching the other containers. NOT
       # localhost -- localhost inside this container is this container.
       POSTGRES_HOST: postgres
