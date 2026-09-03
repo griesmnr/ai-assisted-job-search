@@ -94,6 +94,42 @@ class FakeSource implements JobSource {
   }
 }
 
+/**
+ * Base for `makeCountingScorer`'s per-job score (ticket e8e59e6).
+ *
+ * Was 50 until 2026-09-03. That put every job whose externalId ends in 0-4
+ * at 50-54 — below `MATCH_SCORE_FLOOR` (55, ticket 1b9f81e, merged
+ * 2026-09-02) — so `runDemoMatch`'s floor filter, working exactly as
+ * designed, dropped those jobs from the `results` list that seven
+ * pipeline-mechanics tests in this file assert against. Those tests predate
+ * the floor and are about dedup, partial-failure resilience, spend capping
+ * and multi-source merging, none of which care what a score IS, so the
+ * fixture moved above the business rule rather than the business rule
+ * moving down.
+ *
+ * 70 is picked so every externalId suffix `makeCountingScorer` is used
+ * against in this file (0-19; the widest is `MANY_JOBS` in the spend-guard
+ * describe — some OTHER fixtures in this file, like the cost-estimate-only
+ * ones, number higher but are never routed through this scorer) lands in
+ * 70-89 — clear of the floor at the bottom and of 100 at the top, so the
+ * fake scores stay plausible percentages. The "counting-scorer fixture
+ * scores" test near the bottom of this file pins that invariant against a
+ * hand-maintained upper bound (`HIGHEST_FIXTURE_SUFFIX`, not a scan of this
+ * file's actual fixtures), so a future floor change above 89 fails with one
+ * obvious assertion instead of seven mysteriously empty `results` arrays.
+ * That constant must be raised by hand in step with any new
+ * makeCountingScorer fixture numbered past 19 — it won't catch that on its
+ * own.
+ */
+const COUNTING_SCORER_BASE = 70;
+
+/** The score `makeCountingScorer` returns for a job whose externalId ends
+ * in `-n`. Extracted so the invariant test below can check the formula
+ * without a database. */
+function countingScoreFor(n: number): number {
+  return COUNTING_SCORER_BASE + n;
+}
+
 /** Counts invocations so tests can assert exactly how many (real, billed)
  * scorer calls happened, without an ANTHROPIC_API_KEY or any network
  * access. */
@@ -105,7 +141,7 @@ function makeCountingScorer(): { scoreJob: ScoreJobFn; calls: () => number } {
     // checkable.
     const n = Number(jobArg.externalId.split("-").pop());
     return {
-      matchScore: 50 + n,
+      matchScore: countingScoreFor(n),
       rationale: `fake rationale for ${jobArg.title}`,
       strengths: [`strength for ${jobArg.title}`],
       gaps: [`gap for ${jobArg.title}`],
@@ -152,6 +188,11 @@ function makeFlakyScorer(failFor: ReadonlySet<string>): {
       throw new Error(`simulated 529 overload for ${jobArg.externalId}`);
     }
     return {
+      // Flat 60: above MATCH_SCORE_FLOOR (55), so a job this scorer
+      // succeeds on is visible in `runDemoMatch`'s floor-filtered `results`
+      // and a job it fails on is absent because it has no score at all —
+      // the distinction every caller of this fixture is actually testing
+      // (ticket e8e59e6).
       matchScore: 60,
       rationale: `fake rationale for ${jobArg.title}`,
       strengths: [],
@@ -520,7 +561,14 @@ describe("runDemoMatch: a scorer that throws for one job (ticket 620ca30 review 
     expect(second.newlyScored).toBe(1);
     expect(second.skipped).toBe(2);
     expect(second.failed).toBe(0);
-    expect(second.results).toHaveLength(3); // all 3 now have a score
+    // The retried job now appears in the ranked list alongside the two that
+    // succeeded the first time. This is the DISPLAY claim, and it only
+    // holds because both fixture scorers involved clear MATCH_SCORE_FLOOR
+    // (makeFlakyScorer's flat 60, makeCountingScorer's COUNTING_SCORER_BASE
+    // + n) — ticket e8e59e6. The PERSISTENCE claim this test exists for
+    // ("all 3 now have a score") is the floor-blind job_matches count
+    // immediately below; that one is what must never regress.
+    expect(second.results).toHaveLength(3);
 
     const matchRowsAfterSecond = await db
       .select()
@@ -1113,7 +1161,26 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
     // WHICH jobs the cap selected is pinned, not accidental (ticket
     // 16c824a review F3): 0-3 were pre-scored, 4 failed (will retry), 5-6
     // were newly scored this run, and 7-9 are the ones the cap dropped.
-    const scoredTitles = run.results.map((r) => r.title);
+    //
+    // Read from `job_matches` directly rather than from `run.results`
+    // (ticket e8e59e6). What F3 pins is which jobs the run decided to spend
+    // a scoring call on and RECORDED — a persistence fact. `run.results` is
+    // the floor-filtered display list (`applyMatchScoreFloor`, ticket
+    // 1b9f81e), so a job can be correctly scored and persisted and still be
+    // absent from it merely for scoring below 55. Using it here conflated
+    // "the cap skipped this job" with "this job scored badly" — two
+    // different outcomes that must not share one assertion. The DB query
+    // below can only distinguish them: a row exists iff a score was
+    // computed and persisted, whatever its value.
+    const scoredRows = await db
+      .select({ title: jobsTable.title })
+      .from(jobMatches)
+      .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
+      .where(eq(jobMatches.resumeId, run.resumeId));
+    const scoredTitles = scoredRows.map((r) => r.title);
+    // Exactly the 6 below and nothing else — this resume is unique to this
+    // test, so every job_matches row under it came from these two runs.
+    expect(scoredTitles).toHaveLength(6);
     for (const i of [0, 1, 2, 3, 5, 6]) {
       expect(scoredTitles).toContain(`F2F3 Engineer ${i}`);
     }
@@ -1359,6 +1426,13 @@ describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b
       await new Promise((resolve) => setTimeout(resolve, 20));
       events.push(`resolve:${jobArg.externalId}`);
       return {
+        // Left at 50 (below MATCH_SCORE_FLOOR) deliberately, unlike the
+        // fixtures raised for ticket e8e59e6: this test asserts only
+        // `newlyScored` and the recorded call ORDER, never `run.results`,
+        // so the floor's display filter cannot reach any of its
+        // assertions — and a below-floor score here keeps at least one
+        // integration fixture proving that scoring/persistence still
+        // happen for jobs the floor will later hide.
         matchScore: 50,
         rationale: `fake rationale for ${jobArg.title}`,
         strengths: [],
@@ -2480,6 +2554,38 @@ describe("isTotalScoringFailure (ticket 620ca30 review finding B3)", () => {
 
   it("is false on a partial failure — some scores still succeeded", () => {
     expect(isTotalScoringFailure({ failed: 1, newlyScored: 2 })).toBe(false);
+  });
+});
+
+describe("counting-scorer fixture scores clear MATCH_SCORE_FLOOR (ticket e8e59e6)", () => {
+  // Pure arithmetic — no DB needed. This exists because the collision it
+  // guards was invisible: `makeCountingScorer`'s old `50 + n` silently put
+  // every job numbered 0-4 below the floor introduced later by ticket
+  // 1b9f81e, and the only symptom was seven DB-backed pipeline tests
+  // asserting on an empty `results` array — a failure mode that reads like
+  // "the pipeline is broken", not "the fixture data is stale". One
+  // explicit assertion on the formula makes the next such change (raising
+  // MATCH_SCORE_FLOOR, or adding a fixture numbered past 19) fail here,
+  // where the message says exactly what is wrong.
+  //
+  // 19 is the largest externalId suffix any fixture in this file uses
+  // (`MANY_JOBS` in the spend-guard describe, 20 jobs indexed 0-19). Raise
+  // it in step with any fixture that numbers jobs higher.
+  const HIGHEST_FIXTURE_SUFFIX = 19;
+
+  it("keeps every fixture job at or above the floor and at or below 100", () => {
+    for (let n = 0; n <= HIGHEST_FIXTURE_SUFFIX; n++) {
+      const score = countingScoreFor(n);
+      expect(score).toBeGreaterThanOrEqual(MATCH_SCORE_FLOOR);
+      expect(score).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("stays distinguishable per job, so tests that check rank order still can", () => {
+    const scores = Array.from({ length: HIGHEST_FIXTURE_SUFFIX + 1 }, (_, n) =>
+      countingScoreFor(n),
+    );
+    expect(new Set(scores).size).toBe(scores.length);
   });
 });
 
