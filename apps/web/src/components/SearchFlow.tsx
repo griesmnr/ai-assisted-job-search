@@ -152,15 +152,31 @@ export function SearchFlow({
     if (!sameResume || !sameSources) {
       setPhase({ kind: "idle" });
     }
-    // Deliberately depends on [resumeId, sourceIds] only, not `phase`: this
-    // effect's job is to react to resumeId/sourceIds changing out from
-    // under whatever estimate is currently shown, not to re-run on every
-    // phase transition (including the "estimated" -> "idle" one this
-    // effect itself causes, which would otherwise immediately re-fire).
-    // This repo has no react-hooks lint plugin configured (eslint.config.js
-    // is @eslint/js + typescript-eslint only), so there is no
-    // exhaustive-deps rule to satisfy or disable here.
-  }, [resumeId, sourceIds]);
+    // `phase` IS in this dependency array (review round 3, git-bug 484889d):
+    // without it, a prop change that lands WHILE the estimate request is
+    // still in flight (phase === "estimating") is missed entirely. The
+    // effect no-ops during "estimating" (the guard above returns early for
+    // any phase.kind !== "estimated"), so it "observes and discards" that
+    // prop change instead of queueing a re-check. When the request then
+    // resolves, `handleEstimate` sets phase to "estimated" with a snapshot
+    // captured for the OLD selection — but that `setPhase` call doesn't
+    // change this component's own `resumeId`/`sourceIds` props, so without
+    // `phase` in the deps this effect would never re-run to notice the
+    // divergence, and the UI would show the new (live) selection checked
+    // while `handleConfirmRun` would still fire against the stale snapshot.
+    // Including `phase` re-fires this effect on every phase transition,
+    // which DOES include the "estimated" -> "idle" transition this effect
+    // itself causes — but that re-fire is idempotent, not a loop: on that
+    // second run phase.kind is "idle", the guard above returns immediately,
+    // and nothing further happens. Verified (see SearchFlow.test.tsx) with
+    // a controllable/deferred estimateSearch promise: toggle a source while
+    // the request is in flight, let it resolve, and assert the landing
+    // phase is never an actionable "estimated" state bound to the stale
+    // selection. This repo has no react-hooks lint plugin configured
+    // (eslint.config.js is @eslint/js + typescript-eslint only), so there
+    // is no exhaustive-deps rule enforcing this either way — the deps array
+    // is maintained by hand.
+  }, [resumeId, sourceIds, phase]);
 
   async function poll(searchId: string, estimate: EstimateSearchResponse) {
     try {

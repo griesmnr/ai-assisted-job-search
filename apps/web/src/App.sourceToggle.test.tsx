@@ -2,7 +2,11 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GetResumeResultsResponse, GetSourcesResponse } from "@app/shared";
+import {
+  MATCH_SCORE_FLOOR,
+  type GetResumeResultsResponse,
+  type GetSourcesResponse,
+} from "@app/shared";
 import App from "./App";
 
 /**
@@ -76,7 +80,7 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     // Resume submitted -> resumeId set -> useResults fires its one fetch.
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
-    expect(getResults).toHaveBeenCalledWith("resume-1", { minScore: 55 });
+    expect(getResults).toHaveBeenCalledWith("resume-1", { minScore: MATCH_SCORE_FLOOR });
 
     // Sources loaded and rendered as toggles.
     await screen.findByLabelText("Greenhouse");
