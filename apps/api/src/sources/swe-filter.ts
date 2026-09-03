@@ -245,8 +245,28 @@ export function matchesTitleExclusion(title: string): boolean {
  * was always wrong; separating geography from work-arrangement is what
  * surfaced it. Handles "Washington, D.C.", "Washington, DC", and
  * "Washington DC" (comma optional, periods optional).
+ *
+ * Ticket 9cac9a9 (found by the 4450f39 adversarial reviewer, fixed before
+ * going live): the guard above didn't cover the spelled-out "District of
+ * Columbia" form. USAJOBS writes exactly that — not "DC"/"D.C." — and
+ * wasn't wired into demo-match.ts yet when this was found, so it was latent,
+ * not an active false positive. `usajobs-real-response.json` confirms both
+ * pieces needed to construct the trap string honestly: the real spelling is
+ * "District of Columbia" (its `CountrySubDivisionCode`, and embedded in
+ * `LocationName`/`CityName` "Joint Base Anacostia-Bolling, District of
+ * Columbia"), and USAJOBS's own `PositionLocationDisplay`/`LocationName`
+ * fields both follow a "City, State" convention confirmed repeatedly in the
+ * same fixture (e.g. "Walla Walla, Washington", "Gunter AFB, Alabama"). A
+ * DC-proper posting (city "Washington") therefore reaches `location` as
+ * "Washington, District of Columbia" — the exact literal string isn't
+ * present verbatim in the fixture (no single fixture record has both city
+ * "Washington" and state "District of Columbia" together), but every piece
+ * of it is real, not invented. Would have failed in the worst direction:
+ * DC federal jobs passing PNW unconditionally (PNW ignores work
+ * arrangement), presenting as Washington-state postings.
  */
-const PNW = /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*d\.?c\.?)|,\s*wa\b/i;
+const PNW =
+  /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*(?:d\.?c\.?|district of columbia))|,\s*wa\b/i;
 
 /**
  * A broad "somewhere in the US" signal from free text — "United States",
