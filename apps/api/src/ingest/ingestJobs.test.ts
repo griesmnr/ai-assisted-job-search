@@ -1,23 +1,18 @@
 import { and, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { jobs, searches, searchResults, resumes, sourceDescriptors } from "../db/schema.js";
+import { jobs, searches, searchResults, sourceDescriptors, resumes } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import type { NormalizedJob } from "../sources/types.js";
 import { ingestJobsForSearch } from "./ingestJobs.js";
 
 // Node 22 can read .env itself - no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
+// file used to connect straight to the shared dev Postgres, where the
+// hardcoded fixture ids below could collide with another worktree's
+// concurrent run.
+let testDb: TestDatabase;
 
 // Widened to `string` (not the const-inferred literal type) so it can be
 // cast to NormalizedJob["dataSource"] below without TS treating it as an
@@ -47,7 +42,8 @@ function makeNormalizedJob(overrides: Partial<NormalizedJob> = {}): NormalizedJo
 }
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("ingest_jobs_test");
+  const db = testDb.db;
   await db.insert(sourceDescriptors).values({ id: DATA_SOURCE, displayName: "Ingest Test Source" });
   await db
     .insert(resumes)
@@ -59,18 +55,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.delete(searchResults).where(eq(searchResults.searchId, SEARCH_ID));
-  await db.delete(searchResults).where(eq(searchResults.searchId, OTHER_SEARCH_ID));
-  await db.delete(searches).where(eq(searches.id, SEARCH_ID));
-  await db.delete(searches).where(eq(searches.id, OTHER_SEARCH_ID));
-  await db.delete(jobs).where(eq(jobs.dataSource, DATA_SOURCE));
-  await db.delete(resumes).where(eq(resumes.id, RESUME_ID));
-  await db.delete(sourceDescriptors).where(eq(sourceDescriptors.id, DATA_SOURCE));
-  await client.end();
+  await testDb?.teardown();
 });
 
 describe("ingestJobsForSearch", () => {
   it("ingesting the same posting twice results in one row (6bf2196)", async () => {
+    const db = testDb.db;
     const job = makeNormalizedJob({ externalId: "dup-1" });
 
     const first = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, [job]);
@@ -95,6 +85,7 @@ describe("ingestJobsForSearch", () => {
   });
 
   it("does not double-publish-worthy jobs on redelivery: only the first call reports a newly inserted id", async () => {
+    const db = testDb.db;
     // This is the DB-level half of "a redelivered score.job publish
     // doesn't double-publish for an already-ingested job" - the worker
     // test (fetchSourceWorker.test.ts) proves the queue-level behavior;
@@ -109,6 +100,7 @@ describe("ingestJobsForSearch", () => {
   });
 
   it("links a pre-existing job (ingested via a different search) without re-inserting it", async () => {
+    const db = testDb.db;
     const job = makeNormalizedJob({ externalId: "cross-search-1" });
 
     const first = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, [job]);
@@ -129,6 +121,7 @@ describe("ingestJobsForSearch", () => {
   });
 
   it("relinking the same (search, job) pair does not create a duplicate search_results row", async () => {
+    const db = testDb.db;
     const job = makeNormalizedJob({ externalId: "relink-1" });
 
     await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, [job]);
@@ -146,11 +139,13 @@ describe("ingestJobsForSearch", () => {
   });
 
   it("returns empty results for an empty jobs array without touching the DB", async () => {
+    const db = testDb.db;
     const result = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, []);
     expect(result).toEqual({ linkedJobIds: [], newlyInsertedJobIds: [] });
   });
 
   it("rolls back the insert when the caller's dataSource doesn't match the job's own dataSource (transaction regression)", async () => {
+    const db = testDb.db;
     // The job itself is tagged DATA_SOURCE (a valid FK target, so the
     // INSERT succeeds), but the caller passes a DIFFERENT dataSource as
     // the query parameter - the same shape of bug the worker's dispatch
