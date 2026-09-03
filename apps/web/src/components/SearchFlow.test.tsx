@@ -27,8 +27,7 @@ vi.mock("../api/client", () => ({
  * A promise this test controls the resolution timing of, so "the estimate
  * request is still in flight" (phase === "estimating") is a real state we
  * can hold open and inspect/mutate around, not just something inferred from
- * timing. Same technique the round-3 reviewer used in their own throwaway
- * probe for this race (git-bug 484889d).
+ * timing.
  */
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -180,5 +179,33 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
     });
     expect(startSearch).toHaveBeenCalledOnce();
+  });
+
+  it("prop change during an in-flight run must not reset 'starting'/'running'", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    const { promise, resolve } = deferred<{ searchId: string }>();
+    startSearch.mockReturnValue(promise);
+    getSearchStatus.mockResolvedValue({ status: "pending" });
+
+    const { rerender } = render(
+      <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+    await screen.findByRole("button", { name: "Starting..." });
+    expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
+
+    rerender(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    expect(screen.getByRole("button", { name: "Starting..." })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Estimate search cost" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolve({ searchId: "s1" });
+      await promise;
+    });
+    await screen.findByLabelText("Search running");
+    rerender(<SearchFlow resumeId="resume-1" sourceIds={["z"]} onSearchComplete={() => {}} />);
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   });
 });
