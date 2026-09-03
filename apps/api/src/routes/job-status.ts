@@ -24,24 +24,17 @@
  * versioned).
  */
 import { randomUUID } from "node:crypto";
-import type { SetJobStatusResponse, UserJobStatus } from "@app/shared";
+import { type SetJobStatusResponse, type UserJobStatus, USER_JOB_STATUSES } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 
-const KNOWN_STATUSES: readonly UserJobStatus[] = [
-  "saved",
-  "resume_optimized",
-  "applied",
-  "dismissed",
-];
-
 const setStatusBodySchema = {
   type: "object",
   required: ["status"],
   properties: {
-    status: { type: "string", enum: [...KNOWN_STATUSES] },
+    status: { type: "string", enum: [...USER_JOB_STATUSES] },
     resumeId: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
@@ -104,7 +97,6 @@ export function registerJobStatusRoutes(
           target: userJobStatuses.jobId,
           set: {
             status,
-            resumeId: resumeId ?? null,
             updatedAt: now,
             // Ticket 484889d: `excluded.applied_at` is this write's proposed
             // value — `now` when `status === "applied"`, else the `null`
@@ -115,6 +107,47 @@ export function registerJobStatusRoutes(
             // "applied" write, so a later save/dismiss of an already-applied
             // job never erases the real timestamp it was applied at.
             appliedAt: sql`coalesce(excluded.applied_at, ${userJobStatuses.appliedAt})`,
+            // Review round F3: `resumeId` needs the SAME protection, for
+            // the same reason, and this was an unconditional overwrite
+            // before this fix (`resumeId: resumeId ?? null` on every
+            // status write, regardless of status). Concrete failure this
+            // caused: apply to job X with resume "tailored-v2" (row:
+            // applied, appliedAt=T, resumeId=tailored-v2 — correct). Later
+            // load a different resume ("generic-v3") and click "Saved" on
+            // the SAME job — a status change, not a new application. The
+            // old code overwrote resumeId to "generic-v3" while appliedAt
+            // correctly stayed T, leaving the row asserting "applied at T
+            // with generic-v3" when the real application used
+            // tailored-v2 — exactly the scenario this column's own doc
+            // comment (schema.ts) names as its reason for existing.
+            //
+            // NOT a plain `coalesce(excluded.resume_id, existing)` like
+            // appliedAt above — deliberately different, and here's why:
+            // appliedAt's COALESCE only works because `.values()` above
+            // already forces `appliedAt` to `null` on any non-"applied"
+            // write, so `excluded.applied_at` is guaranteed null in that
+            // case and COALESCE has nothing to prefer over the existing
+            // value. `resumeId` in `.values()` CANNOT be gated the same
+            // way — `resumeId: resumeId ?? null` must stay unconditional
+            // there, because a non-"applied" write (e.g. a first-ever
+            // "saved"/"resume_optimized" write, which takes the INSERT
+            // path, not this UPDATE path) is still supposed to record
+            // whatever resume was in hand (see this file's own
+            // "records resumeId when given" test, which writes
+            // status:"resume_optimized" with a resumeId on a job's FIRST
+            // write and asserts it's stored). That means `excluded.resume_id`
+            // can legitimately be non-null even on a non-"applied" write,
+            // so `coalesce(excluded.resume_id, existing)` would still take
+            // the new, wrong value here — the exact bug this fix closes.
+            // Instead: a write that IS "applied" takes the new resumeId
+            // (recording which resume the NEW application used); every
+            // other write ignores `excluded` entirely and re-asserts the
+            // EXISTING row's own `resumeId` (unqualified column reference —
+            // same "refers to the pre-conflict row" mechanism the appliedAt
+            // COALESCE's second argument relies on), so `excluded` can never
+            // win on a non-"applied" write regardless of what resumeId
+            // happened to be attached to that write's request body.
+            resumeId: status === "applied" ? (resumeId ?? null) : sql`${userJobStatuses.resumeId}`,
           },
         });
 

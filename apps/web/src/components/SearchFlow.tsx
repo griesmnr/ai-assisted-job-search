@@ -8,8 +8,30 @@ const POLL_INTERVAL_MS = 2000;
 type Phase =
   | { kind: "idle" }
   | { kind: "estimating" }
-  | { kind: "estimated"; estimate: EstimateSearchResponse }
-  | { kind: "starting"; estimate: EstimateSearchResponse }
+  | {
+      kind: "estimated";
+      estimate: EstimateSearchResponse;
+      // Snapshot of what the estimate was actually computed for (review
+      // round, F1, git-bug 484889d): `resumeId`/`sourceIds` are captured
+      // HERE, at the moment the estimate response lands, rather than read
+      // live from props when "Run search" is later clicked. `SourceToggles`
+      // and `ResumeInput` stay interactive while this panel is showing, so
+      // props can legitimately change between "estimate computed" and
+      // "user clicks confirm" — e.g. toggling on two more sources after
+      // seeing a one-source estimate. Firing `startSearch` from live props
+      // would spend money on a selection the user never saw a price for,
+      // which is exactly the failure this whole cost-preview feature exists
+      // to prevent. `handleConfirmRun` uses this snapshot, never the
+      // `resumeId`/`sourceIds` props, for that call.
+      resumeId: string;
+      sourceIds: string[];
+    }
+  | {
+      kind: "starting";
+      estimate: EstimateSearchResponse;
+      resumeId: string;
+      sourceIds: string[];
+    }
   | { kind: "running"; estimate: EstimateSearchResponse; searchId: string; startedAt: number }
   | { kind: "done"; estimate: EstimateSearchResponse; result: SearchStatusResponse }
   | { kind: "error"; message: string };
@@ -72,16 +94,33 @@ export function SearchFlow({
     setPhase({ kind: "estimating" });
     try {
       const estimate = await estimateSearch(resumeId, sourceIds);
-      setPhase({ kind: "estimated", estimate });
+      // Snapshot props AT THE MOMENT the estimate landed (F1) — not a
+      // reference to the live `resumeId`/`sourceIds` closed over above,
+      // which is exactly the same value right now but will silently diverge
+      // if props change before confirm.
+      setPhase({ kind: "estimated", estimate, resumeId, sourceIds: [...sourceIds] });
     } catch (err) {
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  async function handleConfirmRun(estimate: EstimateSearchResponse) {
-    setPhase({ kind: "starting", estimate });
+  async function handleConfirmRun(snapshot: {
+    estimate: EstimateSearchResponse;
+    resumeId: string;
+    sourceIds: string[];
+  }) {
+    const { estimate, resumeId: snapshotResumeId, sourceIds: snapshotSourceIds } = snapshot;
+    setPhase({
+      kind: "starting",
+      estimate,
+      resumeId: snapshotResumeId,
+      sourceIds: snapshotSourceIds,
+    });
     try {
-      const started = await startSearch(resumeId, sourceIds);
+      // Fired against the SNAPSHOT captured when the estimate was computed
+      // (F1), never the live `resumeId`/`sourceIds` props — see the `Phase`
+      // type's "estimated" doc comment for the failure this avoids.
+      const started = await startSearch(snapshotResumeId, snapshotSourceIds);
       setPhase({ kind: "running", estimate, searchId: started.searchId, startedAt: Date.now() });
       pollRef.current = window.setInterval(
         () => void poll(started.searchId, estimate),
@@ -91,6 +130,37 @@ export function SearchFlow({
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
   }
+
+  // F1: an estimate becomes stale the instant what it was computed for
+  // changes. `SourceToggles`/`ResumeInput` stay live and interactive while
+  // the "estimated" panel is showing (by design — nothing blocks further
+  // toggling before confirming), so this effect is what keeps a changed
+  // selection from ever reaching `handleConfirmRun` with a mismatched
+  // estimate still on screen: it discards the stale estimate back to
+  // "idle" the moment `resumeId`/`sourceIds` diverge from the snapshot,
+  // forcing a fresh "Estimate search cost" click (and a fresh, honest
+  // price) before anything can spend money. Deliberately scoped to ONLY
+  // the "estimated" phase — once the user has clicked "Run search"
+  // ("starting"/"running"), the request is already in flight against its
+  // own snapshot and must not be interrupted by a prop change.
+  useEffect(() => {
+    if (phase.kind !== "estimated") return;
+    const sameResume = phase.resumeId === resumeId;
+    const sameSources =
+      phase.sourceIds.length === sourceIds.length &&
+      phase.sourceIds.every((id, i) => id === sourceIds[i]);
+    if (!sameResume || !sameSources) {
+      setPhase({ kind: "idle" });
+    }
+    // Deliberately depends on [resumeId, sourceIds] only, not `phase`: this
+    // effect's job is to react to resumeId/sourceIds changing out from
+    // under whatever estimate is currently shown, not to re-run on every
+    // phase transition (including the "estimated" -> "idle" one this
+    // effect itself causes, which would otherwise immediately re-fire).
+    // This repo has no react-hooks lint plugin configured (eslint.config.js
+    // is @eslint/js + typescript-eslint only), so there is no
+    // exhaustive-deps rule to satisfy or disable here.
+  }, [resumeId, sourceIds]);
 
   async function poll(searchId: string, estimate: EstimateSearchResponse) {
     try {
@@ -148,7 +218,13 @@ export function SearchFlow({
           />
           <button
             type="button"
-            onClick={() => void handleConfirmRun(phase.estimate)}
+            onClick={() =>
+              void handleConfirmRun({
+                estimate: phase.estimate,
+                resumeId: phase.resumeId,
+                sourceIds: phase.sourceIds,
+              })
+            }
             disabled={phase.kind === "starting"}
           >
             {phase.kind === "starting" ? "Starting..." : "Run search"}

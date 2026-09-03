@@ -86,17 +86,24 @@ export function buildApp(deps: BuildAppDeps) {
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
   });
 
-  // CORS (ticket 484889d): apps/web (Vite dev server, default
-  // http://localhost:5173) and this API (default http://localhost:3000)
-  // are different origins, so a browser blocks the fetch calls without
-  // this. Permissive by design, not oversight — CLAUDE.md's stack table
-  // and this ticket's own instructions call this "not a security-sensitive
-  // concern for a local single-user dev tool": no accounts, no auth, no
-  // cookies, runs on localhost. `origin: true` reflects whatever Origin the
-  // browser sends (rather than a hardcoded port) so it keeps working if
-  // Vite picks a different port because 5173 is taken, which it does
-  // silently and often.
-  void app.register(cors, { origin: true });
+  // CORS (ticket 484889d, review round F2): apps/web (Vite dev server,
+  // default http://localhost:5173) and this API (default
+  // http://localhost:3000) are different origins, so a browser blocks the
+  // fetch calls without this. NOT `origin: true` (reflect-any-origin) —
+  // that was the original choice here, on the reasoning that no
+  // accounts/auth/cookies makes CORS "not security-sensitive for a local
+  // single-user dev tool." That reasoning missed that `POST /searches` is
+  // real, unauthenticated money-spend reachable purely by Origin: with
+  // `origin: true`, ANY webpage open in the same browser while this API is
+  // running on localhost can cross-origin POST /searches and it will
+  // succeed — drive-by spend, plus read access to resume text and match
+  // results via the GET routes. Scoping the regex to localhost/127.0.0.1
+  // (any port) keeps the original stated benefit — this keeps working
+  // whichever port Vite actually picks, which it changes silently and
+  // often when 5173 is taken — while closing the arbitrary-origin gap:
+  // only pages actually served from this machine's loopback address can
+  // call this API at all.
+  void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
 
   registerSourceRoutes(app);
   registerResumeRoutes(app, deps.db);

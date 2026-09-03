@@ -29,11 +29,12 @@
  * show by default; only an explicit `?status=dismissed` surfaces dismissed
  * jobs again (e.g. a future "dismissed" tab).
  */
-import type {
-  CreateResumeResponse,
-  GetResumeResponse,
-  GetResumeResultsResponse,
-  UserJobStatus,
+import {
+  type CreateResumeResponse,
+  type GetResumeResponse,
+  type GetResumeResultsResponse,
+  type UserJobStatus,
+  USER_JOB_STATUSES,
 } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { SQL } from "drizzle-orm";
@@ -42,17 +43,6 @@ import type { FastifyInstance } from "fastify";
 import { getOrCreateResumeId } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
-
-/** Mirrors apps/api/src/db/schema.ts's `userJobStatusEnum` values — kept as
- * a local list (not imported from @app/shared's `UserJobStatus`, which is a
- * type, not a runtime value) so `?status=` can be validated the same way
- * `?source=` already is against `SOURCE_DESCRIPTORS`. */
-const KNOWN_STATUSES: readonly UserJobStatus[] = [
-  "saved",
-  "resume_optimized",
-  "applied",
-  "dismissed",
-];
 
 /**
  * Generous ceiling for a pasted resume — well above any real resume, well
@@ -128,9 +118,12 @@ export function registerResumeRoutes(
 
     // Ticket 484889d: validated the same way ?source= is below — an
     // unrecognized status string must 400, not silently match nothing.
-    if (status !== undefined && !KNOWN_STATUSES.includes(status as UserJobStatus)) {
+    // `USER_JOB_STATUSES` (review round F4) is the one canonical runtime
+    // list backing `UserJobStatus`, shared with job-status.ts's own
+    // validation instead of each route hand-duplicating it.
+    if (status !== undefined && !USER_JOB_STATUSES.includes(status as UserJobStatus)) {
       return reply.code(400).send({
-        error: `Unknown status "${status}" (known values: ${KNOWN_STATUSES.join(", ")}).`,
+        error: `Unknown status "${status}" (known values: ${USER_JOB_STATUSES.join(", ")}).`,
       });
     }
     const statusFilter = status as UserJobStatus | undefined;

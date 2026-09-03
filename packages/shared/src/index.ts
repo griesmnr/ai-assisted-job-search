@@ -108,8 +108,20 @@ export type GetResumeResponse = {
  * schema.ts's `userJobStatusEnum`). Mirrored here rather than imported from
  * apps/api because nothing under apps/api/src ever crosses the wire into
  * @app/web — see this file's header comment.
+ *
+ * Review round F4 (git-bug 484889d): the runtime array is exported too, as
+ * `USER_JOB_STATUSES`, and the type is derived FROM it (`(typeof
+ * USER_JOB_STATUSES)[number]`) rather than the array being typed against a
+ * separately hand-written union. Before this, `apps/api/src/routes/
+ * resumes.ts` and `apps/api/src/routes/job-status.ts` each hand-duplicated
+ * their own local `KNOWN_STATUSES` array (used for runtime validation,
+ * since a `type` has no runtime representation) — two copies that could
+ * silently drift from this type and from each other. One canonical runtime
+ * list here removes that drift risk; both route files now import
+ * `USER_JOB_STATUSES` instead of redeclaring it.
  */
-export type UserJobStatus = "saved" | "resume_optimized" | "applied" | "dismissed";
+export const USER_JOB_STATUSES = ["saved", "resume_optimized", "applied", "dismissed"] as const;
+export type UserJobStatus = (typeof USER_JOB_STATUSES)[number];
 
 export type ScoredJobResult = {
   jobId: string;

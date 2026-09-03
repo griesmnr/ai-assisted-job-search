@@ -164,6 +164,64 @@ describe("POST /jobs/:id/status", () => {
     expect(rows[0]?.resumeId).toBe(resumeId);
   });
 
+  it("review round F3: a later non-'applied' status write does not clobber the resumeId an actual application recorded", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    const tailored = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Tailored resume ${randomUUID()}` },
+    });
+    const tailoredResumeId = (tailored.json() as { id: string }).id;
+    resumeIds.push(tailoredResumeId);
+
+    const generic = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Generic resume ${randomUUID()}` },
+    });
+    const genericResumeId = (generic.json() as { id: string }).id;
+    resumeIds.push(genericResumeId);
+
+    // Apply to the job with the tailored resume -- this is the write that
+    // is supposed to be permanent (schema.ts's own doc comment on
+    // resumeId names exactly this scenario).
+    const applied = await app.inject({
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "applied", resumeId: tailoredResumeId },
+    });
+    expect(applied.statusCode).toBe(200);
+    const afterApplied = await db
+      .select()
+      .from(userJobStatuses)
+      .where(eq(userJobStatuses.jobId, jobId));
+    expect(afterApplied[0]?.resumeId).toBe(tailoredResumeId);
+    const appliedAt = afterApplied[0]?.appliedAt;
+
+    // Later: a DIFFERENT resume is loaded, and a non-"applied" status is
+    // written for the SAME job (e.g. re-saving it). Before this fix, this
+    // unconditionally overwrote resumeId to genericResumeId, falsely
+    // asserting the application used the generic resume.
+    const savedAgain = await app.inject({
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "saved", resumeId: genericResumeId },
+    });
+    expect(savedAgain.statusCode).toBe(200);
+
+    const afterSaved = await db
+      .select()
+      .from(userJobStatuses)
+      .where(eq(userJobStatuses.jobId, jobId));
+    expect(afterSaved[0]?.status).toBe("saved");
+    // resumeId still points at the resume the application actually used...
+    expect(afterSaved[0]?.resumeId).toBe(tailoredResumeId);
+    // ...and the real applied-at timestamp is still untouched too.
+    expect(afterSaved[0]?.appliedAt?.getTime()).toBe(appliedAt?.getTime());
+  });
+
   it("404s for an unknown job id", async () => {
     const app = buildTestApp();
     const response = await app.inject({

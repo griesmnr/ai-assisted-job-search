@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import type { GetResumeResultsResponse } from "@app/shared";
+import { type GetResumeResultsResponse, MATCH_SCORE_FLOOR } from "@app/shared";
 import { getResults } from "../api/client";
-import { SCORE_FLOOR } from "../constants";
 
 export type ResultsState =
   | { status: "idle" }
@@ -10,11 +9,14 @@ export type ResultsState =
   | { status: "ready"; data: GetResumeResultsResponse };
 
 /**
- * Fetches the curated results view for a resume — always at `SCORE_FLOOR`
- * (see constants.ts for why this is a client-side constant, not a server
- * default) — and exposes a `refresh` callback so callers can re-pull after
- * a status write (ticket 484889d decision #2: a dismissed job must leave
- * the visible list) or a search run completes.
+ * Fetches the curated results view for a resume — always at
+ * `MATCH_SCORE_FLOOR` (git-bug 484889d, review round F4: imported directly
+ * from `@app/shared` rather than a local `apps/web` constant now that
+ * `main` exports it — see that ticket's own git-bug comments for why a
+ * client-side floor, not a server default, is the right layer) — and
+ * exposes a `refresh` callback so callers can re-pull after a status write
+ * (ticket 484889d decision #2: a dismissed job must leave the visible
+ * list) or a search run completes.
  *
  * Source filtering is deliberately NOT a parameter here: decision #3
  * (2026-08-29) is that toggles filter an already-fetched corpus instantly,
@@ -36,7 +38,7 @@ export function useResults(resumeId: string | undefined): {
     }
     let cancelled = false;
     setState({ status: "loading" });
-    getResults(resumeId, { minScore: SCORE_FLOOR })
+    getResults(resumeId, { minScore: MATCH_SCORE_FLOOR })
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
       })
