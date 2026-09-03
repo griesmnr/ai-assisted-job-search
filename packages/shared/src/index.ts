@@ -94,6 +94,14 @@ export type GetResumeResponse = {
   resumeText: string;
 };
 
+/**
+ * The user's own status toward a job (ticket 0c319b2, apps/api/src/db/
+ * schema.ts's `userJobStatusEnum`). Mirrored here rather than imported from
+ * apps/api because nothing under apps/api/src ever crosses the wire into
+ * @app/web — see this file's header comment.
+ */
+export type UserJobStatus = "saved" | "resume_optimized" | "applied" | "dismissed";
+
 export type ScoredJobResult = {
   jobId: string;
   externalId: string;
@@ -110,6 +118,13 @@ export type ScoredJobResult = {
   rationale: string;
   strengths: string[];
   gaps: string[];
+  /**
+   * The user's current status toward this job, or `null` when no
+   * `user_job_statuses` row exists for it yet (ticket 484889d — added
+   * alongside the frontend since no REST surface previously read this
+   * column at all; see that ticket's report for what else was missing).
+   */
+  status: UserJobStatus | null;
 };
 
 export type GetResumeResultsResponse = {
@@ -118,6 +133,23 @@ export type GetResumeResultsResponse = {
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */
   hiddenBelowFloor?: number;
+};
+
+/**
+ * `POST /jobs/:id/status` (ticket 484889d). `resumeId` is optional and
+ * records which resume was in hand when the status was set — see
+ * `userJobStatuses.resumeId`'s doc comment in apps/api/src/db/schema.ts for
+ * why it's an attribute, never part of the row's identity.
+ */
+export type SetJobStatusRequest = {
+  status: UserJobStatus;
+  resumeId?: string;
+};
+
+export type SetJobStatusResponse = {
+  jobId: string;
+  status: UserJobStatus;
+  updatedAt: string;
 };
 
 export type SourceHealth = {

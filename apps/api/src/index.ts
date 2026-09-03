@@ -1,10 +1,12 @@
 import { pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
+import cors from "@fastify/cors";
 import Fastify from "fastify";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
+import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
 import { registerSourceRoutes } from "./routes/sources.js";
@@ -84,9 +86,22 @@ export function buildApp(deps: BuildAppDeps) {
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
   });
 
+  // CORS (ticket 484889d): apps/web (Vite dev server, default
+  // http://localhost:5173) and this API (default http://localhost:3000)
+  // are different origins, so a browser blocks the fetch calls without
+  // this. Permissive by design, not oversight — CLAUDE.md's stack table
+  // and this ticket's own instructions call this "not a security-sensitive
+  // concern for a local single-user dev tool": no accounts, no auth, no
+  // cookies, runs on localhost. `origin: true` reflects whatever Origin the
+  // browser sends (rather than a hardcoded port) so it keeps working if
+  // Vite picks a different port because 5173 is taken, which it does
+  // silently and often.
+  void app.register(cors, { origin: true });
+
   registerSourceRoutes(app);
   registerResumeRoutes(app, deps.db);
   registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
+  registerJobStatusRoutes(app, deps.db);
 
   return app;
 }
