@@ -36,15 +36,19 @@ import type { NormalizedJob } from "./types.js";
 
 // Title filter: actual software engineering roles, not adjacent ones.
 //
-// F6 (ticket 6b2313a review): the `staff engineer` alternative below is now
-// dead code — NOT (further down this file) excludes `\bstaff\b` (subject to
-// its own range-aware precision fix, which still excludes a bare "Staff
-// Engineer"), so no title can survive SOFTWARE via this specific alternative
-// and then also survive NOT. Left in place rather than removed: pruning
-// SOFTWARE further is out of this ticket's scope (see the file's own "Out"
-// note above), and a future change to NOT's staff handling (e.g. narrowing
-// it further) could make this alternative reachable again without anyone
-// having to re-derive it from scratch.
+// F6 (ticket 6b2313a review round 2, corrected — round 1's comment here was
+// wrong): the `staff engineer` alternative below is NOT dead code. NOT's
+// staff exclusion (further down this file) has a range-aware precision fix
+// that deliberately does NOT exclude a level-list title like "Senior/Staff
+// Engineer" (the point of that fix is to stop dropping non-staff-only
+// postings) — and for a slash-joined title like that, `staff engineer` is
+// the ONLY SOFTWARE alternative that matches at all (no space before
+// "engineer" for `senior engineer` to catch, no "software"/"full-stack"/etc
+// present either). So this alternative is genuinely load-bearing: removing
+// it would silently drop real "Senior/Staff Engineer"-shaped postings that
+// NOT was specifically changed to stop excluding. Verified live,
+// 2026-09-03: "Senior/Staff Engineer" survives SOFTWARE only via this
+// alternative, and survives NOT (correctly, not staff-only).
 const SOFTWARE =
   /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
 
@@ -138,7 +142,8 @@ const SOFTWARE =
 // Staff)", "Senior/Staff Applied Research Software Engineer" — none of these
 // should be excluded; a Senior candidate is explicitly invited to apply.
 // Fixed with lookaround that keeps `staff` excluding only when it is NOT
-// adjacent to a level-list marker ("or ", "to ", "/") on either side:
+// adjacent to a level-list marker ("or ", "to ", or an immediately-adjacent
+// "/" with no space) on either side:
 //   (?<!\b(?:or|to)\s)(?<!\/)\bstaff\b(?!\s*(?:or|to)\b)(?!\/)
 // The `\b` inside the lookbehind's `(?:or|to)\s` matters — without it,
 // "Search **for** Staff Engineers" or "Transition **into** Staff Role" would
@@ -147,11 +152,22 @@ const SOFTWARE =
 // (still NOT excluded) plus "Staff Software Engineer" and "Staff Engineer"
 // (still excluded) — see swe-filter.test.ts.
 //
+// Known, measured-as-harmless residual gap (round 2 review): the "/" guard
+// only covers an UNSPACED slash ("Staff/Senior"). A spaced slash ("Senior /
+// Staff …") still excludes. Real example, 2026-09-03: "Senior / Staff
+// Machine Learning Research Scientist, Agents" (Scale AI) — still excluded
+// by this alternative, but has zero survivor impact: it fails SOFTWARE
+// regardless (caught independently by the `machine learning` exclusion), so
+// nothing currently reaching the scorer is affected. Not widened further
+// since there's no live evidence yet that it needs to be — narrow the
+// lookaround (e.g. `\s?\/\s?`) if a real spaced-slash SOFTWARE-passing title
+// ever surfaces.
+//
 // F2 (opus review, measured per-word, corrected pool, 2026-09-03 — see
 // verify-staff-title-exclusion-savings.ts for the reproducible script):
-// against the live 6,203-posting Greenhouse pool, of the 178 titles that
+// against the live 6,204-posting Greenhouse pool, of the 178 titles that
 // survived the OLD (pre-ticket) filter, `staff` (with F1's precision fix)
-// alone removes 75 — effectively all of this change's real saving.
+// alone removes 74 — effectively all of this change's real saving.
 // `distinguished` alone removes 0 (only 2 occurrences anywhere in the pool,
 // neither survives SOFTWARE) but is kept anyway: harmless today, and a
 // future "Distinguished Engineer" title that DID clear SOFTWARE would

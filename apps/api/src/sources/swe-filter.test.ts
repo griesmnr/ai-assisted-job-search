@@ -347,7 +347,7 @@ describe('filterSoftwareEngineeringJobs — F1 fix: "staff" inside a level RANGE
 });
 
 describe('filterSoftwareEngineeringJobs — "fellow" dropped from NOT entirely (ticket 6b2313a, opus review F2/F3)', () => {
-  it('does NOT exclude "SWE Fellow - Human Frontier Collective (US)" (real, live: Scale AI, 2026-09-03) -- this is an early-career FELLOWSHIP PROGRAM title, not a staff-level role; every real "fellow" match in the live 6,204-posting pool is this same Human Frontier Collective program (13 postings across Finance/Legal/ML/Medical/STEM/SWE tracks and three countries), which is why "fellow" was dropped from NOT rather than kept -- it never matched the ticket\'s own "staff-level titles never clear the score floor" rationale to begin with', () => {
+  it('does NOT exclude "SWE Fellow - Human Frontier Collective (US)" (real, live: Scale AI, 2026-09-03) -- this is an early-career FELLOWSHIP PROGRAM title, not a staff-level role; every real "fellow" match in the live 6,204-posting pool is this same Human Frontier Collective program (13-14 postings as of 2026-09-03, across Finance/Legal/ML/Medical/STEM/SWE tracks and three countries — exact count drifts day to day as the board changes), which is why "fellow" was dropped from NOT rather than kept -- it never matched the ticket\'s own "staff-level titles never clear the score floor" rationale to begin with', () => {
     expect(matchesTitleExclusion("SWE Fellow - Human Frontier Collective (US)")).toBe(false);
   });
 
