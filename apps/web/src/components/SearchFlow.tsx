@@ -207,12 +207,42 @@ export function SearchFlow({
         // `phase` here is `poll`'s closed-over value from whenever THIS
         // interval tick's closure was created, not necessarily the phase
         // React last rendered; reading `prev` from the updater guarantees
-        // this always merges onto the actual current state. Guarded by
-        // `prev.kind === "running"` because the phase can only ever be
-        // legitimately "running" (or already moved on) by the time a poll
-        // tick's response comes back.
+        // this always merges onto the actual current state.
+        //
+        // TWO guards, not one (review round, F2+F3 — the single
+        // `prev.kind === "running"` check this used to have was not
+        // enough):
+        //
+        //  - `prev.kind === "running"`: the phase can only legitimately be
+        //    "running" (or already moved on) by the time a poll tick's
+        //    response comes back.
+        //  - `prev.searchId === searchId`: WHICH run `prev` is currently
+        //    "running" for. Without this, a stale response from a PREVIOUS
+        //    search can land after the user has already started a NEW one:
+        //    search 1's poll A is in flight when search 1's poll B returns
+        //    "complete" (phase -> "done"); the user immediately starts
+        //    search 2 (phase -> "running" again); poll A then finally
+        //    resolves and — since `prev.kind === "running"` is true again,
+        //    just for the WRONG run — would overwrite search 2's
+        //    `scoredSoFar` with search 1's stale count (F3, cross-run
+        //    leakage).
+        //
+        // `Math.max`, not a bare overwrite, on the surviving branch: the
+        // interval fires unconditionally every `POLL_INTERVAL_MS` and each
+        // `poll()` call awaits its own independent `getSearchStatus` round
+        // trip, so two ticks for the SAME run can resolve out of order — a
+        // slow tick A (fired at t=0) can still be in flight when a faster
+        // tick B (fired at t=2s) resolves first with a higher count. If A
+        // then resolves later with its OLDER (lower) count, a bare
+        // overwrite would render progress running backwards (F2). The
+        // server-side counter (`onJobScored`, routes/searches.ts) only ever
+        // increments within one run, so the higher of "what's on screen"
+        // and "what this response reports" is always the more current
+        // truth for that run.
         setPhase((prev) =>
-          prev.kind === "running" ? { ...prev, scoredSoFar: result.scoredSoFar } : prev,
+          prev.kind === "running" && prev.searchId === searchId
+            ? { ...prev, scoredSoFar: Math.max(prev.scoredSoFar, result.scoredSoFar) }
+            : prev,
         );
         return;
       }
@@ -286,6 +316,13 @@ export function SearchFlow({
         <div className="cost-panel running" aria-label="Search running">
           <h3>Search running...</h3>
           <ElapsedTimer startedAt={phase.startedAt} />
+          {/* F4 (review round, ticket 1998875): `jobCount` (the "of M") is
+              fixed at ESTIMATE time, but the real run re-fetches sources —
+              more or fewer postings can appear before confirm, so this can
+              legitimately read e.g. "12 of 10" or stall below M. Low
+              frequency, no money at risk. Deliberately NOT clamped: clamping
+              `scoredSoFar` to `jobCount` would hide that real divergence
+              instead of just displaying it. */}
           <p>
             {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
           </p>

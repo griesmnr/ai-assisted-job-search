@@ -1402,9 +1402,21 @@ describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b
     job(`demo-match-prewarm-${i}`, `Prewarm Engineer ${i}`),
   );
   const RESUME_TEXT = `${RESUME_TEXT_PREFIX} prewarm-ordering ${randomUUID()}`;
+  // Ticket 1998875 F1: a SEPARATE job set from PREWARM_JOBS, scored against
+  // the SAME RESUME_TEXT (and therefore the same resumeId — runDemoMatch
+  // upserts one resumes row per distinct resumeText). Distinct externalIds
+  // matter here, not a distinct resume: ticket 620ca30 skips (never
+  // re-scores) a job already scored for a given resumeId, so reusing
+  // PREWARM_JOBS in a second "it" against this same RESUME_TEXT would make
+  // every job free (`newlyScored: 0`, `onJobScored` never firing) once the
+  // "awaits the first job's call..." test above has already run.
+  const SCORED_EVENT_JOBS: NormalizedJob[] = Array.from({ length: 4 }, (_, i) =>
+    job(`demo-match-scored-event-${i}`, `Scored Event Engineer ${i}`),
+  );
 
   beforeAll(() => {
     allExternalIds.push(...PREWARM_JOBS.map((j) => j.externalId));
+    allExternalIds.push(...SCORED_EVENT_JOBS.map((j) => j.externalId));
     allResumeTexts.push(RESUME_TEXT);
   });
 
@@ -1486,6 +1498,68 @@ describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b
     );
     for (const idx of otherStartIndices) {
       expect(idx).toBeGreaterThan(1);
+    }
+  });
+
+  it("fires onJobScored synchronously as each job's call resolves, interleaved with completion — not bunched after the whole batch settles (ticket 1998875, F1)", async () => {
+    // This is the mechanism-level proof for the "N of M scored so far" live
+    // progress feature (SearchFlow.tsx / routes/searches.ts): it must be
+    // impossible for `onJobScored` to fire only after every job has already
+    // finished, because that would make a poller (routes/searches.ts's
+    // `scoredSoFar` counter) jump straight from 0 to the final total instead
+    // of climbing — the exact bug this ticket exists to prevent. Reuses
+    // `makeOrderTrackingScorer`'s own `events` array (see that function's
+    // doc comment above) as the shared timeline: the scorer pushes
+    // `start:<id>` / `resolve:<id>`, and this test's `onJobScored` callback
+    // pushes a plain `"scored"` entry into that SAME array, so both sources
+    // of events land on one shared timeline with their real relative order
+    // preserved.
+    const source = new FakeSource(SCORED_EVENT_JOBS);
+    const { scoreJob, events } = makeOrderTrackingScorer();
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+      // Ticket 1998875: `onJobScored` is called synchronously inside
+      // `scoreOne`, immediately after `await scoreJob(...)` resolves and
+      // BEFORE `scoreOne` returns — see demo-match.ts. Pushing into the
+      // scorer's own `events` array here, rather than a separate counter,
+      // is what lets this test check ADJACENCY (below), not just a final
+      // count.
+      onJobScored: () => {
+        events.push("scored");
+      },
+    });
+
+    // Sanity: every job was actually scored (same shape as the ordering
+    // test above) — this test is about the TIMING of `onJobScored`, not
+    // about whether jobs get scored at all.
+    expect(run.newlyScored).toBe(SCORED_EVENT_JOBS.length);
+    expect(events.filter((e) => e === "scored")).toHaveLength(SCORED_EVENT_JOBS.length);
+
+    // The core assertion: every `resolve:<id>` entry must be IMMEDIATELY
+    // followed by a `"scored"` entry — proving `onJobScored` fires as each
+    // job's own call resolves, not batched afterward.
+    //
+    // Concretely, this fails if `onJobScored?.()` were moved out of
+    // `scoreOne` into a loop over `settled` AFTER `Promise.allSettled` (the
+    // regression the reviewer verified would otherwise slip past every
+    // other test in this file, including the frontend-mocking test in
+    // SearchFlow.test.tsx): every `"scored"` push would then land at the
+    // END of `events`, once for each of the four jobs, all clustered
+    // together — so this loop's very first iteration (checking phase 1's
+    // lone pre-warm job, whose `resolve:<id>` is immediately followed by
+    // phase 2's `start:<id>` events in the buggy version, not by
+    // `"scored"`) would already fail.
+    const resolveIndices = events.map((_, i) => i).filter((i) => events[i]!.startsWith("resolve:"));
+    expect(resolveIndices).toHaveLength(SCORED_EVENT_JOBS.length);
+    for (const i of resolveIndices) {
+      expect(events[i + 1]).toBe("scored");
     }
   });
 });

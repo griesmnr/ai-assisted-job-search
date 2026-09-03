@@ -294,4 +294,104 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       { timeout: 4000 },
     );
   }, 15000);
+
+  // Review round, F2: `setInterval` fires unconditionally every
+  // POLL_INTERVAL_MS, and each tick's `poll()` awaits its OWN independent
+  // `getSearchStatus` round trip — so two ticks for the same run can settle
+  // OUT OF ORDER. A slow early tick can still be in flight when a faster
+  // later tick already resolved with a HIGHER count; if the slow tick then
+  // resolves with its OLDER (lower) count, a bare overwrite would make the
+  // displayed count run backwards. Uses per-call deferred promises (same
+  // `deferred()` helper the F1 tests above use for `estimateSearch`/
+  // `startSearch`, applied here to individual `getSearchStatus` calls) so
+  // this test controls RESOLUTION order independently of INVOCATION order —
+  // the only way to reproduce "later-fired, faster" vs. "earlier-fired,
+  // slower" deterministically rather than by timing luck.
+  it("an out-of-order (slower, stale) poll response never regresses scoredSoFar backward (ticket 1998875 review, F2)", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+
+    const tickA = deferred<{
+      status: string;
+      scoredSoFar: number;
+      searchId: string;
+      resumeId: string;
+    }>();
+    const tickB = deferred<{
+      status: string;
+      scoredSoFar: number;
+      searchId: string;
+      resumeId: string;
+    }>();
+    getSearchStatus
+      .mockReturnValueOnce(tickA.promise)
+      .mockReturnValueOnce(tickB.promise)
+      .mockResolvedValue({
+        status: "complete",
+        searchId: "search-1",
+        resumeId: "resume-1",
+        newlyScored: 10,
+        failed: 0,
+        skipped: 0,
+        cappedCount: 0,
+        costEstimate: makeEstimate().costEstimate,
+        sourceOutcomes: [],
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    await screen.findByLabelText("Search running");
+    expect(screen.getByText("0 of 10 scored so far.")).toBeInTheDocument();
+
+    // Wait for BOTH the first tick (fires ~2000ms after "running" started)
+    // and the second tick (~2000ms after that) to have actually been
+    // invoked — both `getSearchStatus` calls are now in flight,
+    // deliberately left unresolved so far.
+    await waitFor(
+      () => {
+        expect(getSearchStatus).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 5000 },
+    );
+
+    // Resolve the SECOND (later-fired) tick FIRST, simulating it being the
+    // FASTER response — a higher, genuinely-progressed count.
+    await act(async () => {
+      tickB.resolve({
+        status: "pending",
+        scoredSoFar: 7,
+        searchId: "search-1",
+        resumeId: "resume-1",
+      });
+      await tickB.promise;
+    });
+    await waitFor(() => {
+      expect(screen.getByText("7 of 10 scored so far.")).toBeInTheDocument();
+    });
+
+    // NOW resolve the FIRST (earlier-fired) tick — the SLOWER, now-STALE
+    // response, carrying a LOWER count than what's already on screen.
+    await act(async () => {
+      tickA.resolve({
+        status: "pending",
+        scoredSoFar: 3,
+        searchId: "search-1",
+        resumeId: "resume-1",
+      });
+      await tickA.promise;
+    });
+
+    // Must NOT regress to the stale, lower value — the display stays at the
+    // higher count `Math.max` preserved. Given one tick to process (a
+    // `waitFor` poll), the DOM must never show "3 of 10" at all.
+    await waitFor(() => {
+      expect(screen.getByText("7 of 10 scored so far.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("3 of 10 scored so far.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
+  }, 15000);
 });
