@@ -703,6 +703,64 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
   });
 });
 
+describe("POST /searches — swe-filter.ts's staff-level default, CLI/no-criteria path only (ticket 6b2313a)", () => {
+  // History (opus review F3, PM-ratified): an earlier round of this ticket
+  // also gave the EXPLICIT-criteria path its own hidden titleExclude
+  // default, tested here with two more end-to-end cases. That default was
+  // reverted (see criteria.ts and criteria.test.ts) — it was actively wrong
+  // on that path, not just redundant. This describe block now covers only
+  // what's actually true post-revert: the staff-level exclusion lives
+  // solely in swe-filter.ts's `NOT` regex, reached only via
+  // `compileFilter(undefined)` (no `criteria` field at all in the request
+  // body). An explicit `criteria` — even `{}` — never sees it; see the
+  // "opts OUT of filtering entirely" test above.
+  it("the CLI/no-criteria default excludes a staff-level title end to end", async () => {
+    const staffJob = fakeJob(`staff-${randomUUID()}`, "Staff Software Engineer", {
+      location: "Seattle, WA",
+    });
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE] },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+
+    expect(body.status).toBe("complete");
+    expect(body.newlyScored).toBe(0);
+  });
+
+  it("an explicit empty criteria object does NOT exclude a staff-level title — the default is CLI-only, not a title-exclude default that also applies to explicit criteria (F3 revert)", async () => {
+    const staffJob = fakeJob(`staff-empty-crit-${randomUUID()}`, "Staff Software Engineer", {
+      location: "Seattle, WA",
+    });
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+
+    expect(body.status).toBe("complete");
+    expect(body.newlyScored).toBe(1);
+  });
+});
+
 describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review round 2)", () => {
   async function insertOrphanSearch(status: "running" | "complete" | "failed"): Promise<{
     searchId: string;
