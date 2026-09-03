@@ -37,8 +37,74 @@ import type { NormalizedJob } from "./types.js";
 // Title filter: actual software engineering roles, not adjacent ones.
 const SOFTWARE =
   /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
+
+// ---------------------------------------------------------------------------
+// `\bWORD\b` is only correct when every real suffixed form of WORD is either
+// caught by the same trailing `\b` or genuinely shouldn't be. Ticket 06b09cf:
+// `\bintern\b` doesn't match "Internship" -- the trailing `\b` needs a
+// boundary immediately after "intern", and "s" (from "-ship") is a word
+// character, so there's no boundary there. A real Ashby/ramp posting titled
+// "Software Engineer Internship, Android" (see swe-filter.test.ts) passed
+// SOFTWARE and slipped past NOT, reaching the scorer as if it were a regular
+// SWE role.
+//
+// The fix is an explicit optional-suffix group, not a dropped trailing `\b`
+// (`\bintern` alone would also match "internal", "internally",
+// "international", "internationalize" -- all real, wanted title words).
+// `(ships?|s)?` keeps the boundary requirement right after whichever suffix
+// actually matched, so "internal"/"international" still fail to match at
+// all (after "intern" the next character is "a", which is neither the
+// start of "ship"/"ships" nor "s", so the optional group matches empty and
+// the trailing `\b` then fails against "a") while "Intern", "Interns",
+// "Internship", and "Internships" all match. No fixture title in this repo
+// isolates the "international"/"internal" no-over-match guard -- the one
+// candidate, ashby-real-response-ramp.json's "Marketing Media Strategist,
+// International (Contract)", is excluded via the `marketing` alternative
+// regardless of what this fix does, so it can't prove this specific case.
+// That guard is verified at the regex level directly instead -- see
+// swe-filter.test.ts's boundary tests.
+//
+// Audited every other NOT alternative for the same class of defect (a real
+// suffixed form of WORD that the trailing `\b` fails to bridge), per the
+// ticket's own request:
+//   - `recruit` -> real fixture title "GTM Recruiter, AMER"
+//     (ashby-real-response-notion.json) proves `\brecruit\b` misses
+//     "Recruiter"; likely misses "Recruiting"/"Recruitment"/"Recruits" for
+//     the identical reason even though no fixture happens to contain those
+//     exact forms. Fixed the same way, below.
+//   - `designer` -> no real fixture title contains "design" as a bare word
+//     or as a prefix of a longer word, so there is no fixture evidence of
+//     either an under-match (a suffixed "designer" form) or the over-match
+//     the ticket speculated about (a bare `\bdesign\b` alternative, which
+//     doesn't actually exist in this regex). Left unchanged.
+//   - `manager` / `director` / `principal` -> every real fixture title
+//     using these is already the exact singular word ("Acquisition
+//     Manager", "Director, Product Management ...", "Associate Principal,
+//     ..."); no fixture contains a plural ("Managers"/"Directors") or other
+//     suffixed form, so there's no real evidence of a live defect here.
+//     Left unchanged rather than guessing -- see the ticket's own warning
+//     against inventing fixes for cases nobody has actually observed.
+//   - `sales` / `marketing` / `machine learning` / `data scientist` /
+//     `field service` -> every real fixture title containing these already
+//     matches correctly (e.g. "Workshop Sales Representative", "Marketing
+//     Media Strategist", "Senior Software Engineer, Machine Learning
+//     Infrastructure" all have a genuine word boundary right where the
+//     regex expects one). No fixture evidence of a defect. Left unchanged.
+// ---------------------------------------------------------------------------
 const NOT =
-  /\b(manager|director|principal|sales|marketing|recruit|intern|designer|field service|machine learning|data scientist)\b/i;
+  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist)\b/i;
+
+/** Exported so the exclusion regex can be verified directly against a real
+ * fixture title string without also requiring that title to independently
+ * match `SOFTWARE` first. Most of the excludable-word fixture titles (e.g.
+ * "GTM Recruiter, AMER") never matched SOFTWARE to begin with, so asserting
+ * on `filterSoftwareEngineeringJobs`'s combined output proves nothing about
+ * NOT specifically -- see swe-filter.test.ts. Mirrors the precedent already
+ * set by exporting `classifyGeography`/`resolveWorkArrangement` alongside
+ * the combined `passesLocationFilter`. */
+export function matchesTitleExclusion(title: string): boolean {
+  return NOT.test(title);
+}
 
 // ---------------------------------------------------------------------------
 // Location filter: two independent questions, kept as two independent
