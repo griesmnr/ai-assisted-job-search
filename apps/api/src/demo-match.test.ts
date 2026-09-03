@@ -107,13 +107,19 @@ class FakeSource implements JobSource {
  * fixture moved above the business rule rather than the business rule
  * moving down.
  *
- * 70 is picked so every externalId suffix this file uses (0-19; the widest
- * is `MANY_JOBS` in the spend-guard describe) lands in 70-89 — clear of the
- * floor at the bottom and of 100 at the top, so the fake scores stay
- * plausible percentages. The "counting-scorer fixture scores" test near the
- * bottom of this file pins that invariant, so a future floor change or a
- * fixture numbered past 19 fails with one obvious assertion instead of
- * seven mysteriously empty `results` arrays.
+ * 70 is picked so every externalId suffix `makeCountingScorer` is used
+ * against in this file (0-19; the widest is `MANY_JOBS` in the spend-guard
+ * describe — some OTHER fixtures in this file, like the cost-estimate-only
+ * ones, number higher but are never routed through this scorer) lands in
+ * 70-89 — clear of the floor at the bottom and of 100 at the top, so the
+ * fake scores stay plausible percentages. The "counting-scorer fixture
+ * scores" test near the bottom of this file pins that invariant against a
+ * hand-maintained upper bound (`HIGHEST_FIXTURE_SUFFIX`, not a scan of this
+ * file's actual fixtures), so a future floor change above 89 fails with one
+ * obvious assertion instead of seven mysteriously empty `results` arrays.
+ * That constant must be raised by hand in step with any new
+ * makeCountingScorer fixture numbered past 19 — it won't catch that on its
+ * own.
  */
 const COUNTING_SCORER_BASE = 70;
 
