@@ -1,10 +1,12 @@
 import { pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
+import cors from "@fastify/cors";
 import Fastify from "fastify";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
+import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
 import { registerSourceRoutes } from "./routes/sources.js";
@@ -84,9 +86,29 @@ export function buildApp(deps: BuildAppDeps) {
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
   });
 
+  // CORS (ticket 484889d, review round F2): apps/web (Vite dev server,
+  // default http://localhost:5173) and this API (default
+  // http://localhost:3000) are different origins, so a browser blocks the
+  // fetch calls without this. NOT `origin: true` (reflect-any-origin) —
+  // that was the original choice here, on the reasoning that no
+  // accounts/auth/cookies makes CORS "not security-sensitive for a local
+  // single-user dev tool." That reasoning missed that `POST /searches` is
+  // real, unauthenticated money-spend reachable purely by Origin: with
+  // `origin: true`, ANY webpage open in the same browser while this API is
+  // running on localhost can cross-origin POST /searches and it will
+  // succeed — drive-by spend, plus read access to resume text and match
+  // results via the GET routes. Scoping the regex to localhost/127.0.0.1
+  // (any port) keeps the original stated benefit — this keeps working
+  // whichever port Vite actually picks, which it changes silently and
+  // often when 5173 is taken — while closing the arbitrary-origin gap:
+  // only pages actually served from this machine's loopback address can
+  // call this API at all.
+  void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
+
   registerSourceRoutes(app);
   registerResumeRoutes(app, deps.db);
   registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
+  registerJobStatusRoutes(app, deps.db);
 
   return app;
 }

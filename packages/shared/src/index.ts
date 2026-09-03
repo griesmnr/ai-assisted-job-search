@@ -103,6 +103,26 @@ export type GetResumeResponse = {
   resumeText: string;
 };
 
+/**
+ * The user's own status toward a job (ticket 0c319b2, apps/api/src/db/
+ * schema.ts's `userJobStatusEnum`). Mirrored here rather than imported from
+ * apps/api because nothing under apps/api/src ever crosses the wire into
+ * @app/web — see this file's header comment.
+ *
+ * Review round F4 (git-bug 484889d): the runtime array is exported too, as
+ * `USER_JOB_STATUSES`, and the type is derived FROM it (`(typeof
+ * USER_JOB_STATUSES)[number]`) rather than the array being typed against a
+ * separately hand-written union. Before this, `apps/api/src/routes/
+ * resumes.ts` and `apps/api/src/routes/job-status.ts` each hand-duplicated
+ * their own local `KNOWN_STATUSES` array (used for runtime validation,
+ * since a `type` has no runtime representation) — two copies that could
+ * silently drift from this type and from each other. One canonical runtime
+ * list here removes that drift risk; both route files now import
+ * `USER_JOB_STATUSES` instead of redeclaring it.
+ */
+export const USER_JOB_STATUSES = ["saved", "resume_optimized", "applied", "dismissed"] as const;
+export type UserJobStatus = (typeof USER_JOB_STATUSES)[number];
+
 export type ScoredJobResult = {
   jobId: string;
   externalId: string;
@@ -119,6 +139,13 @@ export type ScoredJobResult = {
   rationale: string;
   strengths: string[];
   gaps: string[];
+  /**
+   * The user's current status toward this job, or `null` when no
+   * `user_job_statuses` row exists for it yet (ticket 484889d — added
+   * alongside the frontend since no REST surface previously read this
+   * column at all; see that ticket's report for what else was missing).
+   */
+  status: UserJobStatus | null;
 };
 
 export type GetResumeResultsResponse = {
@@ -127,6 +154,23 @@ export type GetResumeResultsResponse = {
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */
   hiddenBelowFloor?: number;
+};
+
+/**
+ * `POST /jobs/:id/status` (ticket 484889d). `resumeId` is optional and
+ * records which resume was in hand when the status was set — see
+ * `userJobStatuses.resumeId`'s doc comment in apps/api/src/db/schema.ts for
+ * why it's an attribute, never part of the row's identity.
+ */
+export type SetJobStatusRequest = {
+  status: UserJobStatus;
+  resumeId?: string;
+};
+
+export type SetJobStatusResponse = {
+  jobId: string;
+  status: UserJobStatus;
+  updatedAt: string;
 };
 
 export type SourceHealth = {

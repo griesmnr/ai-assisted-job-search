@@ -4,7 +4,13 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../index.js";
-import { jobMatches, jobs as jobsTable, resumes, sourceDescriptors } from "../db/schema.js";
+import {
+  jobMatches,
+  jobs as jobsTable,
+  resumes,
+  sourceDescriptors,
+  userJobStatuses,
+} from "../db/schema.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
@@ -48,6 +54,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (jobIds.length > 0) {
+    // user_job_statuses.job_id references jobs.id with no ON DELETE
+    // cascade (schema.ts) — deleted first, or the jobs delete below fails
+    // its FK constraint for any test that set a status.
+    await db.delete(userJobStatuses).where(inArray(userJobStatuses.jobId, jobIds));
     await db.delete(jobMatches).where(inArray(jobMatches.jobId, jobIds));
     await db.delete(jobsTable).where(inArray(jobsTable.id, jobIds));
   }
@@ -271,19 +281,84 @@ describe("GET /resumes/:id/results", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it("rejects a status filter with 400 rather than silently ignoring it (0c319b2 not merged)", async () => {
+  it("400s on an unrecognized status value", async () => {
     const app = buildTestApp();
-    const resumeText = `Status resume ${randomUUID()}`;
+    const resumeText = `Bad status resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
     resumeIds.push(resumeId);
 
     const response = await app.inject({
       method: "GET",
-      url: `/resumes/${resumeId}/results?status=saved`,
+      url: `/resumes/${resumeId}/results?status=not-a-real-status`,
     });
     expect(response.statusCode).toBe(400);
   });
+
+  it(
+    "includes each job's status, excludes dismissed by default, and shows them again for " +
+      "?status=dismissed (ticket 484889d, 0c319b2 now merged)",
+    async () => {
+      const app = buildTestApp();
+      const resumeText = `Status-view resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+      resumeIds.push(resumeId);
+
+      const untouchedId = await seedScoredJob(resumeId, 80, "Untouched job");
+      const savedId = await seedScoredJob(resumeId, 75, "Saved job");
+      const dismissedId = await seedScoredJob(resumeId, 70, "Dismissed job");
+
+      await db.insert(userJobStatuses).values([
+        {
+          id: randomUUID(),
+          jobId: savedId,
+          status: "saved",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: randomUUID(),
+          jobId: dismissedId,
+          status: "dismissed",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      const byId = (results: Array<{ jobId: string; status: string | null }>) =>
+        new Map(results.map((r) => [r.jobId, r.status]));
+
+      const defaultView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results`,
+      });
+      expect(defaultView.statusCode).toBe(200);
+      const defaultBody = defaultView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      const defaultStatuses = byId(defaultBody.results);
+      expect(defaultStatuses.get(untouchedId)).toBeNull();
+      expect(defaultStatuses.get(savedId)).toBe("saved");
+      // Decision #2 (git-bug 484889d): a dismissed job leaves the visible
+      // (default) list.
+      expect(defaultStatuses.has(dismissedId)).toBe(false);
+
+      const dismissedView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?status=dismissed`,
+      });
+      const dismissedBody = dismissedView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      expect(byId(dismissedBody.results).get(dismissedId)).toBe("dismissed");
+      expect(dismissedBody.results).toHaveLength(1);
+    },
+  );
 
   it("rejects a non-numeric minScore with 400, not 500", async () => {
     const app = buildTestApp();
