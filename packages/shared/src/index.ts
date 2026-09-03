@@ -329,7 +329,16 @@ export type StartSearchResponse = {
  *
  * - `"pending"` / `"failed"` / `"complete"` — live, in-memory-tracked
  *   status for a run this API process started and is still tracking (or
- *   just finished tracking).
+ *   just finished tracking). `"pending"` additionally carries `scoredSoFar`
+ *   (ticket 1998875) — a running count of jobs successfully scored so far
+ *   this run, incremented as each `scoreOne` call in `runDemoMatch`
+ *   resolves (see that function's `onJobScored` option). It counts
+ *   SUCCESSFUL scores only, matching `newlyScored`'s semantics on the
+ *   `"complete"` member below — a job whose call failed isn't "scored," it
+ *   will be retried on the next run. This is the only piece of progress
+ *   surfaced mid-run; per-job scores themselves are still never exposed
+ *   until the run completes (decision: results come from the database,
+ *   never from in-memory state).
  * - `"complete-details-unavailable"` — the `searches` row's own completion
  *   marker (schema.ts's `searchStatusEnum`) says `'complete'`, but this API
  *   process's in-memory tracker has lost the run (e.g. a restart) so the
@@ -347,7 +356,7 @@ export type StartSearchResponse = {
  *   scoring 3 of 200").
  */
 export type SearchStatusResponse =
-  | { searchId: string; status: "pending"; resumeId: string }
+  | { searchId: string; status: "pending"; resumeId: string; scoredSoFar: number }
   | { searchId: string; status: "failed"; resumeId: string; error?: string }
   | {
       searchId: string;

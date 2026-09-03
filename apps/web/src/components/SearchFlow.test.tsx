@@ -166,7 +166,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
   it("happy path: nothing races — confirming Run search fires startSearch with exactly the estimated (captured) selection", async () => {
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
-    getSearchStatus.mockResolvedValue({ status: "pending" });
+    getSearchStatus.mockResolvedValue({ status: "pending", scoredSoFar: 0 });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />);
 
@@ -185,7 +185,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     estimateSearch.mockResolvedValue(makeEstimate());
     const { promise, resolve } = deferred<{ searchId: string }>();
     startSearch.mockReturnValue(promise);
-    getSearchStatus.mockResolvedValue({ status: "pending" });
+    getSearchStatus.mockResolvedValue({ status: "pending", scoredSoFar: 0 });
 
     const { rerender } = render(
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
@@ -208,4 +208,90 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     rerender(<SearchFlow resumeId="resume-1" sourceIds={["z"]} onSearchComplete={() => {}} />);
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   });
+
+  // Ticket 1998875 acceptance criterion: "A test proving the count
+  // increases mid-run, not just jumps straight to the final total." Uses
+  // the same deferred/controllable-mock technique as the tests above —
+  // here applied to `getSearchStatus` via chained `mockResolvedValueOnce`
+  // calls, one per poll tick — so each of the running search's real
+  // `setInterval` ticks (POLL_INTERVAL_MS = 2000ms in SearchFlow.tsx) can
+  // be observed landing a DIFFERENT, still-climbing `scoredSoFar` value
+  // before the run completes, rather than asserting only the final
+  // "done" state.
+  it("shows scoredSoFar climbing across multiple poll ticks before the run completes, proving intermediate progress is genuinely observable (ticket 1998875)", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+
+    // Tick 1: 3 of 10. Tick 2: 7 of 10 — a DIFFERENT, higher value, not
+    // the same number repeated and not the final total (10) — proves
+    // this is a genuinely progressing count, not a single flip from 0 to
+    // done. Tick 3: the run completes.
+    getSearchStatus
+      .mockResolvedValueOnce({
+        status: "pending",
+        scoredSoFar: 3,
+        searchId: "search-1",
+        resumeId: "resume-1",
+      })
+      .mockResolvedValueOnce({
+        status: "pending",
+        scoredSoFar: 7,
+        searchId: "search-1",
+        resumeId: "resume-1",
+      })
+      .mockResolvedValue({
+        status: "complete",
+        searchId: "search-1",
+        resumeId: "resume-1",
+        newlyScored: 10,
+        failed: 0,
+        skipped: 0,
+        cappedCount: 0,
+        costEstimate: makeEstimate().costEstimate,
+        sourceOutcomes: [],
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    await screen.findByLabelText("Search running");
+    // Before any poll response has landed, the count starts at 0 — this
+    // is what proves the LATER assertions are observing genuine
+    // progress, not just a display that was already showing a nonzero
+    // number from the start.
+    expect(screen.getByText("0 of 10 scored so far.")).toBeInTheDocument();
+
+    // First poll tick lands ~2000ms of real time after "running" started
+    // (POLL_INTERVAL_MS) — the explicit timeout below is longer than
+    // testing-library's default 1000ms `waitFor` timeout specifically to
+    // give that real interval tick room to fire.
+    await waitFor(
+      () => {
+        expect(screen.getByText("3 of 10 scored so far.")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+    // Still running, not "done" — one pending tick must not end the poll.
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
+
+    // Second poll tick: a higher, still-intermediate value.
+    await waitFor(
+      () => {
+        expect(screen.getByText("7 of 10 scored so far.")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
+
+    // Third tick finally completes the run.
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText("Search finished")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+  }, 15000);
 });

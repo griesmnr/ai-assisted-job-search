@@ -32,7 +32,17 @@ type Phase =
       resumeId: string;
       sourceIds: string[];
     }
-  | { kind: "running"; estimate: EstimateSearchResponse; searchId: string; startedAt: number }
+  | {
+      kind: "running";
+      estimate: EstimateSearchResponse;
+      searchId: string;
+      startedAt: number;
+      // Ticket 1998875: `GET /searches/:id`'s live "pending" count of jobs
+      // successfully scored so far this run. Starts at 0 the moment
+      // `"running"` is entered and is updated on every poll tick — see
+      // `poll()` below.
+      scoredSoFar: number;
+    }
   | { kind: "done"; estimate: EstimateSearchResponse; result: SearchStatusResponse }
   | { kind: "error"; message: string };
 
@@ -48,29 +58,31 @@ type Phase =
  *    only from the explicit "Run search" confirm button below, never
  *    automatically.
  *
- * LIVE SPEND DURING A RUN — HONEST LIMITATION, not silently faked: Nicole
- * asked (2026-09-02 comment) for "what we've spent so far" WHILE a run is
- * in progress, updating as jobs are scored. Audited before building this:
- * `runDemoMatch` (apps/api/src/demo-match.ts) fires every scoring call
- * concurrently after a single cache-warming call and writes ALL results to
- * the database in one batch once the whole batch settles (see the
- * `Promise.allSettled` block and the `db.insert(jobMatches)` right after
- * it) — there is no per-job event, partial DB write, or progress counter
- * exposed anywhere while a run is in flight, and `GET /searches/:id` only
- * ever reports `"pending"` or a final `"complete"`/`"failed"`, never a
- * partial count. Building real incremental live spend would mean
- * restructuring that scoring loop (streaming progress out of
- * `runDemoMatch`, or writing `job_matches` rows one at a time instead of in
- * a batch) — which is apps/api's scoring/matching pipeline, explicitly OUT
- * OF SCOPE for this ticket ("changing anything in apps/api's
- * scoring/matching logic").
+ * LIVE PROGRESS DURING A RUN (ticket 1998875, split from this ticket's own
+ * F5 gap): Nicole asked (2026-09-02 comment on 484889d) for "what we've
+ * spent so far" WHILE a run is in progress, updating as jobs are scored.
+ * The audit done for 484889d found nothing in the API to show — `GET
+ * /searches/:id` only ever reported `"pending"` or a final
+ * `"complete"`/`"failed"`, never a partial count, because `runDemoMatch`
+ * (apps/api/src/demo-match.ts) had no per-job event at all. Ticket 1998875
+ * closed PART of that gap: `runDemoMatch` now takes an `onJobScored`
+ * callback fired once per successfully-scored job (still inside the same
+ * concurrent `Promise.allSettled` loop — the scoring/batching structure
+ * itself is unchanged), routes/searches.ts wires it into a per-run counter,
+ * and `GET /searches/:id`'s `"pending"` member now carries `scoredSoFar`.
+ * That's what the "N of M scored so far" line below reflects, and it is a
+ * REAL live count, not a stub.
  *
- * So: what this component actually shows during `"running"` is an elapsed
- * timer plus the PRE-RUN estimate, clearly labeled as an estimate rather
- * than a live actual total — never presented as if it were incrementing
- * real spend. This is flagged in the ticket report as a real, unfilled gap
- * (not a stub pretending to be the real thing) — a genuine "live spend"
- * feature needs a follow-up ticket against demo-match.ts's scoring loop.
+ * What's still NOT live: per-run COST. `job_matches` rows are still written
+ * in one batch after the whole run settles (decision: results come from the
+ * database, never from in-memory state — per-job scores are deliberately
+ * never exposed incrementally, only the count), and nothing measures
+ * real-time token spend mid-run. The cost figure shown below is still the
+ * PRE-RUN estimate, clearly labeled as such — never presented as if it were
+ * incrementing real spend. A genuine live-spend figure remains a real,
+ * unfilled gap (not a stub pretending to be the real thing); a follow-up
+ * ticket could derive an approximate one from `scoredSoFar` and this
+ * estimate's per-job average, but that's an explicit choice not made here.
  */
 export function SearchFlow({
   resumeId,
@@ -121,7 +133,13 @@ export function SearchFlow({
       // (F1), never the live `resumeId`/`sourceIds` props — see the `Phase`
       // type's "estimated" doc comment for the failure this avoids.
       const started = await startSearch(snapshotResumeId, snapshotSourceIds);
-      setPhase({ kind: "running", estimate, searchId: started.searchId, startedAt: Date.now() });
+      setPhase({
+        kind: "running",
+        estimate,
+        searchId: started.searchId,
+        startedAt: Date.now(),
+        scoredSoFar: 0,
+      });
       pollRef.current = window.setInterval(
         () => void poll(started.searchId, estimate),
         POLL_INTERVAL_MS,
@@ -181,7 +199,23 @@ export function SearchFlow({
   async function poll(searchId: string, estimate: EstimateSearchResponse) {
     try {
       const result = await getSearchStatus(searchId);
-      if (result.status === "pending") return;
+      if (result.status === "pending") {
+        // Ticket 1998875: this is the only state update a "still pending"
+        // poll tick makes — everything else about the "running" phase
+        // (estimate/searchId/startedAt) stays put. Written as a functional
+        // update, not `setPhase({ ...phase, scoredSoFar: ... })`, because
+        // `phase` here is `poll`'s closed-over value from whenever THIS
+        // interval tick's closure was created, not necessarily the phase
+        // React last rendered; reading `prev` from the updater guarantees
+        // this always merges onto the actual current state. Guarded by
+        // `prev.kind === "running"` because the phase can only ever be
+        // legitimately "running" (or already moved on) by the time a poll
+        // tick's response comes back.
+        setPhase((prev) =>
+          prev.kind === "running" ? { ...prev, scoredSoFar: result.scoredSoFar } : prev,
+        );
+        return;
+      }
       if (pollRef.current !== undefined) {
         window.clearInterval(pollRef.current);
         pollRef.current = undefined;
@@ -252,9 +286,13 @@ export function SearchFlow({
         <div className="cost-panel running" aria-label="Search running">
           <h3>Search running...</h3>
           <ElapsedTimer startedAt={phase.startedAt} />
+          <p>
+            {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
+          </p>
           <p className="cost-caveat">
             Estimated cost for this run: ${phase.estimate.costEstimate.estimatedCostUsd.toFixed(2)}{" "}
-            (pre-run estimate — a live running total isn't available yet; see this ticket's notes).
+            (pre-run estimate — the job count above updates live, but per-run cost is still only
+            available as this pre-run figure; see this component's top-of-file notes).
           </p>
         </div>
       )}

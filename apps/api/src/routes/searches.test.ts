@@ -700,7 +700,7 @@ describe("searchRuns bound (ticket 59fdc52 review round 2)", () => {
     try {
       // One pending entry inserted FIRST (oldest by insertion order) — if
       // eviction ignored status, this would be the first thing deleted.
-      searchRuns.set("pending-oldest", { status: "pending", resumeId: "r0" });
+      searchRuns.set("pending-oldest", { status: "pending", resumeId: "r0", scoredSoFar: 0 });
       for (let i = 0; i < MAX_TRACKED_SEARCHES + 50; i++) {
         searchRuns.set(`complete-${i}`, {
           status: "complete",
