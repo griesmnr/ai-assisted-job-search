@@ -37,7 +37,10 @@ import { CompositeSource, type PerSourceOutcome } from "./sources/composite.js";
 import { createGreenhouseSourceFromEnv } from "./sources/greenhouse.js";
 import { createLeverSourceFromEnv } from "./sources/lever.js";
 import { createSmartRecruitersSourceFromEnv } from "./sources/smartrecruiters.js";
-import { filterSoftwareEngineeringJobs } from "./sources/swe-filter.js";
+import {
+  filterSoftwareEngineeringJobs,
+  excludedForMissingWorkArrangement as excludedForMissingWorkArrangementFilter,
+} from "./sources/swe-filter.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
 process.loadEnvFile();
@@ -994,6 +997,28 @@ export type RunDemoMatchOptions = {
    */
   filter?: (jobs: NormalizedJob[]) => NormalizedJob[];
   /**
+   * Companion to `filter` (ticket 14289ac): given the SAME union of raw
+   * jobs `filter` receives, returns whichever of them were excluded
+   * SPECIFICALLY because they're "somewhere in the US" with no evidence,
+   * structured or textual, of a remote work arrangement — a plain boolean
+   * `filter` can't report distinctly, since it just says "not a survivor."
+   * Defaults to a function that always returns `[]` (no metadata-exclusion
+   * reporting), same "opt in by passing the real thing" shape as `filter`
+   * itself defaulting to identity. The one real implementation is
+   * swe-filter.ts's `excludedForMissingWorkArrangement`, and it's only
+   * meaningful when `filter` is (or is built from) `filterSoftwareEngineeringJobs`
+   * — `main()` below and the REST routes wire the two together so they're
+   * never passed inconsistently (e.g. one reflecting `criteria`-based
+   * filtering while the other reports against a filter that doesn't even
+   * have a "us-wide" concept — see `sources/criteria.ts`'s `passesLocation`,
+   * which is a different, simpler model with nothing to report here, hence
+   * `compileExcludedForMissingWorkArrangement` returning `() => []` for any
+   * explicit `criteria`). Threaded into `sourceOutcomes` /
+   * `BoardCoverageEntry` exactly like `filter`'s survivors are, through the
+   * same reporting channel — see `SourceOutcome.excludedForMissingWorkArrangement`.
+   */
+  excludedForMissingWorkArrangement?: (jobs: NormalizedJob[]) => NormalizedJob[];
+  /**
    * Spend guard (ticket 16c824a). Above this many jobs actually NEEDING a
    * new score this run (already-scored jobs are free — ticket 620ca30),
    * scoring stops here unless `allowAboveThreshold` is set — see
@@ -1080,7 +1105,29 @@ export type RunDemoMatchOptions = {
  * hiring right now" apart from "they're hiring, just not for this" —
  * three different problems that otherwise all look like silence.
  */
-export type BoardCoverageEntry = TokenOutcome & { survivedFilter: number };
+export type BoardCoverageEntry = TokenOutcome & {
+  survivedFilter: number;
+  /**
+   * How many of this token's postings, past the title filter, were
+   * excluded specifically because they're "somewhere in the US" with no
+   * evidence — structured or textual — of a remote work arrangement
+   * (ticket 14289ac; see swe-filter.ts's `excludedForMissingWorkArrangement`
+   * and `LocationRejectionReason`). Correlated to this token by the SAME
+   * `companyName`-matching `buildBoardCoverage` already uses for
+   * `survivedFilter`, and carries the identical hazard — see that field's
+   * WARNING above. Always `0` for a token whose source doesn't populate
+   * `tokenOutcomes` at all (this array is then `[]`, per
+   * `buildBoardCoverage`'s early return) — as of this ticket that's still
+   * true for Lever, Ashby, and SmartRecruiters, so a source-level total
+   * (`SourceOutcome.excludedForMissingWorkArrangement`) is the only place
+   * this reads correctly for those three; only Greenhouse gets the
+   * per-employer breakdown today. A board contributing zero survivors with
+   * a nonzero count here is DISTINCT from one contributing zero for every
+   * other already-tracked reason — that distinction is this ticket's whole
+   * point.
+   */
+  excludedForMissingWorkArrangement: number;
+};
 
 export type RunDemoMatchResult = {
   resumeId: string;
@@ -1190,6 +1237,20 @@ export type SourceOutcome = {
    * misattribution risk.
    */
   survivedFilter: number;
+  /**
+   * How many of THIS source's title-passing postings were excluded
+   * specifically for missing work-arrangement metadata — ticket 14289ac,
+   * source-level total (sums the same jobs `BoardCoverageEntry.excludedForMissingWorkArrangement`
+   * attributes per-token where a per-token breakdown is available). Always
+   * `0` for "error" (nothing was fetched) and for a run that didn't pass
+   * `RunDemoMatchOptions.excludedForMissingWorkArrangement`. This is the
+   * number that makes a source contributing zero survivors FOR THIS REASON
+   * distinguishable from one contributing zero for every other reason —
+   * "error" (fetch failed), "empty" (no postings at all), or "ok" with
+   * `survivedFilter: 0` and THIS at `0` too (postings existed, none
+   * matched, and it wasn't the missing-metadata rule specifically).
+   */
+  excludedForMissingWorkArrangement: number;
   /** Present only when `status === "error"`. */
   errorMessage: string | undefined;
   /**
@@ -1273,6 +1334,16 @@ export function buildBoardCoverage(
   tokenOutcomes: TokenOutcome[] | undefined,
   filtered: NormalizedJob[],
   warn: (message: string) => void = (message) => console.warn(message),
+  /**
+   * Ticket 14289ac: the title-passing postings of THIS source that were
+   * excluded specifically for missing work-arrangement metadata (see
+   * swe-filter.ts's `excludedForMissingWorkArrangement`), correlated to a
+   * token by `companyName` the same way `filtered` is for `survivedFilter`
+   * below. Defaults to `[]` so every existing caller (including the tests
+   * in demo-match.test.ts written before this ticket) keeps working
+   * unchanged and simply gets `0` for the new field.
+   */
+  excludedForMissingWorkArrangement: NormalizedJob[] = [],
 ): BoardCoverageEntry[] {
   if (!tokenOutcomes || tokenOutcomes.length === 0) return [];
 
@@ -1282,10 +1353,19 @@ export function buildBoardCoverage(
     survivedByCompany.set(key, (survivedByCompany.get(key) ?? 0) + 1);
   }
 
+  const excludedByCompany = new Map<string, number>();
+  for (const job of excludedForMissingWorkArrangement) {
+    const key = job.company.trim().toLowerCase();
+    excludedByCompany.set(key, (excludedByCompany.get(key) ?? 0) + 1);
+  }
+
   const coverage = tokenOutcomes.map((outcome) => ({
     ...outcome,
     survivedFilter: outcome.companyName
       ? (survivedByCompany.get(outcome.companyName.trim().toLowerCase()) ?? 0)
+      : 0,
+    excludedForMissingWorkArrangement: outcome.companyName
+      ? (excludedByCompany.get(outcome.companyName.trim().toLowerCase()) ?? 0)
       : 0,
   }));
 
@@ -1311,9 +1391,10 @@ export function buildBoardCoverage(
   if (duplicateNames.size > 0) {
     warn(
       `buildBoardCoverage: multiple tokens self-report the same company name ` +
-        `(${[...duplicateNames].join(", ")}) — each such token's survivedFilter counts every ` +
-        `survivor attributed to that name, so they are almost certainly double-counted between ` +
-        `those tokens specifically, regardless of whether the totals above happened to match.`,
+        `(${[...duplicateNames].join(", ")}) — each such token's survivedFilter AND ` +
+        `excludedForMissingWorkArrangement counts every job attributed to that name, so both are ` +
+        `almost certainly double-counted between those tokens specifically, regardless of whether ` +
+        `the totals above happened to match.`,
     );
   }
 
@@ -1342,8 +1423,17 @@ export function describeBoardOutcome(entry: BoardCoverageEntry): string {
       // the board may be perfectly healthy, this run just couldn't
       // confirm that.
       return `${entry.message ?? "fetch failed (unknown error)"} — rerun to retry`;
-    case "ok":
-      return `${entry.postingCount} posting(s), ${entry.survivedFilter} survived filtering`;
+    case "ok": {
+      const base = `${entry.postingCount} posting(s), ${entry.survivedFilter} survived filtering`;
+      // Ticket 14289ac: only append this when nonzero, so the common case
+      // (no metadata-excluded postings) reads exactly as it always has —
+      // the whole point is that a NONzero count here now stands out
+      // instead of being silent.
+      return entry.excludedForMissingWorkArrangement > 0
+        ? `${base} (+${entry.excludedForMissingWorkArrangement} more excluded for missing ` +
+            `work-arrangement metadata — "United States" with no evidence of a remote arrangement)`
+        : base;
+    }
   }
 }
 
@@ -1363,6 +1453,11 @@ export function buildSourceOutcomes(
   perSource: PerSourceOutcome[],
   filtered: NormalizedJob[],
   warn: (message: string) => void = (message) => console.warn(message),
+  /** Ticket 14289ac: same union-of-all-sources shape as `filtered`, bucketed
+   * per source below exactly like `filtered` already is for `survivedFilter`.
+   * Defaults to `[]` so existing callers (including demo-match.test.ts's
+   * pre-ticket tests) are unaffected and simply see `0`. */
+  excludedForMissingWorkArrangement: NormalizedJob[] = [],
 ): SourceOutcome[] {
   return perSource.map((outcome): SourceOutcome => {
     if (outcome.status === "error") {
@@ -1373,6 +1468,7 @@ export function buildSourceOutcomes(
         skippedCount: 0,
         skipRate: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
         errorMessage: outcome.errorMessage,
         boardCoverage: [],
       };
@@ -1380,6 +1476,9 @@ export function buildSourceOutcomes(
 
     const { result } = outcome;
     const filteredForSource = filtered.filter((j) => j.dataSource === outcome.dataSource);
+    const excludedForSource = excludedForMissingWorkArrangement.filter(
+      (j) => j.dataSource === outcome.dataSource,
+    );
 
     return {
       dataSource: outcome.dataSource,
@@ -1388,8 +1487,14 @@ export function buildSourceOutcomes(
       skippedCount: result.skipped.length,
       skipRate: result.skipRate,
       survivedFilter: filteredForSource.length,
+      excludedForMissingWorkArrangement: excludedForSource.length,
       errorMessage: undefined,
-      boardCoverage: buildBoardCoverage(result.tokenOutcomes, filteredForSource, warn),
+      boardCoverage: buildBoardCoverage(
+        result.tokenOutcomes,
+        filteredForSource,
+        warn,
+        excludedForSource,
+      ),
     };
   });
 }
@@ -1405,11 +1510,16 @@ export function describeSourceOutcome(entry: SourceOutcome): string {
       return `${entry.errorMessage ?? "search failed (unknown error)"} — rerun to retry`;
     case "empty":
       return "0 postings returned this run";
-    case "ok":
-      return (
+    case "ok": {
+      const base =
         `${entry.jobsFound} posting(s), ${entry.skippedCount} skipped ` +
-        `(skipRate ${entry.skipRate.toFixed(2)}), ${entry.survivedFilter} survived filtering`
-      );
+        `(skipRate ${entry.skipRate.toFixed(2)}), ${entry.survivedFilter} survived filtering`;
+      // Ticket 14289ac — see describeBoardOutcome's identical treatment.
+      return entry.excludedForMissingWorkArrangement > 0
+        ? `${base} (+${entry.excludedForMissingWorkArrangement} more excluded for missing ` +
+            `work-arrangement metadata)`
+        : base;
+    }
   }
 }
 
@@ -1618,6 +1728,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     scoreJob,
     criteria = {},
     filter = (jobs: NormalizedJob[]) => jobs,
+    excludedForMissingWorkArrangement: excludeMissingArrangementFn = () => [],
     scoreThreshold = DEFAULT_SCORE_THRESHOLD,
     allowAboveThreshold = false,
     usageStatsPath = "prep/scoring-usage-stats.json",
@@ -1704,6 +1815,14 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // out to build, and swe-filter.ts itself is unchanged.
   const filtered = filter(found);
 
+  // Ticket 14289ac: the SAME union `filter` just ran over, asked a
+  // different question — not "did it survive" but "was it excluded
+  // specifically for missing work-arrangement metadata." See
+  // `RunDemoMatchOptions.excludedForMissingWorkArrangement`'s doc comment
+  // for why this is a separate function rather than something `filter`
+  // itself reports.
+  const excludedForMetadata = excludeMissingArrangementFn(found);
+
   // Ticket 16c824a: no `maxJobs`-style truncation here. Every survivor gets
   // ingested and is a scoring CANDIDATE — the old bug was slicing this list
   // to 12 in source/board iteration order before any of it reached the
@@ -1713,8 +1832,11 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // SCORED, not which ones get persisted.
   const candidates = filtered;
 
-  const sourceOutcomes = buildSourceOutcomes(perSource, filtered, (message) =>
-    log(`  WARNING: ${message}`),
+  const sourceOutcomes = buildSourceOutcomes(
+    perSource,
+    filtered,
+    (message) => log(`  WARNING: ${message}`),
+    excludedForMetadata,
   );
   log("  Source coverage:");
   for (const so of sourceOutcomes) {
@@ -2228,6 +2350,7 @@ async function main() {
       scoreJob: makeClaudeScorer(anthropic),
       criteria: {},
       filter: filterSoftwareEngineeringJobs,
+      excludedForMissingWorkArrangement: excludedForMissingWorkArrangementFilter,
       allowAboveThreshold,
     });
 

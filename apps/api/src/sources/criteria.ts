@@ -39,7 +39,7 @@
  * guarantee.
  */
 import type { SearchCriteria } from "@app/shared";
-import { filterSoftwareEngineeringJobs } from "./swe-filter.js";
+import { excludedForMissingWorkArrangement, filterSoftwareEngineeringJobs } from "./swe-filter.js";
 import type { NormalizedJob } from "./types.js";
 
 export type { SearchCriteria };
@@ -147,4 +147,33 @@ export function compileFilter(
         return true;
       });
   };
+}
+
+/**
+ * Companion to `compileFilter`, for `RunDemoMatchOptions.excludedForMissingWorkArrangement`
+ * (ticket 14289ac) — always compiled and passed alongside `compileFilter`'s
+ * result by the two real callers (`main()` in demo-match.ts,
+ * `routes/searches.ts`) so the two never drift out of sync for a given
+ * request.
+ *
+ * `criteria === undefined` mirrors `compileFilter` exactly: the caller gets
+ * the real `filterSoftwareEngineeringJobs`-equivalent exclusion count,
+ * `excludedForMissingWorkArrangement` from swe-filter.ts.
+ *
+ * Any EXPLICIT `criteria` (including `{}`) instead gets `() => []`. Not an
+ * oversight: `passesLocation` above is a genuinely different, simpler
+ * location model (`nearLocations`/`remoteOk` substring matches) with no
+ * "us-wide broad-US geography" concept at all — there is no equivalent
+ * "excluded for missing work-arrangement metadata" reason to report against
+ * it, and reporting swe-filter.ts's us-wide/PNW-based count against a
+ * filter that doesn't share that model would be actively misleading, not
+ * merely absent.
+ */
+export function compileExcludedForMissingWorkArrangement(
+  criteria: SearchCriteria | undefined,
+): (jobs: NormalizedJob[]) => NormalizedJob[] {
+  if (criteria === undefined) {
+    return excludedForMissingWorkArrangement;
+  }
+  return () => [];
 }
