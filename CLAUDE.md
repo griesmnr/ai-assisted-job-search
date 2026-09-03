@@ -359,9 +359,30 @@ work in `/workspace` directly and never touch `main`.
 
 ```bash
 rtk git worktree add .worktrees/<bug-id-short> -b ticket/<bug-id-short>-<slug>
+cd .worktrees/<bug-id-short> && rtk pnpm install
 # ... agent works there ...
 rtk git worktree remove .worktrees/<bug-id-short>
 ```
+
+**The `pnpm install` step is mandatory, not optional cleanup.** `git worktree
+add` does not run it for you, and skipping it is not simply "no
+node_modules" — a worktree can inherit an `apps/api/node_modules` (or
+`apps/web/`, `packages/shared/`) left over as a symlink into `/workspace` or
+another worktree from an earlier manual fix-up. `@app/shared`'s own symlink
+inside that directory is relative (`../../../../packages/shared`), and a
+relative symlink resolves against the *physical* location of the directory
+that contains it — so a borrowed `apps/api/node_modules` keeps resolving
+`@app/shared` to whichever tree it physically lives in, never to the
+worktree you're standing in. `tsc --noEmit` then reports success while
+silently typechecking a different branch's shared types (git-bug 22fb214,
+confirmed 2026-09-03: hit the PM's own verification four times before the
+root cause was found). Running `pnpm install` from inside the worktree gives
+it real, worktree-local `node_modules` at every level, with `@app/shared`
+correctly symlinked to *that worktree's own* `packages/shared` — verified by
+adding a throwaway export to one worktree's `packages/shared` and confirming
+a sibling worktree's simultaneous `tsc --noEmit -p apps/api/tsconfig.json`
+does not see it. Since this reuses the local pnpm store (no re-download), it
+costs a few seconds per worktree, not a full install.
 
 Worktrees live in `.worktrees/` **inside** the repo, which is gitignored. They
 cannot go in the parent directory: `/workspace` is the macOS bind mount, so
@@ -374,6 +395,10 @@ Rules:
 - One ticket, one worktree, one branch.
 - Before dispatching parallel tickets, the PM checks they do not touch
   overlapping files. Overlapping tickets are serialized, not parallelized.
+- Never symlink or otherwise share `node_modules` (at any level: root,
+  `apps/api/`, `apps/web/`, `packages/shared/`) between worktrees or from
+  main as a shortcut — always let `pnpm install`, run from inside that
+  worktree, produce its own.
 - Worktrees are removed after merge or abandonment. No stale worktrees.
 
 ## Agent Orchestration
