@@ -10,6 +10,15 @@ export function ping(): string {
   return "pong";
 }
 
+/**
+ * Minimum match score (0-100) to display in the ranked list (ticket 1b9f81e).
+ * Jobs scoring below this are still scored and persisted in the database, but
+ * hidden from the printed/returned ranked list. This is a display filter only,
+ * not a scoring or persistence filter — the threshold can be retuned later
+ * without re-paying to score anything already in the database.
+ */
+export const MATCH_SCORE_FLOOR = 55;
+
 export type Job = {
   id: string;
   externalId: string;
