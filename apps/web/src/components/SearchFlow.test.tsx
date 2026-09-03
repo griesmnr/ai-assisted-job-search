@@ -394,4 +394,103 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(screen.queryByText("3 of 10 scored so far.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
+
+  // Review round 2 (F3): the F2 fix (Math.max) alone is not sufficient — a
+  // poll from a PREVIOUS, already-finished search can still resolve late and
+  // leak its count onto a NEW search's phase, since `prev.kind === "running"`
+  // is true again once a new search starts. Only comparing `searchId` too
+  // closes this. Reproduces the mechanism directly: `setInterval` fires every
+  // POLL_INTERVAL_MS regardless of whether the previous tick resolved, so
+  // search-1 genuinely has TWO polls in flight — tick A (held open) and tick
+  // B (resolves "complete" first, since it's a fresh promise with no delay).
+  // Tick B completing the search does NOT cancel tick A's already-fired
+  // promise; it only stops the interval from firing again. Search 2 starts;
+  // THEN tick A's stale response finally resolves.
+  it("a stale poll from a completed PREVIOUS search never leaks its count onto a NEW search (ticket 1998875 review, F3)", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch
+      .mockResolvedValueOnce({ searchId: "search-1", status: "pending", skippedSources: [] })
+      .mockResolvedValueOnce({ searchId: "search-2", status: "pending", skippedSources: [] });
+
+    const search1TickA = deferred<{
+      status: string;
+      scoredSoFar: number;
+      searchId: string;
+      resumeId: string;
+    }>();
+    getSearchStatus
+      // search-1, tick A (fires first, ~2000ms in): held open deliberately.
+      .mockReturnValueOnce(search1TickA.promise)
+      // search-1, tick B (fires second, ~4000ms in): resolves "complete"
+      // immediately — genuinely faster than tick A, which is still pending.
+      .mockResolvedValueOnce({
+        status: "complete",
+        searchId: "search-1",
+        resumeId: "resume-1",
+        newlyScored: 1,
+        failed: 0,
+        skipped: 0,
+        cappedCount: 0,
+        costEstimate: makeEstimate().costEstimate,
+        sourceOutcomes: [],
+      })
+      // search-2's own poll: resolves normally, scored nothing yet.
+      .mockResolvedValue({
+        status: "pending",
+        scoredSoFar: 0,
+        searchId: "search-2",
+        resumeId: "resume-1",
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    // Search 1: estimate, confirm, running.
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+    await screen.findByLabelText("Search running");
+
+    // Wait for tick B to land and finish search 1 — tick A is still
+    // in-flight underneath it the whole time.
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText("Search finished")).toBeInTheDocument();
+      },
+      { timeout: 6000 },
+    );
+
+    // Start search 2.
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+    await screen.findByLabelText("Search running");
+    expect(screen.getByText("0 of 10 scored so far.")).toBeInTheDocument();
+
+    // Search 2's own poll lands normally: still 0, still running.
+    await waitFor(
+      () => {
+        expect(getSearchStatus).toHaveBeenCalledTimes(3);
+      },
+      { timeout: 4000 },
+    );
+
+    // NOW search-1's stale tick A finally resolves, carrying a HIGH count
+    // under search-1's searchId — while the component is displaying
+    // search-2, which has scored nothing.
+    await act(async () => {
+      search1TickA.resolve({
+        status: "pending",
+        scoredSoFar: 8,
+        searchId: "search-1",
+        resumeId: "resume-1",
+      });
+      await search1TickA.promise;
+    });
+
+    // Must NOT leak: search-2's display stays at 0, never jumps to 8.
+    expect(screen.getByText("0 of 10 scored so far.")).toBeInTheDocument();
+    expect(screen.queryByText("8 of 10 scored so far.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
+  }, 15000);
 });
