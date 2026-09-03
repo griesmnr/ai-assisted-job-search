@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { Job } from "@app/shared";
+import { MATCH_SCORE_FLOOR } from "@app/shared";
 import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -57,15 +58,6 @@ process.loadEnvFile();
  * Re-run `model-ab.ts` before changing this again.
  */
 export const MODEL = "claude-sonnet-5";
-
-/**
- * Minimum match score (0-100) to display in the ranked list (ticket 1b9f81e).
- * Jobs scoring below this are still scored and persisted in the database, but
- * hidden from the printed/returned ranked list. This is a display filter only,
- * not a scoring or persistence filter — the threshold can be retuned later
- * without re-paying to score anything already in the database.
- */
-export const MATCH_SCORE_FLOOR = 55;
 
 /**
  * Hard cap on the scorer's own response size — the JSON schema below is

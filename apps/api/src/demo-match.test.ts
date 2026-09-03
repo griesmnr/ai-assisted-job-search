@@ -7,6 +7,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { MATCH_SCORE_FLOOR } from "@app/shared";
 import {
   jobMatches,
   jobs as jobsTable,
@@ -29,7 +30,6 @@ import {
   estimateScoringCost,
   isTotalScoringFailure,
   makeClaudeScorer,
-  MATCH_SCORE_FLOOR,
   MODEL,
   readUsageStats,
   recordUsageStats,
@@ -2505,7 +2505,7 @@ describe("applyMatchScoreFloor (ticket 1b9f81e)", () => {
     const results = [
       makeRankedResult(40, "Job 1"),
       makeRankedResult(50, "Job 2"),
-      makeRankedResult(54, "Job 3"),
+      makeRankedResult(MATCH_SCORE_FLOOR - 1, "Job 3"),
     ];
     const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
     expect(displayed).toHaveLength(0);
@@ -2514,7 +2514,7 @@ describe("applyMatchScoreFloor (ticket 1b9f81e)", () => {
 
   it("includes all jobs when all are at or above the floor", () => {
     const results = [
-      makeRankedResult(55, "Job 1"),
+      makeRankedResult(MATCH_SCORE_FLOOR, "Job 1"),
       makeRankedResult(75, "Job 2"),
       makeRankedResult(100, "Job 3"),
     ];
@@ -2535,16 +2535,14 @@ describe("applyMatchScoreFloor (ticket 1b9f81e)", () => {
     expect(displayed).toHaveLength(3);
     expect(belowFloorCount).toBe(2);
     // Verify the correct jobs were included
-    expect(displayed.map((r) => r.matchScore).sort((a, b) => b - a)).toEqual([
-      100, 75, 60,
-    ]);
+    expect(displayed.map((r) => r.matchScore).sort((a, b) => b - a)).toEqual([100, 75, 60]);
   });
 
-  it("includes jobs exactly at the floor (55%)", () => {
+  it(`includes jobs exactly at the floor (${MATCH_SCORE_FLOOR}%)`, () => {
     const results = [
-      makeRankedResult(54, "Below"),
-      makeRankedResult(55, "AtFloor"),
-      makeRankedResult(56, "Above"),
+      makeRankedResult(MATCH_SCORE_FLOOR - 1, "Below"),
+      makeRankedResult(MATCH_SCORE_FLOOR, "AtFloor"),
+      makeRankedResult(MATCH_SCORE_FLOOR + 1, "Above"),
     ];
     const { displayed, belowFloorCount } = applyMatchScoreFloor(results);
     expect(displayed).toHaveLength(2);
