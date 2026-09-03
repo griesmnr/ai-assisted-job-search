@@ -281,11 +281,11 @@ afterAll(async () => {
   // management UI) between test runs even within one broker session that
   // never restarts.
   for (const tier of [...TEST_RETRY_TIERS, MECHANICS_LONG_TIER, MECHANICS_SHORT_TIER]) {
-    await channel.deleteQueue(tier.queue).catch(() => {});
+    await channel?.deleteQueue(tier.queue).catch(() => {});
   }
 
-  await channel.close();
-  await connection.close();
+  await channel?.close();
+  await connection?.close();
 });
 
 async function makeSearch(): Promise<string> {
