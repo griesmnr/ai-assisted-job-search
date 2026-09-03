@@ -50,15 +50,19 @@ const SOFTWARE =
 //
 // The fix is an explicit optional-suffix group, not a dropped trailing `\b`
 // (`\bintern` alone would also match "internal", "internally",
-// "international", "internationalize" -- all real, wanted title words, e.g.
-// ashby-real-response-ramp.json's own "Marketing Media Strategist,
-// International (Contract)"). `(ships?|s)?` keeps the boundary requirement
-// right after whichever suffix actually matched, so "internal"/
-// "international" still fail to match at all (after "intern" the next
-// character is "a", which is neither the start of "ship"/"ships" nor "s",
-// so the optional group matches empty and the trailing `\b` then fails
-// against "a") while "Intern", "Interns", "Internship", and "Internships"
-// all match.
+// "international", "internationalize" -- all real, wanted title words).
+// `(ships?|s)?` keeps the boundary requirement right after whichever suffix
+// actually matched, so "internal"/"international" still fail to match at
+// all (after "intern" the next character is "a", which is neither the
+// start of "ship"/"ships" nor "s", so the optional group matches empty and
+// the trailing `\b` then fails against "a") while "Intern", "Interns",
+// "Internship", and "Internships" all match. No fixture title in this repo
+// isolates the "international"/"internal" no-over-match guard -- the one
+// candidate, ashby-real-response-ramp.json's "Marketing Media Strategist,
+// International (Contract)", is excluded via the `marketing` alternative
+// regardless of what this fix does, so it can't prove this specific case.
+// That guard is verified at the regex level directly instead -- see
+// swe-filter.test.ts's boundary tests.
 //
 // Audited every other NOT alternative for the same class of defect (a real
 // suffixed form of WORD that the trailing `\b` fails to bridge), per the

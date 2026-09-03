@@ -212,7 +212,7 @@ describe("filterSoftwareEngineeringJobs — title filter", () => {
     }
   });
 
-  it('intern exclusion does NOT wrongly exclude "internal"/"international" (real fragment: "International" from ashby-real-response-ramp.json\'s "Marketing Media Strategist, International (Contract)"; "internal"/"internally" have no real fixture instance in this repo, so these two are verified at the regex level directly, not via a fixture title)', () => {
+  it('intern exclusion does NOT wrongly exclude "internal"/"international" (no fixture title in this repo isolates this case -- ashby-real-response-ramp.json\'s "Marketing Media Strategist, International (Contract)" is excluded via the `marketing` alternative regardless, so it cannot prove this guard; verified at the regex level directly instead)', () => {
     expect(matchesTitleExclusion("Software Engineer, Internal Tools")).toBe(false);
     expect(matchesTitleExclusion("Senior Engineer, International Payments")).toBe(false);
     expect(matchesTitleExclusion("Software Engineer, Internally Facing Tools")).toBe(false);
@@ -228,6 +228,11 @@ describe("filterSoftwareEngineeringJobs — title filter", () => {
   it('audit finding (ticket 06b09cf): the real fixture title "GTM Recruiter, AMER" (ashby-real-response-notion.json) proves `\\brecruit\\b` also missed "Recruiter" for the identical word-boundary reason as "Internship". Tested against the exported NOT regex directly, not the combined filter, because this title never matched SOFTWARE in the first place (it is not a software-engineering title) — filterSoftwareEngineeringJobs would report it excluded regardless of whether NOT recognizes "Recruiter", so it cannot prove the fix on its own.', () => {
     expect(ashbyNotion.some((j) => j.title === "GTM Recruiter, AMER")).toBe(true);
     expect(matchesTitleExclusion("GTM Recruiter, AMER")).toBe(true);
+  });
+
+  it('real fixture "Deployment Strategist, Internship" (lever-real-response-palantir.json) also confirms the intern-exclusion fix on a second source (Lever, not Ashby) -- flagged by review round 1 as evidence the implementer\'s own report cited but the tests never used', () => {
+    expect(leverPalantir.some((j) => j.text === "Deployment Strategist, Internship")).toBe(true);
+    expect(matchesTitleExclusion("Deployment Strategist, Internship")).toBe(true);
   });
 
   it("recruit exclusion also catches Recruiting/Recruitment/Recruits (same suffix-boundary class as Recruiter; no fixture instance of these specific forms exists, so verified at the regex level)", () => {
