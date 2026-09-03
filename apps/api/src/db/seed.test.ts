@@ -1,38 +1,33 @@
 import { inArray } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sourceDescriptors } from "./schema.js";
 import { seedSourceDescriptors, SOURCE_DESCRIPTORS } from "./seed.js";
+import { createTestDatabase, type TestDatabase } from "./test-db.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see test-db.ts. This file
+// used to connect straight to the shared dev Postgres.
+let testDb: TestDatabase;
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("seed_test");
 });
 
 afterAll(async () => {
-  await client.end();
+  await testDb.teardown();
 });
 
 describe("seedSourceDescriptors (ticket 620ca30)", () => {
-  // Deliberately does NOT delete the seeded rows in afterAll: usajobs,
-  // wa-state, and greenhouse are real, permanent source_descriptors rows —
-  // the same ones `jobs.data_source` needs as a valid FK target for any
-  // real ingest — not throwaway test fixtures. Running this test is
-  // equivalent to running `db:seed` once.
+  // Deliberately does NOT delete the seeded rows: usajobs, wa-state, and
+  // greenhouse are real, permanent source_descriptors rows — the same ones
+  // `jobs.data_source` needs as a valid FK target for any real ingest —
+  // not throwaway test fixtures. Running this test is equivalent to
+  // running `db:seed` once. They die with this file's own isolated
+  // database in `afterAll` above, same as everything else in it.
   it("is idempotent: calling it twice leaves exactly one row per id", async () => {
+    const db = testDb.db;
     await seedSourceDescriptors(db);
     await seedSourceDescriptors(db);
 

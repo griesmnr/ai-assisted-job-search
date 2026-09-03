@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Job } from "@app/shared";
 import type { ChannelModel, ConfirmChannel } from "amqplib";
-import { eq, inArray } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { jobs, resumes, searches, searchResults, sourceDescriptors } from "../db/schema.js";
+import { jobs, resumes, searches, sourceDescriptors } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { FETCH_SOURCE_RETRY_TIERS, setupTopology } from "../queue/topology.js";
 import {
   AuthFailedError,
@@ -29,27 +29,21 @@ import {
 process.loadEnvFile();
 
 // ---------------------------------------------------------------------------
-// Postgres setup (same pattern as db/schema.test.ts and ingest/ingestJobs.test.ts)
+// Postgres setup — isolated, per-run database (ticket c434a6e). This file
+// used to connect straight to the shared dev Postgres under fixed fixture
+// ids ("worker-test-source", "worker-test-resume") — exactly the ids two
+// concurrent worktrees' runs collided on with a real FK violation (see
+// git-bug c434a6e's incident history). See ../db/test-db.ts.
 // ---------------------------------------------------------------------------
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-const db = drizzle(client);
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
 const RESUME_ID = "worker-test-resume";
 // Widened to `string` (not the const-inferred literal) so it can be cast to
 // Job["dataSource"] / NormalizedJob["dataSource"] below - this id is only a
 // valid `source_descriptors.id` FK target for this test, not a real source.
 const SOURCE_ID: string = "worker-test-source";
-
-// Every search row this file creates, so afterAll can scope its cleanup
-// instead of truncating tables other tests/owners might have rows in.
-const createdSearchIds: string[] = [];
 
 // ---------------------------------------------------------------------------
 // RabbitMQ setup
@@ -232,7 +226,8 @@ async function stopConsumer() {
 }
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("fetch_source_worker_test");
+  db = testDb.db;
   await db.insert(sourceDescriptors).values({ id: SOURCE_ID, displayName: "Worker Test Source" });
   await db
     .insert(resumes)
@@ -275,14 +270,9 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (createdSearchIds.length > 0) {
-    await db.delete(searchResults).where(inArray(searchResults.searchId, createdSearchIds));
-  }
-  await db.delete(searches).where(eq(searches.resumeId, RESUME_ID));
-  await db.delete(jobs).where(eq(jobs.dataSource, SOURCE_ID));
-  await db.delete(resumes).where(eq(resumes.id, RESUME_ID));
-  await db.delete(sourceDescriptors).where(eq(sourceDescriptors.id, SOURCE_ID));
-  await client.end();
+  // No manual row cleanup needed: this file's rows live in its own
+  // isolated database (created in beforeAll above), dropped whole here.
+  await testDb.teardown();
 
   expect(connectionErrors).toEqual([]);
 
@@ -301,7 +291,6 @@ afterAll(async () => {
 async function makeSearch(): Promise<string> {
   const searchId = randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId: RESUME_ID, searchedAt: new Date() });
-  createdSearchIds.push(searchId);
   return searchId;
 }
 

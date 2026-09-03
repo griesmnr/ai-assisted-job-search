@@ -1,17 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../index.js";
-import {
-  jobMatches,
-  jobs as jobsTable,
-  resumes,
-  searchResults as searchResultsTable,
-  searches as searchesTable,
-  searchSources as searchSourcesTable,
-} from "../db/schema.js";
+import { jobMatches, searches as searchesTable } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../demo-match.js";
 import { __testing } from "./searches.js";
 import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/types.js";
@@ -19,58 +12,26 @@ import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/ty
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
+// file used to connect straight to the shared dev Postgres.
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
 // "usajobs" is one of the real dataSource ids demo-match.ts's
 // seedSourceDescriptors always seeds — reused here for the same reason
 // demo-match.test.ts uses it: no throwaway source_descriptors row needed.
 const DATA_SOURCE = "usajobs" as const;
-const resumeIds: string[] = [];
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("searches_test");
+  db = testDb.db;
 });
 
 afterAll(async () => {
-  // Clean up everything these tests created, keyed off the resumes: every
-  // search/job/match this file produces is reachable from one of these
-  // resume ids since each test uses its own fresh resume. Jobs are found
-  // via search_results (NOT job_matches) because estimateOnly runs
-  // deliberately ingest jobs without ever scoring them — a job_matches-only
-  // cleanup would leave those orphaned.
-  if (resumeIds.length > 0) {
-    const searchRows = await db
-      .select({ id: searchesTable.id })
-      .from(searchesTable)
-      .where(inArray(searchesTable.resumeId, resumeIds));
-    const searchIds = searchRows.map((r) => r.id);
-
-    let jobIds: string[] = [];
-    if (searchIds.length > 0) {
-      const linkRows = await db
-        .select({ jobId: searchResultsTable.jobId })
-        .from(searchResultsTable)
-        .where(inArray(searchResultsTable.searchId, searchIds));
-      jobIds = [...new Set(linkRows.map((r) => r.jobId))];
-    }
-
-    await db.delete(jobMatches).where(inArray(jobMatches.resumeId, resumeIds));
-    if (searchIds.length > 0) {
-      await db.delete(searchResultsTable).where(inArray(searchResultsTable.searchId, searchIds));
-      await db.delete(searchSourcesTable).where(inArray(searchSourcesTable.searchId, searchIds));
-    }
-    if (jobIds.length > 0) await db.delete(jobsTable).where(inArray(jobsTable.id, jobIds));
-    await db.delete(searchesTable).where(inArray(searchesTable.resumeId, resumeIds));
-    await db.delete(resumes).where(inArray(resumes.id, resumeIds));
-  }
-  await client.end();
+  // No manual row cleanup needed: everything this file created lives in
+  // its own isolated database (created in beforeAll above), dropped whole
+  // here.
+  await testDb.teardown();
 });
 
 function fakeJob(
@@ -150,7 +111,6 @@ async function createResume(app: ReturnType<typeof buildApp>): Promise<string> {
     payload: { resumeText: `Search test resume ${randomUUID()}` },
   });
   const id = (response.json() as { id: string }).id;
-  resumeIds.push(id);
   return id;
 }
 

@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray, or } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MATCH_SCORE_FLOOR } from "@app/shared";
 import {
@@ -16,6 +15,7 @@ import {
   searchResults,
   searchSources,
 } from "./db/schema.js";
+import { createTestDatabase, type TestDatabase } from "./db/test-db.js";
 import {
   applyMatchScoreFloor,
   buildBoardCoverage,
@@ -51,15 +51,14 @@ import type {
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
+// file used to connect straight to the shared dev Postgres; the hardcoded
+// external ids this file's fixtures use (see FAKE_JOBS below, throughout)
+// are exactly the kind of fixed id two concurrent worktrees' runs
+// collided on with a real FK violation (see git-bug c434a6e's incident
+// history).
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
 // "usajobs" is one of the real dataSource ids demo-match.ts always seeds
 // via seedSourceDescriptors (see db/seed.ts) — using it here also proves
@@ -260,7 +259,8 @@ const allExternalIds: string[] = [];
 const allResumeTexts: string[] = [];
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("demo_match_test");
+  db = testDb.db;
 });
 
 /** Runs `fn`, logging (not throwing) on failure, so one statement failing
@@ -358,7 +358,14 @@ afterAll(async () => {
   }
 
   fs.rmSync(outputDir, { recursive: true, force: true });
-  await client.end();
+  // Belt-and-suspenders only at this point: every row this file created
+  // lives in its own isolated database (created in the top beforeAll
+  // above), which this drops whole — the SELECT-then-safeDelete cleanup
+  // above (ticket 620ca30's fix for the teardown leak this ticket's own
+  // incident history cites) still runs first so a partial failure there is
+  // still visible in the console, but nothing after it depends on that
+  // cleanup having succeeded.
+  await testDb.teardown();
 });
 
 describe("runDemoMatch (ticket 620ca30)", () => {

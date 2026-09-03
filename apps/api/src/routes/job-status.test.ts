@@ -1,31 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../index.js";
-import { jobs as jobsTable, resumes, sourceDescriptors, userJobStatuses } from "../db/schema.js";
+import { jobs as jobsTable, sourceDescriptors, userJobStatuses } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
+// file used to connect straight to the shared dev Postgres.
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
 // A real, canonical dataSource id (see db/seed.ts's SOURCE_DESCRIPTORS),
 // matching the convention resumes.test.ts and searches.test.ts already use.
 const DATA_SOURCE = "usajobs" as const;
-const jobIds: string[] = [];
-const resumeIds: string[] = [];
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("job_status_test");
+  db = testDb.db;
   await db
     .insert(sourceDescriptors)
     .values([{ id: DATA_SOURCE, displayName: "USAJOBS" }])
@@ -33,14 +28,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (jobIds.length > 0) {
-    await db.delete(userJobStatuses).where(inArray(userJobStatuses.jobId, jobIds));
-    await db.delete(jobsTable).where(inArray(jobsTable.id, jobIds));
-  }
-  if (resumeIds.length > 0) {
-    await db.delete(resumes).where(inArray(resumes.id, resumeIds));
-  }
-  await client.end();
+  await testDb.teardown();
 });
 
 function buildTestApp() {
@@ -54,7 +42,6 @@ function buildTestApp() {
 
 async function seedJob(): Promise<string> {
   const jobId = randomUUID();
-  jobIds.push(jobId);
   await db.insert(jobsTable).values({
     id: jobId,
     externalId: `job-status-test-${jobId}`,
@@ -151,7 +138,6 @@ describe("POST /jobs/:id/status", () => {
       payload: { resumeText: `Job-status resume ${randomUUID()}` },
     });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     const response = await app.inject({
       method: "POST",
@@ -174,7 +160,6 @@ describe("POST /jobs/:id/status", () => {
       payload: { resumeText: `Tailored resume ${randomUUID()}` },
     });
     const tailoredResumeId = (tailored.json() as { id: string }).id;
-    resumeIds.push(tailoredResumeId);
 
     const generic = await app.inject({
       method: "POST",
@@ -182,7 +167,6 @@ describe("POST /jobs/:id/status", () => {
       payload: { resumeText: `Generic resume ${randomUUID()}` },
     });
     const genericResumeId = (generic.json() as { id: string }).id;
-    resumeIds.push(genericResumeId);
 
     // Apply to the job with the tailored resume -- this is the write that
     // is supposed to be permanent (schema.ts's own doc comment on

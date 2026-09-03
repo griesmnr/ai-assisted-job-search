@@ -1,8 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  applyMigrationInTransaction,
+  createEmptyTestDatabase,
+  loadMigrationStatements,
+} from "./test-db.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
@@ -53,60 +56,12 @@ process.loadEnvFile();
  * answered by running it against data, not by reading the SQL.
  */
 
-const {
-  POSTGRES_USER = "jobsearch",
-  POSTGRES_PASSWORD = "",
-  POSTGRES_HOST = "postgres",
-  POSTGRES_PORT = "5432",
-  POSTGRES_DB = "jobsearch",
-} = process.env;
-
-// Unique per test run so parallel/repeated runs never collide.
-const TEST_DB = `migration_0004_test_${randomUUID().replace(/-/g, "")}`;
-
-function connectTo(database: string): Client {
-  return new Client({
-    host: POSTGRES_HOST,
-    port: Number(POSTGRES_PORT),
-    user: POSTGRES_USER,
-    password: POSTGRES_PASSWORD,
-    database,
-  });
-}
-
-/** drizzle-kit's migration files separate statements with this exact
- * marker (see drizzle/0000_jazzy_zarda.sql etc.) — splitting on it and
- * executing each piece individually is what `drizzle-kit migrate` itself
- * does under the hood. */
-const STATEMENT_BREAKPOINT = "--> statement-breakpoint";
-
-function loadMigrationStatements(filename: string): string[] {
-  const path = fileURLToPath(new URL(`../../drizzle/${filename}`, import.meta.url));
-  const sql = readFileSync(path, "utf8");
-  return sql
-    .split(STATEMENT_BREAKPOINT)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-/** `drizzle-kit migrate` wraps a pending migration's statements in one
- * transaction — an abort partway through rolls the whole file back, never
- * leaving the database half-migrated. Applying statements one at a time in
- * autocommit (no BEGIN/COMMIT) would NOT reproduce that: a failure midway
- * would leave whatever ran before it committed. Wrapping here matches
- * production behavior instead of testing a laxer approximation of it. */
-async function applyMigrationInTransaction(client: Client, filename: string): Promise<void> {
-  await client.query("BEGIN");
-  try {
-    for (const statement of loadMigrationStatements(filename)) {
-      await client.query(statement);
-    }
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  }
-}
+// CREATE DATABASE / DROP DATABASE, migration-statement loading, and
+// wrapping a migration file in BEGIN/COMMIT (matching what `drizzle-kit
+// migrate` itself does) now live in ./test-db.ts (ticket c434a6e) - this
+// file was the original, hand-rolled version of that pattern; every other
+// DB-backed test file now shares it instead of re-deriving it.
+let teardown: () => Promise<void>;
 
 const PRE_0004_MIGRATIONS = [
   "0000_jazzy_zarda.sql",
@@ -115,7 +70,6 @@ const PRE_0004_MIGRATIONS = [
   "0003_fresh_gabe_jones.sql",
 ];
 
-let admin: Client;
 let db: Client;
 
 // Fixture text, kept as named constants so every `it` below can look up
@@ -148,12 +102,10 @@ const SCENARIO_A_TEXT = "scenario A resume text (three duplicates, non-canonical
 const SCENARIO_C_TEXT = "scenario C resume text (duplicate match on one resume)";
 
 beforeAll(async () => {
-  admin = connectTo(POSTGRES_DB);
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${TEST_DB}"`);
+  const empty = await createEmptyTestDatabase("migration_0004_test");
+  db = empty.client;
+  teardown = empty.teardown;
 
-  db = connectTo(TEST_DB);
-  await db.connect();
   for (const file of PRE_0004_MIGRATIONS) {
     for (const statement of loadMigrationStatements(file)) {
       await db.query(statement);
@@ -221,11 +173,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db?.end();
-  // A just-created, empty-of-connections database can be dropped
-  // immediately — nothing else ever connects to TEST_DB.
-  await admin.query(`DROP DATABASE IF EXISTS "${TEST_DB}"`);
-  await admin.end();
+  await teardown?.();
 });
 
 describe("migration 0004 applied to a table with pre-existing rows (ticket 620ca30 review findings B1, B1-again)", () => {

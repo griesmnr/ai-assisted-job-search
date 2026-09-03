@@ -23,41 +23,30 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray, or } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { and, eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  jobMatches,
-  jobs as jobsTable,
-  resumes,
-  searches,
-  searchResults,
-  searchSources,
-  userJobStatuses,
-} from "./schema.js";
+import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "./schema.js";
+import { createTestDatabase, type TestDatabase } from "./test-db.js";
 import { fetchAppliedJobIds, runDemoMatch, type ScoreJobFn } from "../demo-match.js";
 import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/types.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
+// Isolated, per-run database (ticket c434a6e) — see test-db.ts. This file
+// used to connect straight to the shared dev Postgres.
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
-const db = drizzle(client);
-
-// Real, permanently-seeded source id (see db/seed.ts) — same choice
-// demo-match.test.ts makes, and deliberately not deleted in afterAll.
+// "usajobs" is one of the real dataSource ids `runDemoMatch` always seeds
+// via `seedSourceDescriptors` (see db/seed.ts) before it ingests anything —
+// no separate seed step is needed against this file's fresh database.
 const DATA_SOURCE = "usajobs" as const;
 
-/** Prefixed so a leaked row from a crashed run is still findable by hand;
- * the per-run UUID keeps concurrent/repeated runs from colliding. */
+/** Kept even though rows now die with this file's own isolated database:
+ * the per-run UUID still keeps this file's own two runDemoMatch calls
+ * (v1, v2) from colliding with each other. */
 const RUN_ID = randomUUID();
 const RESUME_TEXT_PREFIX = "ticket-0c319b2-user-job-statuses-test:";
 const RESUME_V1 = `${RESUME_TEXT_PREFIX} v1 ${RUN_ID}`;
@@ -108,99 +97,21 @@ let outputPath: string;
 let usageStatsPath: string;
 
 beforeAll(async () => {
-  await client.connect();
+  testDb = await createTestDatabase("user_job_statuses_test");
+  db = testDb.db;
   outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "user-job-statuses-test-"));
   outputPath = path.join(outputDir, "match-results.json");
   usageStatsPath = path.join(outputDir, "scoring-usage-stats.json");
 });
 
-/** Logs rather than throws, so one failing cleanup statement can't skip
- * every statement after it and leak rows into the shared dev database. */
-async function safeDelete(label: string, fn: () => Promise<unknown>): Promise<void> {
-  try {
-    await fn();
-  } catch (err) {
-    console.error(`[user-job-statuses.test.ts afterAll] cleanup step "${label}" failed:`, err);
-  }
-}
-
 afterAll(async () => {
-  // Resolve ids by SELECT from statically-known data, never from a
-  // runDemoMatch return value — a run that throws partway still leaves rows
-  // behind under ids the test never learned.
-  const externalIds = [APPLIED_EXTERNAL_ID, OTHER_EXTERNAL_ID];
-  const jobRows = await db
-    .select({ id: jobsTable.id })
-    .from(jobsTable)
-    .where(and(eq(jobsTable.dataSource, DATA_SOURCE), inArray(jobsTable.externalId, externalIds)));
-  const jobIds = jobRows.map((r) => r.id);
-
-  const resumeRows = await db
-    .select({ id: resumes.id })
-    .from(resumes)
-    .where(inArray(resumes.resumeText, [RESUME_V1, RESUME_V2]));
-  const resumeIds = resumeRows.map((r) => r.id);
-
-  let searchIds: string[] = [];
-  if (resumeIds.length > 0) {
-    const rows = await db
-      .select({ id: searches.id })
-      .from(searches)
-      .where(inArray(searches.resumeId, resumeIds));
-    searchIds = rows.map((r) => r.id);
-  }
-
-  // Children before parents.
-  if (jobIds.length > 0) {
-    await safeDelete("user_job_statuses", () =>
-      db.delete(userJobStatuses).where(inArray(userJobStatuses.jobId, jobIds)),
-    );
-  }
-  if (jobIds.length > 0 || searchIds.length > 0) {
-    await safeDelete("search_results", () =>
-      db
-        .delete(searchResults)
-        .where(
-          or(
-            jobIds.length > 0 ? inArray(searchResults.jobId, jobIds) : undefined,
-            searchIds.length > 0 ? inArray(searchResults.searchId, searchIds) : undefined,
-          ),
-        ),
-    );
-  }
-  if (searchIds.length > 0) {
-    await safeDelete("search_sources", () =>
-      db.delete(searchSources).where(inArray(searchSources.searchId, searchIds)),
-    );
-  }
-  if (jobIds.length > 0 || resumeIds.length > 0) {
-    await safeDelete("job_matches", () =>
-      db
-        .delete(jobMatches)
-        .where(
-          or(
-            resumeIds.length > 0 ? inArray(jobMatches.resumeId, resumeIds) : undefined,
-            jobIds.length > 0 ? inArray(jobMatches.jobId, jobIds) : undefined,
-          ),
-        ),
-    );
-  }
-  await safeDelete("jobs", () =>
-    db
-      .delete(jobsTable)
-      .where(
-        and(eq(jobsTable.dataSource, DATA_SOURCE), inArray(jobsTable.externalId, externalIds)),
-      ),
-  );
-  if (searchIds.length > 0) {
-    await safeDelete("searches", () => db.delete(searches).where(inArray(searches.id, searchIds)));
-  }
-  await safeDelete("resumes", () =>
-    db.delete(resumes).where(inArray(resumes.resumeText, [RESUME_V1, RESUME_V2])),
-  );
-
+  // No manual row cleanup needed: every row this file created lives in its
+  // own isolated database (created in beforeAll above), dropped whole here
+  // — a throw partway through a test can't leave anything behind that
+  // would break a later run the way it could under the old shared-database
+  // teardown (see test-db.ts for the incident history).
   fs.rmSync(outputDir, { recursive: true, force: true });
-  await client.end();
+  await testDb.teardown();
 });
 
 describe("user_job_statuses survives a resume rewrite (ticket 0c319b2)", () => {

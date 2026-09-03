@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../index.js";
 import {
@@ -11,18 +10,15 @@ import {
   sourceDescriptors,
   userJobStatuses,
 } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 process.loadEnvFile();
 
-const client = new Client({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  database: process.env.POSTGRES_DB,
-});
-const db = drizzle(client);
+// Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
+// file used to connect straight to the shared dev Postgres.
+let testDb: TestDatabase;
+let db: NodePgDatabase;
 
 // A real, canonical dataSource id (see db/seed.ts's SOURCE_DESCRIPTORS) —
 // NOT a made-up test-only id. Ticket 59fdc52 review round 2 added
@@ -35,14 +31,10 @@ const DATA_SOURCE = "usajobs" as const;
 // with no matching jobs" is a valid, non-400 "empty" result — as opposed
 // to an unrecognized source id, which is the case the 400 check exists for.
 const OTHER_REAL_DATA_SOURCE = "greenhouse" as const;
-const resumeIds: string[] = [];
-const jobIds: string[] = [];
 
 beforeAll(async () => {
-  await client.connect();
-  // Real, permanent setup data (identical to what runDemoMatch's own
-  // seedSourceDescriptors produces) — deliberately NOT deleted in afterAll,
-  // matching demo-match.test.ts's own convention for the same id.
+  testDb = await createTestDatabase("resumes_test");
+  db = testDb.db;
   await db
     .insert(sourceDescriptors)
     .values([
@@ -53,18 +45,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (jobIds.length > 0) {
-    // user_job_statuses.job_id references jobs.id with no ON DELETE
-    // cascade (schema.ts) — deleted first, or the jobs delete below fails
-    // its FK constraint for any test that set a status.
-    await db.delete(userJobStatuses).where(inArray(userJobStatuses.jobId, jobIds));
-    await db.delete(jobMatches).where(inArray(jobMatches.jobId, jobIds));
-    await db.delete(jobsTable).where(inArray(jobsTable.id, jobIds));
-  }
-  if (resumeIds.length > 0) {
-    await db.delete(resumes).where(inArray(resumes.id, resumeIds));
-  }
-  await client.end();
+  await testDb.teardown();
 });
 
 function buildTestApp() {
@@ -85,7 +66,6 @@ describe("POST /resumes", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as { id: string };
     expect(typeof body.id).toBe("string");
-    resumeIds.push(body.id);
 
     const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
     expect(rows).toHaveLength(1);
@@ -101,7 +81,6 @@ describe("POST /resumes", () => {
 
     const firstId = (first.json() as { id: string }).id;
     const secondId = (second.json() as { id: string }).id;
-    resumeIds.push(firstId);
     expect(secondId).toBe(firstId);
   });
 
@@ -158,7 +137,6 @@ describe("GET /resumes/:id", () => {
     const resumeText = `Fetch-me resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const id = (created.json() as { id: string }).id;
-    resumeIds.push(id);
 
     const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
     expect(response.statusCode).toBe(200);
@@ -179,7 +157,6 @@ describe("GET /resumes/:id/results", () => {
     title: string,
   ): Promise<string> {
     const jobId = randomUUID();
-    jobIds.push(jobId);
     await db.insert(jobsTable).values({
       id: jobId,
       externalId: `results-test-${jobId}`,
@@ -207,7 +184,6 @@ describe("GET /resumes/:id/results", () => {
     const resumeText = `Results resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     await seedScoredJob(resumeId, 90, "High match");
     await seedScoredJob(resumeId, 60, "Mid match");
@@ -240,7 +216,6 @@ describe("GET /resumes/:id/results", () => {
     const resumeText = `Source-filter resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     await seedScoredJob(resumeId, 70, "Matches source");
 
@@ -266,7 +241,6 @@ describe("GET /resumes/:id/results", () => {
     const resumeText = `Unknown-source resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     const response = await app.inject({
       method: "GET",
@@ -286,7 +260,6 @@ describe("GET /resumes/:id/results", () => {
     const resumeText = `Bad status resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     const response = await app.inject({
       method: "GET",
@@ -307,7 +280,6 @@ describe("GET /resumes/:id/results", () => {
         payload: { resumeText },
       });
       const resumeId = (created.json() as { id: string }).id;
-      resumeIds.push(resumeId);
 
       const untouchedId = await seedScoredJob(resumeId, 80, "Untouched job");
       const savedId = await seedScoredJob(resumeId, 75, "Saved job");
@@ -365,7 +337,6 @@ describe("GET /resumes/:id/results", () => {
     const resumeText = `Bad minScore resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const resumeId = (created.json() as { id: string }).id;
-    resumeIds.push(resumeId);
 
     const response = await app.inject({
       method: "GET",
