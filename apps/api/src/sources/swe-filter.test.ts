@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyGeography,
   filterSoftwareEngineeringJobs,
+  matchesTitleExclusion,
   passesLocationFilter,
   resolveWorkArrangement,
 } from "./swe-filter.js";
@@ -64,6 +65,9 @@ const ashbyRamp = loadFixture("ashby-real-response-ramp.json").jobs as Array<{
   secondaryLocations?: { location?: string }[];
   workplaceType?: string | null;
 }>;
+const ashbyNotion = loadFixture("ashby-real-response-notion.json").jobs as Array<{
+  title: string;
+}>;
 const greenhouseAirbnb = loadFixture("greenhouse-real-response-airbnb.json").jobs as Array<{
   title: string;
   location?: { name?: string };
@@ -96,6 +100,11 @@ if (leverOutreach.length !== 3) {
 }
 if (ashbyRamp.length !== 5) {
   throw new Error(`expected the ashby ramp fixture to have 5 postings, got ${ashbyRamp.length}`);
+}
+if (ashbyNotion.length !== 3) {
+  throw new Error(
+    `expected the ashby notion fixture to have 3 postings, got ${ashbyNotion.length}`,
+  );
 }
 if (greenhouseAirbnb.length !== 3) {
   throw new Error(
@@ -185,13 +194,46 @@ describe("filterSoftwareEngineeringJobs — title filter", () => {
     expect(result).toHaveLength(0);
   });
 
-  it('KNOWN GAP, out of scope for this ticket: "Software Engineer Internship, Android " (real, ashby-real-response-ramp.json) is NOT caught by the intern exclusion, because `\\bintern\\b` requires a word boundary after "intern" and "Internship" continues with word characters ("ship"). Documented here rather than silently accepted — title regexes are explicitly out of scope for ticket 4450f39 ("this file only moves the existing [title] logic, it does not change it"), so this is a pre-existing gap, not introduced by this change.', () => {
+  it('FIXED (ticket 06b09cf): "Software Engineer Internship, Android " (real, ashby-real-response-ramp.json) is now caught by the intern exclusion. Previously `\\bintern\\b` required a word boundary immediately after "intern", and "Internship" continues with word characters ("ship"), so this real posting passed the title filter and reached the scorer. The old NOT regex, run against this exact string (verified with `node -e`, 2026-09-02), matches false; the fixed regex matches true — see the module-level comment on `NOT` for the full before/after.', () => {
     const real = "Software Engineer Internship, Android ";
     expect(ashbyRamp.some((j) => j.title === real)).toBe(true);
     const result = filterSoftwareEngineeringJobs([job({ title: real, company: "ramp" })]);
-    // NOT the desired product behavior — an intern posting really should be
-    // excluded — but accurately reflects the current (unchanged) NOT regex.
+    expect(result).toHaveLength(0);
+  });
+
+  it('intern exclusion also catches "Intern", "Interns", and "Internships" (the other suffixed forms named in the ticket, plus the natural plural of "Internship")', () => {
+    for (const title of [
+      "Software Engineer Intern",
+      "Software Engineer Interns",
+      "Software Engineer Internships",
+    ]) {
+      const result = filterSoftwareEngineeringJobs([job({ title, company: "synthetic" })]);
+      expect(result, `expected "${title}" to be excluded`).toHaveLength(0);
+    }
+  });
+
+  it('intern exclusion does NOT wrongly exclude "internal"/"international" (real fragment: "International" from ashby-real-response-ramp.json\'s "Marketing Media Strategist, International (Contract)"; "internal"/"internally" have no real fixture instance in this repo, so these two are verified at the regex level directly, not via a fixture title)', () => {
+    expect(matchesTitleExclusion("Software Engineer, Internal Tools")).toBe(false);
+    expect(matchesTitleExclusion("Senior Engineer, International Payments")).toBe(false);
+    expect(matchesTitleExclusion("Software Engineer, Internally Facing Tools")).toBe(false);
+    // End-to-end confirmation that a genuine SWE title containing "Internal"
+    // survives the full filter (location held constant at the always-passing
+    // Seattle/hybrid pairing).
+    const result = filterSoftwareEngineeringJobs([
+      job({ title: "Software Engineer, Internal Tools", company: "synthetic" }),
+    ]);
     expect(result).toHaveLength(1);
+  });
+
+  it('audit finding (ticket 06b09cf): the real fixture title "GTM Recruiter, AMER" (ashby-real-response-notion.json) proves `\\brecruit\\b` also missed "Recruiter" for the identical word-boundary reason as "Internship". Tested against the exported NOT regex directly, not the combined filter, because this title never matched SOFTWARE in the first place (it is not a software-engineering title) — filterSoftwareEngineeringJobs would report it excluded regardless of whether NOT recognizes "Recruiter", so it cannot prove the fix on its own.', () => {
+    expect(ashbyNotion.some((j) => j.title === "GTM Recruiter, AMER")).toBe(true);
+    expect(matchesTitleExclusion("GTM Recruiter, AMER")).toBe(true);
+  });
+
+  it("recruit exclusion also catches Recruiting/Recruitment/Recruits (same suffix-boundary class as Recruiter; no fixture instance of these specific forms exists, so verified at the regex level)", () => {
+    for (const word of ["Recruiting", "Recruitment", "Recruits", "Recruiter", "Recruiters"]) {
+      expect(matchesTitleExclusion(`Software Engineer, ${word} Systems`), word).toBe(true);
+    }
   });
 
   it('drops "Data Engineer" — real title, does not match the SOFTWARE regex at all (greenhouse-real-response-discord.json)', () => {
