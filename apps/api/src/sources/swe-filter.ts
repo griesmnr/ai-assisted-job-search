@@ -254,16 +254,24 @@ export function matchesTitleExclusion(title: string): boolean {
  * pieces needed to construct the trap string honestly: the real spelling is
  * "District of Columbia" (its `CountrySubDivisionCode`, and embedded in
  * `LocationName`/`CityName` "Joint Base Anacostia-Bolling, District of
- * Columbia"), and USAJOBS's own `PositionLocationDisplay`/`LocationName`
- * fields both follow a "City, State" convention confirmed repeatedly in the
- * same fixture (e.g. "Walla Walla, Washington", "Gunter AFB, Alabama"). A
- * DC-proper posting (city "Washington") therefore reaches `location` as
+ * Columbia"). The "City, State" convention itself is confirmed repeatedly
+ * (48 samples) in `LocationName` — e.g. "Walla Walla, Washington", "Gunter
+ * AFB, Alabama". `job.location` is actually built from a DIFFERENT field,
+ * `PositionLocationDisplay`, which the fixture only samples twice: one
+ * follows the same convention ("Walla Walla, Washington"), the other is the
+ * literal string "Multiple Locations" — evidence FOR the convention, not
+ * disconfirming it, but thin (n=1), and worth naming honestly rather than
+ * folding into the 48-sample `LocationName` claim above. A DC-proper
+ * posting (city "Washington") would therefore reach `location` as
  * "Washington, District of Columbia" — the exact literal string isn't
- * present verbatim in the fixture (no single fixture record has both city
- * "Washington" and state "District of Columbia" together), but every piece
- * of it is real, not invented. Would have failed in the worst direction:
- * DC federal jobs passing PNW unconditionally (PNW ignores work
- * arrangement), presenting as Washington-state postings.
+ * present verbatim in the fixture (its one DC entry sits inside a
+ * `PositionLocationDisplay: "Multiple Locations"` record, so it never
+ * reaches `job.location` at all — multi-location USAJOBS postings collapse
+ * their state detail before this filter ever sees it; currently harmless,
+ * since "Multiple Locations" itself classifies `unknown` and is rejected),
+ * but every piece used to construct it is real, not invented. Would have
+ * failed in the worst direction: DC federal jobs passing PNW unconditionally
+ * (PNW ignores work arrangement), presenting as Washington-state postings.
  */
 const PNW =
   /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*(?:d\.?c\.?|district of columbia))|,\s*wa\b/i;
