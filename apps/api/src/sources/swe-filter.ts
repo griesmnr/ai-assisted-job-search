@@ -245,8 +245,36 @@ export function matchesTitleExclusion(title: string): boolean {
  * was always wrong; separating geography from work-arrangement is what
  * surfaced it. Handles "Washington, D.C.", "Washington, DC", and
  * "Washington DC" (comma optional, periods optional).
+ *
+ * Ticket 9cac9a9 (found by the 4450f39 adversarial reviewer, fixed before
+ * going live): the guard above didn't cover the spelled-out "District of
+ * Columbia" form. USAJOBS writes exactly that — not "DC"/"D.C." — and
+ * wasn't wired into demo-match.ts yet when this was found, so it was latent,
+ * not an active false positive. `usajobs-real-response.json` confirms both
+ * pieces needed to construct the trap string honestly: the real spelling is
+ * "District of Columbia" (its `CountrySubDivisionCode`, and embedded in
+ * `LocationName`/`CityName` "Joint Base Anacostia-Bolling, District of
+ * Columbia"). The "City, State" convention itself is confirmed repeatedly
+ * (48 samples) in `LocationName` — e.g. "Walla Walla, Washington", "Gunter
+ * AFB, Alabama". `job.location` is actually built from a DIFFERENT field,
+ * `PositionLocationDisplay`, which the fixture only samples twice: one
+ * follows the same convention ("Walla Walla, Washington"), the other is the
+ * literal string "Multiple Locations" — evidence FOR the convention, not
+ * disconfirming it, but thin (n=1), and worth naming honestly rather than
+ * folding into the 48-sample `LocationName` claim above. A DC-proper
+ * posting (city "Washington") would therefore reach `location` as
+ * "Washington, District of Columbia" — the exact literal string isn't
+ * present verbatim in the fixture (its one DC entry sits inside a
+ * `PositionLocationDisplay: "Multiple Locations"` record, so it never
+ * reaches `job.location` at all — multi-location USAJOBS postings collapse
+ * their state detail before this filter ever sees it; currently harmless,
+ * since "Multiple Locations" itself classifies `unknown` and is rejected),
+ * but every piece used to construct it is real, not invented. Would have
+ * failed in the worst direction: DC federal jobs passing PNW unconditionally
+ * (PNW ignores work arrangement), presenting as Washington-state postings.
  */
-const PNW = /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*d\.?c\.?)|,\s*wa\b/i;
+const PNW =
+  /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*(?:d\.?c\.?|district of columbia))|,\s*wa\b/i;
 
 /**
  * A broad "somewhere in the US" signal from free text — "United States",

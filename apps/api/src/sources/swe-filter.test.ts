@@ -87,6 +87,18 @@ const smartrecruitersPage2 = loadFixture("smartrecruiters-real-response-bosch-po
   name: string;
   location: { fullLocation: string; remote: boolean; hybrid: boolean };
 }>;
+// Ticket 9cac9a9: not loaded via `.jobs`/`.content` like the sources above —
+// usajobs-real-response.json is a raw USAJOBS search response (see
+// usajobs.test.ts), shaped `{ SearchResult: { SearchResultItems: [...] } }`.
+const usajobsReal = loadFixture("usajobs-real-response.json") as unknown as {
+  SearchResult: {
+    SearchResultItems: Array<{
+      MatchedObjectDescriptor?: {
+        PositionLocation?: Array<{ LocationName?: string; CountrySubDivisionCode?: string }>;
+      };
+    }>;
+  };
+};
 
 if (leverPalantir.length !== 5) {
   throw new Error(
@@ -131,6 +143,23 @@ if (leverMatchgroup.length !== 1) {
     `expected the lever matchgroup fixture to have 1 posting, got ${leverMatchgroup.length}`,
   );
 }
+
+// Ticket 9cac9a9: the real USAJOBS "District of Columbia" spelling, pulled
+// straight from the committed fixture rather than typed by hand. It lives
+// inside a `PositionLocation` entry (a "Joint Base Anacostia-Bolling,
+// District of Columbia" posting), not in `PositionLocationDisplay` on any
+// single-location record in this fixture — see the PNW doc comment in
+// swe-filter.ts for why "Washington, " + this value is still the honest,
+// non-invented string to test against.
+const usajobsDcSubdivision = usajobsReal.SearchResult.SearchResultItems.flatMap(
+  (item) => item.MatchedObjectDescriptor?.PositionLocation ?? [],
+).find((loc) => loc.CountrySubDivisionCode === "District of Columbia")?.CountrySubDivisionCode;
+if (usajobsDcSubdivision !== "District of Columbia") {
+  throw new Error(
+    'fixture drift: expected usajobs-real-response.json to contain a PositionLocation with CountrySubDivisionCode "District of Columbia"',
+  );
+}
+const usajobsDcLocationString = `Washington, ${usajobsDcSubdivision}`;
 
 function findLever(fixture: typeof leverPalantir, text: string) {
   const job = fixture.find((j) => j.text === text);
@@ -371,6 +400,18 @@ describe("classifyGeography — real location strings", () => {
     expect(classifyGeography("Washington, D.C.")).not.toBe("pnw");
   });
 
+  it('classifies "Washington, District of Columbia" (real USAJOBS spelling) as NOT pnw — ticket 9cac9a9', () => {
+    // Ticket 9cac9a9: the guard added for "Washington, D.C."/"Washington,
+    // DC" (above) didn't cover USAJOBS's spelled-out form. Latent (USAJOBS
+    // wasn't wired into demo-match.ts when this was found), but would have
+    // failed in the worst direction once it was: DC federal jobs presenting
+    // as Washington state. `usajobsDcLocationString` is
+    // "Washington, District of Columbia" here, built from the real fixture
+    // spelling asserted above, not invented.
+    expect(usajobsDcLocationString).toBe("Washington, District of Columbia");
+    expect(classifyGeography(usajobsDcLocationString)).not.toBe("pnw");
+  });
+
   it('classifies "Washington, DC, United States" (smartrecruiters) as us-wide, not pnw', () => {
     const dcJob = findByTitleOrName(
       smartrecruitersPage2,
@@ -422,6 +463,35 @@ describe("classifyGeography — real location strings", () => {
     expect(classifyGeography("London")).toBe("unknown");
   });
 
+  it("still classifies genuine WA locations as pnw — regression check for the ticket 9cac9a9 guard widening", () => {
+    // None of these are exercised by the new "district of columbia"
+    // alternative (only ", WA" or bare "washington" ever match them), but
+    // the ticket's own acceptance criteria calls them out by name as
+    // locations that must not regress, so asserted directly rather than
+    // only implied by the DC-rejection tests above.
+    for (const location of [
+      "Seattle, WA",
+      "Bellevue, WA",
+      "Redmond, WA",
+      "Kirkland, WA",
+      "Spokane, WA",
+    ]) {
+      expect(classifyGeography(location)).toBe("pnw");
+    }
+    // Genuine Washington-STATE strings from the real USAJOBS fixture (not
+    // D.C. at all) — "Walla Walla, Washington" etc. — must still pass too,
+    // since the new lookahead only fires when "washington" is immediately
+    // followed by a DC-shaped suffix.
+    const waSubdivisions = usajobsReal.SearchResult.SearchResultItems.flatMap(
+      (item) => item.MatchedObjectDescriptor?.PositionLocation ?? [],
+    ).filter((loc) => loc.CountrySubDivisionCode === "Washington");
+    expect(waSubdivisions.length).toBeGreaterThan(0);
+    for (const loc of waSubdivisions) {
+      expect(loc.LocationName).toBeDefined();
+      expect(classifyGeography(loc.LocationName as string)).toBe("pnw");
+    }
+  });
+
   it('classifies "Sunnyvale, CA, United States" (smartrecruiters) as us-wide, not pnw', () => {
     const sunnyvale = findByTitleOrName(
       smartrecruitersPage1,
@@ -462,6 +532,18 @@ describe("passesLocationFilter — geography and work arrangement recombined", (
     expect(passesLocationFilter({ location: "Washington, D.C.", locationType: "onsite" })).toBe(
       false,
     );
+  });
+
+  it('"Washington, District of Columbia" (real USAJOBS spelling) is rejected regardless of work arrangement — ticket 9cac9a9', () => {
+    // classifyGeography already returns "unknown" for this string (not
+    // "us-wide" — plain "District of Columbia" carries no US_WIDE token),
+    // so it's rejected at the geography check before work arrangement is
+    // ever consulted. Checked across arrangements anyway, matching the
+    // style of the Seattle/D.C. cases above, so a future PNW/US_WIDE change
+    // can't accidentally start passing this through some other branch.
+    for (const locationType of ["remote", "hybrid", "onsite", undefined] as const) {
+      expect(passesLocationFilter({ location: usajobsDcLocationString, locationType })).toBe(false);
+    }
   });
 
   it("us-wide + remote passes (real: smartrecruiters Washington DC posting is genuinely remote)", () => {
