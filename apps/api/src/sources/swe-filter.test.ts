@@ -886,6 +886,19 @@ describe('passesLocationFilter — per-piece arrangement resolution when locatio
     expect(
       passesLocationFilter({ location: "Singapore; United States", locationType: "remote" }),
     ).toBe(true);
+
+    // The load-bearing case (opus review round 2, finding 4.1): neither
+    // assertion above actually proves the structured branch is immune to
+    // per-piece arrangement leaking in, since neither location string
+    // contains a "remote" token at all. This one does -- a stray "remote"
+    // sitting in one piece must NOT flip the result when a structured,
+    // non-remote locationType governs the whole job.
+    expect(
+      passesLocationFilter({
+        location: "Remote - Singapore; United States",
+        locationType: "onsite",
+      }),
+    ).toBe(false);
   });
 });
 

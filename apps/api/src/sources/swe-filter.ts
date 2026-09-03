@@ -227,7 +227,13 @@ export function matchesTitleExclusion(title: string): boolean {
 // should pass but a bare 'United States' should not" because that
 // distinction is exactly the interaction between these two questions, not
 // a property of the location string alone. See `passesLocationFilter`,
-// which is where they're recombined.
+// which is where they're recombined -- `resolveWorkArrangement` answers
+// question 2 only on the STRUCTURED-`locationType` path (a job's own single
+// whole-job value, unambiguous by construction); when `locationType` is
+// absent, `passesLocationFilter` resolves question 2 per-location instead
+// (ticket 894b4ef review round 2, finding 3 -- a whole-blob text scan let
+// one location's "remote" text answer a different location's arrangement
+// question), so it does not call `resolveWorkArrangement` on that path.
 // ---------------------------------------------------------------------------
 
 /**
@@ -307,9 +313,11 @@ export type Geography = "pnw" | "us-wide" | "unknown";
  * `locations.join("; ")`). `Job.location` deliberately stays a joined
  * string — the ticket that raised this (git-bug 894b4ef) considered giving
  * locations their own representation on `Job` and rejected it: other code
- * (the UI, `resolveWorkArrangement`'s text fallback below) reasonably wants
- * "the whole location string" to display or scan, and Lever is not the only
- * source that can report several locations for one posting. So the split
+ * (the UI; `resolveWorkArrangement` itself, when called directly with a
+ * structured `locationType` -- that path never inspects location text at
+ * all) reasonably wants "the whole location string" to display, and Lever
+ * is not the only source that can report several locations for one
+ * posting. So the split
  * happens here, at the one place that actually needs "one location at a
  * time" (geography classification), not by changing what gets stored.
  *
@@ -319,6 +327,15 @@ export type Geography = "pnw" | "us-wide" | "unknown";
  * indistinguishable from two separate one-part entries.
  */
 const LOCATION_LIST_SEPARATOR = "; ";
+
+/** Classifies ONE already-split location piece. Shared by `classifyGeography`
+ * (which does the splitting and reduces across pieces) and
+ * `passesLocationFilter`'s per-piece path below. */
+function classifyLocationPiece(piece: string): Geography {
+  if (PNW.test(piece)) return "pnw";
+  if (isUsWideText(piece)) return "us-wide";
+  return "unknown";
+}
 
 /**
  * git-bug 894b4ef: a Lever posting open to several locations reaches this
@@ -372,12 +389,6 @@ const LOCATION_LIST_SEPARATOR = "; ";
  * risk, which is reason enough to keep it, but it is not closing a bug
  * anyone observed.)
  */
-function classifyLocationPiece(piece: string): Geography {
-  if (PNW.test(piece)) return "pnw";
-  if (isUsWideText(piece)) return "us-wide";
-  return "unknown";
-}
-
 export function classifyGeography(location: string): Geography {
   const pieces = location.split(LOCATION_LIST_SEPARATOR);
 
@@ -477,6 +488,17 @@ export function passesLocationFilter(
   // "remote" text match found in one location can never answer the
   // arrangement question for a different location in the same list (see
   // this function's doc comment for the concrete case this closes).
+  //
+  // Accepted tradeoff (opus review round 2, finding 3): a BARE "Remote"
+  // piece next to a separate us-wide piece no longer qualifies it either --
+  // e.g. "Remote; United States" now fails, where round-1 code passed it. A
+  // bare "Remote" has unknown geography, indistinguishable from "Remote -
+  // Singapore" without a country list this module doesn't have, so
+  // attaching an unknown-geography piece's remote signal to a different
+  // piece would reintroduce the exact leak this fix closes. Not observed
+  // live: no committed fixture has a semicolon-joined location at all, and
+  // every real "remote" string present names a region ("Remote (US)",
+  // "Remote (Canada)"), never bare.
   for (const piece of location.split(LOCATION_LIST_SEPARATOR)) {
     const geography = classifyLocationPiece(piece);
     if (geography === "unknown") continue;
