@@ -227,7 +227,13 @@ export function matchesTitleExclusion(title: string): boolean {
 // should pass but a bare 'United States' should not" because that
 // distinction is exactly the interaction between these two questions, not
 // a property of the location string alone. See `passesLocationFilter`,
-// which is where they're recombined.
+// which is where they're recombined -- `resolveWorkArrangement` answers
+// question 2 only on the STRUCTURED-`locationType` path (a job's own single
+// whole-job value, unambiguous by construction); when `locationType` is
+// absent, `passesLocationFilter` resolves question 2 per-location instead
+// (ticket 894b4ef review round 2, finding 3 -- a whole-blob text scan let
+// one location's "remote" text answer a different location's arrangement
+// question), so it does not call `resolveWorkArrangement` on that path.
 // ---------------------------------------------------------------------------
 
 /**
@@ -300,15 +306,99 @@ function isUsWideText(location: string): boolean {
 
 export type Geography = "pnw" | "us-wide" | "unknown";
 
-/** `"pnw"` wins over `"us-wide"` when both match (e.g. "Seattle, WA, United
- * States") — it's the more specific, more useful claim. Exported (along
- * with `resolveWorkArrangement` and `passesLocationFilter`) so tests can
- * verify geography and work-arrangement are genuinely separate predicates,
- * not just assert on the combined pass/fail outcome. */
-export function classifyGeography(location: string): Geography {
-  if (PNW.test(location)) return "pnw";
-  if (isUsWideText(location)) return "us-wide";
+/**
+ * The exact separator `lever.ts`'s `normalizeItem` uses to join a
+ * multi-location posting's individual locations into the single string
+ * stored as `Job.location` (see lever.ts, ~line 634:
+ * `locations.join("; ")`). `Job.location` deliberately stays a joined
+ * string — the ticket that raised this (git-bug 894b4ef) considered giving
+ * locations their own representation on `Job` and rejected it: other code
+ * (the UI; `resolveWorkArrangement` itself, when called directly with a
+ * structured `locationType` -- that path never inspects location text at
+ * all) reasonably wants "the whole location string" to display, and Lever
+ * is not the only source that can report several locations for one
+ * posting. So the split
+ * happens here, at the one place that actually needs "one location at a
+ * time" (geography classification), not by changing what gets stored.
+ *
+ * Semicolon-space, not comma: individual entries are themselves frequently
+ * comma-containing city names (real Lever data: "Taiwan, Taipei"), so a
+ * comma-join (and comma-split) would make one two-part entry
+ * indistinguishable from two separate one-part entries.
+ */
+const LOCATION_LIST_SEPARATOR = "; ";
+
+/** Classifies ONE already-split location piece. Shared by `classifyGeography`
+ * (which does the splitting and reduces across pieces) and
+ * `passesLocationFilter`'s per-piece path below. */
+function classifyLocationPiece(piece: string): Geography {
+  if (PNW.test(piece)) return "pnw";
+  if (isUsWideText(piece)) return "us-wide";
   return "unknown";
+}
+
+/**
+ * git-bug 894b4ef: a Lever posting open to several locations reaches this
+ * function as one `"; "`-joined string (e.g. real Binance fixture data:
+ * `"South East Asia; Taiwan, Taipei; Hong Kong"`, from
+ * lever-real-response-binance.json's "Account Manager - VIP Clients
+ * (APAC)" — 3 locations; the ticket also measured a real 120-location, 3008-
+ * char case on a live board, not committed to any fixture). Testing `PNW`
+ * against that whole blob in one shot was wrong two ways: (1) a posting
+ * with one PNW location among many unrelated ones would read as a genuine
+ * "Seattle job" even for entirely unrelated locations, and (2) a regex
+ * alternative like `,\s*wa\b` could in principle match text that SPANS a
+ * join boundary rather than sitting inside one location.
+ *
+ * The fix: split on the exact separator the adapter joins with
+ * (`LOCATION_LIST_SEPARATOR`, verified against lever.ts directly — see its
+ * doc comment above), then run the existing single-location `PNW`/
+ * `isUsWideText` checks against EACH piece independently, never against the
+ * reassembled string. Splitting before testing (rather than testing the
+ * whole string and trying to special-case boundaries after the fact) is
+ * what actually closes the join-boundary risk: once a piece has been split
+ * out, a regex run against it has no boundary text from its neighbors left
+ * to match. A single-location string (the common case — every source other
+ * than Lever, and most Lever postings too) has no `"; "` in it, so
+ * `.split` returns a one-element array and behavior is identical to before
+ * this change; this is exercised directly in swe-filter.test.ts.
+ *
+ * DESIGN DECISION (per the ticket's own acceptance criteria — this is a
+ * stated choice, not an accident of substring matching): a multi-location
+ * posting matches if ANY of its locations classifies as pnw/us-wide — the
+ * same "any" a candidate would apply by hand ("is one of these places
+ * somewhere I could take this job?"). "pnw" wins over "us-wide" across the
+ * whole set, mirroring the existing single-location precedence (e.g.
+ * "Seattle, WA, United States" was already "pnw", not "us-wide", before
+ * this change) — implemented by short-circuiting the moment any piece is
+ * pnw, since nothing else in the list can raise the result further.
+ *
+ * This "any" semantics is intentionally scoped to geography ONLY — it does
+ * not mean a "remote" signal from one location is free to answer a
+ * different location's work-arrangement question. See `passesLocationFilter`
+ * for how the two questions get recombined per-location when `locationType`
+ * is absent (opus review, git-bug 894b4ef round 2, finding 3).
+ *
+ * (Defense-in-depth note: the "a regex could match text spanning a join
+ * boundary" risk this function's split-then-test structure closes is not a
+ * demonstrated live bug — a 21,609-pair differential test run for the round
+ * 2 review found zero cases where a naive whole-string match against PNW or
+ * US_WIDE could actually span a "; " boundary, since none of either regex's
+ * alternatives can match a literal ";". Splitting first still buys
+ * robustness against a future separator or regex change reintroducing that
+ * risk, which is reason enough to keep it, but it is not closing a bug
+ * anyone observed.)
+ */
+export function classifyGeography(location: string): Geography {
+  const pieces = location.split(LOCATION_LIST_SEPARATOR);
+
+  let best: Geography = "unknown";
+  for (const piece of pieces) {
+    const geography = classifyLocationPiece(piece);
+    if (geography === "pnw") return "pnw"; // most specific outcome possible; nothing else in the list can beat it
+    if (best === "unknown" && geography === "us-wide") best = "us-wide";
+  }
+  return best;
 }
 
 /** Fallback remote detection from free text, for sources without a
@@ -332,27 +422,90 @@ export function resolveWorkArrangement(
   return REMOTE_TEXT.test(location) ? "remote" : "unknown";
 }
 
+/**
+ * git-bug 894b4ef DESIGN DECISION, REVISED (opus review round 2, finding 3):
+ * whether geography and work arrangement are evaluated per-location or once
+ * for the whole job depends on WHERE the arrangement signal comes from.
+ *
+ * When `job.locationType` is a structured value (Ashby/Lever/SmartRecruiters
+ * supply this directly), it is genuinely one field for the WHOLE posting —
+ * Lever/Ashby/SmartRecruiters report it once, not once per location, so a
+ * posting doesn't have "12 work arrangements, pass if any is remote," it has
+ * one. That case is unchanged from before this fix: `classifyGeography`'s
+ * per-location "any" (see its doc comment) still applies, and the single
+ * structured arrangement is checked once against the result.
+ *
+ * When `locationType` is ABSENT, though — common; per lever.ts's own doc
+ * comment, none of `payType`/`commitment`/`locationType` is guaranteed
+ * present — the ONLY arrangement signal left is `REMOTE_TEXT` matched
+ * against free text. Round 1 of this ticket ran that text match against the
+ * whole `"; "`-joined blob, which let a "remote" token attached to one
+ * location answer the arrangement question for a completely different
+ * location in the same list. Concrete failing case the reviewer found:
+ * `{ location: "United States; Remote - Singapore", locationType: undefined }`
+ * — `classifyGeography` correctly calls this "us-wide" (from the "United
+ * States" piece), but the old whole-blob `REMOTE_TEXT` scan also matched
+ * (from the unrelated "Remote - Singapore" piece) and the job passed. That's
+ * the exact "onsite in Florida" trap this filter exists to prevent, just
+ * leaking across a location-list boundary: "United States" alone, with no
+ * arrangement signal of its OWN, must not pass just because some other
+ * location in the list happens to say "remote".
+ *
+ * Fixed by making geography and arrangement resolve TOGETHER, per location
+ * piece, whenever `locationType` is absent: each piece decides its own
+ * pass/fail (pnw passes regardless of that piece's arrangement; us-wide only
+ * passes if THAT piece's own text says "remote"), and the job passes if ANY
+ * piece does. A single-location string has one piece, so this is unchanged
+ * for the common case (e.g. "Remote U.S." alone still passes — "remote" and
+ * "united states" are in the same piece, same as always).
+ */
 export function passesLocationFilter(
   job: Pick<NormalizedJob, "location" | "locationType">,
 ): boolean {
   const location = job.location ?? "";
-  const geography = classifyGeography(location);
-  if (geography === "unknown") return false;
 
-  // PNW is physically reachable regardless of arrangement: a Seattle-area
-  // onsite or hybrid role is exactly what a PNW-based candidate wants, and
-  // a Seattle-area "remote" role is still fine too.
-  if (geography === "pnw") return true;
+  if (job.locationType) {
+    // Structured value: one arrangement for the whole job, combined with
+    // geography's existing whole-list "any" semantics.
+    const geography = classifyGeography(location);
+    if (geography === "unknown") return false;
 
-  // geography === "us-wide": broad US without a specific city. Only a
-  // genuinely remote role can be reached from anywhere in the US — hybrid
-  // and onsite roles need the physical proximity "United States" alone
-  // doesn't establish, and an UNKNOWN arrangement must not blanket-pass
-  // either. That is the exact trap this ticket exists to close: "United
-  // States" with no work-arrangement signal at all could be onsite in
-  // Florida.
-  const arrangement = resolveWorkArrangement(location, job.locationType);
-  return arrangement === "remote";
+    // PNW is physically reachable regardless of arrangement: a Seattle-area
+    // onsite or hybrid role is exactly what a PNW-based candidate wants, and
+    // a Seattle-area "remote" role is still fine too.
+    if (geography === "pnw") return true;
+
+    // geography === "us-wide": broad US without a specific city. Only a
+    // genuinely remote role can be reached from anywhere in the US — hybrid
+    // and onsite roles need the physical proximity "United States" alone
+    // doesn't establish. That is the exact trap this filter exists to
+    // close: "United States" with no remote signal could be onsite in
+    // Florida.
+    return job.locationType === "remote";
+  }
+
+  // No structured value: resolve geography and arrangement PER PIECE, so a
+  // "remote" text match found in one location can never answer the
+  // arrangement question for a different location in the same list (see
+  // this function's doc comment for the concrete case this closes).
+  //
+  // Accepted tradeoff (opus review round 2, finding 3): a BARE "Remote"
+  // piece next to a separate us-wide piece no longer qualifies it either --
+  // e.g. "Remote; United States" now fails, where round-1 code passed it. A
+  // bare "Remote" has unknown geography, indistinguishable from "Remote -
+  // Singapore" without a country list this module doesn't have, so
+  // attaching an unknown-geography piece's remote signal to a different
+  // piece would reintroduce the exact leak this fix closes. Not observed
+  // live: no committed fixture has a semicolon-joined location at all, and
+  // every real "remote" string present names a region ("Remote (US)",
+  // "Remote (Canada)"), never bare.
+  for (const piece of location.split(LOCATION_LIST_SEPARATOR)) {
+    const geography = classifyLocationPiece(piece);
+    if (geography === "unknown") continue;
+    if (geography === "pnw") return true; // reachable regardless of this piece's own arrangement
+    if (REMOTE_TEXT.test(piece)) return true; // us-wide: only THIS piece's own text can qualify it
+  }
+  return false;
 }
 
 /**
