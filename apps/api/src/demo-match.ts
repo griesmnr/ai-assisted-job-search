@@ -40,7 +40,25 @@ import { createSmartRecruitersSourceFromEnv } from "./sources/smartrecruiters.js
 import { filterSoftwareEngineeringJobs } from "./sources/swe-filter.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
-process.loadEnvFile();
+// `process.loadEnvFile()` looks for `.env` relative to the CURRENT WORKING
+// DIRECTORY, not this file's location. That's /workspace when this module is
+// reached via its own standalone entry point (`npx tsx apps/api/src/demo-match.ts`
+// from the repo root, per the file header), but `apps/api` when the server
+// starts via `pnpm --filter @app/api dev` or the root `pnpm dev` (pnpm runs a
+// workspace package's scripts with cwd set to that package's directory) --
+// there is no apps/api/.env, only the root one, so the unconditional call used
+// to throw ENOENT and crash the server before it ever bound a port. In the
+// real dev-container flow this is harmless either way: docker-compose.yml's
+// `env_file: .env` on the `dev` service already injects every variable into
+// `process.env` before this module loads, so a missing *local* .env here just
+// means there's nothing left to add, not a broken environment.
+try {
+  process.loadEnvFile();
+} catch (err) {
+  if (!(err instanceof Error) || (err as NodeJS.ErrnoException).code !== "ENOENT") {
+    throw err;
+  }
+}
 
 /**
  * Scoring model. Chosen 2026-08-22 on the evidence of the A/B in
