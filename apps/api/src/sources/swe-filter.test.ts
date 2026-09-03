@@ -59,6 +59,11 @@ const leverOutreach = loadFixture("lever-real-response-outreach.json") as unknow
 const leverMatchgroup = loadFixture("lever-real-response-matchgroup.json") as unknown as Array<{
   text: string;
 }>;
+const leverBinance = loadFixture("lever-real-response-binance.json") as unknown as Array<{
+  text: string;
+  categories?: { location?: string; allLocations?: string[] };
+  workplaceType?: string;
+}>;
 const ashbyRamp = loadFixture("ashby-real-response-ramp.json").jobs as Array<{
   title: string;
   location?: string;
@@ -141,6 +146,11 @@ if (smartrecruitersPage2.length !== 2) {
 if (leverMatchgroup.length !== 1) {
   throw new Error(
     `expected the lever matchgroup fixture to have 1 posting, got ${leverMatchgroup.length}`,
+  );
+}
+if (leverBinance.length !== 4) {
+  throw new Error(
+    `expected the lever binance fixture to have 4 postings, got ${leverBinance.length}`,
   );
 }
 
@@ -502,6 +512,108 @@ describe("classifyGeography — real location strings", () => {
   });
 });
 
+describe("classifyGeography — multi-location Lever postings (git-bug 894b4ef)", () => {
+  // lever-real-response-binance.json's "Account Manager - VIP Clients
+  // (APAC)" is exactly the example the ticket itself measured on a live
+  // board (categories.location: "South East Asia",
+  // categories.allLocations: ["South East Asia", "Taiwan, Taipei", "Hong
+  // Kong"]). `itemLocations()` unions and dedupes those (lever.ts), and
+  // `normalizeItem` joins the result with "; " -- reproduced here via the
+  // same "; " join rather than hand-typing the joined string, so a change
+  // to lever.ts's separator would break this test rather than silently
+  // testing a stale assumption.
+  const apacAccountManager = leverBinance.find(
+    (j) => j.text === "Account Manager - VIP Clients (APAC)",
+  );
+  if (!apacAccountManager) {
+    throw new Error(
+      'expected lever-real-response-binance.json to contain "Account Manager - VIP Clients (APAC)"',
+    );
+  }
+  const apacLocations = Array.from(
+    new Set(
+      [
+        apacAccountManager.categories?.location,
+        ...(apacAccountManager.categories?.allLocations ?? []),
+      ].filter((l): l is string => typeof l === "string"),
+    ),
+  );
+  const apacJoined = apacLocations.join("; ");
+
+  it("reproduces the ticket's own cited real example verbatim", () => {
+    expect(apacJoined).toBe("South East Asia; Taiwan, Taipei; Hong Kong");
+  });
+
+  it("negative: none of several real locations is pnw/us-wide, so the joined posting classifies unknown (no coincidental substring match)", () => {
+    // None of "South East Asia" / "Taiwan, Taipei" / "Hong Kong" contains
+    // "seattle"/"bellevue"/"washington"/",\s*wa"/"united states"/"usa"/a
+    // bare "us" token on its own -- verified per-piece below so this test
+    // documents *why* the whole thing is unknown, not just that it is.
+    for (const piece of apacLocations) {
+      expect(classifyGeography(piece)).toBe("unknown");
+    }
+    expect(classifyGeography(apacJoined)).toBe("unknown");
+  });
+
+  it("true positive: one of several locations is a genuine PNW match, the rest are unrelated -- posting classifies pnw", () => {
+    // Synthetic (no committed fixture has a multi-location Lever posting
+    // where one entry is PNW): built by splicing a real PNW location string
+    // -- "Seattle, WA", lever-real-response-outreach.json's "Director,
+    // Product Management" posting -- into the middle of the real, unrelated
+    // Binance APAC location list above. Every individual location string is
+    // real fixture data; only the combination (which real fixture is
+    // "unlucky" enough to have) is constructed.
+    const withSeattle = [apacLocations[0], "Seattle, WA", apacLocations[1], apacLocations[2]].join(
+      "; ",
+    );
+    expect(withSeattle).toBe("South East Asia; Seattle, WA; Taiwan, Taipei; Hong Kong");
+    expect(classifyGeography(withSeattle)).toBe("pnw");
+  });
+
+  it("true positive: one of several locations is us-wide (not pnw), the rest unrelated -- posting classifies us-wide", () => {
+    // Same construction, using leverOutreach's real "United States" entry
+    // instead of a PNW one, to prove the "us-wide" branch of the same "any"
+    // logic independently of the "pnw" branch above.
+    const usJob = findLever(leverOutreach, "Account Manager, Commercial");
+    expect(usJob.categories?.location).toBe("United States");
+    const withUnitedStates = [apacLocations[0], usJob.categories?.location, apacLocations[2]].join(
+      "; ",
+    );
+    expect(classifyGeography(withUnitedStates)).toBe("us-wide");
+  });
+
+  it('pnw beats us-wide across the list, same precedence as the single-location "Seattle, WA, United States" case', () => {
+    const withBoth = ["United States", "Seattle, WA", "North America"].join("; ");
+    expect(classifyGeography(withBoth)).toBe("pnw");
+  });
+
+  it("splitting happens before testing, not after: a location string containing no separator behaves identically to today (single-location regression check)", () => {
+    // The common case (every non-Lever source, and most Lever postings
+    // too) has no "; " in `location` at all. `.split("; ")` on a string
+    // with no match returns a one-element array, so this must produce
+    // exactly the same result as before this ticket's change.
+    expect(classifyGeography("Seattle, WA")).toBe("pnw");
+    expect(classifyGeography("United States")).toBe("us-wide");
+    expect(classifyGeography("Hyderabad")).toBe("unknown");
+  });
+
+  it("evaluating the joined string is equivalent to the best-of the per-piece results, for a real cross-fixture pairing", () => {
+    // Direct proof that classification is genuinely per-location, not
+    // whole-blob: pairs a real DC posting (fails pnw on its own, per the
+    // dedicated DC-trap test above) with a real Seattle posting. If the
+    // joined blob were tested as one string with the DC lookahead applied
+    // globally rather than per-piece, this specific pairing wouldn't
+    // demonstrate anything new -- the point is that the result is driven by
+    // the Seattle piece regardless of what the DC piece contributes, exactly
+    // as it would if the two were evaluated fully independently.
+    const dcJob = findLever(leverPalantir, "Backend Software Engineer - Defense");
+    const joined = [dcJob.categories?.location, "Seattle, WA"].join("; ");
+    expect(classifyGeography(dcJob.categories?.location ?? "")).not.toBe("pnw");
+    expect(classifyGeography("Seattle, WA")).toBe("pnw");
+    expect(classifyGeography(joined)).toBe("pnw");
+  });
+});
+
 describe("resolveWorkArrangement — structured locationType wins over text", () => {
   it("uses locationType when present, even if the text says something else", () => {
     // Real: ashby-real-response-ramp.json's first posting has "Remote (US)"
@@ -674,6 +786,48 @@ describe("passesLocationFilter — geography and work arrangement recombined", (
 
   it("a location with no location string at all does not pass", () => {
     expect(passesLocationFilter({ location: undefined, locationType: undefined })).toBe(false);
+  });
+});
+
+describe("passesLocationFilter — multi-location Lever postings, and the geography-vs-arrangement design decision (git-bug 894b4ef)", () => {
+  it("a real multi-location posting with none of its locations pnw/us-wide does not pass, any work arrangement", () => {
+    const apacAccountManager = leverBinance.find(
+      (j) => j.text === "Account Manager - VIP Clients (APAC)",
+    );
+    if (!apacAccountManager) throw new Error("fixture drift: expected Binance APAC posting");
+    const joined = [
+      apacAccountManager.categories?.location,
+      ...(apacAccountManager.categories?.allLocations ?? []),
+    ]
+      .filter((l): l is string => typeof l === "string")
+      .filter((l, i, arr) => arr.indexOf(l) === i)
+      .join("; ");
+    expect(joined).toBe("South East Asia; Taiwan, Taipei; Hong Kong");
+    for (const locationType of ["remote", "hybrid", "onsite", undefined] as const) {
+      expect(passesLocationFilter({ location: joined, locationType })).toBe(false);
+    }
+  });
+
+  it("pnw among several locations passes regardless of work arrangement (synthetic list, real PNW + real unrelated pieces)", () => {
+    const joined = "South East Asia; Seattle, WA; Hong Kong";
+    for (const locationType of ["remote", "hybrid", "onsite", undefined] as const) {
+      expect(passesLocationFilter({ location: joined, locationType })).toBe(true);
+    }
+  });
+
+  it('DESIGN DECISION: us-wide among several locations still requires the whole-job arrangement to be remote -- "any location passes" does not bypass the onsite-in-Florida check', () => {
+    // Geography's "any" is per-location (classifyGeography above already
+    // proves this joined string is "us-wide" because ONE of its three
+    // locations is "United States"). Work arrangement is not per-location
+    // -- it's one field for the whole posting -- so it's still evaluated
+    // once, against the whole job, exactly as a single-location "United
+    // States" posting always has been. A us-wide match hiding among
+    // several locations must not quietly skip that check.
+    const joined = "South East Asia; United States; Hong Kong";
+    expect(passesLocationFilter({ location: joined, locationType: "remote" })).toBe(true);
+    expect(passesLocationFilter({ location: joined, locationType: "onsite" })).toBe(false);
+    expect(passesLocationFilter({ location: joined, locationType: "hybrid" })).toBe(false);
+    expect(passesLocationFilter({ location: joined, locationType: undefined })).toBe(false);
   });
 });
 

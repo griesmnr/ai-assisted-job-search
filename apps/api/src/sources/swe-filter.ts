@@ -300,15 +300,78 @@ function isUsWideText(location: string): boolean {
 
 export type Geography = "pnw" | "us-wide" | "unknown";
 
-/** `"pnw"` wins over `"us-wide"` when both match (e.g. "Seattle, WA, United
- * States") — it's the more specific, more useful claim. Exported (along
- * with `resolveWorkArrangement` and `passesLocationFilter`) so tests can
- * verify geography and work-arrangement are genuinely separate predicates,
- * not just assert on the combined pass/fail outcome. */
+/**
+ * The exact separator `lever.ts`'s `normalizeItem` uses to join a
+ * multi-location posting's individual locations into the single string
+ * stored as `Job.location` (see lever.ts, ~line 634:
+ * `locations.join("; ")`). `Job.location` deliberately stays a joined
+ * string — the ticket that raised this (git-bug 894b4ef) considered giving
+ * locations their own representation on `Job` and rejected it: other code
+ * (the UI, `resolveWorkArrangement`'s text fallback below) reasonably wants
+ * "the whole location string" to display or scan, and Lever is not the only
+ * source that can report several locations for one posting. So the split
+ * happens here, at the one place that actually needs "one location at a
+ * time" (geography classification), not by changing what gets stored.
+ *
+ * Semicolon-space, not comma: individual entries are themselves frequently
+ * comma-containing city names (real Lever data: "Taiwan, Taipei"), so a
+ * comma-join (and comma-split) would make one two-part entry
+ * indistinguishable from two separate one-part entries.
+ */
+const LOCATION_LIST_SEPARATOR = "; ";
+
+/**
+ * git-bug 894b4ef: a Lever posting open to several locations reaches this
+ * function as one `"; "`-joined string (e.g. real Binance fixture data:
+ * `"South East Asia; Taiwan, Taipei; Hong Kong"`, from
+ * lever-real-response-binance.json's "Account Manager - VIP Clients
+ * (APAC)" — 3 locations; the ticket also measured a real 120-location, 3008-
+ * char case on a live board, not committed to any fixture). Testing `PNW`
+ * against that whole blob in one shot was wrong two ways: (1) a posting
+ * with one PNW location among many unrelated ones would read as a genuine
+ * "Seattle job" even for entirely unrelated locations, and (2) a regex
+ * alternative like `,\s*wa\b` could in principle match text that SPANS a
+ * join boundary rather than sitting inside one location.
+ *
+ * The fix: split on the exact separator the adapter joins with
+ * (`LOCATION_LIST_SEPARATOR`, verified against lever.ts directly — see its
+ * doc comment above), then run the existing single-location `PNW`/
+ * `isUsWideText` checks against EACH piece independently, never against the
+ * reassembled string. Splitting before testing (rather than testing the
+ * whole string and trying to special-case boundaries after the fact) is
+ * what actually closes the join-boundary risk: once a piece has been split
+ * out, a regex run against it has no boundary text from its neighbors left
+ * to match. A single-location string (the common case — every source other
+ * than Lever, and most Lever postings too) has no `"; "` in it, so
+ * `.split` returns a one-element array and behavior is identical to before
+ * this change; this is exercised directly in swe-filter.test.ts.
+ *
+ * DESIGN DECISION (per the ticket's own acceptance criteria — this is a
+ * stated choice, not an accident of substring matching): a multi-location
+ * posting matches if ANY of its locations classifies as pnw/us-wide — the
+ * same "any" a candidate would apply by hand ("is one of these places
+ * somewhere I could take this job?"). "pnw" wins over "us-wide" across the
+ * whole set, mirroring the existing single-location precedence (e.g.
+ * "Seattle, WA, United States" was already "pnw", not "us-wide", before
+ * this change) — implemented by short-circuiting the moment any piece is
+ * pnw, since nothing else in the list can raise the result further.
+ *
+ * This "any" semantics is intentionally scoped to geography ONLY. It does
+ * NOT extend to `passesLocationFilter`'s work-arrangement check below —
+ * see that function's comment for why (short version: work arrangement is
+ * `job.locationType`, one field for the whole posting, not a per-location
+ * property, so "any location is remote" isn't a coherent question to ask
+ * separately from geography).
+ */
 export function classifyGeography(location: string): Geography {
-  if (PNW.test(location)) return "pnw";
-  if (isUsWideText(location)) return "us-wide";
-  return "unknown";
+  const pieces = location.split(LOCATION_LIST_SEPARATOR);
+
+  let best: Geography = "unknown";
+  for (const piece of pieces) {
+    if (PNW.test(piece)) return "pnw"; // most specific outcome possible; nothing else in the list can beat it
+    if (best === "unknown" && isUsWideText(piece)) best = "us-wide";
+  }
+  return best;
 }
 
 /** Fallback remote detection from free text, for sources without a
@@ -332,6 +395,35 @@ export function resolveWorkArrangement(
   return REMOTE_TEXT.test(location) ? "remote" : "unknown";
 }
 
+/**
+ * git-bug 894b4ef DESIGN DECISION: the per-location "any" semantics added
+ * to `classifyGeography` (see its doc comment) applies ONLY to the
+ * geography sub-step above — it is not threaded through to the
+ * work-arrangement check below, and that's deliberate, not an oversight.
+ *
+ * `classifyGeography` genuinely has several independent things to say
+ * "any" about, because location is a per-location property: a 12-location
+ * Lever posting really does have 12 separate answers to "where is this."
+ * Work arrangement is different — Lever/Ashby/SmartRecruiters all report it
+ * as ONE structured field for the WHOLE posting (`job.locationType`, see
+ * `resolveWorkArrangement`'s doc comment), not one value per location. A
+ * posting doesn't have "12 work arrangements, pass if any is remote" — it
+ * has one. So `resolveWorkArrangement` below is (as it already was, before
+ * this ticket) evaluated once, against the whole job, using its existing
+ * text fallback across the full joined string when `locationType` is
+ * absent (see the real fixture-derived test:
+ * `resolveWorkArrangement("New York, NY (HQ); Remote (US)", "hybrid")`
+ * already exercises a `"; "`-joined string here and correctly prefers the
+ * structured `"hybrid"` — that precedent is untouched by this change).
+ *
+ * Concretely, this means: a multi-location posting where one location is
+ * "us-wide" (not "pnw") and the arrangement is onsite/hybrid/unknown still
+ * fails the filter, exactly as a single-location "United States" / onsite
+ * posting always has — "any location passes" was never meant to also mean
+ * "any location's arrangement bypasses the onsite-in-Florida check." That
+ * check is orthogonal to which specific location matched and stays a
+ * whole-job gate.
+ */
 export function passesLocationFilter(
   job: Pick<NormalizedJob, "location" | "locationType">,
 ): boolean {
