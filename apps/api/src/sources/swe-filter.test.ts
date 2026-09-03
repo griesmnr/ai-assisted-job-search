@@ -518,10 +518,17 @@ describe("classifyGeography — multi-location Lever postings (git-bug 894b4ef)"
   // board (categories.location: "South East Asia",
   // categories.allLocations: ["South East Asia", "Taiwan, Taipei", "Hong
   // Kong"]). `itemLocations()` unions and dedupes those (lever.ts), and
-  // `normalizeItem` joins the result with "; " -- reproduced here via the
-  // same "; " join rather than hand-typing the joined string, so a change
-  // to lever.ts's separator would break this test rather than silently
-  // testing a stale assumption.
+  // `normalizeItem` joins the result with "; ". `apacJoined` below builds
+  // that same joined string by hand, with a hardcoded "; " literal -- it
+  // does NOT call lever.ts's `normalizeItem`/`itemLocations`, so (opus
+  // review round 2, finding correcting an earlier false claim here) a
+  // change to lever.ts's actual join separator would NOT break this test;
+  // it would just silently start testing a stale assumption. The real
+  // separator-drift protection -- a test that drives lever.ts's own code
+  // and would break if its separator changed -- lives in lever.test.ts's
+  // "stores every entry from categories.allLocations on Job.location" test
+  // (~line 577), which asserts a real `Job.location` produced by
+  // `normalizeItem` itself equals the "; "-joined string verbatim.
   const apacAccountManager = leverBinance.find(
     (j) => j.text === "Account Manager - VIP Clients (APAC)",
   );
@@ -815,19 +822,70 @@ describe("passesLocationFilter — multi-location Lever postings, and the geogra
     }
   });
 
-  it('DESIGN DECISION: us-wide among several locations still requires the whole-job arrangement to be remote -- "any location passes" does not bypass the onsite-in-Florida check', () => {
+  it('DESIGN DECISION, REVISED (opus review round 2, finding 3): us-wide among several locations still requires a REMOTE signal that belongs to that same piece -- "any location passes" does not let a remote signal from one location answer a different location\'s arrangement question', () => {
     // Geography's "any" is per-location (classifyGeography above already
     // proves this joined string is "us-wide" because ONE of its three
-    // locations is "United States"). Work arrangement is not per-location
-    // -- it's one field for the whole posting -- so it's still evaluated
-    // once, against the whole job, exactly as a single-location "United
-    // States" posting always has been. A us-wide match hiding among
-    // several locations must not quietly skip that check.
+    // locations is "United States"). When `locationType` is a structured
+    // value, it's one field for the whole posting, so it's checked once
+    // against the whole job -- the three defined-`locationType` cases below
+    // are unchanged from before this fix. When `locationType` is absent,
+    // though, there is no whole-job signal to check: the fix resolves
+    // arrangement per piece too, and "United States" (its own piece, no
+    // "remote" text of its own) correctly still does not pass -- for a
+    // per-piece reason now, not a whole-blob one. See the dedicated
+    // "leaked remote signal" describe block below for the case that
+    // actually distinguishes the old (broken) and new (fixed) logic: a
+    // DIFFERENT piece in the list saying "remote".
     const joined = "South East Asia; United States; Hong Kong";
     expect(passesLocationFilter({ location: joined, locationType: "remote" })).toBe(true);
     expect(passesLocationFilter({ location: joined, locationType: "onsite" })).toBe(false);
     expect(passesLocationFilter({ location: joined, locationType: "hybrid" })).toBe(false);
     expect(passesLocationFilter({ location: joined, locationType: undefined })).toBe(false);
+  });
+});
+
+describe('passesLocationFilter — per-piece arrangement resolution when locationType is absent (opus review round 2, finding 3: a "remote" signal from one location must not leak into a DIFFERENT location\'s geography match)', () => {
+  it('BUG (now FIXED): "United States; Remote - Singapore" with no locationType must NOT pass -- "United States" alone, unqualified by its own arrangement text, must not pass just because a DIFFERENT location in the list happens to say "remote"', () => {
+    // The reviewer's own concrete failing scenario against the pre-fix
+    // code: classifyGeography correctly calls this "us-wide" (from the
+    // "United States" piece), but the OLD whole-blob REMOTE_TEXT scan also
+    // matched "remote" from the unrelated "Remote - Singapore" piece, so
+    // the job wrongly passed. Confirmed independently:
+    expect(classifyGeography("United States; Remote - Singapore")).toBe("us-wide");
+    expect(
+      passesLocationFilter({
+        location: "United States; Remote - Singapore",
+        locationType: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it('"Seattle, WA; Remote - Singapore" with no locationType still passes -- PNW passes regardless of arrangement, unaffected by the fix', () => {
+    expect(
+      passesLocationFilter({
+        location: "Seattle, WA; Remote - Singapore",
+        locationType: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it('"Remote - United States" alone (single location -- "remote" and "united states" in the SAME piece) with no locationType still passes -- the correct, non-buggy single-location case the existing logic already handled, confirmed unbroken by the restructure', () => {
+    expect(
+      passesLocationFilter({ location: "Remote - United States", locationType: undefined }),
+    ).toBe(true);
+  });
+
+  it('a structured locationType applies as a WHOLE-JOB value, not per-location, even with multi-location text -- "Singapore; United States" onsite behaves identically to before this fix (still fails: onsite, not remote)', () => {
+    expect(
+      passesLocationFilter({ location: "Singapore; United States", locationType: "onsite" }),
+    ).toBe(false);
+    // And the mirror case: the same multi-location text with a structured
+    // "remote" locationType passes, exactly as any other us-wide + remote
+    // posting would -- the structured value is not accidentally re-scoped
+    // to only the location piece it happens to sit next to.
+    expect(
+      passesLocationFilter({ location: "Singapore; United States", locationType: "remote" }),
+    ).toBe(true);
   });
 });
 
