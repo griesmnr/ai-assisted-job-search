@@ -1305,10 +1305,10 @@ export function isTotalScoringFailure(
  * self-reports `"Fivetran "` with a trailing space today; only `.trim()`
  * keeps that one matching.
  *
- * Rather than pretend the correlation is exact, this function runs two
- * cheap sanity checks over its own output and calls `warn` when either
- * fires, instead of silently returning numbers that may misattribute
- * survivors between boards:
+ * Rather than pretend the correlation is exact, this function runs three
+ * cheap sanity checks over its own output and calls `warn` when any fires,
+ * instead of silently returning numbers that may misattribute survivors
+ * (or exclusions) between boards:
  *
  *   1. `sum(survivedFilter)` across every returned entry should equal
  *      `filtered.length` — every survivor should be attributed to exactly
@@ -1318,13 +1318,20 @@ export function isTotalScoringFailure(
  *      tokens sharing a name can double-count 2 survivors up to 4 while a
  *      third, nameless token under-counts its own 2 down to 0 — sum stays
  *      right (4) while every individual number is wrong. That's what
- *      check 2 is for.
- *   2. Two or more entries reporting the identical `companyName`
+ *      check 3 is for.
+ *   2. Ticket 14289ac: the identical check, run again for
+ *      `excludedForMissingWorkArrangement` instead of `survivedFilter` —
+ *      the same free-text `companyName` correlation feeds both fields off
+ *      the same `tokenOutcomes` list, so it can misattribute exclusions
+ *      exactly as easily as it can misattribute survivors, and a board
+ *      contributing real exclusions must not silently read as "0" any
+ *      more than one contributing real survivors should.
+ *   3. Two or more entries reporting the identical `companyName`
  *      (case-insensitively) are flagged directly — this is exactly the
- *      double-counting hazard, caught independent of whether the sum
+ *      double-counting hazard, caught independent of whether either sum
  *      happens to net out.
  *
- * Neither check proves the report is correct; both together catch every
+ * No single check proves the report is correct; together they catch every
  * hazard this function's own review turned up. A board that's actually
  * healthy must never silently read as "0 survived filtering" (that reads
  * as dead and is exactly what gets a productive token deleted) without at
@@ -1380,6 +1387,21 @@ export function buildBoardCoverage(
     );
   }
 
+  const attributedExcluded = coverage.reduce(
+    (sum, entry) => sum + entry.excludedForMissingWorkArrangement,
+    0,
+  );
+  if (attributedExcluded !== excludedForMissingWorkArrangement.length) {
+    warn(
+      `buildBoardCoverage: per-token excludedForMissingWorkArrangement counts sum to ` +
+        `${attributedExcluded}, but ${excludedForMissingWorkArrangement.length} job(s) were actually ` +
+        `excluded for missing work-arrangement metadata this run. TokenOutcome.companyName ` +
+        `is free text, not a stable key (two tokens can self-report the same name, or a name can ` +
+        `differ from what actually was excluded) — the board-coverage numbers below may misattribute ` +
+        `exclusions between tokens. Do not conclude a token contributed nothing from this report alone.`,
+    );
+  }
+
   const namesSeen = new Set<string>();
   const duplicateNames = new Set<string>();
   for (const entry of coverage) {
@@ -1405,6 +1427,15 @@ export function buildBoardCoverage(
  * The one-line-per-board summary ticket b723fb9 exists to make possible:
  * outcomes that used to all look like "nothing from this employer" now
  * read as distinct, specific problems.
+ *
+ * Basis note (ticket 14289ac): the "ok" branch below prints `survivedFilter`
+ * and `excludedForMissingWorkArrangement` in one sentence, which reads as
+ * two counts on the same basis — they are not. `survivedFilter` is DEDUPED
+ * (company|title dedupe, from `filterSoftwareEngineeringJobs`);
+ * `excludedForMissingWorkArrangement` deliberately is NOT deduped (see that
+ * function's own doc comment in swe-filter.ts) and counts raw postings, so
+ * the two numbers cannot be summed or diffed against each other as if they
+ * partitioned the same denominator.
  */
 export function describeBoardOutcome(entry: BoardCoverageEntry): string {
   switch (entry.status) {
@@ -1503,6 +1534,11 @@ export function buildSourceOutcomes(
  * The one-line-per-source summary parallel to `describeBoardOutcome` — see
  * `SourceOutcome`'s doc comment for why the vocabulary mirrors
  * `TokenStatus` one level up.
+ *
+ * Basis note (ticket 14289ac): same caveat as `describeBoardOutcome` —
+ * `survivedFilter` (deduped) and `excludedForMissingWorkArrangement` (not
+ * deduped) appear in the same "ok" sentence below but are not on the same
+ * basis; see `describeBoardOutcome`'s doc comment for the full explanation.
  */
 export function describeSourceOutcome(entry: SourceOutcome): string {
   switch (entry.status) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compileFilter } from "./criteria.js";
-import { filterSoftwareEngineeringJobs } from "./swe-filter.js";
+import { compileExcludedForMissingWorkArrangement, compileFilter } from "./criteria.js";
+import { excludedForMissingWorkArrangement, filterSoftwareEngineeringJobs } from "./swe-filter.js";
 import type { NormalizedJob } from "./types.js";
 
 function job(overrides: Partial<NormalizedJob> & Pick<NormalizedJob, "externalId">): NormalizedJob {
@@ -194,5 +194,39 @@ describe("compileFilter — explicit criteria never silently defaults titleExclu
       job({ externalId: "2", title: "Software Engineer", location: "Seattle, WA" }),
     ];
     expect(compileFilter(undefined)(jobs).map((j) => j.externalId)).toEqual(["2"]);
+  });
+});
+
+describe("compileExcludedForMissingWorkArrangement (ticket 14289ac)", () => {
+  // Pins the deliberate undefined-vs-explicit split documented on
+  // compileExcludedForMissingWorkArrangement's own doc comment in
+  // criteria.ts — nothing else asserts it, so a future refactor of
+  // compileFilter (e.g. giving the explicit-criteria path a real
+  // "us-wide" concept) could silently flip the REST default path to
+  // reporting 0 excluded with no test failing to catch it.
+  const usWideMissingArrangementJob: NormalizedJob = job({
+    externalId: "1",
+    title: "Software Engineer",
+    location: "United States",
+    locationType: undefined,
+  });
+
+  it("criteria === undefined delegates to the real excludedForMissingWorkArrangement, unmodified — same exactness guarantee as compileFilter(undefined)", () => {
+    expect(compileExcludedForMissingWorkArrangement(undefined)).toBe(
+      excludedForMissingWorkArrangement,
+    );
+    const result = compileExcludedForMissingWorkArrangement(undefined)([
+      usWideMissingArrangementJob,
+    ]);
+    expect(result.map((j) => j.externalId)).toEqual(["1"]);
+  });
+
+  it("any EXPLICIT criteria, including {}, gets () => [] — not the real function — because the explicit-criteria location model has no 'us-wide' concept to report against", () => {
+    expect(compileExcludedForMissingWorkArrangement({})([usWideMissingArrangementJob])).toEqual([]);
+    expect(
+      compileExcludedForMissingWorkArrangement({ titleInclude: ["software engineer"] })([
+        usWideMissingArrangementJob,
+      ]),
+    ).toEqual([]);
   });
 });

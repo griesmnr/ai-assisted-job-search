@@ -1641,6 +1641,31 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
     expect(byDataSource.get("lever")!.survivedFilter).toBe(1);
   });
 
+  // Ticket 14289ac: `buildSourceOutcomes`' 4th parameter is the same kind of
+  // union-of-all-sources array `filtered` already is, bucketed per source
+  // the identical way — this is the `excludedForMissingWorkArrangement`
+  // analogue of the `survivedFilter` test directly above, proving that
+  // bucketing by exact `dataSource` (not by e.g. company name) never
+  // credits one source's exclusions to another.
+  it("attributes excludedForMissingWorkArrangement by exact dataSource, never crediting one source's exclusions to another", () => {
+    const ghJob = { ...job("gh-1", "Backend Engineer"), dataSource: "greenhouse" as const };
+    const lvJob = { ...job("lv-1", "Backend Engineer"), dataSource: "lever" as const };
+    const perSource: PerSourceOutcome[] = [
+      {
+        dataSource: "greenhouse",
+        status: "ok",
+        result: { jobs: [ghJob], skipped: [], skipRate: 0 },
+      },
+      { dataSource: "lever", status: "ok", result: { jobs: [lvJob], skipped: [], skipRate: 0 } },
+    ];
+    // Both jobs were excluded for missing work-arrangement metadata this
+    // run — each source's own entry must credit only its own job.
+    const outcomes = buildSourceOutcomes(perSource, [], vi.fn(), [ghJob, lvJob]);
+    const byDataSource = new Map(outcomes.map((o) => [o.dataSource, o]));
+    expect(byDataSource.get("greenhouse")!.excludedForMissingWorkArrangement).toBe(1);
+    expect(byDataSource.get("lever")!.excludedForMissingWorkArrangement).toBe(1);
+  });
+
   it("describeSourceOutcome names 'ok', 'empty', and 'error' distinctly", () => {
     const ok: SourceOutcome = {
       dataSource: "greenhouse",
@@ -1685,6 +1710,43 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
     expect(describeSourceOutcome(ok)).toMatch(/10 posting\(s\).*3 survived/);
     expect(describeSourceOutcome(empty)).toMatch(/0 postings/);
     expect(describeSourceOutcome(errored)).toMatch(/timed out/);
+  });
+
+  // Ticket 14289ac: `describeSourceOutcome`'s nonzero-suffix branch is the
+  // source-level analogue of `describeBoardOutcome`'s — only the board-level
+  // one had a test before this. Mirrors that test's structure: a zero count
+  // must read exactly as it always did (no suffix), and a nonzero count
+  // must both differ from it AND carry the suffix text.
+  it("appends the excludedForMissingWorkArrangement suffix only when nonzero, same as describeBoardOutcome", () => {
+    const okZeroExcluded: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 10,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 3,
+      excludedForMissingWorkArrangement: 0,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    const okNonzeroExcluded: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 10,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 3,
+      excludedForMissingWorkArrangement: 6,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    expect(describeSourceOutcome(okZeroExcluded)).not.toMatch(/excluded for missing/);
+    expect(describeSourceOutcome(okNonzeroExcluded)).toMatch(
+      /10 posting\(s\).*3 survived filtering \(\+6 more excluded for missing work-arrangement metadata\)/,
+    );
+    expect(describeSourceOutcome(okNonzeroExcluded)).not.toBe(
+      describeSourceOutcome(okZeroExcluded),
+    );
   });
 });
 

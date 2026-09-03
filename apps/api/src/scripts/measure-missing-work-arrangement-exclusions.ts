@@ -23,6 +23,33 @@
  *
  * Usage (requires GREENHOUSE_BOARD_TOKENS in .env — see .env.example):
  *   npx tsx apps/api/src/scripts/measure-missing-work-arrangement-exclusions.ts
+ *
+ * Re-run and recorded, 2026-09-03 (adversarial review round for this
+ * ticket, reviewer-verified — the reviewer independently reproduced this
+ * run rather than trusting the implementer's report): 7,556 raw postings
+ * across the same 4 sources / 839 title-passing / 138 survivors / 60
+ * excluded for missing work-arrangement metadata (7.2% of title-passing —
+ * down from 2026-08-24's 7.7%, a real change in the live pool's
+ * composition, not a discrepancy in the measurement itself). Concentration
+ * by employer: Brex 14, Figma 12, Elastic 9, Fivetran 9, Datadog 6,
+ * MongoDB 4, Stripe 3, Flexport 1, Cloudflare 1, temporal 1. Six employers
+ * (Figma, Elastic, Fivetran, Datadog, Flexport, Cloudflare) now contribute
+ * ZERO survivors for this reason alone — each would read as a dead board
+ * without this measurement.
+ *
+ * Notable: Temporal's live Ashby board has drifted significantly since the
+ * ticket's original 2026-08-24 measurement, when all 55 of its postings
+ * had `workplaceType: null` (zero survivors, indistinguishable from a dead
+ * board — the case that motivated this whole ticket). As of this
+ * 2026-09-03 re-run, only 3 of Temporal's now-64 postings still have
+ * `workplaceType: null`; the rest have since gone explicit
+ * `workplaceType: "Remote"` — independently re-verified against the live
+ * Ashby API by the reviewer on 2026-09-03, not merely re-derived from this
+ * script's own output. This is real day-to-day board drift, not a
+ * measurement error, and is itself the best illustration of why this has
+ * to be a live, re-runnable script rather than a one-time snapshot: the
+ * exact employer this ticket was motivated by no longer illustrates the
+ * problem on its own, while six other employers now do.
  */
 import { AshbySource } from "../sources/ashby.js";
 import { createGreenhouseSourceFromEnv } from "../sources/greenhouse.js";
@@ -31,6 +58,7 @@ import { SmartRecruitersSource } from "../sources/smartrecruiters.js";
 import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
+  matchesTitleExclusion,
 } from "../sources/swe-filter.js";
 import type { JobSource, NormalizedJob } from "../sources/types.js";
 
@@ -51,11 +79,18 @@ const SMARTRECRUITERS_COMPANIES = [
 // SOFTWARE title filter, copied from swe-filter.ts, needed here ONLY to
 // report "how many title-passing postings" the pool has as a denominator —
 // the actual exclusion classification comes from the real, imported
-// `excludedForMissingWorkArrangement`, never re-derived.
+// `excludedForMissingWorkArrangement`, never re-derived. No exported
+// equivalent of SOFTWARE exists in swe-filter.ts (unlike NOT, below), so
+// this half still has to be copied; see swe-filter.ts's own comment above
+// SOFTWARE for how this exact pattern was verified.
 const SOFTWARE =
   /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
-const NOT =
-  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist|distinguished)\b|(?<!\b(?:or|to)\s)(?<!\/)\bstaff\b(?!\s*(?:or|to)\b)(?!\/)/i;
+// NOT is NOT copied — `matchesTitleExclusion` (swe-filter.ts) is exactly
+// `NOT.test(title)`, exported for precisely this reason. A hand-typed copy
+// here would silently skew this script's headline percentage the next time
+// NOT itself is edited (e.g. ticket 6b2313a's `staff`/`distinguished`
+// additions) without anyone noticing, since nothing would fail — the
+// import makes that drift impossible instead of merely unlikely.
 
 async function fetchAll(): Promise<{
   jobs: NormalizedJob[];
@@ -99,7 +134,9 @@ async function main() {
     `\nFetched ${jobs.length} raw posting(s) total across ${perSourceCounts.size} source(s).`,
   );
 
-  const titlePassing = jobs.filter((j) => SOFTWARE.test(j.title) && !NOT.test(j.title));
+  const titlePassing = jobs.filter(
+    (j) => SOFTWARE.test(j.title) && !matchesTitleExclusion(j.title),
+  );
   const survivors = filterSoftwareEngineeringJobs(jobs);
   const excluded = excludedForMissingWorkArrangement(jobs);
 

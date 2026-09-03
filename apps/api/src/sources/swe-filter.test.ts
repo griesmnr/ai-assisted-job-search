@@ -821,9 +821,10 @@ describe("passesLocationFilter — geography and work arrangement recombined", (
 // live SOFTWARE-passing titles ("Senior Software Engineer, Infrastructure
 // Foundations," `location: "United States"`) — most of Temporal's board has
 // since moved to explicit `workplaceType: "Remote"` (a real, dated change
-// from the ticket's 2026-08-24 measurement, when ALL 55 were null; see this
-// ticket's own live re-measurement for the current, smaller-but-nonzero
-// count). The second fixture posting ("Staff Software Engineer, Open Source
+// from the ticket's 2026-08-24 measurement, when ALL 55 were null; see
+// measure-missing-work-arrangement-exclusions.ts's own doc comment for the
+// 2026-09-03 re-measurement — only 3 of Temporal's now-64 postings are
+// still null). The second fixture posting ("Staff Software Engineer, Open Source
 // Server," `workplaceType: "Remote"`) is the contrasting real case: same
 // employer, same us-wide geography, genuinely remote — passes, and must NOT
 // land in this bucket.
