@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compileFilter, DEFAULT_TITLE_EXCLUDE } from "./criteria.js";
-import { filterSoftwareEngineeringJobs, matchesTitleExclusion } from "./swe-filter.js";
+import { compileFilter } from "./criteria.js";
+import { filterSoftwareEngineeringJobs } from "./swe-filter.js";
 import type { NormalizedJob } from "./types.js";
 
 function job(overrides: Partial<NormalizedJob> & Pick<NormalizedJob, "externalId">): NormalizedJob {
@@ -136,7 +136,7 @@ describe("compileFilter — explicit criteria", () => {
     ).toEqual(["1", "2"]);
   });
 
-  it("no titleInclude/nearLocations/remoteOk means no restriction on that axis; titleExclude omitted still applies the ticket 6b2313a staff-title default, which this title doesn't hit", () => {
+  it("no titleInclude/titleExclude/nearLocations/remoteOk means no restriction on that axis", () => {
     const jobs: NormalizedJob[] = [
       job({ externalId: "1", title: "Anything At All", location: "Nowhere Special" }),
     ];
@@ -159,81 +159,38 @@ describe("compileFilter — explicit criteria", () => {
   });
 });
 
-describe("compileFilter — DEFAULT_TITLE_EXCLUDE (ticket 6b2313a)", () => {
-  // Real fixture check (2026-09-03): no title in apps/api/src/sources/
-  // __fixtures__/ contains "staff", "distinguished", or "fellow" in any
-  // form — the only hit anywhere in the fixture set is "Staffing" inside
-  // description/URL text (usajobs-real-response.json), never a title, and
-  // this filter only ever reads `title`. So — same as swe-filter.test.ts's
-  // precedent for "designer"/"manager" suffix forms with no fixture
-  // evidence — these titles are realistic-but-synthetic, and the
-  // word-boundary claims are cross-checked directly against
-  // `matchesTitleExclusion` (swe-filter.ts's own NOT regex, which carries
-  // the identical three words) so the two default lists are proven to
-  // agree, not just asserted independently.
-  const staffTitle = "Staff Software Engineer";
-  const distinguishedTitle = "Distinguished Engineer";
-  const fellowTitle = "Research Fellow";
-  const falsePositiveRisk = "Onsite Support for Understaffed Teams";
-
-  it("swe-filter.ts's NOT regex agrees with DEFAULT_TITLE_EXCLUDE on all three words — the two default paths (undefined-criteria vs. explicit-criteria-omitting-titleExclude) can't silently diverge", () => {
-    for (const word of DEFAULT_TITLE_EXCLUDE) {
-      expect(matchesTitleExclusion(`Some ${word} Title`), word).toBe(true);
-    }
-  });
-
-  it("a caller who supplies criteria but omits titleExclude gets staff/distinguished/fellow excluded by default", () => {
+describe("compileFilter — explicit criteria never silently defaults titleExclude (ticket 6b2313a, F3 revert)", () => {
+  // History: an earlier round of this ticket gave the explicit-criteria path
+  // its own hidden `DEFAULT_TITLE_EXCLUDE` (staff/distinguished/fellow),
+  // applied whenever a caller supplied `criteria` but omitted `titleExclude`.
+  // Adversarial review (F2/F3) found it was actively wrong, not just
+  // redundant: `distinguished`/`fellow` save nothing on this path (fellow's
+  // only real matches are an early-career fellowship program, not staff
+  // roles — see swe-filter.test.ts), and a caller who explicitly asked for
+  // staff roles back via `titleInclude: ["staff software engineer"]` — the
+  // natural, correct way to request them — got silently zero results, with
+  // no way to know why. Removed entirely; this describe block replaces the
+  // deleted "DEFAULT_TITLE_EXCLUDE" tests with proof of the CORRECT
+  // behavior: the explicit-criteria path applies no title-exclude
+  // restriction at all unless the caller supplies one, exactly like every
+  // other criteria axis (`titleInclude`/`nearLocations`/`remoteOk`).
+  it('a caller who explicitly names a staff-adjacent title via titleInclude gets it back — no hidden default silently zeroes it out (real title: "Staff Software Engineer", live Greenhouse pool, 2026-09-03 — see swe-filter.test.ts for the companies)', () => {
     const jobs: NormalizedJob[] = [
-      job({ externalId: "1", title: staffTitle }),
-      job({ externalId: "2", title: distinguishedTitle }),
-      job({ externalId: "3", title: fellowTitle }),
-      job({ externalId: "4", title: "Software Engineer" }),
+      job({ externalId: "1", title: "Staff Software Engineer" }),
+      job({ externalId: "2", title: "Software Engineer" }),
     ];
-    // titleInclude left broad enough that all four would otherwise pass —
-    // isolates titleExclude's default from titleInclude's own behavior.
-    const filter = compileFilter({
-      titleInclude: ["software engineer", "distinguished engineer", "research fellow"],
-    });
-    expect(filter(jobs).map((j) => j.externalId)).toEqual(["4"]);
-  });
-
-  it('word-boundary matched: "Staff Software Engineer" is excluded, but a false-positive-risk title like "understaffed" is not — same class of defect as ticket 06b09cf', () => {
-    const jobs: NormalizedJob[] = [
-      job({ externalId: "1", title: staffTitle }),
-      job({ externalId: "2", title: falsePositiveRisk }),
-    ];
-    const filter = compileFilter({});
-    expect(filter(jobs).map((j) => j.externalId)).toEqual(["2"]);
-  });
-
-  it("overridable: an explicit empty titleExclude turns the default off entirely — the real request shape a caller targeting staff roles sends", () => {
-    const jobs: NormalizedJob[] = [
-      job({ externalId: "1", title: staffTitle }),
-      job({ externalId: "2", title: distinguishedTitle }),
-      job({ externalId: "3", title: fellowTitle }),
-    ];
-    const filter = compileFilter({ titleExclude: [] });
-    expect(
-      filter(jobs)
-        .map((j) => j.externalId)
-        .sort(),
-    ).toEqual(["1", "2", "3"]);
-  });
-
-  it("overridable: a caller can also swap in their own titleExclude list, replacing (not adding to) the default", () => {
-    const jobs: NormalizedJob[] = [
-      job({ externalId: "1", title: staffTitle }),
-      job({ externalId: "2", title: "Software Engineer, Contract" }),
-    ];
-    const filter = compileFilter({ titleExclude: ["contract"] });
-    // The staff title now survives (default replaced, not merged); the
-    // caller's own "contract" exclusion still applies.
+    const filter = compileFilter({ titleInclude: ["staff software engineer"] });
     expect(filter(jobs).map((j) => j.externalId)).toEqual(["1"]);
   });
 
-  it("compileFilter(undefined) — the CLI/no-criteria default — also excludes staff-level titles, via swe-filter.ts's NOT regex", () => {
+  it("an empty criteria object ({}) does not exclude a staff-level title — titleExclude omitted means no restriction, the same rule {}'s doc comment already states for every other axis", () => {
+    const jobs: NormalizedJob[] = [job({ externalId: "1", title: "Staff Software Engineer" })];
+    expect(compileFilter({})(jobs).map((j) => j.externalId)).toEqual(["1"]);
+  });
+
+  it("compileFilter(undefined) — the CLI/no-criteria default, unaffected by this revert — still excludes staff-level titles via swe-filter.ts's own NOT regex (that exclusion lives there, not in criteria.ts; see swe-filter.ts's NOT comment)", () => {
     const jobs: NormalizedJob[] = [
-      job({ externalId: "1", title: staffTitle, location: "Seattle, WA" }),
+      job({ externalId: "1", title: "Staff Software Engineer", location: "Seattle, WA" }),
       job({ externalId: "2", title: "Software Engineer", location: "Seattle, WA" }),
     ];
     expect(compileFilter(undefined)(jobs).map((j) => j.externalId)).toEqual(["2"]);

@@ -37,13 +37,6 @@
  * filter from it using the generic primitives below — that's the real new
  * capability this ticket adds, independent of the default's exactness
  * guarantee.
- *
- * Ticket 6b2313a: an explicit-criteria caller who omits `titleExclude`
- * still gets a sensible title default (`DEFAULT_TITLE_EXCLUDE`, below) —
- * staff-level titles never clear the score floor (measured: 76/200 jobs,
- * best 52%, median 22%, against a 55% floor), so scoring them by default is
- * pure waste. Overridable by supplying `titleExclude` explicitly, even as
- * `[]`. See `DEFAULT_TITLE_EXCLUDE`'s own doc comment.
  */
 import type { SearchCriteria } from "@app/shared";
 import { filterSoftwareEngineeringJobs } from "./swe-filter.js";
@@ -99,60 +92,22 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
 }
 
 /**
- * Ticket 6b2313a: staff-level titles never clear the score floor — measured
- * across the 200 jobs scored 2026-08-31, STAFF/PRINCIPAL/etc titles (76 of
- * 200) had a best score of 52% and a median of 22%, against a 55% floor.
- * Excluding them by default removes zero jobs the caller would ever see
- * while cutting ~38% of a run's scoring spend. swe-filter.ts's `NOT` regex
- * carries the identical three words as literal `\bword\b` alternatives —
- * that's what makes `compileFilter(undefined)` (the CLI/no-criteria
- * default, which delegates straight to `filterSoftwareEngineeringJobs` and
- * never looks at this constant) exclude them too. The two can't be unified
- * into one shared list: swe-filter.ts's NOT mixes bare words with
- * suffix-handled ones (`recruit(ing|ment|ers?|s)?`, `intern(ships?|s)?`)
- * that have no equivalent in `makePhraseMatcher`'s plain-phrase model, so
- * keeping them as two literal, independently-readable regex/array sources
- * (both citing this ticket) is more honest than a shared abstraction that
- * would have to re-introduce the suffix cases as a special case anyway.
- *
- * Applied below only when a caller supplies explicit `criteria` AND omits
- * `titleExclude` specifically — `criteria.titleExclude ?? DEFAULT_TITLE_EXCLUDE`
- * falls through to this constant on `undefined` (omitted) but NOT on `[]`
- * (`??` only triggers on `null`/`undefined`), so a caller targeting staff
- * roles overrides the default by sending `titleExclude` explicitly, even as
- * an empty array — e.g. `criteria: { titleExclude: [] }`, or
- * `criteria: { titleExclude: ["contract"] }` to swap in their own list
- * entirely. See criteria.test.ts and this module's own doc comment above
- * `compileFilter`.
- */
-export const DEFAULT_TITLE_EXCLUDE: readonly string[] = ["staff", "distinguished", "fellow"];
-
-/**
  * Compiles `criteria` into a `NormalizedJob[] => NormalizedJob[]` filter.
  *
  * `criteria === undefined` (the caller omitted the field entirely) is the
  * ONLY case that reproduces the CLI default — delegates straight to
  * `filterSoftwareEngineeringJobs`. An explicitly-supplied `{}` is treated
- * as a real criteria object — a caller who sends an empty object asked for
- * that, which is different from asking for nothing — and is permissive on
- * every axis EXCEPT title-exclude (no title-include restriction, no
- * location restriction beyond dedupe, but `DEFAULT_TITLE_EXCLUDE` still
- * applies, per ticket 6b2313a, because `{}`'s `titleExclude` is omitted,
- * not `[]`). A caller who wants truly nothing filtered sends
- * `{ titleExclude: [] }`, not `{}`.
+ * as a real, if maximally permissive, criteria object (no title
+ * restriction, no location restriction beyond dedupe) — a caller who sends
+ * an empty object asked for that, which is different from asking for
+ * nothing.
  *
  * For explicit criteria: `titleInclude` (ANY match passes; empty/omitted
  * means no title restriction), then `titleExclude` (ANY match rejects,
- * applied after include; OMITTED — not `[]` — falls back to
- * `DEFAULT_TITLE_EXCLUDE`, ticket 6b2313a: staff-level titles are excluded
- * by default here too, not just on the `undefined`-criteria path below, but
- * a caller can send `titleExclude: []` explicitly to opt back in to staff
- * roles, exactly the same "an explicit empty value means the caller asked
- * for that" principle `{}` itself already follows), then location
- * (`nearLocations`: ANY match passes regardless of work arrangement;
- * `remoteOk`: a confirmed-remote job passes regardless of location text;
- * neither set means no location restriction), then the same company|title
- * dedupe `filterSoftwareEngineeringJobs` uses.
+ * applied after include), then location (`nearLocations`: ANY match passes
+ * regardless of work arrangement; `remoteOk`: a confirmed-remote job passes
+ * regardless of location text; neither set means no location restriction),
+ * then the same company|title dedupe `filterSoftwareEngineeringJobs` uses.
  */
 export function compileFilter(
   criteria: SearchCriteria | undefined,
@@ -162,7 +117,7 @@ export function compileFilter(
   }
 
   const includeMatchers = (criteria.titleInclude ?? []).map(makePhraseMatcher);
-  const excludeMatchers = (criteria.titleExclude ?? DEFAULT_TITLE_EXCLUDE).map(makePhraseMatcher);
+  const excludeMatchers = (criteria.titleExclude ?? []).map(makePhraseMatcher);
   const nearMatchers = (criteria.nearLocations ?? []).map(makePhraseMatcher);
   const remoteOk = criteria.remoteOk ?? false;
   const hasLocationRestriction = nearMatchers.length > 0 || remoteOk;

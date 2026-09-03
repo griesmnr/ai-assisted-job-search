@@ -270,33 +270,26 @@ describe("filterSoftwareEngineeringJobs — title filter", () => {
   });
 });
 
-describe("filterSoftwareEngineeringJobs — staff/distinguished/fellow exclusion (ticket 6b2313a)", () => {
-  // No real fixture title anywhere in __fixtures__/ contains "staff",
-  // "distinguished", or "fellow" (checked 2026-09-03: only hit is
-  // "Staffing" inside description/URL text in usajobs-real-response.json,
-  // never a title). These titles are therefore realistic-but-synthetic —
-  // same footing as this file's existing "Software Engineer Intern(s)"
-  // synthetic cases above, used because the real fixture set doesn't happen
-  // to contain every suffix/boundary case worth proving.
-  it('excludes "Staff Software Engineer" and "Staff Engineer" (both match SOFTWARE via its own "staff engineer"/"software engineer" alternatives, so this also proves NOT actually removes them, not just that they never matched SOFTWARE)', () => {
+describe("filterSoftwareEngineeringJobs — staff/distinguished exclusion (ticket 6b2313a)", () => {
+  // Real, LIVE titles (fetched from the actual Greenhouse pool this review
+  // ran against, 2026-09-03 -- not committed under __fixtures__/, since that
+  // set is a fixed historical snapshot and these are current-pool evidence;
+  // quoted verbatim per this ticket's review, which fetched and verified
+  // them itself). Real fixture data still backs the false-positive negative
+  // controls further down, since no real title anywhere -- fixture or live
+  // pool -- exercises that specific case.
+  it('excludes "Staff Software Engineer" (real, live: Coinbase/Lyft/Twilio/Fivetran, 2026-09-03) and "Staff Engineer" (real, live: MongoDB) -- both match SOFTWARE (via "software engineer" and "staff engineer" respectively), so this also proves NOT actually removes them, not just that they never matched SOFTWARE', () => {
     for (const title of ["Staff Software Engineer", "Staff Engineer"]) {
       const result = filterSoftwareEngineeringJobs([job({ title, company: "synthetic" })]);
       expect(result, `expected "${title}" to be excluded`).toHaveLength(0);
     }
   });
 
-  it('excludes "Distinguished Engineer" and "Fellow" titles', () => {
-    for (const title of [
-      "Distinguished Software Engineer",
-      "Distinguished Engineer",
-      "Software Engineering Fellow",
-      "Research Fellow",
-    ]) {
-      expect(matchesTitleExclusion(title), title).toBe(true);
-    }
+  it('excludes "Distinguished Engineer, Enterprise Scalability" (real, live: Klaviyo, 2026-09-03 -- one of only 2 "distinguish*" titles in the whole 6,204-posting live pool, neither of which matches SOFTWARE, which is why F2\'s measurement reports 0 real savings from this word; kept anyway per this file\'s NOT comment)', () => {
+    expect(matchesTitleExclusion("Distinguished Engineer, Enterprise Scalability")).toBe(true);
   });
 
-  it('does NOT exclude "understaffed" or "Staffing" — the specific false-positive risk this ticket asked to check for (no "Staffing Coordinator" or similar title exists in any committed fixture; the only real "Staffing" hit anywhere in __fixtures__/ is "USA Staffing Applicant Resource Center", inside description/URL text in usajobs-real-response.json, never a title, and this filter never reads description anyway)', () => {
+  it('does NOT exclude "understaffed" or "Staffing" -- the specific false-positive risk this ticket asked to check for (no "Staffing Coordinator" or similar title exists in any committed fixture or the live pool sampled 2026-09-03; the only real "Staffing" hit anywhere in __fixtures__/ is "USA Staffing Applicant Resource Center", inside description/URL text in usajobs-real-response.json, never a title, and this filter never reads description anyway -- kept as an invented negative control since no real equivalent exists)', () => {
     expect(matchesTitleExclusion("Onsite Support for Understaffed Teams")).toBe(false);
     expect(matchesTitleExclusion("Staffing Coordinator")).toBe(false);
     const result = filterSoftwareEngineeringJobs([
@@ -304,8 +297,61 @@ describe("filterSoftwareEngineeringJobs — staff/distinguished/fellow exclusion
     ]);
     expect(result).toHaveLength(1);
   });
+});
 
-  it('does NOT exclude "Fellowship" — same word-boundary shape as ticket 06b09cf\'s "Internship" miss (no boundary right after "fellow" in "Fellowship" — "s" is a word character), left as-is because no fixture title needs the suffix caught: the one real fixture title containing "Fellowship" (lever-real-response-palantir.json, "American Tech Fellowship") never matches SOFTWARE regardless, so there is no live-defect evidence to fix here, per this file\'s own audit precedent of not inventing fixes for unobserved cases', () => {
+describe('filterSoftwareEngineeringJobs — F1 fix: "staff" inside a level RANGE is not excluded (ticket 6b2313a, opus review)', () => {
+  // All four titles below are real and were confirmed LIVE against the
+  // Greenhouse pool on 2026-09-03 -- named directly in the review that
+  // required this fix, and re-verified here rather than taken on faith.
+  // Before the fix, the bare `\bstaff\b` alternative wrongly excluded every
+  // one of these -- each explicitly invites a Senior (non-staff) candidate
+  // too, so excluding them was a real, current false positive, not a
+  // hypothetical.
+  const mongoStaffOrSenior =
+    "Security Software Engineer, Infrastructure Security (Staff or Senior)";
+  const mongoSeniorOrStaffSre = "Site Reliability Engineer (Senior or Staff), Atlas";
+  const mongoMidSeniorOrStaff = "Site Reliability Engineering, Fabric (Mid, Senior, or Staff)";
+  const twilioSeniorSlashStaff = "Senior/Staff Applied Research Software Engineer";
+
+  it("does not exclude any of the four real range-list titles", () => {
+    for (const title of [
+      mongoStaffOrSenior,
+      mongoSeniorOrStaffSre,
+      mongoMidSeniorOrStaff,
+      twilioSeniorSlashStaff,
+    ]) {
+      expect(matchesTitleExclusion(title), title).toBe(false);
+    }
+  });
+
+  it('proves the fix end-to-end (not just at the regex level) on the two range-list titles that also match SOFTWARE -- "Security Software Engineer... (Staff or Senior)" (MongoDB) and "Senior/Staff Applied Research Software Engineer" (Twilio), both real and live', () => {
+    for (const title of [mongoStaffOrSenior, twilioSeniorSlashStaff]) {
+      const result = filterSoftwareEngineeringJobs([job({ title, company: "synthetic" })]);
+      expect(result, `expected "${title}" to survive (not be excluded)`).toHaveLength(1);
+    }
+  });
+
+  it('still excludes a bare "Staff" title with no range marker, even when preceded by a level word that could be mistaken for one -- "Senior Staff Engineer" and "Senior Staff Software Engineer, Core Infrastructure" (both real, live: MongoDB/Robinhood, 2026-09-03) are single specific staff-tier titles, not ranges, and must still be caught', () => {
+    for (const title of [
+      "Senior Staff Engineer",
+      "Senior Staff Software Engineer, Core Infrastructure",
+    ]) {
+      expect(matchesTitleExclusion(title), title).toBe(true);
+    }
+  });
+
+  it('does not let the range-marker lookaround be tricked by a word that merely ENDS in "or "/"to " ("for", "into") -- synthetic, since no real title happens to combine this specific trap with "staff"; verifies the lookbehind requires a genuine word-boundary "or"/"to", not just those two letters followed by a space', () => {
+    expect(matchesTitleExclusion("Search for Staff Engineers")).toBe(true);
+    expect(matchesTitleExclusion("Transition into Staff Role")).toBe(true);
+  });
+});
+
+describe('filterSoftwareEngineeringJobs — "fellow" dropped from NOT entirely (ticket 6b2313a, opus review F2/F3)', () => {
+  it('does NOT exclude "SWE Fellow - Human Frontier Collective (US)" (real, live: Scale AI, 2026-09-03) -- this is an early-career FELLOWSHIP PROGRAM title, not a staff-level role; every real "fellow" match in the live 6,204-posting pool is this same Human Frontier Collective program (13 postings across Finance/Legal/ML/Medical/STEM/SWE tracks and three countries), which is why "fellow" was dropped from NOT rather than kept -- it never matched the ticket\'s own "staff-level titles never clear the score floor" rationale to begin with', () => {
+    expect(matchesTitleExclusion("SWE Fellow - Human Frontier Collective (US)")).toBe(false);
+  });
+
+  it('does NOT exclude "American Tech Fellowship" (real fixture title: lever-real-response-palantir.json) -- same word-boundary shape as ticket 06b09cf\'s "Internship" miss regardless (no boundary right after "fellow" in "Fellowship"), now doubly moot since "fellow" carries no NOT alternative at all', () => {
     expect(matchesTitleExclusion("American Tech Fellowship")).toBe(false);
   });
 });

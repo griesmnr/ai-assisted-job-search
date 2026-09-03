@@ -594,7 +594,7 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
     expect(body.newlyScored).toBe(1);
   });
 
-  it("an explicit empty criteria object opts OUT of titleInclude/location filtering (but NOT titleExclude's own default — see the ticket 6b2313a describe block below)", async () => {
+  it("an explicit empty criteria object opts OUT of filtering entirely", async () => {
     const irrelevant = fakeJob(`opt-out-${randomUUID()}`, "Accountant II", {
       location: "Remote - US",
     });
@@ -618,7 +618,17 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
   });
 });
 
-describe("POST /searches — staff-level title default (ticket 6b2313a)", () => {
+describe("POST /searches — swe-filter.ts's staff-level default, CLI/no-criteria path only (ticket 6b2313a)", () => {
+  // History (opus review F3, PM-ratified): an earlier round of this ticket
+  // also gave the EXPLICIT-criteria path its own hidden titleExclude
+  // default, tested here with two more end-to-end cases. That default was
+  // reverted (see criteria.ts and criteria.test.ts) — it was actively wrong
+  // on that path, not just redundant. This describe block now covers only
+  // what's actually true post-revert: the staff-level exclusion lives
+  // solely in swe-filter.ts's `NOT` regex, reached only via
+  // `compileFilter(undefined)` (no `criteria` field at all in the request
+  // body). An explicit `criteria` — even `{}` — never sees it; see the
+  // "opts OUT of filtering entirely" test above.
   it("the CLI/no-criteria default excludes a staff-level title end to end", async () => {
     const staffJob = fakeJob(`staff-${randomUUID()}`, "Staff Software Engineer", {
       location: "Seattle, WA",
@@ -642,8 +652,10 @@ describe("POST /searches — staff-level title default (ticket 6b2313a)", () => 
     expect(body.newlyScored).toBe(0);
   });
 
-  it("an explicit empty criteria object ALSO excludes a staff-level title — titleExclude's default applies even when the rest of criteria is maximally permissive", async () => {
-    const staffJob = fakeJob(`staff-empty-crit-${randomUUID()}`, "Distinguished Engineer");
+  it("an explicit empty criteria object does NOT exclude a staff-level title — the default is CLI-only, not a title-exclude default that also applies to explicit criteria (F3 revert)", async () => {
+    const staffJob = fakeJob(`staff-empty-crit-${randomUUID()}`, "Staff Software Engineer", {
+      location: "Seattle, WA",
+    });
     const app = buildApp({
       db,
       getScoreJob: makeFakeScorer,
@@ -655,27 +667,6 @@ describe("POST /searches — staff-level title default (ticket 6b2313a)", () => 
       method: "POST",
       url: "/searches",
       payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
-    });
-    const { searchId } = started.json() as { searchId: string };
-    const body = await pollUntilDone(app, searchId);
-
-    expect(body.status).toBe("complete");
-    expect(body.newlyScored).toBe(0);
-  });
-
-  it("the real override shape: criteria.titleExclude: [] gets staff-level roles scored again", async () => {
-    const staffJob = fakeJob(`staff-override-${randomUUID()}`, "Research Fellow");
-    const app = buildApp({
-      db,
-      getScoreJob: makeFakeScorer,
-      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
-    });
-    const resumeId = await createResume(app);
-
-    const started = await app.inject({
-      method: "POST",
-      url: "/searches",
-      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: { titleExclude: [] } },
     });
     const { searchId } = started.json() as { searchId: string };
     const body = await pollUntilDone(app, searchId);

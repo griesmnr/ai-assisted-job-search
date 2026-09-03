@@ -35,6 +35,16 @@ import type { NormalizedJob } from "./types.js";
 // ---------------------------------------------------------------------------
 
 // Title filter: actual software engineering roles, not adjacent ones.
+//
+// F6 (ticket 6b2313a review): the `staff engineer` alternative below is now
+// dead code — NOT (further down this file) excludes `\bstaff\b` (subject to
+// its own range-aware precision fix, which still excludes a bare "Staff
+// Engineer"), so no title can survive SOFTWARE via this specific alternative
+// and then also survive NOT. Left in place rather than removed: pruning
+// SOFTWARE further is out of this ticket's scope (see the file's own "Out"
+// note above), and a future change to NOT's staff handling (e.g. narrowing
+// it further) could make this alternative reachable again without anyone
+// having to re-derive it from scratch.
 const SOFTWARE =
   /\b(software engineer|full.?stack|back.?end|front.?end|web engineer|senior engineer|staff engineer)\b/i;
 
@@ -92,49 +102,91 @@ const SOFTWARE =
 //     regex expects one). No fixture evidence of a defect. Left unchanged.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Ticket 6b2313a: `staff`, `distinguished`, `fellow` added to NOT. Measured
-// across the 200 jobs scored 2026-08-31: STAFF/PRINCIPAL/etc titles (76 of
-// the 200) had a best score of 52% and a median of 22% — no staff-level
-// title has EVER cleared the 55% score floor (`principal` was already here;
-// `staff` was the gap). Excluding them removes zero jobs the owner would
-// ever see while cutting ~38% of a run's scoring spend (76 x $0.0184 =
-// ~$1.40/run at the time of measurement) — real money, since the owner is
-// unemployed and paying API costs from savings.
+// Ticket 6b2313a: `staff` and `distinguished` added to NOT (see the F1-F8
+// history below for how this landed — `fellow` was tried and then dropped).
 //
-// This closes the CLI/`compileFilter(undefined)` default path (this file IS
-// that default — see criteria.ts's doc comment). It does NOT, by itself,
-// make the exclusion overridable — `filterSoftwareEngineeringJobs` has no
-// per-caller knobs at all, deliberately (that's the whole reason
-// `compileFilter` exists). The override lives on the OTHER path:
-// criteria.ts's `DEFAULT_TITLE_EXCLUDE` carries the same three words,
-// applied only when a caller supplies explicit `criteria` and omits
-// `titleExclude` — a caller who wants staff roles back sends
-// `criteria: { titleExclude: [] }` (or their own list), which is real only
-// on that path, not this one (omitting `criteria` entirely always gets
-// this file's filter, non-negotiably, exactly as before this ticket).
+// SCOPE NOTE (opus adversarial review, F7 — PM-ratified 2026-09-03): the
+// ticket as originally written asked for a `criteria`-object-only change
+// ("go through criteria, not a hardcoded regex," "Out: any other change to
+// SOFTWARE/NOT"), on the assumption that `criteria` is the live path. It
+// isn't: `compileFilter(criteria === undefined)` — the ONLY path anything in
+// this codebase currently exercises, since apps/web never sends a `criteria`
+// object at all — delegates straight to THIS file's `filterSoftwareEngineeringJobs`,
+// bypassing criteria.ts's generic machinery entirely. A criteria-only change
+// would have been a complete no-op on the path that matters: zero real
+// savings, against a ticket whose entire stated purpose is savings. The PM
+// ratified editing NOT directly as a deliberate amendment to the ticket's
+// "Out" line, because it's the only way to deliver the savings on the path
+// real traffic takes. criteria.ts's own `DEFAULT_TITLE_EXCLUDE` — a second,
+// independent copy of this idea on the *unused* explicit-criteria path — was
+// reverted in the same review round (see criteria.ts's doc comment above
+// `compileFilter`) for reasons unrelated to this scope call: it was actively
+// wrong on that path (F2/F3 below).
 //
-// Boundary audit (same class of defect as ticket 06b09cf's `intern`/
-// `Internship` miss, per this ticket's own instruction to check): searched
-// every fixture under __fixtures__/ for "staff", "distinguish", "fellow" as
-// substrings (2026-09-03). Zero real fixture TITLES contain any of the
-// three words in any form — the only hit is "Staffing" inside descriptive
-// text/URLs (usajobs-real-response.json, "USA Staffing Applicant Resource"
-// and "apply.usastaffing.gov"), which this filter never reads (title-only)
-// and which `\bstaff\b` wouldn't match anyway (no boundary right after
-// "staff" in "Staffing" — "i" is a word character, same reason `\bintern\b`
-// missed "Internship"). No fixture evidence of a real "Staffing
-// Coordinator"-style title (the specific false-positive the ticket asked to
-// check for) or of a plural/suffixed "Distinguished"/"Fellow" form, so all
-// three are added as bare `\bword\b` alternatives, per this file's own
-// audit precedent above (manager/director/principal/etc.) of not inventing
-// suffix handling for a case nobody has actually observed. Verified
-// directly: `\bstaff\b` matches "Staff Software Engineer" and "Staff
-// Engineer" (both correctly excluded) but not "understaffed" or "Staffing"
-// (no boundary at either transition — "r|s" and "ff|i" are both
-// word-to-word) — see swe-filter.test.ts.
+// Measured across the 200 jobs scored 2026-08-31: STAFF/PRINCIPAL/etc titles
+// (76 of the 200) had a best score of 52% and a median of 22% — no
+// staff-level title has EVER cleared the 55% score floor (`principal` was
+// already here; `staff` was the gap). Excluding them removes zero jobs the
+// owner would ever see.
+//
+// F1 (opus review, blocking correctness fix): the original bare `\bstaff\b`
+// excluded real, CURRENT, Senior-eligible postings that merely mention
+// "staff" as one end of a level RANGE — live examples from the 2026-09-03
+// pool: "Security Software Engineer, Infrastructure Security (Staff or
+// Senior)" (MongoDB), "Site Reliability Engineer (Senior or Staff), Atlas"
+// (×5 variants), "Site Reliability Engineering, Fabric (Mid, Senior, or
+// Staff)", "Senior/Staff Applied Research Software Engineer" — none of these
+// should be excluded; a Senior candidate is explicitly invited to apply.
+// Fixed with lookaround that keeps `staff` excluding only when it is NOT
+// adjacent to a level-list marker ("or ", "to ", "/") on either side:
+//   (?<!\b(?:or|to)\s)(?<!\/)\bstaff\b(?!\s*(?:or|to)\b)(?!\/)
+// The `\b` inside the lookbehind's `(?:or|to)\s` matters — without it,
+// "Search **for** Staff Engineers" or "Transition **into** Staff Role" would
+// wrongly read the trailing "or "/"to " of "for"/"into" as a range marker and
+// suppress the real exclusion. Verified against every real example above
+// (still NOT excluded) plus "Staff Software Engineer" and "Staff Engineer"
+// (still excluded) — see swe-filter.test.ts.
+//
+// F2 (opus review, measured per-word, corrected pool, 2026-09-03 — see
+// verify-staff-title-exclusion-savings.ts for the reproducible script):
+// against the live 6,203-posting Greenhouse pool, of the 178 titles that
+// survived the OLD (pre-ticket) filter, `staff` (with F1's precision fix)
+// alone removes 75 — effectively all of this change's real saving.
+// `distinguished` alone removes 0 (only 2 occurrences anywhere in the pool,
+// neither survives SOFTWARE) but is kept anyway: harmless today, and a
+// future "Distinguished Engineer" title that DID clear SOFTWARE would
+// genuinely be staff-tier, matching the ticket's original rationale. `fellow`
+// was DROPPED entirely (not just imprecise — actively wrong): its only real
+// matches pool-wide are all of the form "SWE Fellow - Human Frontier
+// Collective (US/UK/Canada)", an early-career FELLOWSHIP PROGRAM, not a
+// staff-level role. The ticket's "staff-level titles never clear the score
+// floor" rationale has nothing to do with a junior fellowship — including it
+// was a scope/correctness error independent of F1's regex-precision bug.
+//
+// F4 (opus review, honesty correction): an earlier version of this comment
+// claimed "Zero real fixture TITLES contain any of the three words in any
+// form — the only hit is 'Staffing' inside descriptive text/URLs." That was
+// false: lever-real-response-palantir.json's own posting titled "American
+// Tech Fellowship" is a real fixture TITLE containing "Fellow" (as
+// "Fellowship") — swe-filter.test.ts's own test two sections up already cited
+// this exact title, directly contradicting the claim made here. The correct
+// characterization: real fixture titles containing these words as SUBSTRINGS
+// do exist ("American Tech Fellowship"; usajobs-real-response.json also has
+// "Goodfellow AFB, Texas" and "Staffing"-in-URL, both outside any title
+// field), but none of them satisfy `\bword\b`'s word-boundary requirement
+// against the bare words this file's NOT alternatives use ("Fellowship"
+// has no boundary after "Fellow" — "s" is a word character, same class of
+// miss as ticket 06b09cf's `\bintern\b`/"Internship").
+//
+// Boundary audit (2026-09-03, re-run after F1's fix): `\bstaff\b` (with the
+// F1 lookaround) matches "Staff Software Engineer" and "Staff Engineer" but
+// not "understaffed", "Staffing", or any of the real range-list titles named
+// under F1; `\bdistinguished\b` has no fixture title to test against at all
+// (0 occurrences). See swe-filter.test.ts for all of the above as executable
+// tests, using real titles per F8.
 // ---------------------------------------------------------------------------
 const NOT =
-  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist|staff|distinguished|fellow)\b/i;
+  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist|distinguished)\b|(?<!\b(?:or|to)\s)(?<!\/)\bstaff\b(?!\s*(?:or|to)\b)(?!\/)/i;
 
 /** Exported so the exclusion regex can be verified directly against a real
  * fixture title string without also requiring that title to independently
