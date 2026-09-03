@@ -87,7 +87,7 @@ const searchBodySchema = {
 type SearchBody = { resumeId: string; sourceIds: string[]; criteria?: SearchCriteria };
 
 type SearchRunState =
-  | { status: "pending"; resumeId: string }
+  | { status: "pending"; resumeId: string; scoredSoFar: number }
   | { status: "complete"; resumeId: string; result: RunDemoMatchResult }
   | { status: "failed"; resumeId: string; error: string };
 
@@ -321,7 +321,7 @@ export function registerSearchRoutes(
       }
 
       const searchId = randomUUID();
-      searchRuns.set(searchId, { status: "pending", resumeId });
+      searchRuns.set(searchId, { status: "pending", resumeId, scoredSoFar: 0 });
       pruneSearchRuns();
       inFlightByResume.set(resumeId, searchId);
 
@@ -338,6 +338,19 @@ export function registerSearchRoutes(
         filter: compileFilter(criteria),
         searchId,
         outputPath: tempOutputPath(searchId),
+        // Ticket 1998875: the only bridge between `runDemoMatch`'s
+        // in-flight scoring loop and this route's pollable state. Looks
+        // the entry back up (rather than closing over the object literal
+        // above) so a completed/failed run — which replaces this map
+        // entry entirely via the `.then`/`.catch` below — can never have a
+        // stray late callback mutate a state that's no longer "pending";
+        // in practice every `onJobScored` call happens strictly before the
+        // run settles, but this guard costs nothing and makes that
+        // invariant explicit rather than assumed.
+        onJobScored: () => {
+          const state = searchRuns.get(searchId);
+          if (state && state.status === "pending") state.scoredSoFar++;
+        },
       })
         .then((result) => {
           searchRuns.set(searchId, { status: "complete", resumeId, result });
@@ -431,6 +444,7 @@ export function registerSearchRoutes(
         searchId,
         status: "pending",
         resumeId: state.resumeId,
+        scoredSoFar: state.scoredSoFar,
       };
       return reply.send(response);
     }

@@ -354,6 +354,91 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     expect(resultsBody.results[0]?.matchScore).toBe(77);
   });
 
+  it("GET /searches/:id reports a genuinely rising scoredSoFar across multiple polls during an in-progress run, not just 0-then-final (ticket 1998875, F1)", async () => {
+    // A gated, call-order-tracking scorer — NOT per-job gates keyed by
+    // externalId, because runDemoMatch's own two-phase warm-then-batch
+    // structure (demo-match.ts: score `firstId` alone via
+    // `Promise.allSettled([scoreOne(firstId)])`, THEN fire
+    // `restIds.map(scoreOne)` as one concurrent batch) means the test
+    // cannot predict up front WHICH job becomes "first". Keying the gate by
+    // INVOCATION ORDER instead sidesteps that entirely: call #0 is always
+    // whichever job the two-phase structure chose to warm the cache with,
+    // and calls #1+ are always the batch — regardless of which specific
+    // job that turns out to be.
+    let releaseFirst: () => void = () => {};
+    const gateFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseRest: () => void = () => {};
+    const gateRest = new Promise<void>((resolve) => {
+      releaseRest = resolve;
+    });
+    let calls = 0;
+    const gatedScorer: ScoreJobFn = async (job) => {
+      const gate = calls === 0 ? gateFirst : gateRest;
+      calls++;
+      await gate;
+      return {
+        matchScore: 60,
+        rationale: `fake rationale for ${job.title}`,
+        strengths: [],
+        gaps: [],
+      };
+    };
+
+    const jobs = [
+      matchingJob(`rising-0-${randomUUID()}`),
+      matchingJob(`rising-1-${randomUUID()}`),
+      matchingJob(`rising-2-${randomUUID()}`),
+    ];
+    const app = buildApp({
+      db,
+      getScoreJob: () => gatedScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+
+    // Poll #1: nothing released yet — must be pending at 0, proving the
+    // count starts at 0 rather than skipping straight to a nonzero value.
+    const pollAtStart = await app.inject({ method: "GET", url: `/searches/${searchId}` });
+    const bodyAtStart = pollAtStart.json() as { status: string; scoredSoFar?: number };
+    expect(bodyAtStart.status).toBe("pending");
+    expect(bodyAtStart.scoredSoFar).toBe(0);
+
+    // Release only the first (cache-warming) job. The batch (restIds) is
+    // still gated, so the run must sit at exactly 1 scored, still pending,
+    // until this test explicitly moves it forward again.
+    releaseFirst();
+    let bodyAtOne: { status: string; scoredSoFar?: number } = { status: "" };
+    for (let i = 0; i < 150; i++) {
+      const poll = await app.inject({ method: "GET", url: `/searches/${searchId}` });
+      bodyAtOne = poll.json() as typeof bodyAtOne;
+      if (bodyAtOne.scoredSoFar === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // Poll #2: a GENUINE rise from the poll #1 reading (0 -> 1), observed
+    // WHILE the run is still pending — this is the assertion that would
+    // fail if scoredSoFar were only ever reported as 0-then-final (e.g. if
+    // the counter were incremented from a loop AFTER the whole batch
+    // settles, rather than per-job as each call resolves).
+    expect(bodyAtOne.status).toBe("pending");
+    expect(bodyAtOne.scoredSoFar).toBe(1);
+
+    // Release the batch (the other two jobs) and let the run finish.
+    releaseRest();
+    const finalBody = await pollUntilDone(app, searchId);
+    expect(finalBody.status).toBe("complete");
+    expect(finalBody.newlyScored).toBe(jobs.length);
+  });
+
   it("404s GET /searches/:id for a truly unknown id", async () => {
     const app = buildApp({
       db,
@@ -700,7 +785,7 @@ describe("searchRuns bound (ticket 59fdc52 review round 2)", () => {
     try {
       // One pending entry inserted FIRST (oldest by insertion order) — if
       // eviction ignored status, this would be the first thing deleted.
-      searchRuns.set("pending-oldest", { status: "pending", resumeId: "r0" });
+      searchRuns.set("pending-oldest", { status: "pending", resumeId: "r0", scoredSoFar: 0 });
       for (let i = 0; i < MAX_TRACKED_SEARCHES + 50; i++) {
         searchRuns.set(`complete-${i}`, {
           status: "complete",

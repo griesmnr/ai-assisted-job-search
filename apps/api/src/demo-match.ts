@@ -1023,6 +1023,26 @@ export type RunDemoMatchOptions = {
   outputPath?: string;
   log?: (message: string) => void;
   /**
+   * Ticket 1998875: fired once per job that finishes SUCCESSFULLY inside
+   * the `scoreOne`/`Promise.allSettled` loop below — i.e. once per
+   * eventual `newlyScored`, not once per attempt. A failed `scoreJob` call
+   * does not fire this (mirrors `newlyScored` vs `failed` in
+   * `RunDemoMatchResult`: a failed attempt isn't "scored," it gets retried
+   * on the next run, so counting it here would overstate progress). Called
+   * synchronously the moment each call resolves — NOT batched until
+   * `Promise.allSettled` itself settles — so a caller polling a counter
+   * this increments (routes/searches.ts) can observe genuine intermediate
+   * values while the run is still in flight, not just a jump straight to
+   * the final total. Deliberately does NOT change what `scoreOne` returns,
+   * the two-phase warm/batch structure, or the single batched
+   * `db.insert(jobMatches)` after everything settles (ticket 1998875 scope:
+   * "NOT a scoring-pipeline restructure") — this is purely an
+   * observability hook layered on top of the existing loop. Optional and
+   * defaults to a no-op so every existing caller (the CLI's `main()`,
+   * every `runDemoMatch` test) keeps working unchanged.
+   */
+  onJobScored?: () => void;
+  /**
    * Overrides the randomly generated `searches.id` this run creates.
    * Ticket 59fdc52: the REST API's async "run a search" route needs to hand
    * the client a pollable id *before* this (multi-minute, billed) call
@@ -1605,6 +1625,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     log = console.log,
     searchId: providedSearchId,
     estimateOnly = false,
+    onJobScored,
   } = options;
 
   if (sources.length === 0) {
@@ -1915,6 +1936,11 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
         throw new Error(`runDemoMatch: no NormalizedJob found for linked job id "${jobId}"`);
       }
       const scored = await scoreJob(nj, resumeText);
+      // Fired here, not after `Promise.allSettled` below settles: this is
+      // what makes the count observable WHILE the run is still in flight
+      // (ticket 1998875) rather than only once the whole batch is done —
+      // see `onJobScored`'s doc comment on `RunDemoMatchOptions`.
+      onJobScored?.();
       return { jobId, ...scored };
     };
 
