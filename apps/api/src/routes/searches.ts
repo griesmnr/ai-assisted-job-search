@@ -27,8 +27,15 @@
  * Commercial". `compileFilter(criteria)` (when `criteria` is present in the
  * request body) or `compileFilter(undefined)` (when it's absent — which
  * reproduces the CLI's filter EXACTLY, see criteria.ts) is what a caller
- * gets by default now; passing an explicit empty `{}` is how a caller opts
- * out of filtering entirely.
+ * gets by default now.
+ *
+ * TITLE-EXCLUDE DEFAULT (ticket 6b2313a): an explicit empty `{}` no longer
+ * opts out of ALL title filtering — `titleExclude` specifically still
+ * defaults to excluding staff-level titles (`staff`/`distinguished`/
+ * `fellow`; measured never to score above 52%) unless the caller sends
+ * `titleExclude` explicitly (even `[]`). `{}` still opts out of
+ * `titleInclude`/location filtering, unchanged. See criteria.ts's
+ * `DEFAULT_TITLE_EXCLUDE`.
  */
 import { randomUUID } from "node:crypto";
 import os from "node:os";

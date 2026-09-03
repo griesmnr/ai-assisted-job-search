@@ -91,8 +91,50 @@ const SOFTWARE =
 //     Infrastructure" all have a genuine word boundary right where the
 //     regex expects one). No fixture evidence of a defect. Left unchanged.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Ticket 6b2313a: `staff`, `distinguished`, `fellow` added to NOT. Measured
+// across the 200 jobs scored 2026-08-31: STAFF/PRINCIPAL/etc titles (76 of
+// the 200) had a best score of 52% and a median of 22% — no staff-level
+// title has EVER cleared the 55% score floor (`principal` was already here;
+// `staff` was the gap). Excluding them removes zero jobs the owner would
+// ever see while cutting ~38% of a run's scoring spend (76 x $0.0184 =
+// ~$1.40/run at the time of measurement) — real money, since the owner is
+// unemployed and paying API costs from savings.
+//
+// This closes the CLI/`compileFilter(undefined)` default path (this file IS
+// that default — see criteria.ts's doc comment). It does NOT, by itself,
+// make the exclusion overridable — `filterSoftwareEngineeringJobs` has no
+// per-caller knobs at all, deliberately (that's the whole reason
+// `compileFilter` exists). The override lives on the OTHER path:
+// criteria.ts's `DEFAULT_TITLE_EXCLUDE` carries the same three words,
+// applied only when a caller supplies explicit `criteria` and omits
+// `titleExclude` — a caller who wants staff roles back sends
+// `criteria: { titleExclude: [] }` (or their own list), which is real only
+// on that path, not this one (omitting `criteria` entirely always gets
+// this file's filter, non-negotiably, exactly as before this ticket).
+//
+// Boundary audit (same class of defect as ticket 06b09cf's `intern`/
+// `Internship` miss, per this ticket's own instruction to check): searched
+// every fixture under __fixtures__/ for "staff", "distinguish", "fellow" as
+// substrings (2026-09-03). Zero real fixture TITLES contain any of the
+// three words in any form — the only hit is "Staffing" inside descriptive
+// text/URLs (usajobs-real-response.json, "USA Staffing Applicant Resource"
+// and "apply.usastaffing.gov"), which this filter never reads (title-only)
+// and which `\bstaff\b` wouldn't match anyway (no boundary right after
+// "staff" in "Staffing" — "i" is a word character, same reason `\bintern\b`
+// missed "Internship"). No fixture evidence of a real "Staffing
+// Coordinator"-style title (the specific false-positive the ticket asked to
+// check for) or of a plural/suffixed "Distinguished"/"Fellow" form, so all
+// three are added as bare `\bword\b` alternatives, per this file's own
+// audit precedent above (manager/director/principal/etc.) of not inventing
+// suffix handling for a case nobody has actually observed. Verified
+// directly: `\bstaff\b` matches "Staff Software Engineer" and "Staff
+// Engineer" (both correctly excluded) but not "understaffed" or "Staffing"
+// (no boundary at either transition — "r|s" and "ff|i" are both
+// word-to-word) — see swe-filter.test.ts.
+// ---------------------------------------------------------------------------
 const NOT =
-  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist)\b/i;
+  /\b(manager|director|principal|sales|marketing|recruit(ing|ment|ers?|s)?|intern(ships?|s)?|designer|field service|machine learning|data scientist|staff|distinguished|fellow)\b/i;
 
 /** Exported so the exclusion regex can be verified directly against a real
  * fixture title string without also requiring that title to independently

@@ -594,7 +594,7 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
     expect(body.newlyScored).toBe(1);
   });
 
-  it("an explicit empty criteria object opts OUT of filtering entirely", async () => {
+  it("an explicit empty criteria object opts OUT of titleInclude/location filtering (but NOT titleExclude's own default — see the ticket 6b2313a describe block below)", async () => {
     const irrelevant = fakeJob(`opt-out-${randomUUID()}`, "Accountant II", {
       location: "Remote - US",
     });
@@ -609,6 +609,73 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
       method: "POST",
       url: "/searches",
       payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+
+    expect(body.status).toBe("complete");
+    expect(body.newlyScored).toBe(1);
+  });
+});
+
+describe("POST /searches — staff-level title default (ticket 6b2313a)", () => {
+  it("the CLI/no-criteria default excludes a staff-level title end to end", async () => {
+    const staffJob = fakeJob(`staff-${randomUUID()}`, "Staff Software Engineer", {
+      location: "Seattle, WA",
+    });
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE] },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+
+    expect(body.status).toBe("complete");
+    expect(body.newlyScored).toBe(0);
+  });
+
+  it("an explicit empty criteria object ALSO excludes a staff-level title — titleExclude's default applies even when the rest of criteria is maximally permissive", async () => {
+    const staffJob = fakeJob(`staff-empty-crit-${randomUUID()}`, "Distinguished Engineer");
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const body = await pollUntilDone(app, searchId);
+
+    expect(body.status).toBe("complete");
+    expect(body.newlyScored).toBe(0);
+  });
+
+  it("the real override shape: criteria.titleExclude: [] gets staff-level roles scored again", async () => {
+    const staffJob = fakeJob(`staff-override-${randomUUID()}`, "Research Fellow");
+    const app = buildApp({
+      db,
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: { titleExclude: [] } },
     });
     const { searchId } = started.json() as { searchId: string };
     const body = await pollUntilDone(app, searchId);

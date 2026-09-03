@@ -270,6 +270,46 @@ describe("filterSoftwareEngineeringJobs — title filter", () => {
   });
 });
 
+describe("filterSoftwareEngineeringJobs — staff/distinguished/fellow exclusion (ticket 6b2313a)", () => {
+  // No real fixture title anywhere in __fixtures__/ contains "staff",
+  // "distinguished", or "fellow" (checked 2026-09-03: only hit is
+  // "Staffing" inside description/URL text in usajobs-real-response.json,
+  // never a title). These titles are therefore realistic-but-synthetic —
+  // same footing as this file's existing "Software Engineer Intern(s)"
+  // synthetic cases above, used because the real fixture set doesn't happen
+  // to contain every suffix/boundary case worth proving.
+  it('excludes "Staff Software Engineer" and "Staff Engineer" (both match SOFTWARE via its own "staff engineer"/"software engineer" alternatives, so this also proves NOT actually removes them, not just that they never matched SOFTWARE)', () => {
+    for (const title of ["Staff Software Engineer", "Staff Engineer"]) {
+      const result = filterSoftwareEngineeringJobs([job({ title, company: "synthetic" })]);
+      expect(result, `expected "${title}" to be excluded`).toHaveLength(0);
+    }
+  });
+
+  it('excludes "Distinguished Engineer" and "Fellow" titles', () => {
+    for (const title of [
+      "Distinguished Software Engineer",
+      "Distinguished Engineer",
+      "Software Engineering Fellow",
+      "Research Fellow",
+    ]) {
+      expect(matchesTitleExclusion(title), title).toBe(true);
+    }
+  });
+
+  it('does NOT exclude "understaffed" or "Staffing" — the specific false-positive risk this ticket asked to check for (no "Staffing Coordinator" or similar title exists in any committed fixture; the only real "Staffing" hit anywhere in __fixtures__/ is "USA Staffing Applicant Resource Center", inside description/URL text in usajobs-real-response.json, never a title, and this filter never reads description anyway)', () => {
+    expect(matchesTitleExclusion("Onsite Support for Understaffed Teams")).toBe(false);
+    expect(matchesTitleExclusion("Staffing Coordinator")).toBe(false);
+    const result = filterSoftwareEngineeringJobs([
+      job({ title: "Software Engineer, Understaffed Team Support", company: "synthetic" }),
+    ]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('does NOT exclude "Fellowship" — same word-boundary shape as ticket 06b09cf\'s "Internship" miss (no boundary right after "fellow" in "Fellowship" — "s" is a word character), left as-is because no fixture title needs the suffix caught: the one real fixture title containing "Fellowship" (lever-real-response-palantir.json, "American Tech Fellowship") never matches SOFTWARE regardless, so there is no live-defect evidence to fix here, per this file\'s own audit precedent of not inventing fixes for unobserved cases', () => {
+    expect(matchesTitleExclusion("American Tech Fellowship")).toBe(false);
+  });
+});
+
 describe("classifyGeography — real location strings", () => {
   it('classifies "Seattle, WA" (lever outreach) as pnw', () => {
     expect(classifyGeography("Seattle, WA")).toBe("pnw");

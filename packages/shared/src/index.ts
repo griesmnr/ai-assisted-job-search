@@ -199,12 +199,20 @@ export type GetSourcesResponse = {
  * demo-match.ts's `filterSoftwareEngineeringJobs` EXACTLY — see
  * apps/api/src/sources/criteria.ts's `compileFilter` and its live-pool
  * equivalence proof.
+ *
+ * Ticket 6b2313a: `titleExclude` carries its own narrower default. Omitting
+ * it (not the same as sending `[]`) excludes staff-level titles
+ * (`staff`/`distinguished`/`fellow`) — measured never to score above 52% —
+ * whether or not the rest of `criteria` is populated. A caller targeting
+ * those roles overrides this by sending `titleExclude` explicitly, even as
+ * an empty array. See `DEFAULT_TITLE_EXCLUDE` in criteria.ts.
  */
 export type SearchCriteria = {
   /** Title phrases that qualify. ANY match passes. */
   titleInclude?: string[];
   /** Title phrases that disqualify, applied after include. ANY match
-   * rejects. */
+   * rejects. Omitted (not `[]`) means the staff-level default applies — see
+   * this type's own doc comment. */
   titleExclude?: string[];
   /** Place names that qualify regardless of work arrangement — i.e. "near
    * enough to commute". */
