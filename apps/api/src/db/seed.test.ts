@@ -16,7 +16,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await testDb.teardown();
+  await testDb?.teardown();
 });
 
 describe("seedSourceDescriptors (ticket 620ca30)", () => {

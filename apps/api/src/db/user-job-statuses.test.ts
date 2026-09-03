@@ -111,7 +111,7 @@ afterAll(async () => {
   // would break a later run the way it could under the old shared-database
   // teardown (see test-db.ts for the incident history).
   fs.rmSync(outputDir, { recursive: true, force: true });
-  await testDb.teardown();
+  await testDb?.teardown();
 });
 
 describe("user_job_statuses survives a resume rewrite (ticket 0c319b2)", () => {

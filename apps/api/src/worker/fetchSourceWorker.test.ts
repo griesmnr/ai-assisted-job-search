@@ -272,7 +272,7 @@ afterEach(async () => {
 afterAll(async () => {
   // No manual row cleanup needed: this file's rows live in its own
   // isolated database (created in beforeAll above), dropped whole here.
-  await testDb.teardown();
+  await testDb?.teardown();
 
   expect(connectionErrors).toEqual([]);
 

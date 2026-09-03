@@ -365,7 +365,7 @@ afterAll(async () => {
   // incident history cites) still runs first so a partial failure there is
   // still visible in the console, but nothing after it depends on that
   // cleanup having succeeded.
-  await testDb.teardown();
+  await testDb?.teardown();
 });
 
 describe("runDemoMatch (ticket 620ca30)", () => {

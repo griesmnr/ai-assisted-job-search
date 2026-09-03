@@ -31,7 +31,7 @@ afterAll(async () => {
   // No manual row cleanup needed: everything this file created lives in
   // its own isolated database (created in beforeAll above), dropped whole
   // here.
-  await testDb.teardown();
+  await testDb?.teardown();
 });
 
 function fakeJob(

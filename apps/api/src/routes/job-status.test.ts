@@ -28,7 +28,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await testDb.teardown();
+  await testDb?.teardown();
 });
 
 function buildTestApp() {

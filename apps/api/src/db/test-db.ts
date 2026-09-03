@@ -36,8 +36,15 @@
  *   - a test that throws mid-run leaves rows behind, but they die with
  *     the database in `afterAll`'s `teardown()` (or, if the process was
  *     killed hard enough to skip even that, the orphaned database is
- *     inert - nothing else ever connects to it, so it can't wedge a
- *     later run the way a leaked row in the SHARED database could).
+ *     inert in the meantime - nothing else ever connects to it, so it
+ *     can't wedge a later run the way a leaked row in the SHARED database
+ *     could). It doesn't stay orphaned forever, though: every database
+ *     name embeds its creation time, and each new `createEmptyTestDatabase`
+ *     call opportunistically sweeps and drops any such orphan old enough
+ *     and connection-free (see `sweepOrphanedTestDatabases` below) - this
+ *     matters most for a long-lived Postgres like CI's (ticket 1b699b5),
+ *     which would otherwise accumulate one abandoned database per
+ *     hard-killed run forever.
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -80,6 +87,73 @@ function connectionConfig(database: string) {
  * match every existing test file's fallback. */
 function adminDatabaseName(): string {
   return process.env.POSTGRES_DB ?? "jobsearch";
+}
+
+/**
+ * A normal `teardown()` always drops its own database, but a hard-killed
+ * run (SIGKILL, an OOM, a crashed CI runner) skips `afterAll` entirely and
+ * leaves the database behind. It's inert - nothing else ever connects to
+ * it - but nothing ever drops it either, so in a long-lived Postgres (this
+ * matters most for CI, ticket 1b699b5) these accumulate forever.
+ *
+ * Postgres doesn't track a database's creation time anywhere queryable
+ * (`pg_database` has no such column), so the name itself carries it: every
+ * database this module creates is `<prefix>_<createdAtEpochMsHex>_<uuidHex>`.
+ * This regex pulls the timestamp back out to decide whether a database is
+ * old enough to be a candidate for the sweep below. `.+` is greedy but the
+ * engine backtracks as needed, so a prefix containing underscores (e.g.
+ * `"migration_0004_test"`) still matches correctly - the two trailing
+ * groups are anchored by their character classes (hex-only) and the
+ * fixed 32-hex-char width of the uuid segment.
+ */
+const TEST_DB_NAME_PATTERN = /^.+_([0-9a-f]+)_([0-9a-f]{32})$/;
+
+/** How old (by the timestamp embedded in its name) an orphaned test
+ * database must be before the sweep in {@link sweepOrphanedTestDatabases}
+ * will drop it. A few hours: long enough that it can never catch a
+ * still-running suite (even a slow one), short enough that CI's Postgres
+ * doesn't accumulate all day between sweeps. Not backed by a measurement -
+ * revisit if a real run's duration ever gets close to it. */
+const ORPHAN_SWEEP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Opportunistically drops old orphaned test databases before creating a
+ * new one. Runs on `admin` (already connected, about to `CREATE DATABASE`
+ * anyway) so it costs one extra cheap query against `pg_database` in the
+ * common case - a real drop only happens for databases that are both
+ * named like ours, older than {@link ORPHAN_SWEEP_MAX_AGE_MS}, and have
+ * zero active connections (checked via `pg_stat_activity`, never dropped
+ * out from under a run that's still going for any reason). Errors are
+ * swallowed and logged, never thrown: a sweep failure must never block the
+ * database creation the caller actually asked for.
+ */
+async function sweepOrphanedTestDatabases(admin: Client): Promise<void> {
+  try {
+    const { rows } = await admin.query<{ datname: string }>(
+      "select datname from pg_database where datistemplate = false and datallowconn = true",
+    );
+    const now = Date.now();
+    for (const { datname } of rows) {
+      const match = TEST_DB_NAME_PATTERN.exec(datname);
+      if (!match) continue;
+      const createdAt = Number.parseInt(match[1] ?? "", 16);
+      if (!Number.isFinite(createdAt) || now - createdAt < ORPHAN_SWEEP_MAX_AGE_MS) continue;
+
+      const { rows: activity } = await admin.query<{ n: string }>(
+        "select count(*) as n from pg_stat_activity where datname = $1",
+        [datname],
+      );
+      if (Number(activity[0]?.n ?? "0") > 0) continue; // still in use somehow - never touch it
+
+      await admin.query(`DROP DATABASE IF EXISTS "${datname}"`).catch((err: unknown) => {
+        // Another process could win a race and drop/connect between our
+        // checks and this statement; that's fine, not our problem to solve.
+        console.warn(`sweepOrphanedTestDatabases: failed to drop "${datname}":`, err);
+      });
+    }
+  } catch (err) {
+    console.warn("sweepOrphanedTestDatabases: sweep failed, continuing without it:", err);
+  }
 }
 
 /** Reads one migration file and splits it into individually-executable
@@ -156,11 +230,15 @@ export interface EmptyTestDatabase {
  * migrations land before its test subject (0004 itself) runs.
  */
 export async function createEmptyTestDatabase(prefix: string): Promise<EmptyTestDatabase> {
-  const testDbName = `${prefix}_${randomUUID().replace(/-/g, "")}`;
+  // The `<epoch-ms-hex>_<uuid-hex>` suffix is what lets
+  // sweepOrphanedTestDatabases (below) tell a stale orphan from a database
+  // some other run is still actively using.
+  const testDbName = `${prefix}_${Date.now().toString(16)}_${randomUUID().replace(/-/g, "")}`;
 
   const admin = new Client(connectionConfig(adminDatabaseName()));
   await admin.connect();
   try {
+    await sweepOrphanedTestDatabases(admin);
     await admin.query(`CREATE DATABASE "${testDbName}"`);
   } finally {
     await admin.end();
@@ -205,7 +283,11 @@ export interface TestDatabase extends EmptyTestDatabase {
  * beforeAll(async () => {
  *   testDb = await createTestDatabase("schema_test");
  * });
- * afterAll(() => testDb.teardown());
+ * // `?.` matters: if `beforeAll` itself throws, `testDb` is never
+ * // assigned and `afterAll` still runs - `testDb.teardown()` would throw
+ * // "Cannot read properties of undefined", burying the real error under a
+ * // second, spurious one.
+ * afterAll(async () => testDb?.teardown());
  * const db = () => testDb.db; // or capture testDb.db once beforeAll has run
  * ```
  *
@@ -216,6 +298,18 @@ export interface TestDatabase extends EmptyTestDatabase {
  */
 export async function createTestDatabase(prefix: string): Promise<TestDatabase> {
   const empty = await createEmptyTestDatabase(prefix);
-  await applyMigrations(empty.client);
+  try {
+    await applyMigrations(empty.client);
+  } catch (err) {
+    // Migration failed partway through: `empty.client` is still connected
+    // and `empty.testDbName` still exists. Without this, both leak - an
+    // orphaned database pinned open by a live connection, which can't even
+    // be dropped by hand without `DROP DATABASE ... WITH (FORCE)` until the
+    // process exits. Swallow teardown's own errors so the ORIGINAL
+    // migration failure - the one the caller actually needs to see - isn't
+    // masked by a secondary cleanup failure.
+    await empty.teardown().catch(() => {});
+    throw err;
+  }
   return { ...empty, db: drizzle(empty.client) };
 }
