@@ -57,6 +57,12 @@ const SOURCES: GetSourcesResponse = {
   sources: [
     { id: "usajobs", displayName: "USAJOBS", configured: true },
     { id: "greenhouse", displayName: "Greenhouse", configured: true },
+    {
+      id: "wa-state",
+      displayName: "Washington State Jobs",
+      configured: false,
+      error: "no adapter implemented yet",
+    },
   ],
 };
 
@@ -84,6 +90,13 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     // Sources loaded and rendered as toggles.
     await screen.findByLabelText("Greenhouse");
+
+    // The unconfigured source (wa-state, no adapter) must not appear in the
+    // rendered toggle list at all -- ticket d480357. GET /sources still
+    // reports it (the mocked `getSources` above returns it, same as the
+    // real API's `checkSourceHealth` would); only App.tsx's render path to
+    // SourceToggles narrows it away.
+    expect(screen.queryByLabelText("Washington State Jobs")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Greenhouse"));
 

@@ -60,15 +60,6 @@ section {
   border-radius: 999px;
 }
 
-.source-toggle-label.unavailable {
-  opacity: 0.55;
-}
-
-.source-status {
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
 .cost-panel {
   border: 1px solid var(--border);
   border-radius: 8px;

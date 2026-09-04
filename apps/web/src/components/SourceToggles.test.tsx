@@ -26,20 +26,20 @@ const SOURCES: SourceHealth[] = [
 ];
 
 describe("SourceToggles", () => {
-  it("renders every source, state visible at a glance", () => {
+  it("renders every configured source, state visible at a glance", () => {
     render(<SourceToggles sources={SOURCES} selected={new Set(["usajobs"])} onToggle={() => {}} />);
 
     expect(screen.getByLabelText("USAJOBS")).toBeChecked();
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
   });
 
-  it("shows a failed/unconfigured source as unavailable without breaking the rest of the list", () => {
+  it("does not render a source with no adapter (configured: false) at all (ticket d480357)", () => {
     render(<SourceToggles sources={SOURCES} selected={new Set(["usajobs"])} onToggle={() => {}} />);
 
-    // The unavailable source reads as unavailable, with its reason surfaced...
-    const leverCheckbox = screen.getByLabelText("Lever");
-    expect(leverCheckbox).toBeDisabled();
-    expect(screen.getByText(/unavailable — LEVER_COMPANIES is not set/)).toBeInTheDocument();
+    // Absent entirely -- not a disabled row, not an error message.
+    expect(screen.queryByLabelText("Lever")).not.toBeInTheDocument();
+    expect(screen.queryByText(/unavailable/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/LEVER_COMPANIES is not set/)).not.toBeInTheDocument();
 
     // ...and the rest of the list is unaffected: both other, healthy sources
     // still render and remain independently toggleable.
@@ -55,14 +55,5 @@ describe("SourceToggles", () => {
 
     expect(onToggle).toHaveBeenCalledOnce();
     expect(onToggle).toHaveBeenCalledWith("greenhouse");
-  });
-
-  it("clicking a disabled (unavailable) source's checkbox does not fire onToggle", () => {
-    const onToggle = vi.fn();
-    render(<SourceToggles sources={SOURCES} selected={new Set()} onToggle={onToggle} />);
-
-    fireEvent.click(screen.getByLabelText("Lever"));
-
-    expect(onToggle).not.toHaveBeenCalled();
   });
 });

@@ -9,10 +9,14 @@ export type SourcesState =
 
 /**
  * `GET /sources` — static, config-only health (no network calls; see
- * apps/api/src/sources/registry.ts's `checkSourceHealth`). This is the
- * "unavailable" signal shown directly on the toggle list, distinct from a
- * per-RUN outcome (SourceOutcome/SkippedSource), which only exists once a
- * search has actually been estimated or run — see CostPanel/SearchFlow.
+ * apps/api/src/sources/registry.ts's `checkSourceHealth`), returned here
+ * exactly as the API sends it (every seeded source, `configured` and
+ * `error` included). SourceToggles is what narrows this down to
+ * `configured: true` entries before rendering (ticket d480357) — this hook
+ * stays a plain, unfiltered passthrough so a future admin/debug view can
+ * still use the full list. Distinct from a per-RUN outcome
+ * (SourceOutcome/SkippedSource), which only exists once a search has
+ * actually been estimated or run — see CostPanel/SearchFlow.
  */
 export function useSources(): SourcesState {
   const [state, setState] = useState<SourcesState>({ status: "loading" });

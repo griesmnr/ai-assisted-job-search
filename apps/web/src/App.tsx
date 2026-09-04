@@ -37,8 +37,8 @@ function App() {
   // Default every CONFIGURED source to selected the first time the source
   // list loads, so the first thing a user sees isn't an empty toggle set
   // they have to fill in themselves. An unconfigured source is never
-  // auto-selected -- it can't be toggled on at all (SourceToggles disables
-  // it).
+  // auto-selected -- it doesn't even appear in the toggle list (ticket
+  // d480357: SourceToggles drops unconfigured entries before rendering).
   useEffect(() => {
     if (sourcesState.status !== "ready") return;
     setSelectedSourceIds((prev) => {
@@ -97,7 +97,13 @@ function App() {
             )}
             {sourcesState.status === "ready" && (
               <SourceToggles
-                sources={sourcesState.sources}
+                // Filtered here too (SourceToggles also filters its own
+                // `sources` prop) so a source with no adapter never reaches
+                // the render path at all -- ticket d480357. `checkSourceHealth`
+                // (GET /sources) is unchanged and still reports every seeded
+                // source, including unconfigured ones; only this rendering
+                // path narrows.
+                sources={sourcesState.sources.filter((s) => s.configured)}
                 selected={selectedSourceIds}
                 onToggle={toggleSource}
               />
