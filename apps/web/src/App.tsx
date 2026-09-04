@@ -1,12 +1,61 @@
-import { useEffect, useState } from "react";
-import type { UserJobStatus } from "@app/shared";
+import { useEffect, useMemo, useState } from "react";
+import type { SearchCriteria, UserJobStatus } from "@app/shared";
 import { createResume, setJobStatus } from "./api/client";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
+import { SearchCriteriaForm } from "./components/SearchCriteriaForm";
 import { SearchFlow } from "./components/SearchFlow";
 import { SourceToggles } from "./components/SourceToggles";
 import { useResults } from "./hooks/useResults";
 import { useSources } from "./hooks/useSources";
+
+/**
+ * Splits a comma-separated text field into trimmed, non-empty phrases —
+ * the one place this happens, shared by every SearchCriteria text field.
+ */
+function splitPhrases(text: string): string[] {
+  return text
+    .split(",")
+    .map((phrase) => phrase.trim())
+    .filter((phrase) => phrase.length > 0);
+}
+
+/**
+ * Derives the actual `SearchCriteria` to send from the raw form text
+ * (ticket 957bc22). Returns `undefined` — NOT `{}` — when every field is
+ * empty. This distinction is load-bearing, not cosmetic:
+ * apps/api/src/sources/criteria.ts's `compileFilter` treats `undefined` as
+ * "reproduce the safe default" (filterSoftwareEngineeringJobs) and an
+ * explicit `{}` as "a real, maximally PERMISSIVE criteria object — no
+ * title restriction at all". Sending `{}` because the user hasn't touched
+ * the form yet would silently let every non-software-engineering posting
+ * through the moment this feature shipped. See that file's own doc
+ * comment for the full reasoning.
+ */
+function buildSearchCriteria(form: {
+  titleInclude: string;
+  titleExclude: string;
+  nearLocations: string;
+  remoteOk: boolean;
+}): SearchCriteria | undefined {
+  const titleInclude = splitPhrases(form.titleInclude);
+  const titleExclude = splitPhrases(form.titleExclude);
+  const nearLocations = splitPhrases(form.nearLocations);
+  if (
+    titleInclude.length === 0 &&
+    titleExclude.length === 0 &&
+    nearLocations.length === 0 &&
+    !form.remoteOk
+  ) {
+    return undefined;
+  }
+  const criteria: SearchCriteria = {};
+  if (titleInclude.length > 0) criteria.titleInclude = titleInclude;
+  if (titleExclude.length > 0) criteria.titleExclude = titleExclude;
+  if (nearLocations.length > 0) criteria.nearLocations = nearLocations;
+  if (form.remoteOk) criteria.remoteOk = true;
+  return criteria;
+}
 
 /**
  * The whole v1 product screen (ticket 484889d — see its git-bug for the
@@ -31,6 +80,13 @@ function App() {
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [criteriaForm, setCriteriaForm] = useState({
+    titleInclude: "",
+    titleExclude: "",
+    nearLocations: "",
+    remoteOk: false,
+  });
+  const criteria = useMemo(() => buildSearchCriteria(criteriaForm), [criteriaForm]);
 
   const { state: resultsState, refresh } = useResults(resumeId);
 
@@ -111,29 +167,63 @@ function App() {
             )}
           </section>
 
+          <section className="criteria-section">
+            <h2>Narrow your search</h2>
+            <SearchCriteriaForm
+              titleInclude={criteriaForm.titleInclude}
+              titleExclude={criteriaForm.titleExclude}
+              nearLocations={criteriaForm.nearLocations}
+              remoteOk={criteriaForm.remoteOk}
+              onChange={setCriteriaForm}
+            />
+          </section>
+
           <section className="search-section">
             <h2>Find new matches</h2>
+            <p className="search-pitch">
+              This isn't a keyword search. Claude actually reads your resume against each job
+              description, one at a time, and judges how well you'd really fit — that real reading
+              is what the cost below pays for.
+            </p>
             <SearchFlow
               resumeId={resumeId}
               sourceIds={[...selectedSourceIds]}
+              criteria={criteria}
               onSearchComplete={refresh}
             />
           </section>
 
-          <section className="results-section">
-            <h2>Results</h2>
-            {resultsState.status === "loading" && <p>Loading results...</p>}
-            {resultsState.status === "error" && (
+          {/* Ticket 093d9fe: the results section only appears once there's
+              something to show -- Nicole, live using the app: with a resume
+              pasted and no search ever run yet, an always-rendered "Results"
+              heading over an empty/loading state "doesn't look good". A
+              genuine fetch error is still surfaced (a real problem, not
+              nothing-to-show); the routine background "loading" state for
+              the automatic fetch on resumeId set (useResults.ts) is not,
+              since a user who has never searched has no reason to see a
+              spinner for a result set they know is empty. "Ready but
+              nothing to show" is results.length === 0 AND no floor-hidden
+              count worth reporting -- hiddenBelowFloor > 0 means real
+              scored jobs exist just below the floor, which IS worth
+              showing (ResultsList's own existing design, git-bug 1b9f81e). */}
+          {resultsState.status === "error" && (
+            <section className="results-section">
+              <h2>Results</h2>
               <p role="alert">Could not load results: {resultsState.message}</p>
+            </section>
+          )}
+          {resultsState.status === "ready" &&
+            (resultsState.data.results.length > 0 ||
+              (resultsState.data.hiddenBelowFloor ?? 0) > 0) && (
+              <section className="results-section">
+                <h2>Results</h2>
+                <ResultsList
+                  data={resultsState.data}
+                  selectedSourceIds={selectedSourceIds}
+                  onSetStatus={handleSetStatus}
+                />
+              </section>
             )}
-            {resultsState.status === "ready" && (
-              <ResultsList
-                data={resultsState.data}
-                selectedSourceIds={selectedSourceIds}
-                onSetStatus={handleSetStatus}
-              />
-            )}
-          </section>
         </>
       )}
     </main>
