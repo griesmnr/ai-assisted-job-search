@@ -173,4 +173,22 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       remoteOk: true,
     });
   });
+
+  it("commitment checkboxes (ticket 18c9f18) are omitted from criteria when unchecked and sent as commitmentIn when checked", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.click(screen.getByLabelText("Full-time"));
+    fireEvent.click(screen.getByLabelText("Contract"));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
+      commitmentIn: ["full-time", "contract"],
+    });
+  });
 });

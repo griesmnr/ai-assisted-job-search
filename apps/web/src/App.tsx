@@ -42,12 +42,14 @@ function buildSearchCriteria(form: {
   titleChips: string[];
   nearLocations: string;
   remoteOk: boolean;
+  commitmentIn: ("full-time" | "part-time" | "contract")[];
 }): SearchCriteria {
   const nearLocations = splitPhrases(form.nearLocations);
   const criteria: SearchCriteria = {};
   if (form.titleChips.length > 0) criteria.titleInclude = form.titleChips;
   if (nearLocations.length > 0) criteria.nearLocations = nearLocations;
   if (form.remoteOk) criteria.remoteOk = true;
+  if (form.commitmentIn.length > 0) criteria.commitmentIn = form.commitmentIn;
   return criteria;
 }
 
@@ -88,9 +90,14 @@ function App() {
   // suggestedTitles the moment a resume is submitted (handleResumeSubmit
   // below) -- never a hardcoded default.
   const [titleChips, setTitleChips] = useState<string[]>([]);
-  const [criteriaForm, setCriteriaForm] = useState({
+  const [criteriaForm, setCriteriaForm] = useState<{
+    nearLocations: string;
+    remoteOk: boolean;
+    commitmentIn: ("full-time" | "part-time" | "contract")[];
+  }>({
     nearLocations: "",
     remoteOk: false,
+    commitmentIn: [],
   });
   const criteria = useMemo(
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
@@ -242,6 +249,7 @@ function App() {
                 titleChips={titleChips}
                 nearLocations={criteriaForm.nearLocations}
                 remoteOk={criteriaForm.remoteOk}
+                commitmentIn={criteriaForm.commitmentIn}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
               />
