@@ -105,7 +105,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     // Request is now in flight (phase === "estimating"); the mocked
     // estimateSearch call captured the selection at click time, ["a", "b"].
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
     await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, the user toggles "b" off — sourceIds prop
@@ -145,7 +145,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
     await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, resumeId changes (e.g. a different resume was
@@ -164,6 +164,45 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(startSearch).not.toHaveBeenCalled();
   });
 
+  it("ticket 957bc22: changing criteria while an estimate is already showing resets to idle, same as sourceIds/resumeId", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    const { rerender } = render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a", "b"]}
+        criteria={{ titleInclude: ["backend"] }}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], {
+      titleInclude: ["backend"],
+    });
+
+    // Criteria changes AFTER the estimate landed and is on screen -- e.g.
+    // the user edits the title-include field having already seen a price.
+    // Same failure this whole snapshot mechanism exists to prevent as the
+    // sourceIds/resumeId cases above: a stale estimate must never remain
+    // confirmable once what it priced has changed.
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a", "b"]}
+        criteria={{ titleInclude: ["backend", "platform"] }}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+    });
+    expect(startSearch).not.toHaveBeenCalled();
+  });
+
   it("happy path: nothing races — confirming Run search fires startSearch with exactly the estimated (captured) selection", async () => {
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
@@ -177,7 +216,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
     await waitFor(() => {
-      expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
+      expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
     });
     expect(startSearch).toHaveBeenCalledOnce();
   });
@@ -195,7 +234,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     await screen.findByRole("button", { name: "Starting..." });
-    expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
+    expect(startSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
 
     rerender(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
     expect(screen.getByRole("button", { name: "Starting..." })).toBeInTheDocument();
