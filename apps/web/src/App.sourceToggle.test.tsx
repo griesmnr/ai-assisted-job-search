@@ -118,3 +118,75 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
     expect(getResults).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("App — results section only appears once there's something to show (ticket 093d9fe)", () => {
+  async function submitResume() {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+  }
+
+  it("shows no Results heading when zero results and nothing hidden below the floor", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1" });
+    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+
+    await submitResume();
+
+    // Give the ready state a tick to render before asserting its absence.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole("heading", { name: "Results" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Results section once a hiddenBelowFloor count exists, even with zero visible results", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1" });
+    getResults.mockResolvedValue({ resumeId: "resume-1", results: [], hiddenBelowFloor: 3 });
+
+    await submitResume();
+
+    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+  });
+
+  it("shows the Results section once real results exist", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1" });
+    getResults.mockResolvedValue({
+      resumeId: "resume-1",
+      results: [
+        {
+          jobId: "job-1",
+          externalId: "ext-1",
+          title: "Backend Engineer",
+          company: "Acme",
+          dataSource: "greenhouse",
+          location: null,
+          locationType: null,
+          applyUrl: "https://example.com/apply",
+          matchScore: 80,
+          rationale: "Good fit.",
+          strengths: [],
+          gaps: [],
+          status: null,
+        },
+      ],
+    });
+
+    await submitResume();
+
+    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+  });
+
+  it("still surfaces a real fetch error even with nothing else to show", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1" });
+    getResults.mockRejectedValue(new Error("network down"));
+
+    await submitResume();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load results");
+  });
+});

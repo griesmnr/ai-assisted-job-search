@@ -120,20 +120,37 @@ function App() {
             />
           </section>
 
-          <section className="results-section">
-            <h2>Results</h2>
-            {resultsState.status === "loading" && <p>Loading results...</p>}
-            {resultsState.status === "error" && (
+          {/* Ticket 093d9fe: the results section only appears once there's
+              something to show -- Nicole, live using the app: with a resume
+              pasted and no search ever run yet, an always-rendered "Results"
+              heading over an empty/loading state "doesn't look good". A
+              genuine fetch error is still surfaced (a real problem, not
+              nothing-to-show); the routine background "loading" state for
+              the automatic fetch on resumeId set (useResults.ts) is not,
+              since a user who has never searched has no reason to see a
+              spinner for a result set they know is empty. "Ready but
+              nothing to show" is results.length === 0 AND no floor-hidden
+              count worth reporting -- hiddenBelowFloor > 0 means real
+              scored jobs exist just below the floor, which IS worth
+              showing (ResultsList's own existing design, git-bug 1b9f81e). */}
+          {resultsState.status === "error" && (
+            <section className="results-section">
+              <h2>Results</h2>
               <p role="alert">Could not load results: {resultsState.message}</p>
+            </section>
+          )}
+          {resultsState.status === "ready" &&
+            (resultsState.data.results.length > 0 ||
+              (resultsState.data.hiddenBelowFloor ?? 0) > 0) && (
+              <section className="results-section">
+                <h2>Results</h2>
+                <ResultsList
+                  data={resultsState.data}
+                  selectedSourceIds={selectedSourceIds}
+                  onSetStatus={handleSetStatus}
+                />
+              </section>
             )}
-            {resultsState.status === "ready" && (
-              <ResultsList
-                data={resultsState.data}
-                selectedSourceIds={selectedSourceIds}
-                onSetStatus={handleSetStatus}
-              />
-            )}
-          </section>
         </>
       )}
     </main>
