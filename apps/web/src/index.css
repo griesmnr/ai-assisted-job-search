@@ -26,6 +26,27 @@ section {
   border-top: 1px solid var(--border);
 }
 
+.tab-nav {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.tab-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.tab-button[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-weight: 600;
+}
+
 .resume-input {
   display: flex;
   flex-direction: column;
