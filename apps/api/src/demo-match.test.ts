@@ -2047,15 +2047,36 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     });
   });
 
-  it("bootstrap path: derives input tokens from the REAL prompt text length (not a flat guess) and output from MAX_OUTPUT_TOKENS", () => {
+  it("bootstrap path: derives input tokens from the REAL prompt text length (not a flat guess) and output from the schema-grounded typical size (ticket 1a2cde3), not MAX_OUTPUT_TOKENS", () => {
     const estimate = estimateScoringCost(SAMPLE_JOBS, "resume text", undefined);
     expect(estimate.basis).toBe("bootstrap");
     expect(estimate.jobCount).toBe(2);
-    // Bootstrap output is the model's own hard cap (2000) per job — a real,
-    // code-enforced number, not invented.
-    expect(estimate.estimatedOutputTokens).toBe(2000 * 2);
+    // Ticket 1a2cde3: bootstrap's own `estimatedOutputTokens` (and the
+    // `estimatedCostUsd`/`probableCostUsd` built from it) is the
+    // schema-grounded TYPICAL size now, strictly less than the old
+    // MAX_OUTPUT_TOKENS-per-job assumption — that worst case still exists,
+    // just as `maxCostUsd` instead (see the next test).
+    expect(estimate.estimatedOutputTokens).toBeGreaterThan(0);
+    expect(estimate.estimatedOutputTokens).toBeLessThan(2000 * 2);
     expect(estimate.estimatedInputTokens).toBeGreaterThan(0);
     expect(estimate.estimatedCostUsd).toBeGreaterThan(0);
+  });
+
+  it("bootstrap path: probableCostUsd is measurably lower than maxCostUsd for a realistic job count (ticket 1a2cde3 acceptance criterion)", () => {
+    const MANY_JOBS: NormalizedJob[] = Array.from({ length: 50 }, (_, i) =>
+      job(`cost-estimate-many-${i}`, "Backend Engineer"),
+    );
+    const estimate = estimateScoringCost(MANY_JOBS, RESUME_TEXT_PREFIX, undefined);
+    expect(estimate.basis).toBe("bootstrap");
+    // The old behavior this replaces: bootstrap's probableCostUsd used to
+    // equal maxCostUsd exactly (tied to the MAX_OUTPUT_TOKENS ceiling).
+    // Now it's a real, independently-grounded typical estimate, strictly
+    // below the ceiling for any realistic job count.
+    expect(estimate.probableCostUsd).toBeLessThan(estimate.maxCostUsd);
+    expect(estimate.probableCostUsd).toBeGreaterThan(0);
+    // estimatedCostUsd (kept for internal reference) now equals
+    // probableCostUsd on bootstrap too, not maxCostUsd.
+    expect(estimate.estimatedCostUsd).toBe(estimate.probableCostUsd);
   });
 
   it("measured path: uses the exact average of usageStats for input/output tokens, ignoring prompt text for those two fields", () => {
@@ -2683,22 +2704,27 @@ describe("makeClaudeScorer prompt caching (ticket aff284b)", () => {
   });
 });
 
-describe("describeCostEstimate (ticket 16c824a review F4)", () => {
+describe("describeCostEstimate (ticket 16c824a review F4, updated for ticket 1a2cde3)", () => {
   // No DB needed — pure function.
-  it("renders a bootstrap estimate as an explicit ceiling (≤$…), not a point estimate", () => {
+  it("renders a bootstrap estimate as a point estimate (~$…) leading with the schema-grounded typical cost, with the genuine worst case stated separately", () => {
+    // Ticket 1a2cde3: bootstrap no longer ties probableCostUsd to
+    // maxCostUsd — this fixture's two numbers deliberately differ, the
+    // way a real schema-grounded typical-output estimate now does against
+    // the MAX_OUTPUT_TOKENS ceiling.
     const description = describeCostEstimate({
       jobCount: 129,
       estimatedInputTokens: 100_000,
       estimatedCacheReadTokens: 0,
       estimatedCacheCreationTokens: 0,
-      estimatedOutputTokens: 258_000, // 2000 * 129 — the worst-case bootstrap assumption
-      estimatedCostUsd: 4.93,
+      estimatedOutputTokens: 39_000, // schema-grounded typical, not 2000 * 129
+      estimatedCostUsd: 1.83,
       maxCostUsd: 4.93,
-      probableCostUsd: 4.93,
+      probableCostUsd: 1.83,
       basis: "bootstrap",
     });
-    expect(description).toMatch(/^≤\$4\.93/);
-    expect(description).not.toMatch(/^~\$/);
+    expect(description).toMatch(/^~\$1\.83/);
+    expect(description).toContain("$4.93");
+    expect(description).not.toMatch(/^≤/);
   });
 
   it("renders a measured estimate as a point estimate (~$…), not a ceiling — it's grounded in real prior usage, not a worst case", () => {

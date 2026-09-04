@@ -84,6 +84,41 @@ export const MODEL = "claude-sonnet-5";
 const MAX_OUTPUT_TOKENS = 2000;
 
 /**
+ * Typical (not worst-case) scoring-response size, grounded in `SCHEMA`
+ * above rather than assumed to hit `MAX_OUTPUT_TOKENS` every call (ticket
+ * 1a2cde3). Nicole, on ticket e85fa9b's bootstrap-equals-max choice: "if
+ * you can estimate the top end, I'm confused why you can't estimate a
+ * middle end" — she was right that there's a real, non-arbitrary signal
+ * available: the response is JSON-schema-shaped (an integer score, a
+ * one-or-two-sentence rationale, two short string arrays), not free text,
+ * so its typical size doesn't have to be guessed.
+ *
+ * Grounded in a real captured 200-job scored run (this project's own
+ * resume against a real posting pool, 2026-09-04) rather than invented —
+ * that data is personal job-search content and is gitignored (`prep/`),
+ * so it isn't checked in for someone else to re-derive this number from,
+ * but the measurement itself is real:
+ *
+ *   re-serializing each of the 200 real responses to exactly the shape
+ *   `SCHEMA` describes (matchScore, rationale, strengths, gaps) and
+ *   measuring the resulting JSON string length gave avg 1,232 chars
+ *   (min 869, max 1,665) — roughly 308 tokens at this file's own
+ *   `CHARS_PER_TOKEN_ESTIMATE` heuristic (below), well under
+ *   `MAX_OUTPUT_TOKENS`'s 2,000-token ceiling. Rounded up slightly for
+ *   headroom rather than used raw.
+ *
+ * Deliberately run through the SAME `CHARS_PER_TOKEN_ESTIMATE` heuristic
+ * the input side already uses in this file, not a separately-tuned
+ * factor — that heuristic's own known imprecision (see
+ * `buildCachedPrefix`'s doc comment: ~40% under real tokenization for
+ * this project's resume prose) is an existing, accepted limitation of
+ * the bootstrap path generally, not something this ticket's output-side
+ * estimate needs to solve differently from the input-side one it sits
+ * next to.
+ */
+const TYPICAL_OUTPUT_CHARS_PER_JOB = 1300;
+
+/**
  * Spend-guard threshold (ticket 16c824a) — replaces `MAX_JOBS`, which used
  * to silently slice the shortlist to 12 in board-iteration order. That was
  * the bug: it went uncaught for two funnel-widening tickets (545 -> 6,038
@@ -701,9 +736,10 @@ export type CostEstimate = {
    */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
-  /** Kept for internal reference — equals `probableCostUsd` on "measured"
-   * basis, `maxCostUsd` on "bootstrap". Not for display (ticket e85fa9b) —
-   * UI code reads `maxCostUsd`/`probableCostUsd` directly. */
+  /** Kept for internal reference — equals `probableCostUsd` on BOTH basis
+   * values now (ticket 1a2cde3: bootstrap no longer ties its probable
+   * figure to `maxCostUsd`). Not for display (ticket e85fa9b) — UI code
+   * reads `maxCostUsd`/`probableCostUsd` directly. */
   estimatedCostUsd: number;
   /**
    * A genuine worst-case ceiling: `MAX_OUTPUT_TOKENS` (the model's real,
@@ -717,20 +753,25 @@ export type CostEstimate = {
   /**
    * Best real-data guess at actual cost. "measured": genuine historical
    * averages from `usageStats` — grounded, not assumed. "bootstrap": no
-   * completed run has ever produced `usageStats` yet, so there is no real
-   * signal to discount the ceiling by — this deliberately equals
-   * `maxCostUsd` rather than invent an unfounded discount (see
-   * `estimateScoringCost` below). Narrow/temporary: the app's first
-   * completed run makes every later estimate "measured".
+   * completed run has ever produced `usageStats` yet, but (ticket 1a2cde3)
+   * this is no longer an unfounded discount off `maxCostUsd` either — the
+   * scorer's response is JSON-schema-shaped, not free text, so a realistic
+   * typical output size is grounded in that schema instead (see
+   * `TYPICAL_OUTPUT_CHARS_PER_JOB`'s doc comment). Narrow/temporary in a
+   * different sense now: the app's first completed run makes every later
+   * estimate "measured" (genuinely observed), which is a strictly better
+   * signal than the schema-grounded bootstrap guess this stays until then.
    */
   probableCostUsd: number;
   /**
    * "measured": both averages come from `usageStats` — real recorded calls
    * from a prior run. "bootstrap": no recorded calls exist yet, so input is
    * estimated from THIS run's real prompt character counts (see
-   * `CHARS_PER_TOKEN_ESTIMATE`) and output assumes the worst case,
-   * `MAX_OUTPUT_TOKENS` per job (the model's actual hard cap) — real
-   * numbers from this codebase, never an invented per-job dollar figure.
+   * `CHARS_PER_TOKEN_ESTIMATE`); output feeds `probableCostUsd` from the
+   * schema-grounded typical size (`TYPICAL_OUTPUT_CHARS_PER_JOB`, ticket
+   * 1a2cde3) and `maxCostUsd` from the worst case, `MAX_OUTPUT_TOKENS` per
+   * job (the model's actual hard cap) — real numbers from this codebase
+   * either way, never an invented per-job dollar figure.
    */
   basis: "measured" | "bootstrap";
 };
@@ -935,23 +976,33 @@ export function estimateScoringCost(
     // everything at the flat input rate instead of guessing a split.
     estimatedCacheReadTokens = 0;
     estimatedCacheCreationTokens = 0;
-    estimatedOutputTokens = MAX_OUTPUT_TOKENS * jobCount;
+    // Ticket 1a2cde3: `estimatedOutputTokens` (and the `estimatedCostUsd`
+    // built from it below) is now the TYPICAL, schema-grounded guess —
+    // see `TYPICAL_OUTPUT_CHARS_PER_JOB`'s doc comment — not the worst
+    // case. `maxCostUsd` below is computed separately, straight off
+    // `MAX_OUTPUT_TOKENS`, so it stays the genuine ceiling this field
+    // never used to have before ticket e85fa9b added it; the two no
+    // longer collapse to the same number on this basis.
+    estimatedOutputTokens = Math.round(
+      (TYPICAL_OUTPUT_CHARS_PER_JOB / CHARS_PER_TOKEN_ESTIMATE) * jobCount,
+    );
     estimatedCostUsd =
       (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
       (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
-    // Bootstrap's `estimatedOutputTokens` is ALREADY the worst case
-    // (MAX_OUTPUT_TOKENS * jobCount, see above) -- estimatedCostUsd IS the
-    // ceiling here, nothing further to compute.
-    maxCostUsd = estimatedCostUsd;
+    maxCostUsd =
+      (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+      ((MAX_OUTPUT_TOKENS * jobCount) / 1e6) * pricePerMillionTokens.out;
   }
 
-  // `probableCostUsd`: on "measured", `estimatedCostUsd` already IS the
-  // real-data best guess (historical averages) -- use it directly. On
-  // "bootstrap", there is no measured data anywhere yet to discount the
-  // ceiling by without guessing, so this deliberately equals `maxCostUsd`
-  // rather than invent an unfounded lower figure -- see `CostEstimate`'s
-  // doc comment above.
-  const probableCostUsd = basis === "measured" ? estimatedCostUsd : maxCostUsd;
+  // `probableCostUsd` is `estimatedCostUsd` on BOTH bases now (ticket
+  // 1a2cde3): "measured" already used real historical averages;
+  // "bootstrap" used to fall back to `maxCostUsd` here because it had no
+  // grounded output-size signal at all, but now it does (the schema-typical
+  // estimate above) — see `TYPICAL_OUTPUT_CHARS_PER_JOB`'s doc comment for
+  // why that's a real signal, not an invented discount. The ternary this
+  // replaced is gone because there is no longer a basis where these two
+  // differ.
+  const probableCostUsd = estimatedCostUsd;
 
   return {
     jobCount,
@@ -976,18 +1027,22 @@ export function estimateScoringCost(
  * entry point (`npx tsx apps/api/src/demo-match.ts`) is a legitimate
  * separate audience that can reasonably want the fuller technical detail.
  *
- * The "bootstrap" basis assumes `MAX_OUTPUT_TOKENS` (2000) of output for
- * EVERY job — that constant's own doc comment says that cap is "rarely
- * actually reached" (the JSON schema is small: a score, a rationale, two
- * short string arrays), so a bootstrap estimate for 129 jobs comes out
- * around $4.93 against a realistic ~$1.83. Rendered as a point estimate,
- * that reads as far more precise — and far more expensive — than it is.
- * The FIRST run against any given `usageStatsPath` is always bootstrap
- * (there is no measured data yet), which means it's also the one run
- * where this number is the user's ONLY guide before deciding whether to
- * proceed — exactly the run where overstating it is worst. So: rendered
- * as an explicit ceiling (`≤$…`), not a point estimate, whenever
- * `basis === "bootstrap"`.
+ * The "bootstrap" basis (ticket 1a2cde3): `estimate.probableCostUsd` is
+ * now a schema-grounded TYPICAL estimate (see
+ * `TYPICAL_OUTPUT_CHARS_PER_JOB`'s doc comment), not tied to
+ * `MAX_OUTPUT_TOKENS` — this rendering shows it as the headline `~$…`
+ * point estimate, same as the "measured" branch below, with the genuine
+ * worst case (`estimate.maxCostUsd`, still `MAX_OUTPUT_TOKENS` per job —
+ * that cap's own doc comment says it's "rarely actually reached") stated
+ * alongside it rather than presented as the number itself. Before this
+ * ticket, bootstrap had no typical-case signal at all and this function
+ * rendered `estimatedCostUsd` (then always equal to `maxCostUsd` on this
+ * basis) as an explicit ceiling (`≤$…`) instead of a point estimate,
+ * specifically because overstating the FIRST-ever run's cost — the one
+ * run where this number is the user's only guide before deciding whether
+ * to proceed — was judged worse than an honest, if numberless, "could be
+ * up to $X". That reasoning no longer applies now that there's a real
+ * typical number to lead with.
  *
  * Ticket aff284b review R1: the token figure shown here is now the REAL
  * total tokens a call actually sends (`estimatedInputTokens +
@@ -1013,9 +1068,9 @@ export function describeCostEstimate(estimate: CostEstimate): string {
   }
   if (estimate.basis === "bootstrap") {
     return (
-      `≤$${estimate.estimatedCostUsd.toFixed(2)} (worst case — no measured usage yet, assumes every ` +
-      `call uses its full ${MAX_OUTPUT_TOKENS}-token output budget; the realistic cost is typically ` +
-      `well under this, ${tokens})`
+      `~$${estimate.probableCostUsd.toFixed(2)} (schema-grounded typical estimate, no measured usage ` +
+      `yet — worst case ≤$${estimate.maxCostUsd.toFixed(2)} if every call used its full ` +
+      `${MAX_OUTPUT_TOKENS}-token output budget, ${tokens})`
     );
   }
   return `~$${estimate.estimatedCostUsd.toFixed(2)} (${tokens}, based on measured usage from prior runs)`;
