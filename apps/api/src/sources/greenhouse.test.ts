@@ -47,9 +47,11 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-/** Maps board token -> canned Response, so tests can mock a multi-token
- * search() by token rather than by call order. */
-function fetchByToken(responses: Record<string, () => Response>): typeof fetch {
+/** Maps board token -> canned Response (or a promise of one, for tests
+ * that need to control WHEN a token's fetch resolves -- see the 429
+ * concurrency test below), so tests can mock a multi-token search() by
+ * token rather than by call order. */
+function fetchByToken(responses: Record<string, () => Response | Promise<Response>>): typeof fetch {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (input: any) => {
     const url = input instanceof URL ? input : new URL(String(input));
