@@ -43,6 +43,11 @@ section {
   font-size: 0.9rem;
 }
 
+.search-pitch {
+  font-size: 0.9rem;
+  max-width: 40rem;
+}
+
 .source-toggles {
   list-style: none;
   padding: 0;
