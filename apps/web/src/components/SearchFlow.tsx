@@ -333,9 +333,9 @@ export function SearchFlow({
             {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
           </p>
           <p className="cost-caveat">
-            Probable cost for this run: ${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}
-            {" "}(max ${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}) — pre-run estimate, the
-            job count above updates live but per-run cost is still only available as this pre-run
+            Probable cost for this run: ${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}{" "}
+            (max ${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}) — pre-run estimate, the job
+            count above updates live but per-run cost is still only available as this pre-run
             figure; see this component's top-of-file notes.
           </p>
         </div>

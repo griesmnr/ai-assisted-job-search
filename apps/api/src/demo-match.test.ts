@@ -1899,6 +1899,8 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
       estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
+      maxCostUsd: 0,
+      probableCostUsd: 0,
       basis: "bootstrap",
     });
   });
