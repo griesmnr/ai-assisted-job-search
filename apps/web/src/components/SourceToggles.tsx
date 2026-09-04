@@ -45,7 +45,12 @@ export function SourceToggles({
                 onChange={() => onToggle(source.id)}
                 aria-label={source.displayName}
               />
-              <span className="source-name">{source.displayName}</span>
+              <span className="source-toggle-text">
+                <span className="source-name">{source.displayName}</span>
+                {source.description && (
+                  <span className="source-description">{source.description}</span>
+                )}
+              </span>
             </label>
           </li>
         );

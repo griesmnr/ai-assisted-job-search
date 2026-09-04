@@ -79,6 +79,9 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     render(<App />);
 
+    // Ticket e493085: page title and sources heading wording.
+    expect(screen.getByRole("heading", { name: "AI-Assisted Job Search" })).toBeInTheDocument();
+
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
@@ -90,6 +93,9 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     // Sources loaded and rendered as toggles.
     await screen.findByLabelText("Greenhouse");
+    expect(
+      screen.getByRole("heading", { name: "Which sources do you want to search?" }),
+    ).toBeInTheDocument();
 
     // The unconfigured source (wa-state, no adapter) must not appear in the
     // rendered toggle list at all -- ticket d480357. GET /sources still

@@ -47,17 +47,35 @@ section {
   list-style: none;
   padding: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .source-toggle-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.6rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 8px;
+}
+
+.source-toggle-label input {
+  margin-top: 0.2rem;
+}
+
+.source-toggle-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-name {
+  font-weight: 600;
+}
+
+.source-description {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .estimating {
