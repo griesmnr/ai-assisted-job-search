@@ -23,18 +23,30 @@ import { useState } from "react";
  * "titleChips.length === 0 still sends a REAL empty criteria object,
  * never falls back to a hidden default" rule).
  */
+const COMMITMENT_OPTIONS: { value: "full-time" | "part-time" | "contract"; label: string }[] = [
+  { value: "full-time", label: "Full-time" },
+  { value: "part-time", label: "Part-time" },
+  { value: "contract", label: "Contract" },
+];
+
 export function SearchCriteriaForm({
   titleChips,
   nearLocations,
   remoteOk,
+  commitmentIn,
   onTitleChipsChange,
   onChange,
 }: {
   titleChips: string[];
   nearLocations: string;
   remoteOk: boolean;
+  commitmentIn: ("full-time" | "part-time" | "contract")[];
   onTitleChipsChange: (next: string[]) => void;
-  onChange: (next: { nearLocations: string; remoteOk: boolean }) => void;
+  onChange: (next: {
+    nearLocations: string;
+    remoteOk: boolean;
+    commitmentIn: ("full-time" | "part-time" | "contract")[];
+  }) => void;
 }) {
   const [newChipText, setNewChipText] = useState("");
 
@@ -56,8 +68,20 @@ export function SearchCriteriaForm({
     setNewChipText("");
   }
 
-  function set(patch: Partial<{ nearLocations: string; remoteOk: boolean }>) {
-    onChange({ nearLocations, remoteOk, ...patch });
+  function set(
+    patch: Partial<{
+      nearLocations: string;
+      remoteOk: boolean;
+      commitmentIn: ("full-time" | "part-time" | "contract")[];
+    }>,
+  ) {
+    onChange({ nearLocations, remoteOk, commitmentIn, ...patch });
+  }
+
+  function toggleCommitment(value: "full-time" | "part-time" | "contract", checked: boolean) {
+    set({
+      commitmentIn: checked ? [...commitmentIn, value] : commitmentIn.filter((c) => c !== value),
+    });
   }
 
   return (
@@ -120,6 +144,23 @@ export function SearchCriteriaForm({
         />
         Also show fully remote roles
       </label>
+      <fieldset className="search-criteria-commitment">
+        <legend>
+          {commitmentIn.length > 0
+            ? "Only show these commitment types"
+            : "Commitment type (leave unchecked for no restriction)"}
+        </legend>
+        {COMMITMENT_OPTIONS.map(({ value, label }) => (
+          <label key={value} className="search-criteria-checkbox">
+            <input
+              type="checkbox"
+              checked={commitmentIn.includes(value)}
+              onChange={(e) => toggleCommitment(value, e.target.checked)}
+            />
+            {label}
+          </label>
+        ))}
+      </fieldset>
     </div>
   );
 }

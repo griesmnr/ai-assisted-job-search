@@ -228,6 +228,27 @@ export type SearchCriteria = {
   nearLocations?: string[];
   /** Accept confirmed-remote roles anywhere in-country. */
   remoteOk?: boolean;
+  /**
+   * Which `Job["commitment"]` values are acceptable. Omitted/empty means
+   * no restriction (same pattern as every other field here). A posting
+   * whose commitment is genuinely unknown (not every source reports it —
+   * see swe-filter.ts's Greenhouse comment, which never populates this
+   * field at all) is EXCLUDED once this restriction is non-empty, not
+   * included permissively (ticket 18c9f18's PM ruling): the user
+   * explicitly asked for e.g. "full-time only", and a job this app cannot
+   * verify as full-time does not satisfy that ask. This is a real,
+   * deliberate exception to `nearLocations`/`remoteOk`'s own "unmatched
+   * data still doesn't get penalized beyond what was asked" spirit --
+   * those fields only restrict what a caller opted into; commitment is
+   * the first field here that also has real ambiguity in the underlying
+   * source data (not every ATS reports it), and treating "can't verify"
+   * as "assume it matches" would silently show jobs the user said they
+   * didn't want. See apps/api/src/sources/criteria.ts's `compileFilter`
+   * for the implementation and apps/api/src/sources/*.ts's `mapCommitment`
+   * functions for which sources actually populate this (USAJOBS, Lever,
+   * Ashby, SmartRecruiters -- Greenhouse never does).
+   */
+  commitmentIn?: Job["commitment"][];
 };
 
 /**
