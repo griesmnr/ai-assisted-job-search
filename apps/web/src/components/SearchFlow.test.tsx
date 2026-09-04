@@ -105,7 +105,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     // Request is now in flight (phase === "estimating"); the mocked
     // estimateSearch call captured the selection at click time, ["a", "b"].
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
-    await screen.findByText("Getting a cost estimate...");
+    await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, the user toggles "b" off — sourceIds prop
     // changes out from under the pending request.
@@ -145,7 +145,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
-    await screen.findByText("Getting a cost estimate...");
+    await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, resumeId changes (e.g. a different resume was
     // selected/uploaded).
@@ -493,4 +493,25 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(screen.queryByText("8 of 10 scored so far.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
+});
+
+describe("SearchFlow — estimating phase feedback (ticket 541b55b)", () => {
+  it("shows a spinner and wait-time copy while the estimate request is in flight", async () => {
+    const { promise, resolve } = deferred<EstimateSearchResponse>();
+    estimateSearch.mockReturnValue(promise);
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("this may take a minute");
+    expect(status.querySelector(".spinner")).not.toBeNull();
+
+    // Resolve so the deferred promise doesn't leak into the next test.
+    await act(async () => {
+      resolve(makeEstimate());
+      await promise;
+    });
+  });
 });
