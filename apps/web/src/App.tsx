@@ -97,13 +97,14 @@ function App() {
             )}
             {sourcesState.status === "ready" && (
               <SourceToggles
-                // Filtered here too (SourceToggles also filters its own
-                // `sources` prop) so a source with no adapter never reaches
-                // the render path at all -- ticket d480357. `checkSourceHealth`
-                // (GET /sources) is unchanged and still reports every seeded
-                // source, including unconfigured ones; only this rendering
-                // path narrows.
-                sources={sourcesState.sources.filter((s) => s.configured)}
+                // SourceToggles itself filters out `configured: false`
+                // sources (ticket d480357) -- that invariant lives in the
+                // component, not here, so it holds regardless of what a
+                // caller passes. `checkSourceHealth` (GET /sources) is
+                // unchanged and still reports every seeded source,
+                // including unconfigured ones, for a possible future
+                // admin/debug view.
+                sources={sourcesState.sources}
                 selected={selectedSourceIds}
                 onToggle={toggleSource}
               />

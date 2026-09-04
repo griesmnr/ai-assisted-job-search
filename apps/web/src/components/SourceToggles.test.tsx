@@ -18,10 +18,10 @@ const SOURCES: SourceHealth[] = [
   { id: "usajobs", displayName: "USAJOBS", configured: true },
   { id: "greenhouse", displayName: "Greenhouse", configured: true },
   {
-    id: "lever",
-    displayName: "Lever",
+    id: "wa-state",
+    displayName: "Washington State Careers",
     configured: false,
-    error: "LEVER_COMPANIES is not set",
+    error: "no adapter implemented yet",
   },
 ];
 
@@ -37,7 +37,7 @@ describe("SourceToggles", () => {
     render(<SourceToggles sources={SOURCES} selected={new Set(["usajobs"])} onToggle={() => {}} />);
 
     // Absent entirely -- not a disabled row, not an error message.
-    expect(screen.queryByLabelText("Lever")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Washington State Careers")).not.toBeInTheDocument();
     expect(screen.queryByText(/unavailable/)).not.toBeInTheDocument();
     expect(screen.queryByText(/LEVER_COMPANIES is not set/)).not.toBeInTheDocument();
 
