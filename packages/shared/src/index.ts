@@ -251,7 +251,35 @@ export type CostEstimate = {
    * the "bootstrap" basis, same reasoning as `estimatedCacheReadTokens`. */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
+  /** Kept for internal/back-compat reference — equals `probableCostUsd` on
+   * "measured" basis, `maxCostUsd` on "bootstrap" (see those two fields).
+   * Not for display: ticket e493085/e85fa9b — Nicole asked to see plain
+   * "Max cost" / "Probable cost" numbers, not token buckets or a third
+   * ambiguous "estimated" figure. UI code should read `maxCostUsd` /
+   * `probableCostUsd` directly. */
   estimatedCostUsd: number;
+  /**
+   * A genuine worst-case ceiling, grounded in the model's real hard output
+   * cap (`MAX_OUTPUT_TOKENS`) applied to every job — never exceeded by an
+   * actual run, since that cap is code-enforced on every scoring call
+   * (`demo-match.ts`'s `makeClaudeScorer`). Computed the same way on both
+   * `basis` values (ticket e85fa9b): previously only "bootstrap" had a
+   * ceiling at all.
+   */
+  maxCostUsd: number;
+  /**
+   * The best real-data guess at what a run will actually cost. On
+   * "measured" basis this comes from genuine historical averages
+   * (`usageStats`) — a real, grounded number, not an assumption. On
+   * "bootstrap" (no prior run has ever completed, so no measured data
+   * exists at all) there is no real signal to discount the ceiling by
+   * without guessing, so this deliberately EQUALS `maxCostUsd` rather than
+   * fabricate a lower number — see `estimateScoringCost`'s doc comment in
+   * demo-match.ts for why. This is a narrow, temporary case: the first
+   * completed run of the app ever makes `usageStats` non-empty, and every
+   * estimate after that is "measured".
+   */
+  probableCostUsd: number;
   basis: "measured" | "bootstrap";
 };
 
@@ -298,7 +326,6 @@ export type EstimateSearchRequest = {
 export type EstimateSearchResponse = {
   resumeId: string;
   costEstimate: CostEstimate;
-  costEstimateDescription: string;
   candidatesNeedingScore: number;
   scoreThreshold: number;
   cappedCount: number;
