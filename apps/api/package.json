@@ -6,6 +6,7 @@
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "predev": "drizzle-kit migrate",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "db:migrate": "drizzle-kit migrate",
