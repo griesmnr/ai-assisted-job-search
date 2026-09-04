@@ -1,11 +1,24 @@
 import { useState } from "react";
 import type { ScoredJobResult, UserJobStatus } from "@app/shared";
 
+// State pill labels (past-tense/state form) -- shown once result.status is
+// SET, describing what already happened. Distinct from ACTION_LABELS
+// below (ticket bed37bd): a button that DOES the saving should read
+// "Save", not "Saved" -- the button is an action, the pill is a state.
 const STATUS_LABELS: Record<UserJobStatus, string> = {
   saved: "Saved",
   resume_optimized: "Resume optimized",
   applied: "Applied",
   dismissed: "Dismissed",
+};
+
+// Button labels (present-tense action verbs) -- ticket bed37bd, Nicole:
+// "Save", "Optimize Resume", "Apply", "Dismiss".
+const ACTION_LABELS: Record<UserJobStatus, string> = {
+  saved: "Save",
+  resume_optimized: "Optimize Resume",
+  applied: "Apply",
+  dismissed: "Dismiss",
 };
 
 const STATUS_ACTIONS: UserJobStatus[] = ["saved", "resume_optimized", "applied", "dismissed"];
@@ -102,7 +115,7 @@ export function ResultCard({
             disabled={pending !== null || result.status === status}
             onClick={() => void handleSetStatus(status)}
           >
-            {pending === status ? "Saving..." : STATUS_LABELS[status]}
+            {pending === status ? "Saving..." : ACTION_LABELS[status]}
           </button>
         ))}
       </div>
