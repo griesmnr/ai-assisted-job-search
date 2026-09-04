@@ -283,10 +283,10 @@ export type CostEstimate = {
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
   /** Kept for internal/back-compat reference — equals `probableCostUsd` on
-   * "measured" basis, `maxCostUsd` on "bootstrap" (see those two fields).
-   * Not for display: ticket e493085/e85fa9b — Nicole asked to see plain
-   * "Max cost" / "Probable cost" numbers, not token buckets or a third
-   * ambiguous "estimated" figure. UI code should read `maxCostUsd` /
+   * BOTH basis values now (ticket 1a2cde3 — see that field's own doc
+   * comment). Not for display: ticket e493085/e85fa9b — Nicole asked to
+   * see plain "Max cost" / "Probable cost" numbers, not token buckets or a
+   * third ambiguous "estimated" figure. UI code should read `maxCostUsd` /
    * `probableCostUsd` directly. */
   estimatedCostUsd: number;
   /**
@@ -303,12 +303,17 @@ export type CostEstimate = {
    * "measured" basis this comes from genuine historical averages
    * (`usageStats`) — a real, grounded number, not an assumption. On
    * "bootstrap" (no prior run has ever completed, so no measured data
-   * exists at all) there is no real signal to discount the ceiling by
-   * without guessing, so this deliberately EQUALS `maxCostUsd` rather than
-   * fabricate a lower number — see `estimateScoringCost`'s doc comment in
-   * demo-match.ts for why. This is a narrow, temporary case: the first
-   * completed run of the app ever makes `usageStats` non-empty, and every
-   * estimate after that is "measured".
+   * exists at all), this ticket (1a2cde3) replaced an earlier
+   * bootstrap-equals-`maxCostUsd` tie with a real, non-arbitrary signal
+   * instead: the scorer's response is JSON-schema-shaped (a score, a short
+   * rationale, two short string arrays — see `demo-match.ts`'s `SCHEMA`),
+   * not free text, so a realistic typical output size can be estimated
+   * FROM that schema rather than assumed to hit the hard cap every call.
+   * See `demo-match.ts`'s `TYPICAL_OUTPUT_CHARS_PER_JOB` for the real
+   * measurement this is grounded in. Narrow/temporary in a different sense
+   * now: the app's first completed run makes `usageStats` non-empty, and
+   * every estimate after that is "measured" — a genuinely observed number,
+   * strictly better than even a well-grounded schema guess.
    */
   probableCostUsd: number;
   basis: "measured" | "bootstrap";
