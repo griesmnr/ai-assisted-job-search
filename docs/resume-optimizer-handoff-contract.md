@@ -66,6 +66,7 @@ app's own data model or UI needs to change.
      }
    }
    ```
+
 3. That's it. No auth header, no API key, no POST back to this app needed.
    The response body is always exactly:
 
