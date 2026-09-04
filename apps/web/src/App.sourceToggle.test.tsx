@@ -89,7 +89,10 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     // Resume submitted -> resumeId set -> useResults fires its one fetch.
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
-    expect(getResults).toHaveBeenCalledWith("resume-1", { minScore: MATCH_SCORE_FLOOR });
+    expect(getResults).toHaveBeenCalledWith("resume-1", {
+      minScore: MATCH_SCORE_FLOOR,
+      includeDismissed: true,
+    });
 
     // Sources loaded and rendered as toggles.
     await screen.findByLabelText("Greenhouse");
