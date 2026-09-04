@@ -38,6 +38,26 @@ const BUILDERS: Partial<Record<Job["dataSource"], () => JobSource>> = {
 };
 
 /**
+ * Short, factual "what is this source" lines for the UI (ticket e493085).
+ * Grounded in what's actually configured for THIS deployment (the real
+ * *_COMPANIES/*_BOARD_TOKENS/*_BOARD_NAMES env vars, see .env.example),
+ * not generic ATS marketing copy — a few recognizable names from each
+ * real configured list, not an exhaustive one. Deliberately UI-only, not
+ * persisted to `source_descriptors` (db/seed.ts) — this is presentation
+ * text, not seed data a migration should own, and it can change without
+ * touching the database. USAJOBS's line is the one adapter-behavior fact
+ * rather than a company list: confirmed in sources/wa-state-findings.md's
+ * own research that the API only ever returns federal postings.
+ */
+const SOURCE_DESCRIPTIONS: Partial<Record<Job["dataSource"], string>> = {
+  usajobs: "U.S. federal government positions.",
+  greenhouse: "Stripe, Databricks, Cloudflare, and other tech/SaaS companies.",
+  lever: "Outreach, Palantir, Wealthfront, Rover.",
+  ashby: "Ramp, Notion, Vanta, Temporal.",
+  smartrecruiters: "Nike, Starbucks, Nordstrom, and other large enterprises.",
+};
+
+/**
  * GET /sources — a config-time check only (no network calls; every
  * `createXSourceFromEnv` just reads env vars and constructs an object). This
  * is what makes a source with a missing/typo'd env var visible to the UI
@@ -47,17 +67,25 @@ const BUILDERS: Partial<Record<Job["dataSource"], () => JobSource>> = {
  */
 export function checkSourceHealth(): SourceHealth[] {
   return SOURCE_DESCRIPTORS.map(({ id, displayName }) => {
+    const description = SOURCE_DESCRIPTIONS[id];
     const build = BUILDERS[id];
     if (!build) {
-      return { id, displayName, configured: false, error: "no adapter implemented yet" };
+      return {
+        id,
+        displayName,
+        description,
+        configured: false,
+        error: "no adapter implemented yet",
+      };
     }
     try {
       build();
-      return { id, displayName, configured: true, error: undefined };
+      return { id, displayName, description, configured: true, error: undefined };
     } catch (err) {
       return {
         id,
         displayName,
+        description,
         configured: false,
         error: err instanceof Error ? err.message : String(err),
       };

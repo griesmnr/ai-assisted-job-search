@@ -15,7 +15,12 @@ import { SourceToggles } from "./SourceToggles";
 afterEach(cleanup);
 
 const SOURCES: SourceHealth[] = [
-  { id: "usajobs", displayName: "USAJOBS", configured: true },
+  {
+    id: "usajobs",
+    displayName: "USAJOBS",
+    description: "U.S. federal government positions.",
+    configured: true,
+  },
   { id: "greenhouse", displayName: "Greenhouse", configured: true },
   {
     id: "wa-state",
@@ -45,6 +50,16 @@ describe("SourceToggles", () => {
     // still render and remain independently toggleable.
     expect(screen.getByLabelText("USAJOBS")).toBeEnabled();
     expect(screen.getByLabelText("Greenhouse")).toBeEnabled();
+  });
+
+  it("shows a source's description when one is present, and nothing extra when absent (ticket e493085)", () => {
+    render(<SourceToggles sources={SOURCES} selected={new Set()} onToggle={() => {}} />);
+
+    expect(screen.getByText("U.S. federal government positions.")).toBeInTheDocument();
+    // Greenhouse's fixture has no `description` -- must not crash or render
+    // a stray empty node for it.
+    const greenhouseLabel = screen.getByLabelText("Greenhouse").closest("label");
+    expect(greenhouseLabel?.querySelector(".source-description")).toBeNull();
   });
 
   it("toggling a source calls onToggle with that source's id, never the whole list", () => {

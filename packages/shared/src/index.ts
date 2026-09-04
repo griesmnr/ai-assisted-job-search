@@ -176,6 +176,13 @@ export type SetJobStatusResponse = {
 export type SourceHealth = {
   id: Job["dataSource"];
   displayName: string;
+  /** A short, factual line about what this source actually covers — e.g.
+   * "U.S. federal government positions" for USAJOBS, or a few of the real
+   * companies configured for an ATS-backed source. Grounded in what's
+   * actually configured/true for this deployment, not generic marketing
+   * copy (ticket e493085). Absent for a source with no adapter (it never
+   * reaches the frontend at all — see ticket d480357). */
+  description?: string;
   configured: boolean;
   error?: string;
 };

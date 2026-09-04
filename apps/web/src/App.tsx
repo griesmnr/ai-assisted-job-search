@@ -76,7 +76,7 @@ function App() {
 
   return (
     <main className="app">
-      <h1>Job Search</h1>
+      <h1>AI-Assisted Job Search</h1>
 
       <section className="resume-section">
         <ResumeInput
@@ -90,7 +90,7 @@ function App() {
       {resumeId && (
         <>
           <section className="sources-section">
-            <h2>Sources</h2>
+            <h2>Which sources do you want to search?</h2>
             {sourcesState.status === "loading" && <p>Loading sources...</p>}
             {sourcesState.status === "error" && (
               <p role="alert">Could not load sources: {sourcesState.message}</p>
