@@ -6,11 +6,12 @@ import { buildApp } from "../index.js";
 import { jobMatches, searches as searchesTable } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../demo-match.js";
+import { loadEnvFile } from "../load-env.js";
 import { __testing } from "./searches.js";
 import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/types.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
 // file used to connect straight to the shared dev Postgres.

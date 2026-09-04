@@ -52,11 +52,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
+import { loadEnvFile } from "../load-env.js";
 
-// Node 22 can read .env itself - no dotenv dependency needed. Safe to call
-// more than once (each test file that also calls this at its own top level
-// just re-parses the same file).
-process.loadEnvFile?.();
+// Safe to call more than once (each test file that also calls this at its
+// own top level just re-parses the same file). Ticket 2b54470: this used
+// to be an unguarded `process.loadEnvFile()`, which threw ENOENT for any
+// worktree with no .env present -- every worktree unless something
+// manually copies one in. Because this file is imported by nearly every
+// DB-backed test file (this module's own header comment), that crashed
+// the WHOLE FILE at import time, not one test -- vitest counts that as a
+// failed SUITE, contributing NOTHING to its own "N passed" tally, so
+// `npx vitest run`'s top summary line looked clean while ~1/3 of the
+// suite silently never ran (confirmed live, 2026-09-04: 10 of 32 files).
+// See load-env.ts for why a missing .env is never an error.
+loadEnvFile();
 
 const DRIZZLE_DIR = fileURLToPath(new URL("../../drizzle", import.meta.url));
 

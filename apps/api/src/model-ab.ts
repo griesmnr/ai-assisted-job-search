@@ -9,10 +9,11 @@
  */
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
+import { loadEnvFile } from "./load-env.js";
 import { GreenhouseSource } from "./sources/greenhouse";
 import type { NormalizedJob } from "./sources/types";
 
-process.loadEnvFile();
+loadEnvFile();
 
 const CHALLENGER = "claude-sonnet-5";
 const RESUME = fs.readFileSync("prep/resume.txt", "utf8");

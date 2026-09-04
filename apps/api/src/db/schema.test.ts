@@ -3,9 +3,10 @@ import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatches, jobs, resumes, sourceDescriptors } from "./schema";
 import { createTestDatabase, type TestDatabase } from "./test-db";
+import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see test-db.ts for why:
 // this file used to connect straight to the shared dev Postgres, so two

@@ -11,9 +11,10 @@ import {
   userJobStatuses,
 } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
 // file used to connect straight to the shared dev Postgres.
