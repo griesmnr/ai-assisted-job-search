@@ -35,6 +35,7 @@ afterAll(async () => {
 function buildTestApp() {
   return buildApp({
     db,
+    inferTitles: async () => [],
     getScoreJob: () => {
       throw new Error("not used by these tests");
     },

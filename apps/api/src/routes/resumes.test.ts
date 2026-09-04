@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CreateResumeResponse } from "@app/shared";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -49,12 +50,13 @@ afterAll(async () => {
   await testDb?.teardown();
 });
 
-function buildTestApp() {
+function buildTestApp(inferTitles: (resumeText: string) => Promise<string[]> = async () => []) {
   return buildApp({
     db,
     getScoreJob: () => {
       throw new Error("not used by these tests");
     },
+    inferTitles,
   });
 }
 
@@ -129,6 +131,73 @@ describe("POST /resumes", () => {
       payload: { resumeText: "x".repeat(200_001) },
     });
     expect(response.statusCode).toBe(400);
+  });
+});
+
+// Ticket 39b4a48: resume-based title-keyword inference, replacing the old
+// hardcoded software-engineering filter default.
+describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
+  it("returns real suggested titles from the injected inferTitles function", async () => {
+    const inferTitles = async () => ["Technical Writer", "Documentation Engineer"];
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const response = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as CreateResumeResponse;
+    expect(body.suggestedTitles).toEqual(["Technical Writer", "Documentation Engineer"]);
+  });
+
+  it("calls inferTitles at most once per resume: a resubmission of identical text reuses the cached suggestions", async () => {
+    let calls = 0;
+    const inferTitles = async () => {
+      calls++;
+      return ["Software Engineer"];
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(calls).toBe(1);
+    expect((first.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
+    expect((second.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
+  });
+
+  it("resume creation still succeeds (200, real id) even if inferTitles throws", async () => {
+    const inferTitles = async (): Promise<string[]> => {
+      throw new Error("simulated inference failure");
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const response = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as CreateResumeResponse;
+    expect(typeof body.id).toBe("string");
+    expect(body.suggestedTitles).toEqual([]);
+
+    const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.resumeText).toBe(resumeText);
+  });
+
+  it("an empty inference result ([]) is itself cached, not retried on resubmission", async () => {
+    let calls = 0;
+    const inferTitles = async () => {
+      calls++;
+      return [];
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(calls).toBe(1);
   });
 });
 

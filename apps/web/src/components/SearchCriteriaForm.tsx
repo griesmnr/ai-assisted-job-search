@@ -1,65 +1,108 @@
+import { useState } from "react";
+
 /**
- * Raw-text editing for the four `SearchCriteria` fields (ticket 957bc22).
- * Deliberately "dumb": this component owns no state and computes nothing
- * itself — it just renders controlled inputs and reports every keystroke
- * up to App.tsx, which owns the raw text and derives the actual
- * `SearchCriteria | undefined` (see App.tsx's `buildSearchCriteria`).
- * Keeping the undefined-vs-empty-object judgment call in ONE place
- * (App.tsx) rather than duplicating it here is deliberate — see that
- * function's own doc comment for why it matters.
+ * Editable title-keyword chips + the two remaining plain-text criteria
+ * fields (ticket 39b4a48, superseding ticket 957bc22's title-include/
+ * title-exclude text fields).
  *
- * Each of titleInclude/titleExclude/nearLocations is edited as one plain
- * comma-separated text field rather than a tag-input widget — simplest
- * thing that could work, and `apps/api/src/sources/criteria.ts`'s
- * `compileFilter` already expects `string[]`, so splitting happens once,
- * in App.tsx, not per-keystroke here.
+ * Nicole, live: "I don't want any default software engineering role text
+ * there... Based on your resume, we think these job titles would be good.
+ * And then it can be kind of like keywords where they can click to X them
+ * off, or they can add their own. And then we don't have to have the
+ * include and exclude button." `titleChips` arrives pre-populated from
+ * `POST /resumes`'s real, resume-grounded `suggestedTitles` (App.tsx) —
+ * this component only ever edits the set (remove a chip, add a new one),
+ * it never invents a default of its own. There is deliberately no
+ * title-EXCLUDE control anymore; `SearchCriteria.titleExclude` stays
+ * supported by the backend, just unused by this form.
+ *
+ * Deliberately "dumb" like its predecessor: owns no criteria-shaping
+ * logic, just reports the current chip set up to App.tsx, which is the
+ * one place that decides what becomes the actual `SearchCriteria` sent to
+ * the API (see App.tsx's `buildSearchCriteria` — and its critical
+ * "titleChips.length === 0 still sends a REAL empty criteria object,
+ * never falls back to a hidden default" rule).
  */
 export function SearchCriteriaForm({
-  titleInclude,
-  titleExclude,
+  titleChips,
   nearLocations,
   remoteOk,
+  onTitleChipsChange,
   onChange,
 }: {
-  titleInclude: string;
-  titleExclude: string;
+  titleChips: string[];
   nearLocations: string;
   remoteOk: boolean;
-  onChange: (next: {
-    titleInclude: string;
-    titleExclude: string;
-    nearLocations: string;
-    remoteOk: boolean;
-  }) => void;
+  onTitleChipsChange: (next: string[]) => void;
+  onChange: (next: { nearLocations: string; remoteOk: boolean }) => void;
 }) {
-  function set(patch: Partial<Parameters<typeof onChange>[0]>) {
-    onChange({ titleInclude, titleExclude, nearLocations, remoteOk, ...patch });
+  const [newChipText, setNewChipText] = useState("");
+
+  function removeChip(chip: string) {
+    onTitleChipsChange(titleChips.filter((c) => c !== chip));
+  }
+
+  function addChip() {
+    const trimmed = newChipText.trim();
+    if (trimmed.length === 0) return;
+    // Case-insensitive de-dupe: adding "Software Engineer" when it's
+    // already there (from suggestions or a prior add) should not produce
+    // two visually-identical chips.
+    if (titleChips.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
+      setNewChipText("");
+      return;
+    }
+    onTitleChipsChange([...titleChips, trimmed]);
+    setNewChipText("");
+  }
+
+  function set(patch: Partial<{ nearLocations: string; remoteOk: boolean }>) {
+    onChange({ nearLocations, remoteOk, ...patch });
   }
 
   return (
     <div className="search-criteria-form">
       <p className="search-criteria-hint">
-        Leave everything blank to use the default software-engineering filter. Fill in anything
-        below to narrow it your way instead.
+        {titleChips.length > 0
+          ? "Based on your resume, we think these job titles would be good. Remove any that don't fit, or add your own."
+          : "No title keywords yet — add your own, or leave this empty to search every title."}
       </p>
-      <label className="search-criteria-field">
-        Job titles to include (comma-separated)
-        <input
-          type="text"
-          value={titleInclude}
-          placeholder="e.g. backend, platform engineer"
-          onChange={(e) => set({ titleInclude: e.target.value })}
-        />
-      </label>
-      <label className="search-criteria-field">
-        Job titles to exclude (comma-separated)
-        <input
-          type="text"
-          value={titleExclude}
-          placeholder="e.g. staff, principal"
-          onChange={(e) => set({ titleExclude: e.target.value })}
-        />
-      </label>
+      <ul className="title-chip-list" aria-label="Job title keywords">
+        {titleChips.map((chip) => (
+          <li key={chip} className="title-chip">
+            <span>{chip}</span>
+            <button
+              type="button"
+              className="title-chip-remove"
+              aria-label={`Remove "${chip}"`}
+              onClick={() => removeChip(chip)}
+            >
+              &times;
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="title-chip-add">
+        <label htmlFor="add-title-chip">Add a job title keyword</label>
+        <div className="title-chip-add-row">
+          <input
+            id="add-title-chip"
+            type="text"
+            value={newChipText}
+            placeholder="e.g. backend engineer"
+            onChange={(e) => setNewChipText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addChip();
+              }
+            }}
+          />
+          <button type="button" onClick={addChip} disabled={newChipText.trim().length === 0}>
+            Add
+          </button>
+        </div>
+      </div>
       <label className="search-criteria-field">
         Locations you'd commute to (comma-separated)
         <input

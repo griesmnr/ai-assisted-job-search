@@ -1,0 +1,1 @@
+ALTER TABLE "resumes" ADD COLUMN "suggested_titles" jsonb;

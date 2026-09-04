@@ -135,6 +135,7 @@ describe("POST /searches/estimate", () => {
   it("reports a cost estimate, never calls scoreJob, and does not return a searchId", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("estimate must never need a real scorer");
       },
@@ -186,6 +187,7 @@ describe("POST /searches/estimate", () => {
     );
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("estimate must never need a real scorer");
       },
@@ -216,6 +218,7 @@ describe("POST /searches/estimate", () => {
   it("404s for an unknown resumeId", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -232,6 +235,7 @@ describe("POST /searches/estimate", () => {
   it("400s when none of the requested sourceIds resolve", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -249,6 +253,7 @@ describe("POST /searches/estimate", () => {
   it("400s on a missing sourceIds field", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -269,6 +274,7 @@ describe("POST /searches/estimate", () => {
     // the clean outcome, not the old broken shape.
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -288,6 +294,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
   it("runs a search asynchronously and can be polled to completion", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [matchingJob(`run-${randomUUID()}`)]),
     });
@@ -354,6 +361,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     ];
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => gatedScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
     });
@@ -403,6 +411,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
   it("404s GET /searches/:id for a truly unknown id", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -414,6 +423,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
   it("400s when none of the requested sourceIds resolve", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set(), []),
     });
@@ -429,6 +439,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
   it("400s on a duplicate sourceId", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
     });
@@ -456,6 +467,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     };
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => controllableScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [matchingJob(`gate-${randomUUID()}`)]),
     });
@@ -504,6 +516,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     // defeating the whole quality-filter default.
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [matchingJob(`typo-${randomUUID()}`)]),
     });
@@ -545,6 +558,7 @@ describe("POST /searches + GET /searches/:id — mechanics", () => {
     let calls = 0;
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         calls++;
         if (calls === 1) throw new Error("ANTHROPIC_API_KEY missing (simulated)");
@@ -587,6 +601,7 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
     });
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [relevant, irrelevant]),
     });
@@ -618,6 +633,7 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
     });
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [productManagerJob]),
     });
@@ -646,6 +662,7 @@ describe("POST /searches — default vs explicit criteria selection (ticket 59fd
     });
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [irrelevant]),
     });
@@ -681,6 +698,7 @@ describe("POST /searches — swe-filter.ts's staff-level default, CLI/no-criteri
     });
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
     });
@@ -704,6 +722,7 @@ describe("POST /searches — swe-filter.ts's staff-level default, CLI/no-criteri
     });
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [staffJob]),
     });
@@ -729,6 +748,7 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
   }> {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -749,6 +769,7 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
   it("a row stuck at status='running' is reported incomplete, never complete", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -769,6 +790,7 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
     // shared literal broke TypeScript narrowing for API consumers.
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
@@ -785,6 +807,7 @@ describe("GET /searches/:id — restart fallback honesty (ticket 59fdc52 review 
   it("a row with status='failed' is reported failed", async () => {
     const app = buildApp({
       db,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used");
       },
