@@ -2,11 +2,25 @@
  * Estimate + run a search, and poll a run's status (ticket 59fdc52).
  *
  * This is the ONLY file in the REST surface with a path to a real
- * `ScoreJobFn` (via `getScoreJob`) — every other route (resumes, sources,
- * results) reads or writes free/instant things. `POST /searches` is
- * therefore the one endpoint in this whole API allowed to spend money, and
- * it only does so because the caller explicitly asked (decision: "no
- * endpoint may spend money without the caller explicitly asking it to").
+ * `ScoreJobFn` (via `getScoreJob`) — every other route (sources, results)
+ * reads or writes free/instant things. `POST /searches` is therefore the
+ * one endpoint in this whole API allowed to spend VARIABLE money (scales
+ * with how many jobs get scored), and it only does so because the caller
+ * explicitly asked (decision: "no endpoint may spend variable money
+ * without the caller explicitly asking it to").
+ *
+ * Amended (ticket 39b4a48): `POST /resumes` now also makes one real,
+ * small, BOUNDED Claude call per genuinely-new resume (title-keyword
+ * inference, resume-title-inference.ts) — deliberately automatic, not
+ * gated behind a separate confirm, per Nicole's own explicit design
+ * ("Based on your resume, we think these job titles would be good" as
+ * something that just appears). The distinction that keeps this
+ * consistent with the spirit of the rule above: that call's cost is fixed
+ * and small regardless of input (one resume, ~300 output tokens, no job
+ * descriptions attached) — it can never scale into real money the way a
+ * scoring run can, and it's cached per resume via the existing
+ * content-addressed find-or-create, so it's paid at most once per unique
+ * resume text, not once per request.
  *
  * `POST /searches/estimate` shares almost all of the same fetch/ingest path
  * (via `runDemoMatch`'s `estimateOnly` option) but never touches

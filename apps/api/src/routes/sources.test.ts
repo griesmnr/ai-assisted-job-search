@@ -65,6 +65,7 @@ describe("GET /sources", () => {
   it("lists all six known sources, each reporting configured status from env", async () => {
     const app = buildApp({
       db: fakeDb,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used by this test");
       },

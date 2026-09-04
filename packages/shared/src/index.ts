@@ -96,6 +96,16 @@ export type CreateResumeRequest = {
 
 export type CreateResumeResponse = {
   id: string;
+  /**
+   * Job title keywords Claude inferred from this resume (ticket 39b4a48),
+   * shown to the user as editable/removable chips — replaces the old
+   * hardcoded software-engineering title default. Always a real array,
+   * never absent: `[]` means inference ran and found nothing to suggest
+   * (or failed — see resume-title-inference.ts, a failure degrades to
+   * `[]` rather than blocking resume creation), which the frontend must
+   * treat as "no suggestions to show", not an error.
+   */
+  suggestedTitles: string[];
 };
 
 export type GetResumeResponse = {

@@ -21,37 +21,31 @@ function splitPhrases(text: string): string[] {
 }
 
 /**
- * Derives the actual `SearchCriteria` to send from the raw form text
- * (ticket 957bc22). Returns `undefined` — NOT `{}` — when every field is
- * empty. This distinction is load-bearing, not cosmetic:
- * apps/api/src/sources/criteria.ts's `compileFilter` treats `undefined` as
- * "reproduce the safe default" (filterSoftwareEngineeringJobs) and an
- * explicit `{}` as "a real, maximally PERMISSIVE criteria object — no
- * title restriction at all". Sending `{}` because the user hasn't touched
- * the form yet would silently let every non-software-engineering posting
- * through the moment this feature shipped. See that file's own doc
- * comment for the full reasoning.
+ * Derives the actual `SearchCriteria` to send from the current title chips
+ * and the remaining plain-text fields (ticket 39b4a48, superseding ticket
+ * 957bc22's undefined-vs-{} design).
+ *
+ * ALWAYS returns a real `SearchCriteria` object now, never `undefined` --
+ * this is the deliberate fix for a real gap ticket 957bc22 left open.
+ * `compileFilter` (apps/api/src/sources/criteria.ts) treats `undefined` as
+ * "reproduce the OLD hardcoded software-engineering default" (including
+ * ticket 6b2313a's staff-level title exclusion) and a real object,
+ * even `{}`, as "no title restriction beyond what's actually specified."
+ * Nicole was explicit that the old default must never come back silently:
+ * "I'd rather have it be a really expensive search offered than a blind
+ * default." Zero title chips now means a real, visible "search every
+ * title" state (an empty `titleInclude` is simply omitted from the
+ * object, which is what "no restriction" already means to compileFilter)
+ * -- never a silent fallback to the hidden default a user never chose.
  */
 function buildSearchCriteria(form: {
-  titleInclude: string;
-  titleExclude: string;
+  titleChips: string[];
   nearLocations: string;
   remoteOk: boolean;
-}): SearchCriteria | undefined {
-  const titleInclude = splitPhrases(form.titleInclude);
-  const titleExclude = splitPhrases(form.titleExclude);
+}): SearchCriteria {
   const nearLocations = splitPhrases(form.nearLocations);
-  if (
-    titleInclude.length === 0 &&
-    titleExclude.length === 0 &&
-    nearLocations.length === 0 &&
-    !form.remoteOk
-  ) {
-    return undefined;
-  }
   const criteria: SearchCriteria = {};
-  if (titleInclude.length > 0) criteria.titleInclude = titleInclude;
-  if (titleExclude.length > 0) criteria.titleExclude = titleExclude;
+  if (form.titleChips.length > 0) criteria.titleInclude = form.titleChips;
   if (nearLocations.length > 0) criteria.nearLocations = nearLocations;
   if (form.remoteOk) criteria.remoteOk = true;
   return criteria;
@@ -80,13 +74,18 @@ function App() {
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  // Ticket 39b4a48: starts empty, populated from POST /resumes's real
+  // suggestedTitles the moment a resume is submitted (handleResumeSubmit
+  // below) -- never a hardcoded default.
+  const [titleChips, setTitleChips] = useState<string[]>([]);
   const [criteriaForm, setCriteriaForm] = useState({
-    titleInclude: "",
-    titleExclude: "",
     nearLocations: "",
     remoteOk: false,
   });
-  const criteria = useMemo(() => buildSearchCriteria(criteriaForm), [criteriaForm]);
+  const criteria = useMemo(
+    () => buildSearchCriteria({ titleChips, ...criteriaForm }),
+    [titleChips, criteriaForm],
+  );
 
   const { state: resultsState, refresh } = useResults(resumeId);
 
@@ -116,8 +115,13 @@ function App() {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
-      const { id } = await createResume(resumeText);
+      const { id, suggestedTitles } = await createResume(resumeText);
       setResumeId(id);
+      // Defensive, not just decorative: an older cached client build, a
+      // test fixture written before this field existed, or any future API
+      // response shape drift should degrade to "no suggestions" rather
+      // than crash buildSearchCriteria's `.length` check below.
+      setTitleChips(suggestedTitles ?? []);
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -170,10 +174,10 @@ function App() {
           <section className="criteria-section">
             <h2>Narrow your search</h2>
             <SearchCriteriaForm
-              titleInclude={criteriaForm.titleInclude}
-              titleExclude={criteriaForm.titleExclude}
+              titleChips={titleChips}
               nearLocations={criteriaForm.nearLocations}
               remoteOk={criteriaForm.remoteOk}
+              onTitleChipsChange={setTitleChips}
               onChange={setCriteriaForm}
             />
           </section>

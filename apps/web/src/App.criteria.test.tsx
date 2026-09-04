@@ -2,17 +2,22 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GetResumeResultsResponse, GetSourcesResponse } from "@app/shared";
+import type {
+  EstimateSearchResponse,
+  GetResumeResultsResponse,
+  GetSourcesResponse,
+} from "@app/shared";
 import App from "./App";
 
 /**
- * Ticket 957bc22: the money-critical behavior is that an untouched
- * criteria form sends NO criteria (undefined), not an empty `{}` -- see
- * App.tsx's `buildSearchCriteria` doc comment for why `{}` would be a
- * silent, expensive regression (compileFilter treats it as "no title
- * restriction at all", not "use the safe default"). This file locks that
- * in against the real component tree, not just the pure function in
- * isolation.
+ * Ticket 39b4a48: resume-inferred title chips replace ticket 957bc22's
+ * "leave everything blank = undefined" design. The money-critical behavior
+ * now is the OPPOSITE direction from before: criteria must be a REAL
+ * object from the moment a resume exists — including when suggestedTitles
+ * comes back empty — never `undefined` (which would silently reproduce
+ * the old hardcoded software-engineering/staff-excluding default). Nicole,
+ * live: "I'd rather have it be a really expensive search offered than a
+ * blind default."
  */
 const getSources = vi.fn();
 const createResume = vi.fn();
@@ -43,6 +48,29 @@ const SOURCES: GetSourcesResponse = {
 
 const RESULTS: GetResumeResultsResponse = { resumeId: "resume-1", results: [] };
 
+function makeEstimate(): EstimateSearchResponse {
+  return {
+    resumeId: "resume-1",
+    costEstimate: {
+      jobCount: 0,
+      estimatedInputTokens: 0,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      maxCostUsd: 0,
+      probableCostUsd: 0,
+      basis: "bootstrap",
+    },
+    candidatesNeedingScore: 0,
+    scoreThreshold: 100,
+    cappedCount: 0,
+    alreadyScored: 0,
+    sourceOutcomes: [],
+    skippedSources: [],
+  };
+}
+
 async function submitResume() {
   render(<App />);
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
@@ -60,77 +88,88 @@ async function submitResume() {
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
 }
 
-describe("App — search criteria form (ticket 957bc22)", () => {
-  it("sends NO criteria (undefined) when the form is left untouched", async () => {
+describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
+  it("sends a REAL empty criteria object (never undefined) when the resume has no suggested titles", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
-    estimateSearch.mockResolvedValue({
-      resumeId: "resume-1",
-      costEstimate: {
-        jobCount: 0,
-        estimatedInputTokens: 0,
-        estimatedCacheReadTokens: 0,
-        estimatedCacheCreationTokens: 0,
-        estimatedOutputTokens: 0,
-        estimatedCostUsd: 0,
-        maxCostUsd: 0,
-        probableCostUsd: 0,
-        basis: "bootstrap",
-      },
-      candidatesNeedingScore: 0,
-      scoreThreshold: 100,
-      cappedCount: 0,
-      alreadyScored: 0,
-      sourceOutcomes: [],
-      skippedSources: [],
-    });
+    estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
+    expect(
+      screen.getByText(/No title keywords yet.*leave this empty to search every title/),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], undefined);
+    // The critical assertion: {} (a real, empty, permissive object), NOT
+    // undefined -- undefined would silently reproduce the old hardcoded
+    // default this ticket exists to remove.
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {});
   });
 
-  it("sends a real, non-empty criteria object once the form has real input", async () => {
+  it("pre-populates chips from the resume's real suggestedTitles and sends them as titleInclude", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
-    getResults.mockResolvedValue(RESULTS);
-    estimateSearch.mockResolvedValue({
-      resumeId: "resume-1",
-      costEstimate: {
-        jobCount: 0,
-        estimatedInputTokens: 0,
-        estimatedCacheReadTokens: 0,
-        estimatedCacheCreationTokens: 0,
-        estimatedOutputTokens: 0,
-        estimatedCostUsd: 0,
-        maxCostUsd: 0,
-        probableCostUsd: 0,
-        basis: "bootstrap",
-      },
-      candidatesNeedingScore: 0,
-      scoreThreshold: 100,
-      cappedCount: 0,
-      alreadyScored: 0,
-      sourceOutcomes: [],
-      skippedSources: [],
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      suggestedTitles: ["Backend Engineer", "Platform Engineer"],
     });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
 
-    fireEvent.change(screen.getByLabelText(/Job titles to include/), {
-      target: { value: "backend, platform engineer" },
+    expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
+      titleInclude: ["Backend Engineer", "Platform Engineer"],
     });
+  });
+
+  it("removing a suggested chip changes what's sent", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      suggestedTitles: ["Backend Engineer", "Platform Engineer"],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.click(screen.getByRole("button", { name: 'Remove "Backend Engineer"' }));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
+      titleInclude: ["Platform Engineer"],
+    });
+  });
+
+  it("adding a custom chip includes it alongside the suggestions", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: ["Backend Engineer"] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.change(screen.getByLabelText("Add a job title keyword"), {
+      target: { value: "Site Reliability Engineer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     fireEvent.click(screen.getByLabelText("Also show fully remote roles"));
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["backend", "platform engineer"],
+      titleInclude: ["Backend Engineer", "Site Reliability Engineer"],
       remoteOk: true,
     });
   });

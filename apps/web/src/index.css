@@ -115,6 +115,54 @@ section {
   gap: 0.4rem;
 }
 
+.title-chip-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.title-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.title-chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  color: var(--muted);
+}
+
+.title-chip-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.title-chip-add-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.title-chip-add-row input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.5rem;
+}
+
 .estimating {
   display: flex;
   align-items: center;

@@ -74,7 +74,7 @@ const RESULTS: GetResumeResultsResponse = {
 describe("App — toggling a source never re-fetches results (F6, review round)", () => {
   it("calls getResults exactly once for a resume load, and not again after a source toggle", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
 
     render(<App />);
@@ -131,7 +131,7 @@ describe("App — results section only appears once there's something to show (t
 
   it("shows no Results heading when zero results and nothing hidden below the floor", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
 
     await submitResume();
@@ -143,7 +143,7 @@ describe("App — results section only appears once there's something to show (t
 
   it("shows the Results section once a hiddenBelowFloor count exists, even with zero visible results", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({ resumeId: "resume-1", results: [], hiddenBelowFloor: 3 });
 
     await submitResume();
@@ -153,7 +153,7 @@ describe("App — results section only appears once there's something to show (t
 
   it("shows the Results section once real results exist", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({
       resumeId: "resume-1",
       results: [
@@ -182,7 +182,7 @@ describe("App — results section only appears once there's something to show (t
 
   it("still surfaces a real fetch error even with nothing else to show", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockRejectedValue(new Error("network down"));
 
     await submitResume();

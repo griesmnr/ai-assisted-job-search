@@ -15,6 +15,7 @@ describe("api entrypoint", () => {
   it("builds a Fastify instance with routes registered", async () => {
     const app = buildApp({
       db: fakeDb,
+      inferTitles: async () => [],
       getScoreJob: () => {
         throw new Error("not used by this test");
       },
