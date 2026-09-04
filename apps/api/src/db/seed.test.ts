@@ -3,9 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sourceDescriptors } from "./schema.js";
 import { seedSourceDescriptors, SOURCE_DESCRIPTORS } from "./seed.js";
 import { createTestDatabase, type TestDatabase } from "./test-db.js";
+import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see test-db.ts. This file
 // used to connect straight to the shared dev Postgres.

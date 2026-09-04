@@ -6,6 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { jobs, resumes, searches, sourceDescriptors } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { loadEnvFile } from "../load-env.js";
 import { FETCH_SOURCE_RETRY_TIERS, setupTopology } from "../queue/topology.js";
 import {
   AuthFailedError,
@@ -26,7 +27,7 @@ import {
   type RetryTier,
 } from "./fetchSourceWorker.js";
 
-process.loadEnvFile();
+loadEnvFile();
 
 // ---------------------------------------------------------------------------
 // Postgres setup — isolated, per-run database (ticket c434a6e). This file

@@ -2,11 +2,13 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { jobs, searches, searchResults, sourceDescriptors, resumes } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { loadEnvFile } from "../load-env.js";
 import type { NormalizedJob } from "../sources/types.js";
 import { ingestJobsForSearch } from "./ingestJobs.js";
 
-// Node 22 can read .env itself - no dotenv dependency needed.
-process.loadEnvFile();
+// Node 22 can read .env itself - no dotenv dependency needed (ticket 2b54470:
+// tolerates a missing file, see load-env.ts).
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
 // file used to connect straight to the shared dev Postgres, where the

@@ -6,6 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
+import { loadEnvFile } from "./load-env.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
@@ -121,19 +122,13 @@ const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 async function main() {
-  // See demo-match.ts's matching comment: `pnpm --filter @app/api dev` (and
-  // the root `pnpm dev`) run this script with cwd = apps/api, where there is
-  // no .env -- only the repo root has one, and in the dev container
-  // docker-compose.yml's `env_file: .env` on the `dev` service already put
-  // every variable in `process.env` before this ever runs. A missing local
-  // .env here is not an error.
-  try {
-    process.loadEnvFile();
-  } catch (err) {
-    if (!(err instanceof Error) || (err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-  }
+  // See load-env.ts: `pnpm --filter @app/api dev` (and the root `pnpm dev`)
+  // run this script with cwd = apps/api, where there is no .env -- only the
+  // repo root has one, and in the dev container docker-compose.yml's
+  // `env_file: .env` on the `dev` service already put every variable in
+  // process.env before this ever runs. A missing local .env here is not an
+  // error.
+  loadEnvFile();
 
   // Pool, not a single Client (ticket 59fdc52 review round 2, F2 — a real,
   // reproduced defect): a bare `pg.Client` is ONE connection, and two

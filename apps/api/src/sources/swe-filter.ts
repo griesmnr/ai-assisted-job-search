@@ -13,12 +13,14 @@ import type { NormalizedJob } from "./types.js";
 // specifically so `check-greenhouse-board.ts` (ticket b723fb9 review fix
 // #3) can reuse the exact same filter a real run applies without pulling in
 // demo-match.ts's much heavier import graph: Drizzle, `pg`, the Anthropic
-// SDK, the db schema/seed/ingest modules, and — critically — the top-level
-// `process.loadEnvFile()` call demo-match.ts makes on import, which throws
-// if no `.env` file exists in the current working directory. A script whose
-// whole point is "check whether a candidate employer is worth adding to
+// SDK, and the db schema/seed/ingest modules. A script whose whole point is
+// "check whether a candidate employer is worth adding to
 // GREENHOUSE_BOARD_TOKENS" has no business requiring a working Postgres
-// connection or an ANTHROPIC_API_KEY to run.
+// connection or an ANTHROPIC_API_KEY to run. (Ticket 2b54470: demo-match.ts's
+// top-level env-file load used to also throw outright if no `.env` existed
+// in the current working directory -- that's fixed now, see load-env.ts,
+// but the import-graph-weight reasoning above is independent of that and
+// still the real reason this stays a separate module.)
 //
 // Deliberately out of scope for this ticket: relaxing the TITLE regexes
 // below to inflate survivor counts. Tightening them is the proven 58% ->

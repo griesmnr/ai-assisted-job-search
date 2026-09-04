@@ -19,10 +19,11 @@
  */
 import fs from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
+import { loadEnvFile } from "./load-env.js";
 import { GreenhouseSource } from "./sources/greenhouse";
 import type { NormalizedJob } from "./sources/types";
 
-process.loadEnvFile();
+loadEnvFile();
 
 const MODEL = "claude-opus-5";
 const RUNS = 3;
