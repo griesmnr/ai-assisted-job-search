@@ -402,6 +402,104 @@ describe("GET /resumes/:id/results", () => {
     },
   );
 
+  it(
+    "?includeDismissed=true returns every status (including dismissed) in one view, without " +
+      "changing the default (ticket bec2f98)",
+    async () => {
+      const app = buildTestApp();
+      const resumeText = `Include-dismissed resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      const untouchedId = await seedScoredJob(resumeId, 80, "Untouched job");
+      const savedId = await seedScoredJob(resumeId, 75, "Saved job");
+      const dismissedId = await seedScoredJob(resumeId, 70, "Dismissed job");
+
+      await db.insert(userJobStatuses).values([
+        {
+          id: randomUUID(),
+          jobId: savedId,
+          status: "saved",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: randomUUID(),
+          jobId: dismissedId,
+          status: "dismissed",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      const byId = (results: Array<{ jobId: string; status: string | null }>) =>
+        new Map(results.map((r) => [r.jobId, r.status]));
+
+      // The existing default view is untouched by this ticket -- still
+      // excludes the dismissed job.
+      const defaultView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results`,
+      });
+      const defaultBody = defaultView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      expect(byId(defaultBody.results).has(dismissedId)).toBe(false);
+
+      const includeDismissedView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?includeDismissed=true`,
+      });
+      expect(includeDismissedView.statusCode).toBe(200);
+      const includeDismissedBody = includeDismissedView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      const statuses = byId(includeDismissedBody.results);
+      expect(statuses.get(untouchedId)).toBeNull();
+      expect(statuses.get(savedId)).toBe("saved");
+      expect(statuses.get(dismissedId)).toBe("dismissed");
+      expect(includeDismissedBody.results).toHaveLength(3);
+    },
+  );
+
+  it("an explicit ?status= still wins over ?includeDismissed=true (single-status filter, not a union)", async () => {
+    const app = buildTestApp();
+    const resumeText = `Status-wins-over-include-dismissed resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    const savedId = await seedScoredJob(resumeId, 75, "Saved job");
+    const dismissedId = await seedScoredJob(resumeId, 70, "Dismissed job");
+
+    await db.insert(userJobStatuses).values([
+      {
+        id: randomUUID(),
+        jobId: savedId,
+        status: "saved",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        jobId: dismissedId,
+        status: "dismissed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/resumes/${resumeId}/results?status=saved&includeDismissed=true`,
+    });
+    const body = response.json() as { results: Array<{ jobId: string }> };
+    expect(body.results.map((r) => r.jobId)).toEqual([savedId]);
+  });
+
   it("rejects a non-numeric minScore with 400, not 500", async () => {
     const app = buildTestApp();
     const resumeText = `Bad minScore resume ${randomUUID()}`;

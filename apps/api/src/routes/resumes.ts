@@ -154,10 +154,10 @@ export function registerResumeRoutes(
 
   app.get<{
     Params: { id: string };
-    Querystring: { source?: string; minScore?: string; status?: string };
+    Querystring: { source?: string; minScore?: string; status?: string; includeDismissed?: string };
   }>("/resumes/:id/results", async (request, reply) => {
     const resumeId = request.params.id;
-    const { source, minScore, status } = request.query;
+    const { source, minScore, status, includeDismissed } = request.query;
 
     // Ticket 484889d: validated the same way ?source= is below — an
     // unrecognized status string must 400, not silently match nothing.
@@ -204,17 +204,31 @@ export function registerResumeRoutes(
 
     // The default-dismissed-exclusion (ticket 484889d decision #2: "a
     // dismissed job should leave the visible list") applies whenever the
-    // caller didn't ask for a specific status. `isNull(...)` covers a job
-    // with no `user_job_statuses` row at all (the common case — most jobs
-    // have never been touched), `ne(...)` covers one with a real row whose
+    // caller didn't ask for a specific status AND didn't opt into
+    // `includeDismissed` (ticket bec2f98: Nicole wants a dismissed job to
+    // still surface, visibly marked, in a fresh search's results and in the
+    // "Already Scored Jobs" tab's grouping — both need every status back,
+    // not just non-dismissed). `isNull(...)` covers a job with no
+    // `user_job_statuses` row at all (the common case — most jobs have
+    // never been touched), `ne(...)` covers one with a real row whose
     // status isn't `dismissed`. Postgres's `!=` is NULL, not true, against a
     // NULL column, which is exactly why the `isNull` half is needed
-    // separately rather than relying on `ne` alone to include untouched rows.
-    function statusCondition(): SQL {
+    // separately rather than relying on `ne` alone to include untouched
+    // rows. Returns `undefined` (no condition at all) for the
+    // includeDismissed case, rather than reconstructing "any status" as an
+    // always-true SQL fragment — the caller below only pushes a defined
+    // condition into the WHERE clause.
+    const includeDismissedFlag = includeDismissed === "true";
+    function statusCondition(): SQL | undefined {
       if (statusFilter !== undefined) return eq(userJobStatuses.status, statusFilter);
+      if (includeDismissedFlag) return undefined;
       return or(isNull(userJobStatuses.status), ne(userJobStatuses.status, "dismissed"))!;
     }
 
+    // `and()` (drizzle-orm) already filters out `undefined` entries, so
+    // `statusCondition()`'s "no restriction" case (includeDismissed, no
+    // explicit ?status=) can be spliced in directly here without a separate
+    // push-if-defined step.
     const conditions = [eq(jobMatches.resumeId, resumeId), statusCondition()];
     if (source !== undefined) conditions.push(eq(jobsTable.dataSource, source));
     if (minScoreNum !== undefined) conditions.push(gte(jobMatches.matchScore, minScoreNum));

@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import type { SearchCriteria, UserJobStatus } from "@app/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ScoredJobResult, SearchCriteria, UserJobStatus } from "@app/shared";
 import { createResume, setJobStatus } from "./api/client";
+import {
+  GroupedResultsList,
+  groupKeyForStatus,
+  type ScoredGroupKey,
+} from "./components/GroupedResultsList";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
 import { SearchCriteriaForm } from "./components/SearchCriteriaForm";
@@ -121,6 +126,57 @@ function App() {
   useEffect(() => {
     setHasFreshSearchResults(false);
   }, [selectedSourceIds, criteria]);
+
+  // Ticket bec2f98: "Already Scored Jobs" group placement is a SNAPSHOT
+  // taken when the tab is opened, not a live recompute on every render --
+  // Nicole caught this herself: "if somebody clicks optimize resume on a
+  // saved job, it's going to suddenly disappear... from that current
+  // state." `handleSetStatus` below still calls `refresh()` on every
+  // status write (so a card's own badge/actions update in place, via live
+  // `resultsState.data`), but that refetch must NOT itself reshuffle which
+  // group a card renders under -- only opening (or re-opening) this tab
+  // takes a new snapshot.
+  //
+  // Two effects because the snapshot needs BOTH "the tab just became
+  // active" and "data is actually ready" to fire, and those don't
+  // necessarily land on the same render (data can still be loading the
+  // instant the tab opens). `snapshotPendingRef` bridges them: the first
+  // effect (keyed only on `activeTab`) arms it exactly once per tab-open;
+  // the second effect (keyed on `[activeTab, resultsState]`, so it re-runs
+  // on every refetch too) only actually captures a new snapshot while the
+  // flag is armed, then disarms it -- a later refetch from a status write
+  // re-runs this effect but does nothing, since the flag is already false.
+  const [scoredGroupSnapshot, setScoredGroupSnapshot] = useState<Map<
+    string,
+    ScoredGroupKey
+  > | null>(null);
+  const scoredSnapshotPendingRef = useRef(false);
+
+  useEffect(() => {
+    if (activeTab === "scored") scoredSnapshotPendingRef.current = true;
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (
+      activeTab === "scored" &&
+      scoredSnapshotPendingRef.current &&
+      resultsState.status === "ready"
+    ) {
+      const snapshot = new Map(
+        resultsState.data.results.map((r) => [r.jobId, groupKeyForStatus(r.status)] as const),
+      );
+      setScoredGroupSnapshot(snapshot);
+      scoredSnapshotPendingRef.current = false;
+    }
+  }, [activeTab, resultsState]);
+
+  // Fallback covers a job the snapshot has never seen (e.g. a fresh search
+  // landed new jobs while already on this tab, before the next open
+  // re-snapshots) -- it gets a live-computed group rather than being
+  // silently dropped.
+  function scoredGroupFor(result: ScoredJobResult): ScoredGroupKey {
+    return scoredGroupSnapshot?.get(result.jobId) ?? groupKeyForStatus(result.status);
+  }
 
   // Default every CONFIGURED source to selected the first time the source
   // list loads, so the first thing a user sees isn't an empty toggle set
@@ -281,12 +337,12 @@ function App() {
                 to randomly populate with old stuff." Reuses the same
                 `resultsState.data` fetch as the other tab (no duplicate
                 request) -- `hasFreshSearchResults` just gates whether
-                THIS section is allowed to show it right now.
-                Known gap, follow-up ticket: this still uses the DEFAULT
-                results view, which excludes dismissed jobs -- Nicole
-                separately asked for a dismissed job to still appear here,
-                visibly marked "Dismissed", which needs a small new API
-                option this ticket doesn't add yet. */}
+                THIS section is allowed to show it right now. Ticket
+                bec2f98: that shared fetch now uses `includeDismissed:
+                true` (useResults.ts), so a dismissed job from a fresh
+                search shows up here too, visibly marked "Dismissed" via
+                ResultCard's existing status pill -- no change needed in
+                this component beyond the data it's handed. */}
             {hasFreshSearchResults && resultsState.status === "ready" && (
               <section className="results-section">
                 <h2>Results from this search</h2>
@@ -318,9 +374,10 @@ function App() {
             resultsState.status === "ready" &&
             (resultsState.data.results.length > 0 ||
             (resultsState.data.hiddenBelowFloor ?? 0) > 0 ? (
-              <ResultsList
+              <GroupedResultsList
                 data={resultsState.data}
                 selectedSourceIds={selectedSourceIds}
+                groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
               />
             ) : (
