@@ -272,7 +272,12 @@ export function SearchFlow({
           Estimate search cost
         </button>
       )}
-      {phase.kind === "estimating" && <p>Getting a cost estimate...</p>}
+      {phase.kind === "estimating" && (
+        <p className="estimating">
+          <span className="spinner" aria-hidden="true" />
+          Getting a cost estimate... this may take a minute.
+        </p>
+      )}
 
       {(phase.kind === "estimated" || phase.kind === "starting") && (
         <div className="cost-panel" aria-label="Cost estimate">

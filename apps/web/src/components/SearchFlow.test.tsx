@@ -105,7 +105,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     // Request is now in flight (phase === "estimating"); the mocked
     // estimateSearch call captured the selection at click time, ["a", "b"].
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
-    await screen.findByText("Getting a cost estimate...");
+    await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, the user toggles "b" off — sourceIds prop
     // changes out from under the pending request.
@@ -145,7 +145,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"]);
-    await screen.findByText("Getting a cost estimate...");
+    await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, resumeId changes (e.g. a different resume was
     // selected/uploaded).
