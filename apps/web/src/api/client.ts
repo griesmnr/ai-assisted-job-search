@@ -85,6 +85,10 @@ export type GetResultsParams = {
   source?: string;
   minScore?: number;
   status?: UserJobStatus;
+  /** Ticket bec2f98: bypass the API's default dismissed-exclusion so a
+   * dismissed job comes back too, with its real status, instead of leaving
+   * the visible set entirely. */
+  includeDismissed?: boolean;
 };
 
 export function getResults(
@@ -95,6 +99,7 @@ export function getResults(
   if (params.source !== undefined) query.set("source", params.source);
   if (params.minScore !== undefined) query.set("minScore", String(params.minScore));
   if (params.status !== undefined) query.set("status", params.status);
+  if (params.includeDismissed) query.set("includeDismissed", "true");
   const qs = query.toString();
   return request<GetResumeResultsResponse>(
     `/resumes/${encodeURIComponent(resumeId)}/results${qs ? `?${qs}` : ""}`,

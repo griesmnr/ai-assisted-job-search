@@ -6,6 +6,8 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
+import { loadEnvFile } from "./load-env.js";
+import { inferTitleKeywords } from "./resume-title-inference.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
@@ -30,6 +32,16 @@ export type BuildAppDeps = {
    * `main` itself.
    */
   getScoreJob: () => ScoreJobFn;
+  /**
+   * Real title-keyword inference `POST /resumes` uses (ticket 39b4a48) --
+   * same lazy-construction reasoning as `getScoreJob` above (the
+   * `Anthropic` client it needs throws synchronously if
+   * `ANTHROPIC_API_KEY` is unset, so it must not be built at server boot).
+   * Unlike `getScoreJob` this is the function itself, not a factory for
+   * one -- `main()` below shares the SAME memoized `Anthropic` client
+   * between this and `getScoreJob` rather than constructing two.
+   */
+  inferTitles: (resumeText: string) => Promise<string[]>;
   /**
    * Overrides how `POST /searches` and `POST /searches/estimate` resolve
    * requested source ids into real `JobSource`s. Defaults to the real
@@ -106,7 +118,7 @@ export function buildApp(deps: BuildAppDeps) {
   void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
 
   registerSourceRoutes(app);
-  registerResumeRoutes(app, deps.db);
+  registerResumeRoutes(app, deps.db, deps.inferTitles);
   registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
   registerJobStatusRoutes(app, deps.db);
 
@@ -121,7 +133,13 @@ const isMain =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 async function main() {
-  process.loadEnvFile();
+  // See load-env.ts: `pnpm --filter @app/api dev` (and the root `pnpm dev`)
+  // run this script with cwd = apps/api, where there is no .env -- only the
+  // repo root has one, and in the dev container docker-compose.yml's
+  // `env_file: .env` on the `dev` service already put every variable in
+  // process.env before this ever runs. A missing local .env here is not an
+  // error.
+  loadEnvFile();
 
   // Pool, not a single Client (ticket 59fdc52 review round 2, F2 — a real,
   // reproduced defect): a bare `pg.Client` is ONE connection, and two
@@ -153,17 +171,26 @@ async function main() {
   const db = drizzle(pool);
 
   // Memoized, not reconstructed per call: the Anthropic client is cheap to
-  // reuse across every POST /searches this process handles, and there is no
-  // reason to pay connection-setup cost per search. Still only constructed
-  // on the FIRST call, not at boot — see BuildAppDeps.getScoreJob's doc
-  // comment.
+  // reuse across every POST /searches (and, as of ticket 39b4a48, every
+  // POST /resumes title-inference call) this process handles, and there is
+  // no reason to pay connection-setup cost per call. Still only
+  // constructed on the FIRST actual use, not at boot — see
+  // BuildAppDeps.getScoreJob's doc comment; `inferTitles` shares this same
+  // client rather than constructing a second one.
+  let cachedAnthropic: Anthropic | undefined;
+  const getAnthropicClient = (): Anthropic => {
+    cachedAnthropic ??= new Anthropic();
+    return cachedAnthropic;
+  };
   let cachedScoreJob: ScoreJobFn | undefined;
   const getScoreJob = (): ScoreJobFn => {
-    cachedScoreJob ??= makeClaudeScorer(new Anthropic());
+    cachedScoreJob ??= makeClaudeScorer(getAnthropicClient());
     return cachedScoreJob;
   };
+  const inferTitles = (resumeText: string): Promise<string[]> =>
+    inferTitleKeywords(getAnthropicClient(), resumeText);
 
-  const app = buildApp({ db, getScoreJob });
+  const app = buildApp({ db, getScoreJob, inferTitles });
   const port = Number(process.env.PORT ?? 3000);
 
   try {

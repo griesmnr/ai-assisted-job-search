@@ -6,9 +6,10 @@ import {
   createEmptyTestDatabase,
   loadMigrationStatements,
 } from "./test-db.js";
+import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 /**
  * Migration 0004 (job_matches.strengths/gaps, job_matches' (resume_id,

@@ -23,6 +23,13 @@ export type ResultsState =
  * client-side — this hook fetches the full (floor-applied) result set once
  * per resumeId/refresh and callers narrow by source in memory, never by
  * re-fetching per toggle.
+ *
+ * `includeDismissed: true` (ticket bec2f98): this single fetch feeds BOTH
+ * "Results from this search" and "Already Scored Jobs" (App.tsx), and both
+ * need a dismissed job back with its real status rather than silently
+ * missing — Nicole: "I think that should always happen, even ones that
+ * have already been dismissed. They should show up in the search results,
+ * but they can say that they've already been dismissed."
  */
 export function useResults(resumeId: string | undefined): {
   state: ResultsState;
@@ -38,7 +45,7 @@ export function useResults(resumeId: string | undefined): {
     }
     let cancelled = false;
     setState({ status: "loading" });
-    getResults(resumeId, { minScore: MATCH_SCORE_FLOOR })
+    getResults(resumeId, { minScore: MATCH_SCORE_FLOOR, includeDismissed: true })
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
       })

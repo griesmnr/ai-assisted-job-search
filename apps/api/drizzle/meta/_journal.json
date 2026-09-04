@@ -50,6 +50,13 @@
       "when": 1788319949582,
       "tag": "0006_funny_maestro",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788550100619,
+      "tag": "0007_sharp_sunspot",
+      "breakpoints": true
     }
   ]
 }

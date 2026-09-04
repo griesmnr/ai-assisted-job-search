@@ -230,3 +230,104 @@ describe("compileExcludedForMissingWorkArrangement (ticket 14289ac)", () => {
     ).toEqual([]);
   });
 });
+
+describe("compileFilter — commitmentIn (ticket 18c9f18)", () => {
+  it("omitted/empty commitmentIn means no restriction — full-time, part-time, contract, and unknown-commitment jobs all pass", () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        title: "Software Engineer",
+        company: "Full Co",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "2",
+        title: "Software Engineer",
+        company: "Part Co",
+        commitment: "part-time",
+      }),
+      job({
+        externalId: "3",
+        title: "Software Engineer",
+        company: "Contract Co",
+        commitment: "contract",
+      }),
+      job({
+        externalId: "4",
+        title: "Software Engineer",
+        company: "Unknown Co",
+        commitment: undefined,
+      }),
+    ];
+    expect(
+      compileFilter({})(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2", "3", "4"]);
+    expect(
+      compileFilter({ commitmentIn: [] })(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("commitmentIn restricts to the named values", () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        title: "Software Engineer",
+        company: "Full Co",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "2",
+        title: "Software Engineer",
+        company: "Part Co",
+        commitment: "part-time",
+      }),
+      job({
+        externalId: "3",
+        title: "Software Engineer",
+        company: "Contract Co",
+        commitment: "contract",
+      }),
+    ];
+    const filter = compileFilter({ commitmentIn: ["full-time", "contract"] });
+    expect(
+      filter(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "3"]);
+  });
+
+  it("a job with unknown/undefined commitment is EXCLUDED once commitmentIn is a real, non-empty restriction — this app can't verify it matches what the caller asked for (ticket 18c9f18's PM ruling, see SearchCriteria.commitmentIn's doc comment)", () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        title: "Software Engineer",
+        company: "Known Co",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "2",
+        title: "Software Engineer",
+        company: "Unknown Co",
+        commitment: undefined,
+      }),
+    ];
+    const filter = compileFilter({ commitmentIn: ["full-time"] });
+    expect(filter(jobs).map((j) => j.externalId)).toEqual(["1"]);
+  });
+
+  it("compileFilter(undefined) — the CLI/no-criteria default — is unaffected by commitmentIn entirely (it doesn't exist on that path)", () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        title: "Software Engineer",
+        location: "Seattle, WA",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter(undefined)(jobs).map((j) => j.externalId)).toEqual(["1"]);
+  });
+});

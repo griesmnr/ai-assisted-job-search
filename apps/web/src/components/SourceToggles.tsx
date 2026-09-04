@@ -12,10 +12,15 @@ import type { SourceHealth } from "@app/shared";
  *
  * A source with `configured: false` (GET /sources — no adapter, or missing
  * env config; see apps/api/src/sources/registry.ts's `checkSourceHealth`)
- * renders disabled and visibly "unavailable" rather than just vanishing —
- * decision #5: "a dead source reads as unavailable rather than silently
- * absent." It cannot be toggled on, but it also doesn't break the rest of
- * the list.
+ * is dropped before rendering, not shown as a disabled/"unavailable" row —
+ * ticket d480357 supersedes decision #5 ("a dead source reads as
+ * unavailable rather than silently absent") per Nicole, 2026-09-04: "for
+ * the product, i def want all adapters either working or not showing."
+ * `checkSourceHealth` itself is unchanged and still reports every seeded
+ * source (a future admin/debug view may still want that); this component
+ * filters its own `sources` prop rather than trust every caller to
+ * pre-filter, so "an unconfigured source never renders here" holds even if
+ * a future caller forgets to.
  */
 export function SourceToggles({
   sources,
@@ -26,38 +31,26 @@ export function SourceToggles({
   selected: ReadonlySet<string>;
   onToggle: (sourceId: string) => void;
 }) {
+  const configuredSources = sources.filter((source) => source.configured);
   return (
     <ul className="source-toggles" aria-label="Job sources">
-      {sources.map((source) => {
+      {configuredSources.map((source) => {
         const isSelected = selected.has(source.id);
-        const isUnavailable = !source.configured;
         return (
           <li key={source.id} className="source-toggle">
-            <label
-              className={isUnavailable ? "source-toggle-label unavailable" : "source-toggle-label"}
-            >
+            <label className="source-toggle-label">
               <input
                 type="checkbox"
-                checked={isSelected && !isUnavailable}
-                disabled={isUnavailable}
-                // The `disabled` attribute alone should be enough to stop a
-                // real browser from ever firing this handler for an
-                // unavailable source, but jsdom (unlike real browsers)
-                // still dispatches a synthetic click's change event on a
-                // disabled input — caught live by this component's own test
-                // suite. Guarding here too means correctness doesn't depend
-                // on which environment is running it.
-                onChange={() => {
-                  if (!isUnavailable) onToggle(source.id);
-                }}
+                checked={isSelected}
+                onChange={() => onToggle(source.id)}
                 aria-label={source.displayName}
               />
-              <span className="source-name">{source.displayName}</span>
-              {isUnavailable && (
-                <span className="source-status" role="status">
-                  unavailable{source.error ? ` — ${source.error}` : ""}
-                </span>
-              )}
+              <span className="source-toggle-text">
+                <span className="source-name">{source.displayName}</span>
+                {source.description && (
+                  <span className="source-description">{source.description}</span>
+                )}
+              </span>
             </label>
           </li>
         );

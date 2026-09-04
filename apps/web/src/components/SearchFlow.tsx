@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import type { EstimateSearchResponse, SearchStatusResponse } from "@app/shared";
+import type { EstimateSearchResponse, SearchCriteria, SearchStatusResponse } from "@app/shared";
 import { estimateSearch, getSearchStatus, startSearch } from "../api/client";
 import { SourceOutcomesList } from "./SourceOutcomesList";
+
+/** `criteria` is a small plain object of primitives/string arrays (see
+ * @app/shared's `SearchCriteria`) -- JSON.stringify is a correct,
+ * sufficient equality check for it (no functions/dates/cycles possible in
+ * this shape), and simpler than hand-writing a field-by-field comparator
+ * for a value this small. Order-sensitive within an array (["a","b"] !==
+ * ["b","a"]) -- acceptable here since App.tsx always derives the arrays
+ * from splitting one text field in a stable left-to-right order, so the
+ * same user input always produces the same array order. */
+function sameCriteria(a: SearchCriteria | undefined, b: SearchCriteria | undefined): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -25,12 +37,14 @@ type Phase =
       // `resumeId`/`sourceIds` props, for that call.
       resumeId: string;
       sourceIds: string[];
+      criteria: SearchCriteria | undefined;
     }
   | {
       kind: "starting";
       estimate: EstimateSearchResponse;
       resumeId: string;
       sourceIds: string[];
+      criteria: SearchCriteria | undefined;
     }
   | {
       kind: "running";
@@ -87,10 +101,19 @@ type Phase =
 export function SearchFlow({
   resumeId,
   sourceIds,
+  criteria,
+  onEstimateStart,
   onSearchComplete,
 }: {
   resumeId: string;
   sourceIds: string[];
+  criteria?: SearchCriteria;
+  /** Ticket f4a7f07: fired at the START of every estimate request (before
+   * the network call), so App.tsx can clear its "current search results"
+   * gate the same moment a new estimate is requested — Nicole: "cleared
+   * every time a new search is estimated." Optional so every other
+   * existing caller/test keeps working unchanged. */
+  onEstimateStart?: () => void;
   onSearchComplete: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -103,14 +126,15 @@ export function SearchFlow({
   }, []);
 
   async function handleEstimate() {
+    onEstimateStart?.();
     setPhase({ kind: "estimating" });
     try {
-      const estimate = await estimateSearch(resumeId, sourceIds);
+      const estimate = await estimateSearch(resumeId, sourceIds, criteria);
       // Snapshot props AT THE MOMENT the estimate landed (F1) — not a
-      // reference to the live `resumeId`/`sourceIds` closed over above,
-      // which is exactly the same value right now but will silently diverge
-      // if props change before confirm.
-      setPhase({ kind: "estimated", estimate, resumeId, sourceIds: [...sourceIds] });
+      // reference to the live `resumeId`/`sourceIds`/`criteria` closed over
+      // above, which are exactly the same values right now but will
+      // silently diverge if props change before confirm.
+      setPhase({ kind: "estimated", estimate, resumeId, sourceIds: [...sourceIds], criteria });
     } catch (err) {
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -120,19 +144,27 @@ export function SearchFlow({
     estimate: EstimateSearchResponse;
     resumeId: string;
     sourceIds: string[];
+    criteria: SearchCriteria | undefined;
   }) {
-    const { estimate, resumeId: snapshotResumeId, sourceIds: snapshotSourceIds } = snapshot;
+    const {
+      estimate,
+      resumeId: snapshotResumeId,
+      sourceIds: snapshotSourceIds,
+      criteria: snapshotCriteria,
+    } = snapshot;
     setPhase({
       kind: "starting",
       estimate,
       resumeId: snapshotResumeId,
       sourceIds: snapshotSourceIds,
+      criteria: snapshotCriteria,
     });
     try {
       // Fired against the SNAPSHOT captured when the estimate was computed
-      // (F1), never the live `resumeId`/`sourceIds` props — see the `Phase`
-      // type's "estimated" doc comment for the failure this avoids.
-      const started = await startSearch(snapshotResumeId, snapshotSourceIds);
+      // (F1), never the live `resumeId`/`sourceIds`/`criteria` props — see
+      // the `Phase` type's "estimated" doc comment for the failure this
+      // avoids.
+      const started = await startSearch(snapshotResumeId, snapshotSourceIds, snapshotCriteria);
       setPhase({
         kind: "running",
         estimate,
@@ -167,7 +199,16 @@ export function SearchFlow({
     const sameSources =
       phase.sourceIds.length === sourceIds.length &&
       phase.sourceIds.every((id, i) => id === sourceIds[i]);
-    if (!sameResume || !sameSources) {
+    // Ticket 957bc22: criteria (title include/exclude, locations,
+    // remote-ok) joins resumeId/sourceIds as a third thing that can change
+    // between "estimate computed" and "user clicks confirm" -- the
+    // criteria-editing form (App.tsx) stays interactive while this panel
+    // shows, same as SourceToggles/ResumeInput already did. Without this,
+    // tweaking a title filter after seeing an estimate could fire
+    // startSearch priced for the OLD criteria against the NEW, possibly
+    // much larger or smaller, real candidate set.
+    const sameCriteriaValue = sameCriteria(phase.criteria, criteria);
+    if (!sameResume || !sameSources || !sameCriteriaValue) {
       setPhase({ kind: "idle" });
     }
     // `phase` IS in this dependency array (review round 3, git-bug 484889d):
@@ -194,7 +235,7 @@ export function SearchFlow({
     // (eslint.config.js is @eslint/js + typescript-eslint only), so there
     // is no exhaustive-deps rule enforcing this either way — the deps array
     // is maintained by hand.
-  }, [resumeId, sourceIds, phase]);
+  }, [resumeId, sourceIds, criteria, phase]);
 
   async function poll(searchId: string, estimate: EstimateSearchResponse) {
     try {
@@ -272,17 +313,23 @@ export function SearchFlow({
           Estimate search cost
         </button>
       )}
-      {phase.kind === "estimating" && <p>Getting a cost estimate...</p>}
+      {phase.kind === "estimating" && (
+        <p className="estimating" role="status">
+          <span className="spinner" aria-hidden="true" />
+          Getting a cost estimate... this may take a minute.
+        </p>
+      )}
 
       {(phase.kind === "estimated" || phase.kind === "starting") && (
         <div className="cost-panel" aria-label="Cost estimate">
           <h3>Before you spend anything</h3>
-          <p>{phase.estimate.costEstimateDescription}</p>
           <dl>
             <dt>Jobs that would be scored</dt>
             <dd>{phase.estimate.costEstimate.jobCount}</dd>
-            <dt>Estimated cost</dt>
-            <dd>${phase.estimate.costEstimate.estimatedCostUsd.toFixed(2)}</dd>
+            <dt>Max cost</dt>
+            <dd>${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}</dd>
+            <dt>Probable cost</dt>
+            <dd>${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}</dd>
             <dt>Already scored (free, reused)</dt>
             <dd>{phase.estimate.alreadyScored}</dd>
             {phase.estimate.cappedCount > 0 && (
@@ -303,6 +350,7 @@ export function SearchFlow({
                 estimate: phase.estimate,
                 resumeId: phase.resumeId,
                 sourceIds: phase.sourceIds,
+                criteria: phase.criteria,
               })
             }
             disabled={phase.kind === "starting"}
@@ -327,9 +375,10 @@ export function SearchFlow({
             {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
           </p>
           <p className="cost-caveat">
-            Estimated cost for this run: ${phase.estimate.costEstimate.estimatedCostUsd.toFixed(2)}{" "}
-            (pre-run estimate — the job count above updates live, but per-run cost is still only
-            available as this pre-run figure; see this component's top-of-file notes).
+            Probable cost for this run: ${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}{" "}
+            (max ${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}) — pre-run estimate, the job
+            count above updates live but per-run cost is still only available as this pre-run
+            figure; see this component's top-of-file notes.
           </p>
         </div>
       )}
@@ -346,8 +395,10 @@ export function SearchFlow({
                 <dd>{phase.result.failed}</dd>
                 <dt>Skipped (already scored)</dt>
                 <dd>{phase.result.skipped}</dd>
-                <dt>This run's estimated cost</dt>
-                <dd>${phase.result.costEstimate.estimatedCostUsd.toFixed(2)}</dd>
+                <dt>This run's probable cost</dt>
+                <dd>${phase.result.costEstimate.probableCostUsd.toFixed(2)}</dd>
+                <dt>This run's max cost</dt>
+                <dd>${phase.result.costEstimate.maxCostUsd.toFixed(2)}</dd>
               </dl>
               <SourceOutcomesList
                 sourceOutcomes={phase.result.sourceOutcomes}

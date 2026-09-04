@@ -47,9 +47,11 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-/** Maps board token -> canned Response, so tests can mock a multi-token
- * search() by token rather than by call order. */
-function fetchByToken(responses: Record<string, () => Response>): typeof fetch {
+/** Maps board token -> canned Response (or a promise of one, for tests
+ * that need to control WHEN a token's fetch resolves -- see the 429
+ * concurrency test below), so tests can mock a multi-token search() by
+ * token rather than by call order. */
+function fetchByToken(responses: Record<string, () => Response | Promise<Response>>): typeof fetch {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (input: any) => {
     const url = input instanceof URL ? input : new URL(String(input));
@@ -606,27 +608,80 @@ describe("GreenhouseSource — error classification", () => {
     ]);
   });
 
-  it("a 429 mid-batch stops issuing further requests but returns every job already fetched from healthy boards earlier in the same search() — the reviewer's exact scenario", async () => {
-    // Two healthy boards (real fixtures, not synthetic 500-posting
-    // stand-ins — proves real normalized jobs survive), then a
-    // rate-limited third token, then a fourth token that must never be
-    // requested at all.
-    const fourthTokenFetch = vi.fn(() => jsonResponse({ jobs: [] }));
+  // Ticket b681d18: search() now runs 5 tokens concurrently, not strictly
+  // one at a time -- with only 4 tokens (the old test's shape), ALL of
+  // them dispatch in the first batch and there is no "further requests"
+  // left to stop, so this scenario needs at least CONCURRENCY + 1 tokens
+  // to mean anything, and needs the non-rate-limited tokens' resolution
+  // deliberately held open (not just synchronously returned) so the
+  // rate-limited worker's 429 is guaranteed to be observed BEFORE any
+  // worker moves on to claim the 6th token -- otherwise which requests
+  // "already snuck out" before the stop flag is noticed is a genuine race,
+  // not a deterministic thing to assert on.
+  it("a 429 mid-batch stops issuing further requests but returns every job already fetched from healthy boards earlier in the same search() — the reviewer's exact scenario, now under 5-way concurrency", async () => {
+    function deferredResponse() {
+      let resolve!: (value: Response) => void;
+      const promise = new Promise<Response>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    const discordDeferred = deferredResponse();
+    const airbnbDeferred = deferredResponse();
+    const healthy3Deferred = deferredResponse();
+    const healthy4Deferred = deferredResponse();
+    const sixthTokenFetch = vi.fn(() => jsonResponse({ jobs: [] }));
+
+    // Token at index 0 -- resolves on the very next microtask (an
+    // ordinary async mock, not deferred). The other four in-flight slots
+    // (indices 1-4) are held open on purpose: this guarantees the 429 is
+    // observed and the stop flag is set before any of THOSE workers can
+    // possibly finish and claim index 5.
     const fetchImpl = fetchByToken({
-      discord: () => jsonResponse(discordFixture),
-      airbnb: () => jsonResponse(airbnbFixture),
       "rate-limited": () =>
         new Response("Too Many Requests", { status: 429, headers: { "Retry-After": "30" } }),
-      "never-requested": fourthTokenFetch,
+      discord: () => discordDeferred.promise,
+      airbnb: () => airbnbDeferred.promise,
+      "healthy-3": () => healthy3Deferred.promise,
+      "healthy-4": () => healthy4Deferred.promise,
+      "never-requested": sixthTokenFetch,
     });
-    const source = makeSource(fetchImpl, ["discord", "airbnb", "rate-limited", "never-requested"]);
+    const source = makeSource(fetchImpl, [
+      "rate-limited",
+      "discord",
+      "airbnb",
+      "healthy-3",
+      "healthy-4",
+      "never-requested",
+    ]);
 
-    const result = await source.search({});
+    const resultPromise = source.search({});
+
+    // Let the rate-limited worker's microtask run and set the stop flag
+    // before releasing anything else.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    discordDeferred.resolve(jsonResponse(discordFixture));
+    airbnbDeferred.resolve(jsonResponse(airbnbFixture));
+    healthy3Deferred.resolve(jsonResponse({ jobs: [] }));
+    healthy4Deferred.resolve(jsonResponse({ jobs: [] }));
+
+    const result = await resultPromise;
 
     // Not rejected — resolves with a partial result.
     expect(result.jobs.length).toBe(6); // discordFixture's 3 + airbnbFixture's 3
-    expect(fourthTokenFetch).not.toHaveBeenCalled();
+    expect(sixthTokenFetch).not.toHaveBeenCalled();
     expect(result.tokenOutcomes).toEqual([
+      {
+        token: "rate-limited",
+        status: "error",
+        postingCount: 0,
+        companyName: undefined,
+        message: expect.stringContaining("retry after 30000ms"),
+        skippedCount: 0,
+      },
       {
         token: "discord",
         status: "ok",
@@ -644,11 +699,19 @@ describe("GreenhouseSource — error classification", () => {
         skippedCount: 0,
       },
       {
-        token: "rate-limited",
-        status: "error",
+        token: "healthy-3",
+        status: "empty",
         postingCount: 0,
         companyName: undefined,
-        message: expect.stringContaining("retry after 30000ms"),
+        message: undefined,
+        skippedCount: 0,
+      },
+      {
+        token: "healthy-4",
+        status: "empty",
+        postingCount: 0,
+        companyName: undefined,
+        message: undefined,
         skippedCount: 0,
       },
       {
@@ -660,6 +723,33 @@ describe("GreenhouseSource — error classification", () => {
         skippedCount: 0,
       },
     ]);
+  });
+
+  it("bounded concurrency: never more than 5 requests are in flight to Greenhouse at once", async () => {
+    const TOKEN_COUNT = 12;
+    const tokens = Array.from({ length: TOKEN_COUNT }, (_, i) => `board-${i}`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const responses: Record<string, () => Promise<Response>> = {};
+    for (const token of tokens) {
+      responses[token] = async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // A real timer-level delay so overlapping in-flight requests
+        // actually overlap in wall-clock terms, not just in call order.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return jsonResponse({ jobs: [] });
+      };
+    }
+    const fetchImpl = fetchByToken(responses);
+    const source = makeSource(fetchImpl, tokens);
+
+    const result = await source.search({});
+
+    expect(result.tokenOutcomes).toHaveLength(TOKEN_COUNT);
+    expect(maxInFlight).toBeLessThanOrEqual(5);
+    expect(maxInFlight).toBeGreaterThan(1); // proves it's actually concurrent, not accidentally sequential
   });
 
   // ticket b723fb9 review fix #2: a 500/503 or a network failure — both

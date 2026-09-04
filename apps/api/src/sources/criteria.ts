@@ -107,7 +107,13 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
  * applied after include), then location (`nearLocations`: ANY match passes
  * regardless of work arrangement; `remoteOk`: a confirmed-remote job passes
  * regardless of location text; neither set means no location restriction),
- * then the same company|title dedupe `filterSoftwareEngineeringJobs` uses.
+ * then `commitmentIn` (ticket 18c9f18: a job's `commitment` must be IN the
+ * set; empty/omitted means no restriction; a job whose commitment is
+ * unknown/undefined is EXCLUDED once this restriction is non-empty -- see
+ * `SearchCriteria.commitmentIn`'s own doc comment in @app/shared for the
+ * full reasoning on why this one field doesn't follow the
+ * unmatched-data-passes-through pattern the location fields use), then the
+ * same company|title dedupe `filterSoftwareEngineeringJobs` uses.
  */
 export function compileFilter(
   criteria: SearchCriteria | undefined,
@@ -121,6 +127,7 @@ export function compileFilter(
   const nearMatchers = (criteria.nearLocations ?? []).map(makePhraseMatcher);
   const remoteOk = criteria.remoteOk ?? false;
   const hasLocationRestriction = nearMatchers.length > 0 || remoteOk;
+  const commitmentIn = criteria.commitmentIn ?? [];
 
   function passesTitle(title: string): boolean {
     if (includeMatchers.length > 0 && !includeMatchers.some((m) => m(title))) return false;
@@ -135,11 +142,20 @@ export function compileFilter(
     return remoteOk && isConfirmedRemote(job);
   }
 
+  function passesCommitment(job: Pick<NormalizedJob, "commitment">): boolean {
+    if (commitmentIn.length === 0) return true;
+    // `job.commitment` is undefined for a source that didn't/couldn't
+    // report it -- excluded here on purpose, not passed through. See this
+    // function's own doc comment above.
+    return job.commitment !== undefined && commitmentIn.includes(job.commitment);
+  }
+
   return (jobs: NormalizedJob[]) => {
     const seen = new Set<string>();
     return jobs
       .filter((j) => passesTitle(j.title))
       .filter((j) => passesLocation(j))
+      .filter((j) => passesCommitment(j))
       .filter((j) => {
         const key = `${j.company}|${j.title}`;
         if (seen.has(key)) return false;

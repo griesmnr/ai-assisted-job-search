@@ -96,6 +96,16 @@ export type CreateResumeRequest = {
 
 export type CreateResumeResponse = {
   id: string;
+  /**
+   * Job title keywords Claude inferred from this resume (ticket 39b4a48),
+   * shown to the user as editable/removable chips — replaces the old
+   * hardcoded software-engineering title default. Always a real array,
+   * never absent: `[]` means inference ran and found nothing to suggest
+   * (or failed — see resume-title-inference.ts, a failure degrades to
+   * `[]` rather than blocking resume creation), which the frontend must
+   * treat as "no suggestions to show", not an error.
+   */
+  suggestedTitles: string[];
 };
 
 export type GetResumeResponse = {
@@ -176,6 +186,13 @@ export type SetJobStatusResponse = {
 export type SourceHealth = {
   id: Job["dataSource"];
   displayName: string;
+  /** A short, factual line about what this source actually covers — e.g.
+   * "U.S. federal government positions" for USAJOBS, or a few of the real
+   * companies configured for an ATS-backed source. Grounded in what's
+   * actually configured/true for this deployment, not generic marketing
+   * copy (ticket e493085). Absent for a source with no adapter (it never
+   * reaches the frontend at all — see ticket d480357). */
+  description?: string;
   configured: boolean;
   error?: string;
 };
@@ -211,6 +228,27 @@ export type SearchCriteria = {
   nearLocations?: string[];
   /** Accept confirmed-remote roles anywhere in-country. */
   remoteOk?: boolean;
+  /**
+   * Which `Job["commitment"]` values are acceptable. Omitted/empty means
+   * no restriction (same pattern as every other field here). A posting
+   * whose commitment is genuinely unknown (not every source reports it —
+   * see swe-filter.ts's Greenhouse comment, which never populates this
+   * field at all) is EXCLUDED once this restriction is non-empty, not
+   * included permissively (ticket 18c9f18's PM ruling): the user
+   * explicitly asked for e.g. "full-time only", and a job this app cannot
+   * verify as full-time does not satisfy that ask. This is a real,
+   * deliberate exception to `nearLocations`/`remoteOk`'s own "unmatched
+   * data still doesn't get penalized beyond what was asked" spirit --
+   * those fields only restrict what a caller opted into; commitment is
+   * the first field here that also has real ambiguity in the underlying
+   * source data (not every ATS reports it), and treating "can't verify"
+   * as "assume it matches" would silently show jobs the user said they
+   * didn't want. See apps/api/src/sources/criteria.ts's `compileFilter`
+   * for the implementation and apps/api/src/sources/*.ts's `mapCommitment`
+   * functions for which sources actually populate this (USAJOBS, Lever,
+   * Ashby, SmartRecruiters -- Greenhouse never does).
+   */
+  commitmentIn?: Job["commitment"][];
 };
 
 /**
@@ -244,7 +282,35 @@ export type CostEstimate = {
    * the "bootstrap" basis, same reasoning as `estimatedCacheReadTokens`. */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
+  /** Kept for internal/back-compat reference — equals `probableCostUsd` on
+   * "measured" basis, `maxCostUsd` on "bootstrap" (see those two fields).
+   * Not for display: ticket e493085/e85fa9b — Nicole asked to see plain
+   * "Max cost" / "Probable cost" numbers, not token buckets or a third
+   * ambiguous "estimated" figure. UI code should read `maxCostUsd` /
+   * `probableCostUsd` directly. */
   estimatedCostUsd: number;
+  /**
+   * A genuine worst-case ceiling, grounded in the model's real hard output
+   * cap (`MAX_OUTPUT_TOKENS`) applied to every job — never exceeded by an
+   * actual run, since that cap is code-enforced on every scoring call
+   * (`demo-match.ts`'s `makeClaudeScorer`). Computed the same way on both
+   * `basis` values (ticket e85fa9b): previously only "bootstrap" had a
+   * ceiling at all.
+   */
+  maxCostUsd: number;
+  /**
+   * The best real-data guess at what a run will actually cost. On
+   * "measured" basis this comes from genuine historical averages
+   * (`usageStats`) — a real, grounded number, not an assumption. On
+   * "bootstrap" (no prior run has ever completed, so no measured data
+   * exists at all) there is no real signal to discount the ceiling by
+   * without guessing, so this deliberately EQUALS `maxCostUsd` rather than
+   * fabricate a lower number — see `estimateScoringCost`'s doc comment in
+   * demo-match.ts for why. This is a narrow, temporary case: the first
+   * completed run of the app ever makes `usageStats` non-empty, and every
+   * estimate after that is "measured".
+   */
+  probableCostUsd: number;
   basis: "measured" | "bootstrap";
 };
 
@@ -305,7 +371,6 @@ export type EstimateSearchRequest = {
 export type EstimateSearchResponse = {
   resumeId: string;
   costEstimate: CostEstimate;
-  costEstimateDescription: string;
   candidatesNeedingScore: number;
   scoreThreshold: number;
   cappedCount: number;

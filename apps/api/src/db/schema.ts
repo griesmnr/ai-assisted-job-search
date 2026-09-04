@@ -49,6 +49,14 @@ export const resumes = pgTable("resumes", {
   // one row under concurrent inserts (ON CONFLICT (resume_hash) DO
   // NOTHING). See ticket 620ca30.
   resumeHash: text("resume_hash").notNull().unique(),
+  // Ticket 39b4a48: job title keywords Claude infers from this resume,
+  // computed ONCE per resume (find-or-create already dedupes identical
+  // resume text to one row -- this is what makes inference cache-able at
+  // all: re-submitting the same text never re-pays for it). Nullable, not
+  // an empty array by default: null means "inference hasn't run yet or
+  // failed", [] means "ran, found nothing to suggest" -- the route
+  // distinguishes these to decide whether to retry. See routes/resumes.ts.
+  suggestedTitles: jsonb("suggested_titles").$type<string[]>(),
 });
 
 export const jobMatches = pgTable(

@@ -53,6 +53,8 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
         estimatedCacheCreationTokens: 0,
         estimatedOutputTokens: 0,
         estimatedCostUsd: 0,
+        maxCostUsd: 0,
+        probableCostUsd: 0,
         basis: "bootstrap",
       },
       sourceOutcomes: [],

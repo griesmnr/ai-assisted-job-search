@@ -57,6 +57,12 @@ const SOURCES: GetSourcesResponse = {
   sources: [
     { id: "usajobs", displayName: "USAJOBS", configured: true },
     { id: "greenhouse", displayName: "Greenhouse", configured: true },
+    {
+      id: "wa-state",
+      displayName: "Washington State Jobs",
+      configured: false,
+      error: "no adapter implemented yet",
+    },
   ],
 };
 
@@ -68,10 +74,13 @@ const RESULTS: GetResumeResultsResponse = {
 describe("App — toggling a source never re-fetches results (F6, review round)", () => {
   it("calls getResults exactly once for a resume load, and not again after a source toggle", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1" });
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
 
     render(<App />);
+
+    // Ticket e493085: page title and sources heading wording.
+    expect(screen.getByRole("heading", { name: "AI-Assisted Job Search" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
@@ -80,10 +89,23 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 
     // Resume submitted -> resumeId set -> useResults fires its one fetch.
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
-    expect(getResults).toHaveBeenCalledWith("resume-1", { minScore: MATCH_SCORE_FLOOR });
+    expect(getResults).toHaveBeenCalledWith("resume-1", {
+      minScore: MATCH_SCORE_FLOOR,
+      includeDismissed: true,
+    });
 
     // Sources loaded and rendered as toggles.
     await screen.findByLabelText("Greenhouse");
+    expect(
+      screen.getByRole("heading", { name: "Which sources do you want to search?" }),
+    ).toBeInTheDocument();
+
+    // The unconfigured source (wa-state, no adapter) must not appear in the
+    // rendered toggle list at all -- ticket d480357. GET /sources still
+    // reports it (the mocked `getSources` above returns it, same as the
+    // real API's `checkSourceHealth` would); only App.tsx's render path to
+    // SourceToggles narrows it away.
+    expect(screen.queryByLabelText("Washington State Jobs")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Greenhouse"));
 
@@ -97,5 +119,85 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
     // `selectedSourceIds` to useResults's dependency array, or that passes
     // `source` through to `getResults`, would fail this.
     expect(getResults).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Ticket f4a7f07 moved the whole results section into its own
+// "Already Scored Jobs" tab, hidden by default (activeTab starts
+// "search") -- these tests now switch tabs before asserting on its
+// content. Superseded from ticket 093d9fe's original design: that tab
+// ALWAYS shows its "Results" heading now (it's somewhere the user
+// deliberately navigates to, not an inline surprise), only the CONTENT
+// varies -- see App.tsx's own comment on this exact change.
+describe("App — Already Scored Jobs tab always shows a heading, content varies (ticket f4a7f07, superseding 093d9fe)", () => {
+  async function submitResumeAndOpenScoredTab() {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+  }
+
+  it("shows a 'no jobs scored yet' message when zero results and nothing hidden below the floor", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+
+    await submitResumeAndOpenScoredTab();
+
+    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(screen.getByText("No jobs scored yet.")).toBeInTheDocument();
+  });
+
+  it("shows real results once a hiddenBelowFloor count exists, even with zero visible results", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue({ resumeId: "resume-1", results: [], hiddenBelowFloor: 3 });
+
+    await submitResumeAndOpenScoredTab();
+
+    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(screen.queryByText("No jobs scored yet.")).not.toBeInTheDocument();
+  });
+
+  it("shows real results once they exist", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue({
+      resumeId: "resume-1",
+      results: [
+        {
+          jobId: "job-1",
+          externalId: "ext-1",
+          title: "Backend Engineer",
+          company: "Acme",
+          dataSource: "greenhouse",
+          location: null,
+          locationType: null,
+          applyUrl: "https://example.com/apply",
+          matchScore: 80,
+          rationale: "Good fit.",
+          strengths: [],
+          gaps: [],
+          status: null,
+        },
+      ],
+    });
+
+    await submitResumeAndOpenScoredTab();
+
+    expect(await screen.findByText("Backend Engineer")).toBeInTheDocument();
+  });
+
+  it("still surfaces a real fetch error", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockRejectedValue(new Error("network down"));
+
+    await submitResumeAndOpenScoredTab();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load results");
   });
 });

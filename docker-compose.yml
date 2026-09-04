@@ -90,6 +90,15 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    ports:
+      # Loopback only -- same reasoning as postgres/rabbitmq above. Neither
+      # apps/api's Fastify server nor apps/web's Vite dev server is exposed
+      # here by default: `docker compose --profile dev up` alone gets you a
+      # shell (start-dev.sh), not a browsable app. `pnpm dev` still has to
+      # be run inside that shell for either port to answer anything.
+      - "127.0.0.1:3000:3000" # apps/api (Fastify)
+      - "127.0.0.1:5173:5173" # apps/web (Vite) -- see vite.config.ts's
+      # `server.host` for why binding inside this container needs it
     env_file:
       - .env
     environment:

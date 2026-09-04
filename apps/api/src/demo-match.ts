@@ -32,6 +32,7 @@ import {
   userJobStatuses,
 } from "./db/schema.js";
 import { ingestJobsForSearch } from "./ingest/ingestJobs.js";
+import { loadEnvFile } from "./load-env.js";
 import { createAshbySourceFromEnv } from "./sources/ashby.js";
 import { CompositeSource, type PerSourceOutcome } from "./sources/composite.js";
 import { createGreenhouseSourceFromEnv } from "./sources/greenhouse.js";
@@ -43,7 +44,18 @@ import {
 } from "./sources/swe-filter.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "./sources/types.js";
 
-process.loadEnvFile();
+// See load-env.ts: `process.loadEnvFile()` looks for `.env` relative to the
+// CURRENT WORKING DIRECTORY, not this file's location. That's /workspace
+// when this module is reached via its own standalone entry point (`npx tsx
+// apps/api/src/demo-match.ts` from the repo root, per the file header), but
+// `apps/api` when the server starts via `pnpm --filter @app/api dev` or the
+// root `pnpm dev` (pnpm runs a workspace package's scripts with cwd set to
+// that package's directory) -- there is no apps/api/.env, only the root
+// one. In the real dev-container flow this is harmless either way:
+// docker-compose.yml's `env_file: .env` on the `dev` service already
+// injects every variable into `process.env` before this module loads, so a
+// missing *local* .env here just means there's nothing left to add.
+loadEnvFile();
 
 /**
  * Scoring model. Chosen 2026-08-22 on the evidence of the A/B in
@@ -689,7 +701,29 @@ export type CostEstimate = {
    */
   estimatedCacheCreationTokens: number;
   estimatedOutputTokens: number;
+  /** Kept for internal reference — equals `probableCostUsd` on "measured"
+   * basis, `maxCostUsd` on "bootstrap". Not for display (ticket e85fa9b) —
+   * UI code reads `maxCostUsd`/`probableCostUsd` directly. */
   estimatedCostUsd: number;
+  /**
+   * A genuine worst-case ceiling: `MAX_OUTPUT_TOKENS` (the model's real,
+   * code-enforced hard cap) applied to every job, on top of the same
+   * input/cache token figures used for `probableCostUsd`. Never exceeded
+   * by a real run. Computed on both `basis` values (ticket e85fa9b) — this
+   * used to be the ONLY figure "bootstrap" produced, with no ceiling
+   * computed for "measured" at all.
+   */
+  maxCostUsd: number;
+  /**
+   * Best real-data guess at actual cost. "measured": genuine historical
+   * averages from `usageStats` — grounded, not assumed. "bootstrap": no
+   * completed run has ever produced `usageStats` yet, so there is no real
+   * signal to discount the ceiling by — this deliberately equals
+   * `maxCostUsd` rather than invent an unfounded discount (see
+   * `estimateScoringCost` below). Narrow/temporary: the app's first
+   * completed run makes every later estimate "measured".
+   */
+  probableCostUsd: number;
   /**
    * "measured": both averages come from `usageStats` — real recorded calls
    * from a prior run. "bootstrap": no recorded calls exist yet, so input is
@@ -780,6 +814,8 @@ export function estimateScoringCost(
       estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
+      maxCostUsd: 0,
+      probableCostUsd: 0,
       basis,
     };
   }
@@ -789,6 +825,14 @@ export function estimateScoringCost(
   let estimatedCacheCreationTokens: number;
   let estimatedOutputTokens: number;
   let estimatedCostUsd: number;
+  // Ticket e85fa9b: a genuine worst-case companion to `estimatedCostUsd`,
+  // computed on BOTH basis values now (previously only bootstrap had one).
+  // Same input/cache-token figures either way -- those come from real
+  // prompt/prefix character counts, not from the stochastic part (output
+  // length) -- with output priced at `MAX_OUTPUT_TOKENS * jobCount`, the
+  // model's real, code-enforced hard cap, instead of whatever this
+  // basis's `estimatedOutputTokens` assumption is.
+  let maxCostUsd: number;
 
   if (basis === "measured") {
     const avgInputTokens = usageStats!.totalInputTokens / usageStats!.calls;
@@ -838,6 +882,9 @@ export function estimateScoringCost(
       estimatedCostUsd =
         (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
         (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+      maxCostUsd =
+        (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+        ((MAX_OUTPUT_TOKENS * jobCount) / 1e6) * pricePerMillionTokens.out;
     } else {
       estimatedInputTokens = Math.round(avgInputTokens * jobCount);
       // Cache READS scale per job — every job AFTER the run's first reads
@@ -869,6 +916,13 @@ export function estimateScoringCost(
           pricePerMillionTokens.in *
           CACHE_WRITE_PRICE_MULTIPLIER +
         (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+      maxCostUsd =
+        (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
+        (estimatedCacheReadTokens / 1e6) * pricePerMillionTokens.in * CACHE_READ_PRICE_MULTIPLIER +
+        (estimatedCacheCreationTokens / 1e6) *
+          pricePerMillionTokens.in *
+          CACHE_WRITE_PRICE_MULTIPLIER +
+        ((MAX_OUTPUT_TOKENS * jobCount) / 1e6) * pricePerMillionTokens.out;
     }
   } else {
     const totalPromptChars = jobsToScore.reduce(
@@ -885,7 +939,19 @@ export function estimateScoringCost(
     estimatedCostUsd =
       (estimatedInputTokens / 1e6) * pricePerMillionTokens.in +
       (estimatedOutputTokens / 1e6) * pricePerMillionTokens.out;
+    // Bootstrap's `estimatedOutputTokens` is ALREADY the worst case
+    // (MAX_OUTPUT_TOKENS * jobCount, see above) -- estimatedCostUsd IS the
+    // ceiling here, nothing further to compute.
+    maxCostUsd = estimatedCostUsd;
   }
+
+  // `probableCostUsd`: on "measured", `estimatedCostUsd` already IS the
+  // real-data best guess (historical averages) -- use it directly. On
+  // "bootstrap", there is no measured data anywhere yet to discount the
+  // ceiling by without guessing, so this deliberately equals `maxCostUsd`
+  // rather than invent an unfounded lower figure -- see `CostEstimate`'s
+  // doc comment above.
+  const probableCostUsd = basis === "measured" ? estimatedCostUsd : maxCostUsd;
 
   return {
     jobCount,
@@ -894,12 +960,22 @@ export function estimateScoringCost(
     estimatedCacheCreationTokens,
     estimatedOutputTokens,
     estimatedCostUsd,
+    maxCostUsd,
+    probableCostUsd,
     basis,
   };
 }
 
 /**
- * Human-readable rendering of a `CostEstimate` (ticket 16c824a review F4).
+ * Human-readable, token-jargon-carrying rendering of a `CostEstimate`
+ * (ticket 16c824a review F4). Used ONLY for the CLI/`main()`'s own console
+ * narration (see its call sites below) -- NOT by the REST API or the web
+ * UI as of ticket e85fa9b, which surface `CostEstimate.maxCostUsd` /
+ * `probableCostUsd` as plain numbers instead; Nicole asked not to see
+ * token/cache-bucket text in the product. Kept here because the CLI
+ * entry point (`npx tsx apps/api/src/demo-match.ts`) is a legitimate
+ * separate audience that can reasonably want the fuller technical detail.
+ *
  * The "bootstrap" basis assumes `MAX_OUTPUT_TOKENS` (2000) of output for
  * EVERY job — that constant's own doc comment says that cap is "rarely
  * actually reached" (the JSON schema is small: a score, a rationale, two
@@ -1944,6 +2020,8 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
         estimatedCacheCreationTokens: 0,
         estimatedOutputTokens: 0,
         estimatedCostUsd: 0,
+        maxCostUsd: 0,
+        probableCostUsd: 0,
         basis: "bootstrap",
       },
     };

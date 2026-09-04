@@ -140,148 +140,197 @@ export class GreenhouseSource implements JobSource {
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
-    const tokenOutcomes: TokenOutcome[] = [];
+    const total = this.#boardTokens.length;
+    // Indexed, not pushed-to: workers below complete in COMPLETION order,
+    // not the original board-token order (that's the whole point of
+    // concurrency). Writing each outcome to its origin index and filtering
+    // at the end (below) restores the original `this.#boardTokens` order
+    // in the returned `tokenOutcomes` regardless of which token's fetch
+    // happened to resolve first -- preserving the exact ordered-output
+    // contract every existing caller/test already depends on.
+    const tokenOutcomesByIndex: (TokenOutcome | undefined)[] = new Array(total);
 
     // ---------------------------------------------------------------------
-    // Per-error-kind isolation policy (ticket b723fb9, review round 2).
-    // Sequential, not Promise.all: keeps this well-behaved against an
-    // unauthenticated public API shared by every Greenhouse consumer, and
-    // keeps a 429/5xx on one token from firing a burst of simultaneous
-    // requests at the others. Four outcomes for a single token's fetch,
-    // each handled differently below:
+    // Per-error-kind isolation policy (ticket b723fb9, review round 2),
+    // now run through a bounded-concurrency pool (ticket b681d18) instead
+    // of strictly one request at a time. Nicole, told the real tradeoff
+    // (meaningfully faster against real measured 5-8s/board timings on the
+    // 25-token list, small increase in rate-limit risk vs. hammering a
+    // shared unauthenticated public API): "yes, moderate parallelism
+    // (~5 at once)". CONCURRENCY below is that choice, not a full
+    // Promise.all across all 25 -- that full-parallel shape was the one
+    // explicitly rejected.
     //
-    //   - 404 (UnexpectedStatusError, status 404): ISOLATED, continue. A
-    //     property of the token (typo, renamed company, never existed) —
-    //     permanent, and will 404 identically forever. No reason to let it
-    //     discard jobs already collected from healthy boards.
+    // Four outcomes for a single token's fetch, each handled differently:
+    //
+    //   - 404 (UnexpectedStatusError, status 404): ISOLATED, worker moves
+    //     to the next queued token. A property of the token (typo, renamed
+    //     company, never existed) — permanent, will 404 identically
+    //     forever. No reason to let it discard jobs already collected from
+    //     healthy boards.
     //
     //   - TransientSourceError (timeout, network failure, 5xx): ISOLATED,
-    //     continue. A property of THIS request, not the whole batch — real
-    //     captured timings on the widened 25-token list showed boards
-    //     taking 5-8 real seconds against a 15s timeout, so a single slow/
-    //     flaky board is a meaningfully more likely event at 25 tokens than
-    //     it was at 4. A retry of the exact same request may well succeed.
+    //     worker moves on. A property of THIS request, not the whole
+    //     batch — real captured timings on the widened 25-token list
+    //     showed boards taking 5-8 real seconds against a 15s timeout, so
+    //     a single slow/flaky board is a meaningfully more likely event at
+    //     25 tokens than it was at 4. A retry of the exact same request
+    //     may well succeed.
     //
-    //   - ForbiddenError (403): ISOLATED, continue. Per this file's own
-    //     `parseResponse` doc comment and `ForbiddenError`'s doc comment in
-    //     types.ts, a 403 here is treated as a transient edge/WAF block
-    //     ("not reliably permanent... a WAF rule or fingerprint can change
-    //     request-to-request"), not a systemic rejection — the isolation
-    //     branch that exists for exactly that kind of per-request blip.
-    //     (This is a corrected boundary — a first pass at this comment
-    //     grouped 403 with 401 as "very likely to recur identically",
-    //     which contradicted both of those pre-existing doc comments.)
+    //   - ForbiddenError (403): ISOLATED, worker moves on. Per this file's
+    //     own `parseResponse` doc comment and `ForbiddenError`'s doc
+    //     comment in types.ts, a 403 here is treated as a transient
+    //     edge/WAF block ("not reliably permanent... a WAF rule or
+    //     fingerprint can change request-to-request"), not a systemic
+    //     rejection.
     //
-    //   - RateLimitedError (429): ISOLATED, but by `break`, not `continue`.
-    //     "Stop hammering an already-rate-limited, shared, unauthenticated
-    //     endpoint" and "discard every job already fetched from healthy
-    //     boards" are two separate decisions, and only the first follows
-    //     from a 429. `break` implements the first — no further requests
-    //     go out — while still returning everything already collected
-    //     instead of throwing it away. Every token that was never attempted
-    //     is recorded as "error" so a caller can see, per token, which
-    //     boards this run didn't get to and why, rather than a search()
-    //     that made real progress (e.g. 11 of 25 boards, thousands of
-    //     postings) surfacing to its caller as nothing at all.
+    //   - RateLimitedError (429): ISOLATED for the token itself, but ALSO
+    //     sets a shared `rateLimitedBy` flag that every worker checks
+    //     before claiming its NEXT token — no worker starts a NEW request
+    //     once any worker has seen a 429. This is the one behavior that
+    //     genuinely changes shape under concurrency: with CONCURRENCY
+    //     workers already in flight when a 429 lands, up to
+    //     CONCURRENCY - 1 OTHER requests may already be running and are
+    //     allowed to complete naturally (their real per-token outcomes are
+    //     genuine information, not discarded) — this can never have been
+    //     true of the old strictly-sequential version, where a 429 was
+    //     detected before any later request had been issued at all. What's
+    //     preserved exactly: no request is ever issued for a token that
+    //     hadn't already been claimed by a worker at the moment the 429
+    //     was observed, and everything collected before that point is
+    //     still returned, never thrown away.
     //
     //   - AuthFailedError (401), MalformedResponseError, any other
-    //     UnexpectedStatusError (e.g. 400): ABORT — rethrown, whole
-    //     search() rejects. A 401 means something changed globally (this
-    //     API takes no credentials; a real 401 is not a per-token fact), a
-    //     malformed response means Greenhouse's schema moved under us, and
-    //     an unmapped 4xx is unclassified — all three should fail loudly
-    //     rather than silently degrade into a per-token status buried in a
-    //     report.
+    //     UnexpectedStatusError (e.g. 400): ABORT — the whole search()
+    //     eventually rejects. Under concurrency this can no longer happen
+    //     the INSTANT the error is seen (other in-flight workers finish
+    //     their own current request first — there is no cheap way to
+    //     cancel an in-flight `fetch` without also risking discarding a
+    //     response that was about to succeed), but the end state is
+    //     identical: once every worker has stopped, if any worker ever hit
+    //     one of these three, search() throws that error and nothing from
+    //     this call is returned, exactly as before.
     // ---------------------------------------------------------------------
-    for (let i = 0; i < this.#boardTokens.length; i++) {
-      const token = this.#boardTokens[i]!;
-      let data: GreenhouseBoardResponse;
-      try {
-        data = await this.#fetchBoard(token);
-      } catch (err) {
-        if (err instanceof UnexpectedStatusError && err.status === 404) {
-          tokenOutcomes.push({
-            token,
-            status: "not-found",
-            postingCount: 0,
-            companyName: undefined,
-            message: undefined,
-            skippedCount: 0,
-          });
-          continue;
-        }
-        if (err instanceof TransientSourceError || err instanceof ForbiddenError) {
-          tokenOutcomes.push({
-            token,
-            status: "error",
-            postingCount: 0,
-            companyName: undefined,
-            message: err.message,
-            skippedCount: 0,
-          });
-          continue;
-        }
-        if (err instanceof RateLimitedError) {
-          tokenOutcomes.push({
-            token,
-            status: "error",
-            postingCount: 0,
-            companyName: undefined,
-            message:
-              err.retryAfterMs !== undefined
-                ? `${err.message} (retry after ${err.retryAfterMs}ms)`
-                : err.message,
-            skippedCount: 0,
-          });
-          // Every remaining, never-attempted token — no request goes out
-          // for any of them this call. Recorded individually (not as one
-          // aggregate outcome) so `describeBoardOutcome` can render each
-          // one's line the same way it renders every other token.
-          for (const notAttempted of this.#boardTokens.slice(i + 1)) {
-            tokenOutcomes.push({
-              token: notAttempted,
+    const CONCURRENCY = 5;
+    let nextIndex = 0;
+    let rateLimitedBy: string | undefined;
+    let abortError: unknown;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (rateLimitedBy !== undefined || abortError !== undefined) return;
+        const i = nextIndex;
+        if (i >= total) return;
+        // Claim happens synchronously, before any `await` below — no two
+        // workers can ever claim the same index, regardless of how many
+        // run concurrently.
+        nextIndex = i + 1;
+        const token = this.#boardTokens[i]!;
+
+        let data: GreenhouseBoardResponse;
+        try {
+          data = await this.#fetchBoard(token);
+        } catch (err) {
+          if (err instanceof UnexpectedStatusError && err.status === 404) {
+            tokenOutcomesByIndex[i] = {
+              token,
+              status: "not-found",
+              postingCount: 0,
+              companyName: undefined,
+              message: undefined,
+              skippedCount: 0,
+            };
+            continue;
+          }
+          if (err instanceof TransientSourceError || err instanceof ForbiddenError) {
+            tokenOutcomesByIndex[i] = {
+              token,
               status: "error",
               postingCount: 0,
               companyName: undefined,
-              message: `not checked — search() stopped issuing requests after board "${token}" was rate-limited (HTTP 429)`,
+              message: err.message,
               skippedCount: 0,
-            });
+            };
+            continue;
           }
-          break;
+          if (err instanceof RateLimitedError) {
+            tokenOutcomesByIndex[i] = {
+              token,
+              status: "error",
+              postingCount: 0,
+              companyName: undefined,
+              message:
+                err.retryAfterMs !== undefined
+                  ? `${err.message} (retry after ${err.retryAfterMs}ms)`
+                  : err.message,
+              skippedCount: 0,
+            };
+            rateLimitedBy ??= token;
+            continue;
+          }
+          // AuthFailedError, MalformedResponseError, or an unmapped
+          // UnexpectedStatusError -- abort-worthy. Record which error wins
+          // (first one observed) and stop this worker; other in-flight
+          // workers will stop claiming new work on their next iteration.
+          abortError ??= err;
+          return;
         }
-        throw err;
-      }
 
-      let tokenSkippedCount = 0;
-      for (const item of data.jobs) {
-        if (!itemMatchesCriteria(item, criteria)) continue;
-        const result = normalizeItem(item);
-        if (result.ok) {
-          jobs.push(result.job);
-        } else {
-          skipped.push({ externalId: result.externalId, reason: result.reason });
-          tokenSkippedCount++;
+        let tokenSkippedCount = 0;
+        for (const item of data.jobs) {
+          if (!itemMatchesCriteria(item, criteria)) continue;
+          const result = normalizeItem(item);
+          if (result.ok) {
+            jobs.push(result.job);
+          } else {
+            skipped.push({ externalId: result.externalId, reason: result.reason });
+            tokenSkippedCount++;
+          }
         }
-      }
 
-      // Recorded before criteria filtering: `postingCount` (and the
-      // "empty" vs "ok" status it drives) describes the board itself, not
-      // what a particular search narrowed it down to — see the doc
-      // comment on `TokenOutcome`. `companyName` is read off the FIRST raw
-      // record only — see the WARNING on `TokenOutcome.companyName` for
-      // why a caller must not treat this as a stable per-token key.
-      tokenOutcomes.push({
-        token,
-        status: data.jobs.length === 0 ? "empty" : "ok",
-        postingCount: data.jobs.length,
-        companyName: data.jobs[0]?.company_name,
-        message: undefined,
-        skippedCount: tokenSkippedCount,
-      });
+        // Recorded before criteria filtering: `postingCount` (and the
+        // "empty" vs "ok" status it drives) describes the board itself,
+        // not what a particular search narrowed it down to — see the doc
+        // comment on `TokenOutcome`. `companyName` is read off the FIRST
+        // raw record only — see the WARNING on `TokenOutcome.companyName`
+        // for why a caller must not treat this as a stable per-token key.
+        tokenOutcomesByIndex[i] = {
+          token,
+          status: data.jobs.length === 0 ? "empty" : "ok",
+          postingCount: data.jobs.length,
+          companyName: data.jobs[0]?.company_name,
+          message: undefined,
+          skippedCount: tokenSkippedCount,
+        };
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => worker()));
+
+    if (abortError !== undefined) throw abortError;
+
+    if (rateLimitedBy !== undefined) {
+      // Every index a worker never got to claim before the flag was set.
+      // Recorded individually (not as one aggregate outcome) so
+      // `describeBoardOutcome` can render each one's line the same way it
+      // renders every other token.
+      for (let i = 0; i < total; i++) {
+        if (tokenOutcomesByIndex[i] !== undefined) continue;
+        tokenOutcomesByIndex[i] = {
+          token: this.#boardTokens[i]!,
+          status: "error",
+          postingCount: 0,
+          companyName: undefined,
+          message: `not checked — search() stopped issuing requests after board "${rateLimitedBy}" was rate-limited (HTTP 429)`,
+          skippedCount: 0,
+        };
+      }
     }
 
-    const total = jobs.length + skipped.length;
-    const skipRate = total === 0 ? 0 : skipped.length / total;
+    const tokenOutcomes = tokenOutcomesByIndex.filter((o): o is TokenOutcome => o !== undefined);
+
+    const totalRecords = jobs.length + skipped.length;
+    const skipRate = totalRecords === 0 ? 0 : skipped.length / totalRecords;
 
     return { jobs, skipped, skipRate, tokenOutcomes };
   }

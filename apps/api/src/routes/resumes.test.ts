@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CreateResumeResponse } from "@app/shared";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,9 +12,10 @@ import {
   userJobStatuses,
 } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
-process.loadEnvFile();
+loadEnvFile();
 
 // Isolated, per-run database (ticket c434a6e) — see db/test-db.ts. This
 // file used to connect straight to the shared dev Postgres.
@@ -48,12 +50,13 @@ afterAll(async () => {
   await testDb?.teardown();
 });
 
-function buildTestApp() {
+function buildTestApp(inferTitles: (resumeText: string) => Promise<string[]> = async () => []) {
   return buildApp({
     db,
     getScoreJob: () => {
       throw new Error("not used by these tests");
     },
+    inferTitles,
   });
 }
 
@@ -128,6 +131,73 @@ describe("POST /resumes", () => {
       payload: { resumeText: "x".repeat(200_001) },
     });
     expect(response.statusCode).toBe(400);
+  });
+});
+
+// Ticket 39b4a48: resume-based title-keyword inference, replacing the old
+// hardcoded software-engineering filter default.
+describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
+  it("returns real suggested titles from the injected inferTitles function", async () => {
+    const inferTitles = async () => ["Technical Writer", "Documentation Engineer"];
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const response = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as CreateResumeResponse;
+    expect(body.suggestedTitles).toEqual(["Technical Writer", "Documentation Engineer"]);
+  });
+
+  it("calls inferTitles at most once per resume: a resubmission of identical text reuses the cached suggestions", async () => {
+    let calls = 0;
+    const inferTitles = async () => {
+      calls++;
+      return ["Software Engineer"];
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(calls).toBe(1);
+    expect((first.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
+    expect((second.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
+  });
+
+  it("resume creation still succeeds (200, real id) even if inferTitles throws", async () => {
+    const inferTitles = async (): Promise<string[]> => {
+      throw new Error("simulated inference failure");
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    const response = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as CreateResumeResponse;
+    expect(typeof body.id).toBe("string");
+    expect(body.suggestedTitles).toEqual([]);
+
+    const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.resumeText).toBe(resumeText);
+  });
+
+  it("an empty inference result ([]) is itself cached, not retried on resubmission", async () => {
+    let calls = 0;
+    const inferTitles = async () => {
+      calls++;
+      return [];
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Resume text ${randomUUID()}`;
+
+    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(calls).toBe(1);
   });
 });
 
@@ -331,6 +401,104 @@ describe("GET /resumes/:id/results", () => {
       expect(dismissedBody.results).toHaveLength(1);
     },
   );
+
+  it(
+    "?includeDismissed=true returns every status (including dismissed) in one view, without " +
+      "changing the default (ticket bec2f98)",
+    async () => {
+      const app = buildTestApp();
+      const resumeText = `Include-dismissed resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      const untouchedId = await seedScoredJob(resumeId, 80, "Untouched job");
+      const savedId = await seedScoredJob(resumeId, 75, "Saved job");
+      const dismissedId = await seedScoredJob(resumeId, 70, "Dismissed job");
+
+      await db.insert(userJobStatuses).values([
+        {
+          id: randomUUID(),
+          jobId: savedId,
+          status: "saved",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: randomUUID(),
+          jobId: dismissedId,
+          status: "dismissed",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      const byId = (results: Array<{ jobId: string; status: string | null }>) =>
+        new Map(results.map((r) => [r.jobId, r.status]));
+
+      // The existing default view is untouched by this ticket -- still
+      // excludes the dismissed job.
+      const defaultView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results`,
+      });
+      const defaultBody = defaultView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      expect(byId(defaultBody.results).has(dismissedId)).toBe(false);
+
+      const includeDismissedView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?includeDismissed=true`,
+      });
+      expect(includeDismissedView.statusCode).toBe(200);
+      const includeDismissedBody = includeDismissedView.json() as {
+        results: Array<{ jobId: string; status: string | null }>;
+      };
+      const statuses = byId(includeDismissedBody.results);
+      expect(statuses.get(untouchedId)).toBeNull();
+      expect(statuses.get(savedId)).toBe("saved");
+      expect(statuses.get(dismissedId)).toBe("dismissed");
+      expect(includeDismissedBody.results).toHaveLength(3);
+    },
+  );
+
+  it("an explicit ?status= still wins over ?includeDismissed=true (single-status filter, not a union)", async () => {
+    const app = buildTestApp();
+    const resumeText = `Status-wins-over-include-dismissed resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    const savedId = await seedScoredJob(resumeId, 75, "Saved job");
+    const dismissedId = await seedScoredJob(resumeId, 70, "Dismissed job");
+
+    await db.insert(userJobStatuses).values([
+      {
+        id: randomUUID(),
+        jobId: savedId,
+        status: "saved",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        jobId: dismissedId,
+        status: "dismissed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/resumes/${resumeId}/results?status=saved&includeDismissed=true`,
+    });
+    const body = response.json() as { results: Array<{ jobId: string }> };
+    expect(body.results.map((r) => r.jobId)).toEqual([savedId]);
+  });
 
   it("rejects a non-numeric minScore with 400, not 500", async () => {
     const app = buildTestApp();

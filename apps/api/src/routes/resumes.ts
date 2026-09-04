@@ -68,6 +68,13 @@ export function registerResumeRoutes(
   app: FastifyInstance,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
+  /**
+   * Ticket 39b4a48: real title-keyword inference, one Claude call per
+   * genuinely-new resume. Injected (not called directly) so route tests
+   * can pass a fake instead of making a real paid call — same DI pattern
+   * `registerSearchRoutes`'s `getScoreJob`/`resolveSourceIds` already use.
+   */
+  inferTitles: (resumeText: string) => Promise<string[]>,
 ): void {
   app.post<{ Body: { resumeText: string } }>(
     "/resumes",
@@ -90,7 +97,43 @@ export function registerResumeRoutes(
       // genuinely new resume gets a new id whose scores start empty (no
       // job_matches rows exist for it yet — see GET /resumes/:id/results).
       const id = await getOrCreateResumeId(db, resumeText);
-      const response: CreateResumeResponse = { id };
+
+      // Ticket 39b4a48: suggested title keywords, computed at most ONCE per
+      // resume and cached on the row — `suggestedTitles === null` means
+      // inference has never run for this id (schema.ts's column doc
+      // comment). Since `id` is content-addressed, a resubmission of
+      // identical resume text reuses the same row and never re-pays for
+      // this. `inferTitles` itself is documented to never throw (see
+      // resume-title-inference.ts) — a failure degrades to `[]` — but this
+      // is wrapped in its own try/catch anyway, defense in depth: resume
+      // creation succeeding must never depend on a callee honoring its own
+      // contract (this is an injected dependency; a test double or a
+      // future implementation could throw).
+      const existingRow = await db
+        .select({ suggestedTitles: resumes.suggestedTitles })
+        .from(resumes)
+        .where(eq(resumes.id, id))
+        .limit(1);
+      let suggestedTitles = existingRow[0]?.suggestedTitles ?? null;
+      if (suggestedTitles === null) {
+        try {
+          suggestedTitles = await inferTitles(resumeText);
+        } catch (err) {
+          request.log.error({ err, id }, "title inference failed, continuing with none");
+          suggestedTitles = [];
+        }
+        try {
+          await db.update(resumes).set({ suggestedTitles }).where(eq(resumes.id, id));
+        } catch (err) {
+          // A failed WRITE of the (already-computed) suggestions must not
+          // fail resume creation either — the response below still carries
+          // the real suggestions this request computed; only a FUTURE
+          // request for this same resume id would redundantly re-infer.
+          request.log.error({ err, id }, "failed to persist suggestedTitles");
+        }
+      }
+
+      const response: CreateResumeResponse = { id, suggestedTitles };
       return reply.code(200).send(response);
     },
   );
@@ -111,10 +154,10 @@ export function registerResumeRoutes(
 
   app.get<{
     Params: { id: string };
-    Querystring: { source?: string; minScore?: string; status?: string };
+    Querystring: { source?: string; minScore?: string; status?: string; includeDismissed?: string };
   }>("/resumes/:id/results", async (request, reply) => {
     const resumeId = request.params.id;
-    const { source, minScore, status } = request.query;
+    const { source, minScore, status, includeDismissed } = request.query;
 
     // Ticket 484889d: validated the same way ?source= is below — an
     // unrecognized status string must 400, not silently match nothing.
@@ -161,17 +204,31 @@ export function registerResumeRoutes(
 
     // The default-dismissed-exclusion (ticket 484889d decision #2: "a
     // dismissed job should leave the visible list") applies whenever the
-    // caller didn't ask for a specific status. `isNull(...)` covers a job
-    // with no `user_job_statuses` row at all (the common case — most jobs
-    // have never been touched), `ne(...)` covers one with a real row whose
+    // caller didn't ask for a specific status AND didn't opt into
+    // `includeDismissed` (ticket bec2f98: Nicole wants a dismissed job to
+    // still surface, visibly marked, in a fresh search's results and in the
+    // "Already Scored Jobs" tab's grouping — both need every status back,
+    // not just non-dismissed). `isNull(...)` covers a job with no
+    // `user_job_statuses` row at all (the common case — most jobs have
+    // never been touched), `ne(...)` covers one with a real row whose
     // status isn't `dismissed`. Postgres's `!=` is NULL, not true, against a
     // NULL column, which is exactly why the `isNull` half is needed
-    // separately rather than relying on `ne` alone to include untouched rows.
-    function statusCondition(): SQL {
+    // separately rather than relying on `ne` alone to include untouched
+    // rows. Returns `undefined` (no condition at all) for the
+    // includeDismissed case, rather than reconstructing "any status" as an
+    // always-true SQL fragment — the caller below only pushes a defined
+    // condition into the WHERE clause.
+    const includeDismissedFlag = includeDismissed === "true";
+    function statusCondition(): SQL | undefined {
       if (statusFilter !== undefined) return eq(userJobStatuses.status, statusFilter);
+      if (includeDismissedFlag) return undefined;
       return or(isNull(userJobStatuses.status), ne(userJobStatuses.status, "dismissed"))!;
     }
 
+    // `and()` (drizzle-orm) already filters out `undefined` entries, so
+    // `statusCondition()`'s "no restriction" case (includeDismissed, no
+    // explicit ?status=) can be spliced in directly here without a separate
+    // push-if-defined step.
     const conditions = [eq(jobMatches.resumeId, resumeId), statusCondition()];
     if (source !== undefined) conditions.push(eq(jobsTable.dataSource, source));
     if (minScoreNum !== undefined) conditions.push(gte(jobMatches.matchScore, minScoreNum));
