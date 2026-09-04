@@ -35,10 +35,10 @@ Expeditors               519 posting(s), 0 would survive filtering
 
 A `0 posting(s)` line (as opposed to `INVALID`) means the script's own
 Finding-1 disambiguation (`checkCareersSiteValidity`, reused from
-`smartrecruiters.ts`) positively confirmed the identifier as a real
-SmartRecruiters customer with a currently empty board — not an unrecognized
-identifier silently reading as empty. Confirmed directly, independent of the
-script, for all six:
+`smartrecruiters.ts`) got a direct HTTP 200 from
+`careers.smartrecruiters.com/{company}` rather than the 3xx-to-`jobs.
+smartrecruiters.com` redirect Finding 1 documents for an unrecognized/
+typo'd identifier:
 
 ```
 Nike        | totalFound: 0 | careers status: 200 | location: null
@@ -49,13 +49,23 @@ PACCAR      | totalFound: 0 | careers status: 200 | location: null
 Visa        | totalFound: 0 | careers status: 200 | location: null
 ```
 
-`careers.smartrecruiters.com/{company}` returned a direct HTTP 200 for every
-one of them (a genuine careers microsite), not the 3xx-to-`jobs.
-smartrecruiters.com` redirect `smartrecruiters.ts`'s Finding 1 documents for
-an unrecognized/typo'd identifier. So this is not a config typo: these are
-six real SmartRecruiters customers that simply aren't posting anything on
-the platform right now. Nothing for the filter to evaluate — it isn't
-misbehaving, there's no input.
+**Correction from adversarial review (2026-09-04):** a bare `careers status:
+200` is weaker evidence than the first draft of this doc claimed —
+SmartRecruiters issues a distinct tenant page (200) for essentially any
+plausible-looking slug, including invented ones (`Nike1`, `NikeInc`,
+`VisaInc` all return 200 as separate tenants from the real accounts). A 200
+proves a tenant exists, not that it's the specific real employer intended.
+What actually rules out "this is a typo'd/wrong identifier" is a broader
+sweep: the review checked ~20 plausible identifier variants per company
+(`paccar`, `PACCAR_US`, `tmobile`, `TMobileUS`, etc.) and every variant
+returns `totalFound: 0` too — consistent with "this employer's SmartRecruiters
+presence is genuinely empty right now" and inconsistent with "the configured
+slug just happens to be wrong while some other slug for the same employer
+has real postings." Combined with each configured identifier matching the
+employer's own public branding exactly (not a guess), this is not a config
+typo: these six are being asked correctly and simply aren't posting
+anything on the platform right now. Nothing for the filter to evaluate —
+it isn't misbehaving, there's no input.
 
 ## Why Expeditors' 519 postings don't survive
 
@@ -85,12 +95,17 @@ sap|cloud|api|devops|architect`) found exactly **2 unique titles**, out of
 356 unique titles on the board:
 
 - `Data Engineer III/Senior (Analytics)` — 4 open reqs, real captured
-  locations: Edison NJ, Irving TX, Ellenwood GA, Romulus MI. Every one has
-  structured `location.remote: false, location.hybrid: false` — onsite,
-  none in the PNW, none remote. `classifyGeography` correctly resolves
-  these to "unknown" (no PNW match, no "united states"/"usa"/"us" text
-  match on a bare city/state string) and the job fails
-  `passesLocationFilter` regardless of the title question. The title also
+  locations: `"Edison, NJ, United States"`, `"Irving, TX, United States"`,
+  `"Ellenwood, GA, United States"`, `"Romulus, MI, United States"`. Every
+  one has structured `location.remote: false, location.hybrid: false` —
+  onsite, none in the PNW. **Correction from adversarial review
+  (2026-09-04):** the first draft of this doc said `classifyGeography`
+  resolves these to `"unknown"` — wrong. The "United States" text matches
+  the US-wide geography regex, so `classifyGeography` actually returns
+  `"us-wide"`, not `"unknown"`. The outcome is unchanged (`us-wide` +
+  onsite/non-remote still fails `passesLocationFilter`, same as
+  `"unknown"` would), but the stated mechanism was wrong and is corrected
+  here. The title also
   genuinely doesn't match `SOFTWARE` — "Data Engineer" is a data-engineering
   title, and this project's filter already deliberately treats adjacent
   roles (e.g. `data scientist` in `NOT`) as out of scope, consistent with
@@ -114,15 +129,10 @@ false,"fullLocation":"Europe, , OTHER"}`. Structured `remote`/`hybrid`
   519-record set to validate a widened regex against, this is left
   unchanged and simply recorded here.
 
-Fixture: a trimmed real 10-record page of this exact live response is
-committed at
-`__fixtures__/smartrecruiters-real-response-expeditors-postings-page1.json`
-(fetched 2026-09-04) for future reference.
-
 **Expeditors does have a genuine PNW footprint** — its HQ is Bellevue/
 Federal Way, WA, and 19 of its 519 live postings are physically located in
-the Seattle area (`classifyGeography` correctly reads these as `"pnw"`).
-None of them are software engineering roles:
+the Seattle area, correctly classifying as `"pnw"`. None of them are
+software engineering roles:
 
 ```
 Payroll Specialist                                    | Seattle, WA
@@ -134,8 +144,24 @@ Logistics Security Analyst                             | Seattle, WA
 Customer Service Representative - Customs Brokerage    | Federal Way, WA
 ```
 
-So the location filter is not silently discarding a real Seattle-area SWE
-posting either — there simply isn't one on this board right now.
+**Correction from adversarial review (2026-09-04):** the first draft of
+this doc claimed all 19 "correctly" classify as `pnw`, presented as
+evidence the filter is working right. That's not quite true — one of the
+19 is `"Manager - Project Cargo Services, AU/NZ" | Jandakot, WA,
+Australia`, which classifies `pnw` too, because `PNW`'s `,\s*wa\b`
+alternation matches "WA" as a bare 2-letter code without checking the
+country — it can't distinguish Washington State from Western Australia.
+This posting only fails to appear in results because of the unrelated
+`manager` title exclusion, not because the location filter correctly
+identified it as non-PNW. That's a real, separate latent bug, filed as its
+own ticket (7ab1b57) rather than fixed here, since fixing it isn't in this
+ticket's scope and deserves its own real-data-first treatment like the DC
+guard and Ashby PLACE fixes. The other 18 of the 19 are genuinely
+Seattle/Bellevue/Federal-Way US postings and do correctly classify `pnw`.
+
+So, setting the Australia false-positive aside, the location filter is not
+silently discarding a real Seattle-area SWE posting — there simply isn't
+one on this board right now.
 
 ## Ruling out case (a) — no location-format gap found
 
@@ -146,11 +172,15 @@ string at all — it carries a structured `location.remote` boolean instead)
 was the first thing checked here, since `swe-filter.ts`'s own top-of-file
 comment names SmartRecruiters explicitly as a historical victim of that bug.
 It is fixed and stayed fixed: this ticket's real data confirms the
-structured-boolean path works correctly both directions — genuine PNW
-postings (the 19 Bellevue/Seattle listings above) correctly classify as
-`"pnw"`, and genuine non-PNW onsite postings (Data Engineer, Global
-Technology Engineer) correctly classify as excluded. Nothing in this
-investigation reproduces a location-string format the filter mishandles.
+structured-boolean path works correctly both directions — the 18 genuine
+Bellevue/Seattle/Federal-Way postings correctly classify as `"pnw"`, and
+genuine non-PNW onsite postings (Data Engineer, Global Technology
+Engineer) correctly classify as excluded/failing. (A different, unrelated
+bug — the `,\s*wa\b` PNW regex also matching Western Australia, ticket
+7ab1b57 — surfaced in this same 19-posting set; that's a false-positive-
+geography bug, not a recurrence of Ashby's hyphen-format bug, which was a
+false-negative on genuinely-PNW text.) Nothing in this investigation
+reproduces Ashby's specific location-string-format failure mode.
 
 ## Recommendation for Nicole
 
