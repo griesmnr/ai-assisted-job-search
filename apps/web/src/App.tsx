@@ -351,6 +351,7 @@ function App() {
                   <ResultsList
                     data={resultsState.data}
                     selectedSourceIds={selectedSourceIds}
+                    resumeId={resumeId}
                     onSetStatus={handleSetStatus}
                   />
                 ) : (
@@ -377,6 +378,7 @@ function App() {
               <GroupedResultsList
                 data={resultsState.data}
                 selectedSourceIds={selectedSourceIds}
+                resumeId={resumeId}
                 groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
               />

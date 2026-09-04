@@ -250,6 +250,46 @@ export const userJobStatuses = pgTable(
   (table) => [unique().on(table.jobId)],
 );
 
+/**
+ * A short-lived, cross-app handoff (ticket dbfd594): "Optimize Resume"
+ * links to Nicole's separate resume-tailoring app with a job description
+ * + resume text payload. That app runs on a different origin (its own
+ * Vercel deployment), so this app can't write into its localStorage or
+ * cram both full texts into the URL itself (resume text alone can run to
+ * MAX_RESUME_TEXT_LENGTH, 200K chars — far past any browser's safe URL
+ * length). Instead: this row IS the payload, addressed by its own `id`
+ * (a UUID, already unguessable — no separate token column needed); the
+ * link the user clicks carries only `?import=<GET /handoffs/:id URL>`,
+ * and the receiving app does a plain `fetch()` on it.
+ *
+ * `resumeText`/`jobDescription`/`jobTitle`/`company` are SNAPSHOTTED at
+ * creation time, not live-joined from `resumes`/`jobs` at read time —
+ * deliberately, so the handoff still resolves correctly even if the
+ * underlying resume or job row changes (or, in a future where postings
+ * get pruned, is deleted) before the short TTL expires. A handoff is a
+ * point-in-time payload, not a live view.
+ */
+export const handoffs = pgTable("handoffs", {
+  id: text("id").primaryKey(),
+  jobId: text("job_id")
+    .notNull()
+    .references(() => jobs.id),
+  resumeId: text("resume_id")
+    .notNull()
+    .references(() => resumes.id),
+  resumeText: text("resume_text").notNull(),
+  jobDescription: text("job_description").notNull(),
+  jobTitle: text("job_title").notNull(),
+  company: text("company").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Fixed short TTL from creation (HANDOFF_TTL_MS in routes/handoffs.ts) —
+  // stored as a concrete timestamp, not recomputed from createdAt at read
+  // time, so the expiry check is a single indexed-free comparison and the
+  // TTL policy can change later without invalidating rows already written
+  // under the old one.
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
 export const searchSources = pgTable("search_sources", {
   id: text("id").primaryKey(),
   searchId: text("search_id")
