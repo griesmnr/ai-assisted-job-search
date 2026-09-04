@@ -282,12 +282,13 @@ export function SearchFlow({
       {(phase.kind === "estimated" || phase.kind === "starting") && (
         <div className="cost-panel" aria-label="Cost estimate">
           <h3>Before you spend anything</h3>
-          <p>{phase.estimate.costEstimateDescription}</p>
           <dl>
             <dt>Jobs that would be scored</dt>
             <dd>{phase.estimate.costEstimate.jobCount}</dd>
-            <dt>Estimated cost</dt>
-            <dd>${phase.estimate.costEstimate.estimatedCostUsd.toFixed(2)}</dd>
+            <dt>Max cost</dt>
+            <dd>${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}</dd>
+            <dt>Probable cost</dt>
+            <dd>${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}</dd>
             <dt>Already scored (free, reused)</dt>
             <dd>{phase.estimate.alreadyScored}</dd>
             {phase.estimate.cappedCount > 0 && (
@@ -332,9 +333,10 @@ export function SearchFlow({
             {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
           </p>
           <p className="cost-caveat">
-            Estimated cost for this run: ${phase.estimate.costEstimate.estimatedCostUsd.toFixed(2)}{" "}
-            (pre-run estimate — the job count above updates live, but per-run cost is still only
-            available as this pre-run figure; see this component's top-of-file notes).
+            Probable cost for this run: ${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}
+            {" "}(max ${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}) — pre-run estimate, the
+            job count above updates live but per-run cost is still only available as this pre-run
+            figure; see this component's top-of-file notes.
           </p>
         </div>
       )}
@@ -351,8 +353,10 @@ export function SearchFlow({
                 <dd>{phase.result.failed}</dd>
                 <dt>Skipped (already scored)</dt>
                 <dd>{phase.result.skipped}</dd>
-                <dt>This run's estimated cost</dt>
-                <dd>${phase.result.costEstimate.estimatedCostUsd.toFixed(2)}</dd>
+                <dt>This run's probable cost</dt>
+                <dd>${phase.result.costEstimate.probableCostUsd.toFixed(2)}</dd>
+                <dt>This run's max cost</dt>
+                <dd>${phase.result.costEstimate.maxCostUsd.toFixed(2)}</dd>
               </dl>
               <SourceOutcomesList
                 sourceOutcomes={phase.result.sourceOutcomes}

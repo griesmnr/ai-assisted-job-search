@@ -43,12 +43,7 @@ import type {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import {
-  describeCostEstimate,
-  runDemoMatch,
-  type RunDemoMatchResult,
-  type ScoreJobFn,
-} from "../demo-match.js";
+import { runDemoMatch, type RunDemoMatchResult, type ScoreJobFn } from "../demo-match.js";
 import { resumes, searches as searchesTable } from "../db/schema.js";
 import { compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
@@ -250,7 +245,6 @@ export function registerSearchRoutes(
       const response: EstimateSearchResponse = {
         resumeId,
         costEstimate: result.costEstimate,
-        costEstimateDescription: describeCostEstimate(result.costEstimate),
         candidatesNeedingScore: result.candidatesNeedingScore,
         scoreThreshold: result.scoreThreshold,
         cappedCount: result.cappedCount,

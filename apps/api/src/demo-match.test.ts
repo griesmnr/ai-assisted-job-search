@@ -2548,6 +2548,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
       estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 258_000, // 2000 * 129 — the worst-case bootstrap assumption
       estimatedCostUsd: 4.93,
+      maxCostUsd: 4.93,
+      probableCostUsd: 4.93,
       basis: "bootstrap",
     });
     expect(description).toMatch(/^≤\$4\.93/);
@@ -2562,6 +2564,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
       estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 40_000,
       estimatedCostUsd: 1.83,
+      maxCostUsd: 3.5,
+      probableCostUsd: 1.83,
       basis: "measured",
     });
     expect(description).toMatch(/^~\$1\.83/);
@@ -2576,6 +2580,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
       estimatedCacheCreationTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
+      maxCostUsd: 0,
+      probableCostUsd: 0,
       basis: "bootstrap",
     });
     expect(description).toBe("$0.00 (nothing needs scoring)");
@@ -2603,6 +2609,8 @@ describe("describeCostEstimate (ticket 16c824a review F4)", () => {
       estimatedCacheCreationTokens: 331_440,
       estimatedOutputTokens: 100_000,
       estimatedCostUsd: 1.93,
+      maxCostUsd: 3.0,
+      probableCostUsd: 1.93,
       basis: "measured" as const,
     };
     const description = describeCostEstimate(estimate);
