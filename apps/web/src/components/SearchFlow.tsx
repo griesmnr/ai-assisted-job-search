@@ -273,7 +273,7 @@ export function SearchFlow({
         </button>
       )}
       {phase.kind === "estimating" && (
-        <p className="estimating">
+        <p className="estimating" role="status">
           <span className="spinner" aria-hidden="true" />
           Getting a cost estimate... this may take a minute.
         </p>

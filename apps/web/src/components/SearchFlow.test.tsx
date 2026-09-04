@@ -494,3 +494,24 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
 });
+
+describe("SearchFlow — estimating phase feedback (ticket 541b55b)", () => {
+  it("shows a spinner and wait-time copy while the estimate request is in flight", async () => {
+    const { promise, resolve } = deferred<EstimateSearchResponse>();
+    estimateSearch.mockReturnValue(promise);
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("this may take a minute");
+    expect(status.querySelector(".spinner")).not.toBeNull();
+
+    // Resolve so the deferred promise doesn't leak into the next test.
+    await act(async () => {
+      resolve(makeEstimate());
+      await promise;
+    });
+  });
+});
