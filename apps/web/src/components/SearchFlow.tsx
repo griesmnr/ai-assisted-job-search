@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EstimateSearchResponse, SearchCriteria, SearchStatusResponse } from "@app/shared";
 import { estimateSearch, getSearchStatus, startSearch } from "../api/client";
+import { clearActiveSearchFor, readActiveSearch, writeActiveSearch } from "../session";
 import { SourceOutcomesList } from "./SourceOutcomesList";
 
 /** `criteria` is a small plain object of primitives/string arrays (see
@@ -50,6 +51,14 @@ type Phase =
       kind: "running";
       estimate: EstimateSearchResponse;
       searchId: string;
+      /** Which resume this run belongs to (ticket 3f05144). Carried on the
+       * phase rather than read from the live `resumeId` prop for the same
+       * reason `"estimated"` snapshots its inputs: the props can change
+       * under a run that is already in flight (the user pastes a new
+       * resume mid-search), and the persisted in-flight record must stay
+       * tied to the resume the run was actually STARTED for — that is what
+       * `clearActiveSearchFor` scopes against. */
+      resumeId: string;
       startedAt: number;
       // Ticket 1998875: `GET /searches/:id`'s live "pending" count of jobs
       // successfully scored so far this run. Starts at 0 the moment
@@ -116,14 +125,108 @@ export function SearchFlow({
   onEstimateStart?: () => void;
   onSearchComplete: () => void;
 }) {
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Ticket 3f05144: the first thing this component does on EVERY mount is
+  // ask `sessionStorage` whether a real, already-paid-for run is still in
+  // flight for this resume. A reload (tab discard, Vite HMR reconnect,
+  // stray Cmd-R, laptop sleep) is indistinguishable from a first mount
+  // from in here, which is exactly why the answer has to come from
+  // storage rather than from React state that the reload just erased.
+  //
+  // Restored as `scoredSoFar: 0` on purpose — see PersistedActiveSearch's
+  // doc comment; the mount effect below polls immediately, so the real
+  // count replaces the 0 within one round trip.
+  const [phase, setPhase] = useState<Phase>(() => {
+    const record = readActiveSearch();
+    if (record === undefined || record.resumeId !== resumeId) return { kind: "idle" };
+    return {
+      kind: "running",
+      estimate: record.estimate,
+      searchId: record.searchId,
+      resumeId: record.resumeId,
+      startedAt: record.startedAt,
+      scoredSoFar: 0,
+    };
+  });
   const pollRef = useRef<number | undefined>(undefined);
+  // Captured once, from the FIRST render's phase — `useRef`'s initial value
+  // is evaluated on every render but only the first one is kept, so this
+  // stays the restored run (or undefined) for the life of the mount even
+  // after `phase` moves on.
+  const restoredRunRef = useRef(phase.kind === "running" ? phase : undefined);
 
   useEffect(() => {
     return () => {
       if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
     };
   }, []);
+
+  // Reconnect to a restored run: poll ONCE immediately (a run can easily
+  // have finished during the reload, and waiting a full POLL_INTERVAL_MS to
+  // find that out would show a stale "Search running..." panel), then keep
+  // polling on the normal interval.
+  //
+  // This effect owns its own interval id and clears it in its own cleanup
+  // rather than relying on the unmount effect above, because React's
+  // StrictMode deliberately runs mount effects twice in development
+  // (effect -> cleanup -> effect). Without a real cleanup here the first
+  // run's interval would be orphaned and the tab would poll twice as often.
+  // `pollRef` is still updated so the rest of the component (poll's own
+  // stop-on-terminal-status path, handleConfirmRun) can cancel it the same
+  // way it cancels an interval it started itself.
+  useEffect(() => {
+    const restored = restoredRunRef.current;
+    if (restored === undefined) return;
+    void poll(restored.searchId, restored.estimate, true);
+    const intervalId = window.setInterval(
+      () => void poll(restored.searchId, restored.estimate, true),
+      POLL_INTERVAL_MS,
+    );
+    pollRef.current = intervalId;
+    return () => {
+      window.clearInterval(intervalId);
+      if (pollRef.current === intervalId) pollRef.current = undefined;
+    };
+    // Mount-only by design, with an empty dep array kept deliberately
+    // empty: `poll` is recreated every render but only ever touches
+    // `pollRef`/`setPhase`, both stable, and re-running this effect would
+    // start a duplicate interval for a run already being polled. (This repo
+    // has no react-hooks lint plugin — see the F1 effect's note below — so
+    // no exhaustive-deps rule disagrees with that choice.)
+  }, []);
+
+  // The single writer of the in-flight-search record. Keeping it in one
+  // effect keyed on `phase` — rather than sprinkling write/clear calls
+  // through every transition — means "storage says a run is in flight"
+  // and "this component is in the running phase" cannot drift apart.
+  //
+  // Cost of re-writing on every poll tick (the phase object changes when
+  // `scoredSoFar` does, ~every 2s): one JSON.stringify of a few KB. That is
+  // cheaper than the class of bug the alternative invites.
+  //
+  // "starting" is excluded from BOTH branches: the `POST /searches` request
+  // is in flight, so there is no searchId to write yet — but the previous
+  // record (if any) must not be dropped either, since the response may
+  // still turn out to be a 409 naming a run that really is still going.
+  useEffect(() => {
+    if (phase.kind === "running") {
+      writeActiveSearch({
+        searchId: phase.searchId,
+        resumeId: phase.resumeId,
+        startedAt: phase.startedAt,
+        estimate: phase.estimate,
+      });
+      return;
+    }
+    if (phase.kind === "starting") return;
+    // Scoped by the run's OWN resume where we know it. A finished run
+    // reports its `resumeId` on every `SearchStatusResponse` member, and
+    // that is the record to drop — the live `resumeId` prop may have moved
+    // on (the user pasted a new resume while the run was still going), and
+    // `clearActiveSearchFor` deliberately refuses to delete a record it
+    // isn't sure it owns. Without this the finished run's record would
+    // linger, inert, until the tab closes.
+    clearActiveSearchFor(phase.kind === "done" ? phase.result.resumeId : resumeId);
+  }, [phase, resumeId]);
 
   async function handleEstimate() {
     onEstimateStart?.();
@@ -165,20 +268,52 @@ export function SearchFlow({
       // the `Phase` type's "estimated" doc comment for the failure this
       // avoids.
       const started = await startSearch(snapshotResumeId, snapshotSourceIds, snapshotCriteria);
-      setPhase({
-        kind: "running",
-        estimate,
-        searchId: started.searchId,
-        startedAt: Date.now(),
-        scoredSoFar: 0,
-      });
-      pollRef.current = window.setInterval(
-        () => void poll(started.searchId, estimate),
-        POLL_INTERVAL_MS,
-      );
+      enterRunning(started.searchId, snapshotResumeId, estimate);
     } catch (err) {
+      // Ticket 3f05144: `POST /searches` answers an overlapping run for the
+      // same resume with `409 { error, searchId }` (routes/searches.ts's
+      // `inFlightByResume` guard). That guard is what actually prevents the
+      // duplicate SPEND, and it already worked — but the frontend used to
+      // render the 409 as a flat error, which is the wrong story to tell:
+      // the run named in that body is alive, already paid for, and scoring
+      // right now. This is also the one hole persistence alone cannot
+      // close, because it covers the window between the request leaving the
+      // browser and the response arriving — reload in that window and there
+      // was never a searchId to persist. Adopting the id turns that window
+      // into "you're already running one, here it is."
+      const inFlightId = inFlightSearchIdFromError(err);
+      if (inFlightId !== undefined) {
+        enterRunning(inFlightId, snapshotResumeId, estimate);
+        return;
+      }
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /** The one place a run is adopted into the "running" phase and its poll
+   * loop started — shared by the normal `POST /searches` success path and
+   * the 409-adoption path above, so they can never drift. */
+  function enterRunning(
+    searchId: string,
+    runResumeId: string,
+    estimate: EstimateSearchResponse,
+  ): void {
+    setPhase({
+      kind: "running",
+      estimate,
+      searchId,
+      resumeId: runResumeId,
+      // "now" is exact on the normal path and a lower bound on the
+      // 409-adoption path (that run started before this click, and the API
+      // does not report its start time) — so the elapsed timer can
+      // under-report there. Displaying a slightly short elapsed time is a
+      // much smaller problem than not showing the run at all, and there is
+      // nothing more accurate available without a new API field.
+      startedAt: Date.now(),
+      scoredSoFar: 0,
+    });
+    if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
+    pollRef.current = window.setInterval(() => void poll(searchId, estimate), POLL_INTERVAL_MS);
   }
 
   // F1: an estimate becomes stale the instant what it was computed for
@@ -237,7 +372,18 @@ export function SearchFlow({
     // is maintained by hand.
   }, [resumeId, sourceIds, criteria, phase]);
 
-  async function poll(searchId: string, estimate: EstimateSearchResponse) {
+  /**
+   * `fromStorage` marks a run this mount adopted from `sessionStorage`
+   * rather than started itself (ticket 3f05144). It changes exactly one
+   * thing: how a 404 is reported. For a run started in this tab, a 404 is a
+   * genuine anomaly and belongs on screen as an error. For a run restored
+   * from storage, a 404 means the record is stale — the API process was
+   * restarted, or this dev database was reset out from under it — and the
+   * honest UI is a clean idle state the user can search from, not a
+   * "Could not run the search: No search with id ..." alert about a search
+   * they never asked this page to run.
+   */
+  async function poll(searchId: string, estimate: EstimateSearchResponse, fromStorage = false) {
     try {
       const result = await getSearchStatus(searchId);
       if (result.status === "pending") {
@@ -297,6 +443,10 @@ export function SearchFlow({
       if (pollRef.current !== undefined) {
         window.clearInterval(pollRef.current);
         pollRef.current = undefined;
+      }
+      if (fromStorage && apiErrorStatus(err) === 404) {
+        setPhase({ kind: "idle" });
+        return;
       }
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -427,6 +577,38 @@ export function SearchFlow({
       )}
     </div>
   );
+}
+
+/**
+ * Reads the HTTP status off whatever `../api/client` threw.
+ *
+ * Structural rather than `err instanceof ApiError` on purpose: this
+ * component's own tests, and App's, replace `../api/client` wholesale with
+ * `vi.mock`, so the `ApiError` class identity visible here is not
+ * necessarily the one a rejected mock built its error from — an
+ * `instanceof` check would silently answer "no" in exactly the tests that
+ * exist to prove this branch works. `ApiError` is the only thing that
+ * module ever throws, and `status` is a plain own property on it, so
+ * reading it structurally is both stronger and simpler here.
+ */
+function apiErrorStatus(err: unknown): number | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+/**
+ * The `searchId` of an already-running search, if `err` is the `409` that
+ * `POST /searches`'s per-resume in-flight guard answers with. `undefined`
+ * for every other error — including a 409 whose body somehow lacks the id,
+ * which stays a plain error rather than being guessed at.
+ */
+function inFlightSearchIdFromError(err: unknown): string | undefined {
+  if (apiErrorStatus(err) !== 409) return undefined;
+  const body = (err as { body?: unknown }).body;
+  if (typeof body !== "object" || body === null) return undefined;
+  const searchId = (body as { searchId?: unknown }).searchId;
+  return typeof searchId === "string" && searchId.length > 0 ? searchId : undefined;
 }
 
 /**

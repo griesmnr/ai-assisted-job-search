@@ -11,11 +11,22 @@ import { useState } from "react";
 export function ResumeInput({
   onSubmit,
   submitting,
+  initialText = "",
 }: {
   onSubmit: (resumeText: string) => void;
   submitting: boolean;
+  /**
+   * What the box starts with (ticket 3f05144). Read ONCE, as the initial
+   * value of this component's own state — deliberately not a controlled
+   * `value`/`onChange` pair. The caller (App.tsx) only knows the text of
+   * the resume that was actually SUBMITTED, so making this controlled
+   * would either throw away every keystroke before the next submit or
+   * force App to persist a draft on every character. "Seed the box after a
+   * reload, then get out of the way" is the whole job.
+   */
+  initialText?: string;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
 
   return (
     <form
