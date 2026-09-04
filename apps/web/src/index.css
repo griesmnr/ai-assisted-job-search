@@ -83,6 +83,38 @@ section {
   font-size: 0.85rem;
 }
 
+.search-criteria-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 30rem;
+}
+
+.search-criteria-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.search-criteria-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.search-criteria-field input {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.5rem;
+}
+
+.search-criteria-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .estimating {
   display: flex;
   align-items: center;
