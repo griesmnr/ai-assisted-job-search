@@ -3,9 +3,10 @@
  * Run it with:  npx tsx apps/api/src/queue/demo.ts
  * Or watch the same thing in a browser at http://localhost:15672
  */
+import { loadEnvFile } from "../load-env.js";
 import { setupTopology } from "./topology";
 
-process.loadEnvFile();
+loadEnvFile();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
