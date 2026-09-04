@@ -102,11 +102,18 @@ export function SearchFlow({
   resumeId,
   sourceIds,
   criteria,
+  onEstimateStart,
   onSearchComplete,
 }: {
   resumeId: string;
   sourceIds: string[];
   criteria?: SearchCriteria;
+  /** Ticket f4a7f07: fired at the START of every estimate request (before
+   * the network call), so App.tsx can clear its "current search results"
+   * gate the same moment a new estimate is requested — Nicole: "cleared
+   * every time a new search is estimated." Optional so every other
+   * existing caller/test keeps working unchanged. */
+  onEstimateStart?: () => void;
   onSearchComplete: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -119,6 +126,7 @@ export function SearchFlow({
   }, []);
 
   async function handleEstimate() {
+    onEstimateStart?.();
     setPhase({ kind: "estimating" });
     try {
       const estimate = await estimateSearch(resumeId, sourceIds, criteria);

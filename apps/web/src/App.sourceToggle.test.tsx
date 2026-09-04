@@ -119,39 +119,47 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
   });
 });
 
-describe("App — results section only appears once there's something to show (ticket 093d9fe)", () => {
-  async function submitResume() {
+// Ticket f4a7f07 moved the whole results section into its own
+// "Already Scored Jobs" tab, hidden by default (activeTab starts
+// "search") -- these tests now switch tabs before asserting on its
+// content. Superseded from ticket 093d9fe's original design: that tab
+// ALWAYS shows its "Results" heading now (it's somewhere the user
+// deliberately navigates to, not an inline surprise), only the CONTENT
+// varies -- see App.tsx's own comment on this exact change.
+describe("App — Already Scored Jobs tab always shows a heading, content varies (ticket f4a7f07, superseding 093d9fe)", () => {
+  async function submitResumeAndOpenScoredTab() {
     render(<App />);
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
   }
 
-  it("shows no Results heading when zero results and nothing hidden below the floor", async () => {
+  it("shows a 'no jobs scored yet' message when zero results and nothing hidden below the floor", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
 
-    await submitResume();
+    await submitResumeAndOpenScoredTab();
 
-    // Give the ready state a tick to render before asserting its absence.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(screen.queryByRole("heading", { name: "Results" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(screen.getByText("No jobs scored yet.")).toBeInTheDocument();
   });
 
-  it("shows the Results section once a hiddenBelowFloor count exists, even with zero visible results", async () => {
+  it("shows real results once a hiddenBelowFloor count exists, even with zero visible results", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({ resumeId: "resume-1", results: [], hiddenBelowFloor: 3 });
 
-    await submitResume();
+    await submitResumeAndOpenScoredTab();
 
     expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(screen.queryByText("No jobs scored yet.")).not.toBeInTheDocument();
   });
 
-  it("shows the Results section once real results exist", async () => {
+  it("shows real results once they exist", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue({
@@ -175,17 +183,17 @@ describe("App — results section only appears once there's something to show (t
       ],
     });
 
-    await submitResume();
+    await submitResumeAndOpenScoredTab();
 
-    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(await screen.findByText("Backend Engineer")).toBeInTheDocument();
   });
 
-  it("still surfaces a real fetch error even with nothing else to show", async () => {
+  it("still surfaces a real fetch error", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockRejectedValue(new Error("network down"));
 
-    await submitResume();
+    await submitResumeAndOpenScoredTab();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load results");
   });
