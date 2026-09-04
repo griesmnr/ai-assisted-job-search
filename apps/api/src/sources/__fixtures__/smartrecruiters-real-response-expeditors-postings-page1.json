@@ -1,0 +1,790 @@
+{
+  "offset": 0,
+  "limit": 10,
+  "totalFound": 519,
+  "content": [
+    {
+      "id": "744000147349519",
+      "name": "Warehouse Lead Agent",
+      "uuid": "9dca0885-b0f1-4bea-b0d8-3431a4c34490",
+      "jobAdId": "f4cfda17-bd07-42e1-938e-97c17d3d3fc7",
+      "defaultJobAd": true,
+      "refNumber": "REF21273F",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T20:07:43.154Z",
+      "location": {
+        "city": "Orlando",
+        "region": "FL",
+        "country": "us",
+        "address": "2544 East Landstreet Road",
+        "postalCode": "32824",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "28.4356575",
+        "longitude": "-81.34965369999999",
+        "fullLocation": "Orlando, FL, United States"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "736039",
+        "label": "Warehouse"
+      },
+      "function": {
+        "id": "other",
+        "label": "Other"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "736039",
+          "valueLabel": "Warehouse"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147349519",
+      "creator": {
+        "name": "Efren Gonzalez"
+      },
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147314873",
+      "name": "Accounts Payable Agent",
+      "uuid": "d10398f9-daee-41a1-814d-3e56f48ef96c",
+      "jobAdId": "110e7055-0ca7-4b4a-90ec-67477cf6c0e7",
+      "defaultJobAd": true,
+      "refNumber": "REF21160C",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T16:52:58.488Z",
+      "location": {
+        "city": "Memphis",
+        "region": "TN",
+        "country": "us",
+        "address": "6005 Freeport Avenue",
+        "postalCode": "38141",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "35.0094833",
+        "longitude": "-89.85999369999999",
+        "fullLocation": "Memphis, TN, United States"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "734917",
+        "label": "Accounting"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "entry_level",
+        "label": "Entry Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "734917",
+          "valueLabel": "Accounting"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147314873",
+      "creator": {
+        "name": "Laura Lovelace"
+      },
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147268019",
+      "name": "Accounts Payable Agent - Milan office",
+      "uuid": "241a4559-f62c-4718-bde1-eb1351ec2d2a",
+      "jobAdId": "173de257-4d80-47bb-b2e5-e7277fb71085",
+      "defaultJobAd": true,
+      "refNumber": "REF21271O",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T14:11:45.286Z",
+      "location": {
+        "city": "Pioltello",
+        "region": "Lombardia",
+        "country": "it",
+        "address": "Via Gorizia 1b",
+        "postalCode": "20096",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "45.4927409",
+        "longitude": "9.3187166",
+        "fullLocation": "Pioltello, Lombardia, Italy"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "734917",
+        "label": "Accounting"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "it",
+          "valueLabel": "Italy"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "734917",
+          "valueLabel": "Accounting"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147268019",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147254944",
+      "name": "Technology Support (Associate 1)",
+      "uuid": "f526d368-8b0c-4333-a0ad-7514bd01c699",
+      "jobAdId": "fb1d2ad2-acac-4e4d-9b9c-d455440b0ea3",
+      "defaultJobAd": true,
+      "refNumber": "REF21270R",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T13:39:33.412Z",
+      "location": {
+        "city": "Kempton Park",
+        "region": "GP",
+        "country": "za",
+        "address": "23 Spier Street",
+        "postalCode": "1619",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "-26.0764352",
+        "longitude": "28.2713574",
+        "fullLocation": "Kempton Park, GP, South Africa"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "735206",
+        "label": "Global Technology"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "za",
+          "valueLabel": "South Africa"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "735206",
+          "valueLabel": "Global Technology"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "252503e6-6399-4c64-aeee-c07079038a34",
+          "valueLabel": "Non-District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147254944",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147240152",
+      "name": "District Sales Executive",
+      "uuid": "8c854003-80c7-420a-abd9-879c2c3543bd",
+      "jobAdId": "f99772d1-6754-4bb0-bc32-cd033067c499",
+      "defaultJobAd": true,
+      "refNumber": "REF21231O",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T12:39:42.813Z",
+      "location": {
+        "city": "Elkridge",
+        "region": "MD",
+        "country": "us",
+        "address": "6095 Marshalee Drive",
+        "postalCode": "21075",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "39.2058133",
+        "longitude": "-76.7738427",
+        "fullLocation": "Elkridge, MD, United States"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "735869",
+        "label": "Sales"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "735869",
+          "valueLabel": "Sales"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147240152",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147226913",
+      "name": "Ocean specialist",
+      "uuid": "7a4fd811-3c2b-4e6c-9c50-a0230a026402",
+      "jobAdId": "c74a61a7-e669-4fea-8ac4-ad52018274d5",
+      "defaultJobAd": true,
+      "refNumber": "REF21268T",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T11:55:40.550Z",
+      "location": {
+        "city": "Morbio Inferiore",
+        "region": "TI",
+        "country": "ch",
+        "address": "Viale Serfontana",
+        "postalCode": "6834",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "45.8462828",
+        "longitude": "9.0160833",
+        "fullLocation": "Morbio Inferiore, TI, Switzerland"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "735784",
+        "label": "Ocean Services"
+      },
+      "function": {
+        "id": "other",
+        "label": "Other"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "executive",
+        "label": "Executive"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "ch",
+          "valueLabel": "Switzerland"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "735784",
+          "valueLabel": "Ocean Services"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147226913",
+      "creator": {
+        "name": "Stefania Ficara"
+      },
+      "language": {
+        "code": "it",
+        "label": "Italian",
+        "labelNative": "italiano"
+      }
+    },
+    {
+      "id": "744000147157709",
+      "name": "Ocean Export Agent (MAD)",
+      "uuid": "c19516ea-f8e4-4478-aece-dc987cb16a27",
+      "jobAdId": "7b4a1373-0950-4ef7-afb0-518d445ed7e2",
+      "defaultJobAd": true,
+      "refNumber": "REF8048M",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T06:30:21.639Z",
+      "location": {
+        "city": "Alcobendas",
+        "region": "MD",
+        "country": "es",
+        "address": "Avenida de la Transición Española",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "40.5371903",
+        "longitude": "-3.6237015",
+        "fullLocation": "Alcobendas, MD, Spain"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "735784",
+        "label": "Ocean Services"
+      },
+      "function": {
+        "id": "administrative",
+        "label": "Administrative"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "entry_level",
+        "label": "Entry Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "es",
+          "valueLabel": "Spain"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "735784",
+          "valueLabel": "Ocean Services"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147157709",
+      "language": {
+        "code": "es",
+        "label": "Spanish",
+        "labelNative": "español"
+      }
+    },
+    {
+      "id": "744000147143059",
+      "name": "Air Export Agent",
+      "uuid": "5f0beebd-560d-474a-b145-f20d59e4e2da",
+      "jobAdId": "fe68cb9c-fc0f-427c-9966-ede73760c790",
+      "defaultJobAd": true,
+      "refNumber": "REF20215C",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T02:55:31.834Z",
+      "location": {
+        "city": "Paranaque",
+        "region": "Metro Manila",
+        "country": "ph",
+        "address": "Pascor Building III Pascor Drive Sto Nino",
+        "postalCode": "1700",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Paranaque, Metro Manila, Philippines"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "734951",
+        "label": "Air Services"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "entry_level",
+        "label": "Entry Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "ph",
+          "valueLabel": "Philippines"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "734951",
+          "valueLabel": "Air Services"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147143059",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147097149",
+      "name": "Customer Retention & Development Manager (CRDM)",
+      "uuid": "51af66d2-ffdb-4a9c-8992-5f487abc206a",
+      "jobAdId": "956d0251-5874-437e-90b5-decbd95d26e0",
+      "defaultJobAd": true,
+      "refNumber": "REF21260D",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-03T00:13:25.365Z",
+      "location": {
+        "city": "Metairie",
+        "region": "LA",
+        "country": "us",
+        "address": "3900 North Causeway Boulevard",
+        "postalCode": "70002",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "30.0189375",
+        "longitude": "-90.15624539999999",
+        "fullLocation": "Metairie, LA, United States"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "734900",
+        "label": "Account Management"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "entry_level",
+        "label": "Entry Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "734900",
+          "valueLabel": "Account Management"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147097149",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000147091179",
+      "name": "Transport Specialist",
+      "uuid": "80432f45-5a96-4e18-a80a-ba86cca2fbf3",
+      "jobAdId": "9041005d-967d-48a6-9ac8-fa57796e6ecc",
+      "defaultJobAd": true,
+      "refNumber": "REF21259S",
+      "company": {
+        "identifier": "Expeditors",
+        "name": "Expeditors"
+      },
+      "releasedDate": "2026-09-02T22:29:08.175Z",
+      "location": {
+        "city": "Addison",
+        "region": "TX",
+        "country": "us",
+        "address": "15303 North Dallas Parkway Suite 1100",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Addison, TX, United States"
+      },
+      "industry": {
+        "id": "logistics_and_supply_chain",
+        "label": "Logistics And Supply Chain"
+      },
+      "department": {
+        "id": "735767",
+        "label": "Supply Chain Solutions"
+      },
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b80550e4b06b8e19e902ef",
+          "fieldLabel": "Department",
+          "valueId": "735767",
+          "valueLabel": "Supply Chain Solutions"
+        },
+        {
+          "fieldId": "6903a85526f101e43f2f0206",
+          "fieldLabel": "Job Type",
+          "valueId": "4eb59f15-fa99-431b-9168-e43def89912d",
+          "valueLabel": "District"
+        },
+        {
+          "fieldId": "5654dec2e4b0f3c43a18752a",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Expeditors"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Expeditors/postings/744000147091179",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    }
+  ]
+}
