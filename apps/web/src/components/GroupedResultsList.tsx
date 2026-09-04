@@ -48,11 +48,13 @@ export function groupKeyForStatus(status: UserJobStatus | null): ScoredGroupKey 
 export function GroupedResultsList({
   data,
   selectedSourceIds,
+  resumeId,
   groupFor,
   onSetStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
+  resumeId: string;
   groupFor: (result: ScoredJobResult) => ScoredGroupKey;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
 }) {
@@ -88,7 +90,12 @@ export function GroupedResultsList({
             <h3>{GROUP_LABELS[key]}</h3>
             <ul className="result-cards">
               {results.map((result) => (
-                <ResultCard key={result.jobId} result={result} onSetStatus={onSetStatus} />
+                <ResultCard
+                  key={result.jobId}
+                  result={result}
+                  resumeId={resumeId}
+                  onSetStatus={onSetStatus}
+                />
               ))}
             </ul>
           </section>

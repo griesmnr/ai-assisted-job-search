@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
 import { loadEnvFile } from "./load-env.js";
 import { inferTitleKeywords } from "./resume-title-inference.js";
+import { registerHandoffRoutes } from "./routes/handoffs.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
@@ -121,6 +122,7 @@ export function buildApp(deps: BuildAppDeps) {
   registerResumeRoutes(app, deps.db, deps.inferTitles);
   registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
   registerJobStatusRoutes(app, deps.db);
+  registerHandoffRoutes(app, deps.db);
 
   return app;
 }

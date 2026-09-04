@@ -1,11 +1,26 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScoredJobResult } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
-afterEach(cleanup);
+const createHandoff = vi.fn();
+
+// Ticket dbfd594: "Optimize Resume" now mints a real server-side handoff
+// before navigating anywhere -- mocked here the same way App-level tests
+// mock ./api/client, so this component-level test never makes a real
+// network call.
+vi.mock("../api/client", () => ({
+  createHandoff: (...args: unknown[]) => createHandoff(...args),
+  handoffFetchUrl: (id: string) => `https://api.example.com/handoffs/${id}`,
+  RESUME_OPTIMIZER_APP_URL: "https://optimizer.example.com/",
+}));
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
   return {
@@ -31,7 +46,7 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
 // two different labels for the same status, deliberately.
 describe("ResultCard — present-tense action buttons vs. state pill (ticket bed37bd)", () => {
   it("shows all four actions as present-tense verbs, regardless of current status -- Apply as a link (ticket 3d80a85), the rest as buttons", () => {
-    render(<ResultCard result={makeResult()} onSetStatus={async () => {}} />);
+    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={async () => {}} />);
 
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Optimize Resume" })).toBeInTheDocument();
@@ -47,7 +62,13 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
   });
 
   it("shows the state pill in past-tense/state form once a status is set, alongside unchanged present-tense actions", () => {
-    render(<ResultCard result={makeResult({ status: "applied" })} onSetStatus={async () => {}} />);
+    render(
+      <ResultCard
+        result={makeResult({ status: "applied" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+      />,
+    );
 
     // The pill: state form.
     expect(screen.getByText("Applied")).toBeInTheDocument();
@@ -59,10 +80,29 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
 
   it("calls onSetStatus with the right status when a present-tense action button is clicked", async () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(<ResultCard result={makeResult()} onSetStatus={onSetStatus} />);
+    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "saved");
+  });
+
+  it("Optimize Resume mints a handoff, opens the optimizer app with it, and records resume_optimized (ticket dbfd594)", async () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    createHandoff.mockResolvedValue({ id: "handoff-1", expiresAt: new Date().toISOString() });
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
 
+    await waitFor(() => expect(createHandoff).toHaveBeenCalledWith("job-1", "resume-1"));
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://optimizer.example.com/?import=" +
+        encodeURIComponent("https://api.example.com/handoffs/handoff-1"),
+      "_blank",
+      "noreferrer",
+    );
     expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized");
   });
 });
@@ -74,6 +114,7 @@ describe("ResultCard — Apply is a real posting link + status write (ticket 3d8
     render(
       <ResultCard
         result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
       />,
     );
@@ -85,7 +126,7 @@ describe("ResultCard — Apply is a real posting link + status write (ticket 3d8
 
   it("records status=applied when clicked", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(<ResultCard result={makeResult()} onSetStatus={onSetStatus} />);
+    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
 
     fireEvent.click(screen.getByRole("link", { name: "Apply" }));
 
@@ -94,7 +135,13 @@ describe("ResultCard — Apply is a real posting link + status write (ticket 3d8
 
   it("does not re-write status when clicked again after already applied (still navigable)", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(<ResultCard result={makeResult({ status: "applied" })} onSetStatus={onSetStatus} />);
+    render(
+      <ResultCard
+        result={makeResult({ status: "applied" })}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+      />,
+    );
 
     const link = screen.getByRole("link", { name: "Apply" });
     fireEvent.click(link);
@@ -111,6 +158,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ company: "Wealthfront", dataSource: "lever" })}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
       />,
     );
@@ -123,6 +171,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ location: "Seattle, WA", locationType: "hybrid" })}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
       />,
     );
@@ -135,6 +184,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ location: null, locationType: null })}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
       />,
     );

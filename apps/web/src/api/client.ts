@@ -28,6 +28,16 @@ import type {
 const API_BASE_URL: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:3000";
 
+/**
+ * Nicole's separate resume-tailoring app (ticket dbfd594) — a different
+ * origin/deployment entirely, not part of this monorepo. Overridable the
+ * same way `API_BASE_URL` is, since the real URL can differ between her
+ * local dev instance and the deployed one.
+ */
+export const RESUME_OPTIMIZER_APP_URL: string =
+  (import.meta.env.VITE_RESUME_OPTIMIZER_APP_URL as string | undefined) ??
+  "https://ai-job-search-assistant-beta.vercel.app/";
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -143,4 +153,33 @@ export function setJobStatus(
     method: "POST",
     body: JSON.stringify({ status, resumeId }),
   });
+}
+
+export type CreateHandoffResponse = {
+  id: string;
+  expiresAt: string;
+};
+
+/**
+ * Ticket dbfd594: snapshots a job's description + this resume's text
+ * server-side, returning a short-lived `id` — see apps/api/src/routes/
+ * handoffs.ts's own doc comment for why this exists (a cross-origin app
+ * can't be handed a payload via localStorage or a bare URL param, so this
+ * app hands over a small, safe pointer instead).
+ */
+export function createHandoff(jobId: string, resumeId: string): Promise<CreateHandoffResponse> {
+  return request<CreateHandoffResponse>("/handoffs", {
+    method: "POST",
+    body: JSON.stringify({ jobId, resumeId }),
+  });
+}
+
+/**
+ * The absolute URL the RECEIVING app (a different origin) fetches to read
+ * a handoff's payload — never a relative path, since that app has no
+ * notion of "relative to this app". Exported so `ResultCard.tsx` can build
+ * it without hand-duplicating `API_BASE_URL` string concatenation.
+ */
+export function handoffFetchUrl(handoffId: string): string {
+  return `${API_BASE_URL}/handoffs/${encodeURIComponent(handoffId)}`;
 }

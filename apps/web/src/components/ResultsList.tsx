@@ -16,10 +16,12 @@ import { ResultCard } from "./ResultCard";
 export function ResultsList({
   data,
   selectedSourceIds,
+  resumeId,
   onSetStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
+  resumeId: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
 }) {
   const visible = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
@@ -48,7 +50,12 @@ export function ResultsList({
       {visible.length > 0 && (
         <ul className="result-cards">
           {visible.map((result) => (
-            <ResultCard key={result.jobId} result={result} onSetStatus={onSetStatus} />
+            <ResultCard
+              key={result.jobId}
+              result={result}
+              resumeId={resumeId}
+              onSetStatus={onSetStatus}
+            />
           ))}
         </ul>
       )}
