@@ -113,6 +113,11 @@ function App() {
 
           <section className="search-section">
             <h2>Find new matches</h2>
+            <p className="search-pitch">
+              This isn't a keyword search. Claude actually reads your resume against each job
+              description, one at a time, and judges how well you'd really fit — that real reading
+              is what the cost below pays for.
+            </p>
             <SearchFlow
               resumeId={resumeId}
               sourceIds={[...selectedSourceIds]}
