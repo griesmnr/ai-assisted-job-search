@@ -460,22 +460,80 @@ export function resolveWorkArrangement(
  * piece does. A single-location string has one piece, so this is unchanged
  * for the common case (e.g. "Remote U.S." alone still passes — "remote" and
  * "united states" are in the same piece, same as always).
+ *
+ * Ticket 14289ac: this used to be the whole story — a plain boolean, with
+ * every rejection reason (unknown geography entirely, a us-wide posting the
+ * source explicitly marked hybrid/onsite, a us-wide posting with NO
+ * arrangement evidence at all) collapsing into one indistinguishable
+ * `false`. That last case specifically — "somewhere in the US," no
+ * structured `locationType`, no "remote" text either — is exactly the shape
+ * ticket 4450f39's own reviewer flagged as invisible: measured live
+ * 2026-08-24, 105 of 1,358 title-passing postings (7.7%) fail for this
+ * reason alone, concentrated by employer (Temporal's Ashby board: all
+ * `workplaceType: null`, zero survivors, indistinguishable from a dead
+ * board). The RULE is unchanged (still correctly rejects "onsite in
+ * Florida"); only its SILENCE is fixed, by pulling the decision logic out
+ * into `classifyLocationFilterOutcome` below — a richer classifier this
+ * function now delegates to — so a caller can ask not just "did it pass"
+ * but "why not," and specifically count this one reason separately (see
+ * `excludedForMissingWorkArrangement`).
  */
 export function passesLocationFilter(
   job: Pick<NormalizedJob, "location" | "locationType">,
 ): boolean {
+  return classifyLocationFilterOutcome(job).passed;
+}
+
+/** Every distinct reason `classifyLocationFilterOutcome` can fail a job,
+ * kept as its own type (rather than a bare string) so a caller's switch/
+ * comparison is checked against real, closed values. */
+export type LocationRejectionReason =
+  /** No piece of `location` classified as `pnw` OR `us-wide` at all —
+   * genuinely unplaced geography (a foreign city, an empty string, "Remote"
+   * with no region attached). The original, pre-ticket-14289ac catch-all. */
+  | "unknown-geography"
+  /** Geography is `us-wide` and the source told us, via a STRUCTURED
+   * `locationType`, exactly how the job is worked — just not `"remote"`
+   * (e.g. `"hybrid"` or `"onsite"`). A KNOWN non-remote arrangement, not
+   * missing metadata; kept distinct from the case below on the same
+   * "surface the real reason" principle this ticket exists for, even
+   * though the ticket's own acceptance criteria only require the reason
+   * below to be countable. */
+  | "us-wide-not-remote"
+  /** Geography is `us-wide` and NOTHING says how the job is worked — no
+   * structured `locationType` on the job at all, and no piece of the
+   * location text says "remote" either. This is the ticket 14289ac
+   * category: "United States" with zero evidence either way, which could
+   * just as easily be onsite in Florida as remote-friendly. See
+   * `excludedForMissingWorkArrangement`, which counts exactly this. */
+  | "us-wide-missing-work-arrangement";
+
+export type LocationFilterOutcome =
+  { passed: true } | { passed: false; reason: LocationRejectionReason };
+
+/**
+ * The full classification `passesLocationFilter` collapses to a boolean.
+ * Mirrors that function's control flow exactly (in fact `passesLocationFilter`
+ * now just reads `.passed` off this) so there is exactly one place this
+ * logic lives — see `passesLocationFilter`'s doc comment for the full
+ * reasoning behind each branch; this comment only documents the REASON
+ * values a caller gets back on failure.
+ */
+export function classifyLocationFilterOutcome(
+  job: Pick<NormalizedJob, "location" | "locationType">,
+): LocationFilterOutcome {
   const location = job.location ?? "";
 
   if (job.locationType) {
     // Structured value: one arrangement for the whole job, combined with
     // geography's existing whole-list "any" semantics.
     const geography = classifyGeography(location);
-    if (geography === "unknown") return false;
+    if (geography === "unknown") return { passed: false, reason: "unknown-geography" };
 
     // PNW is physically reachable regardless of arrangement: a Seattle-area
     // onsite or hybrid role is exactly what a PNW-based candidate wants, and
     // a Seattle-area "remote" role is still fine too.
-    if (geography === "pnw") return true;
+    if (geography === "pnw") return { passed: true };
 
     // geography === "us-wide": broad US without a specific city. Only a
     // genuinely remote role can be reached from anywhere in the US — hybrid
@@ -483,13 +541,16 @@ export function passesLocationFilter(
     // doesn't establish. That is the exact trap this filter exists to
     // close: "United States" with no remote signal could be onsite in
     // Florida.
-    return job.locationType === "remote";
+    if (job.locationType === "remote") return { passed: true };
+    // The source DID tell us the arrangement — it's just not remote. Known,
+    // not missing.
+    return { passed: false, reason: "us-wide-not-remote" };
   }
 
   // No structured value: resolve geography and arrangement PER PIECE, so a
   // "remote" text match found in one location can never answer the
   // arrangement question for a different location in the same list (see
-  // this function's doc comment for the concrete case this closes).
+  // `passesLocationFilter`'s doc comment for the concrete case this closes).
   //
   // Accepted tradeoff (opus review round 2, finding 3): a BARE "Remote"
   // piece next to a separate us-wide piece no longer qualifies it either --
@@ -501,13 +562,55 @@ export function passesLocationFilter(
   // live: no committed fixture has a semicolon-joined location at all, and
   // every real "remote" string present names a region ("Remote (US)",
   // "Remote (Canada)"), never bare.
+  let sawUsWide = false;
   for (const piece of location.split(LOCATION_LIST_SEPARATOR)) {
     const geography = classifyLocationPiece(piece);
     if (geography === "unknown") continue;
-    if (geography === "pnw") return true; // reachable regardless of this piece's own arrangement
-    if (REMOTE_TEXT.test(piece)) return true; // us-wide: only THIS piece's own text can qualify it
+    if (geography === "pnw") return { passed: true }; // reachable regardless of this piece's own arrangement
+    // us-wide: only THIS piece's own text can qualify it.
+    sawUsWide = true;
+    if (REMOTE_TEXT.test(piece)) return { passed: true };
   }
-  return false;
+  // At least one piece was us-wide and none had its own "remote" text (or
+  // there was no recognizable geography at all) — distinguish the two: the
+  // first is "we know roughly where, we just don't know how it's worked,"
+  // the second is "we don't even know that much."
+  return {
+    passed: false,
+    reason: sawUsWide ? "us-wide-missing-work-arrangement" : "unknown-geography",
+  };
+}
+
+/**
+ * Title-passing postings that fail `passesLocationFilter` for exactly ONE
+ * reason: `"us-wide-missing-work-arrangement"` — ticket 14289ac. Runs the
+ * identical SOFTWARE/NOT title filter `filterSoftwareEngineeringJobs` does
+ * (so the two functions partition the same title-passing pool consistently)
+ * and then asks `classifyLocationFilterOutcome` a different question of
+ * whatever failed the location half: not "did it fail" but "did it fail
+ * SPECIFICALLY because of missing work-arrangement metadata," as opposed to
+ * unknown geography entirely or a us-wide posting explicitly marked
+ * hybrid/onsite. Exists so a caller (`demo-match.ts`'s
+ * `buildBoardCoverage`/`buildSourceOutcomes`) can report this exclusion
+ * reason as its own countable outcome through the same channel every other
+ * outcome already flows through, rather than it reading as an
+ * indistinguishable part of "didn't survive filtering."
+ *
+ * Deliberately NOT deduped by `company|title` the way
+ * `filterSoftwareEngineeringJobs`'s survivors are: this counts POSTINGS
+ * excluded, matching how the ticket's own live measurement (105 of 1,358
+ * title-passing postings) was framed — a caller wanting distinct openings
+ * can dedupe the result itself.
+ */
+export function excludedForMissingWorkArrangement<
+  T extends Pick<NormalizedJob, "title" | "location" | "locationType">,
+>(jobs: T[]): T[] {
+  return jobs
+    .filter((j) => SOFTWARE.test(j.title) && !NOT.test(j.title))
+    .filter((j) => {
+      const outcome = classifyLocationFilterOutcome(j);
+      return !outcome.passed && outcome.reason === "us-wide-missing-work-arrangement";
+    });
 }
 
 /**

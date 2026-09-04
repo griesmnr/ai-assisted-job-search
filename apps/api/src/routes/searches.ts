@@ -59,7 +59,7 @@ import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { runDemoMatch, type RunDemoMatchResult, type ScoreJobFn } from "../demo-match.js";
 import { resumes, searches as searchesTable } from "../db/schema.js";
-import { compileFilter } from "../sources/criteria.js";
+import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
 import type { JobSource } from "../sources/types.js";
 
@@ -245,6 +245,7 @@ export function registerSearchRoutes(
         resumeText,
         scoreJob: NEVER_SCORE,
         filter: compileFilter(criteria),
+        excludedForMissingWorkArrangement: compileExcludedForMissingWorkArrangement(criteria),
         estimateOnly: true,
         outputPath: tempOutputPath(`estimate-${randomUUID()}`),
       });
@@ -344,6 +345,7 @@ export function registerSearchRoutes(
         resumeText,
         scoreJob,
         filter: compileFilter(criteria),
+        excludedForMissingWorkArrangement: compileExcludedForMissingWorkArrangement(criteria),
         searchId,
         outputPath: tempOutputPath(searchId),
         // Ticket 1998875: the only bridge between `runDemoMatch`'s

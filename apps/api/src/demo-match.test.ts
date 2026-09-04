@@ -785,6 +785,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
       },
       {
         token: "quiet-co",
@@ -794,6 +795,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
       },
       {
         token: "flaky-co",
@@ -803,6 +805,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
         message: "timed out after 15000ms",
         skippedCount: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
       },
       {
         token: "widgetco",
@@ -812,6 +815,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
       },
       {
         token: "acme",
@@ -821,6 +825,7 @@ describe("runDemoMatch: board coverage (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 1,
+        excludedForMissingWorkArrangement: 0,
       },
     ]);
   });
@@ -1588,6 +1593,7 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
         skippedCount: 0,
         skipRate: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
         errorMessage: "network unreachable",
         boardCoverage: [],
       },
@@ -1636,6 +1642,31 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
     expect(byDataSource.get("lever")!.survivedFilter).toBe(1);
   });
 
+  // Ticket 14289ac: `buildSourceOutcomes`' 4th parameter is the same kind of
+  // union-of-all-sources array `filtered` already is, bucketed per source
+  // the identical way — this is the `excludedForMissingWorkArrangement`
+  // analogue of the `survivedFilter` test directly above, proving that
+  // bucketing by exact `dataSource` (not by e.g. company name) never
+  // credits one source's exclusions to another.
+  it("attributes excludedForMissingWorkArrangement by exact dataSource, never crediting one source's exclusions to another", () => {
+    const ghJob = { ...job("gh-1", "Backend Engineer"), dataSource: "greenhouse" as const };
+    const lvJob = { ...job("lv-1", "Backend Engineer"), dataSource: "lever" as const };
+    const perSource: PerSourceOutcome[] = [
+      {
+        dataSource: "greenhouse",
+        status: "ok",
+        result: { jobs: [ghJob], skipped: [], skipRate: 0 },
+      },
+      { dataSource: "lever", status: "ok", result: { jobs: [lvJob], skipped: [], skipRate: 0 } },
+    ];
+    // Both jobs were excluded for missing work-arrangement metadata this
+    // run — each source's own entry must credit only its own job.
+    const outcomes = buildSourceOutcomes(perSource, [], vi.fn(), [ghJob, lvJob]);
+    const byDataSource = new Map(outcomes.map((o) => [o.dataSource, o]));
+    expect(byDataSource.get("greenhouse")!.excludedForMissingWorkArrangement).toBe(1);
+    expect(byDataSource.get("lever")!.excludedForMissingWorkArrangement).toBe(1);
+  });
+
   it("describeSourceOutcome names 'ok', 'empty', and 'error' distinctly", () => {
     const ok: SourceOutcome = {
       dataSource: "greenhouse",
@@ -1644,6 +1675,7 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
       skippedCount: 1,
       skipRate: 0.1,
       survivedFilter: 3,
+      excludedForMissingWorkArrangement: 0,
       errorMessage: undefined,
       boardCoverage: [],
     };
@@ -1654,6 +1686,7 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
       skippedCount: 0,
       skipRate: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
       errorMessage: undefined,
       boardCoverage: [],
     };
@@ -1664,6 +1697,7 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
       skippedCount: 0,
       skipRate: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
       errorMessage: "timed out",
       boardCoverage: [],
     };
@@ -1677,6 +1711,43 @@ describe("buildSourceOutcomes / describeSourceOutcome (ticket d8417b2)", () => {
     expect(describeSourceOutcome(ok)).toMatch(/10 posting\(s\).*3 survived/);
     expect(describeSourceOutcome(empty)).toMatch(/0 postings/);
     expect(describeSourceOutcome(errored)).toMatch(/timed out/);
+  });
+
+  // Ticket 14289ac: `describeSourceOutcome`'s nonzero-suffix branch is the
+  // source-level analogue of `describeBoardOutcome`'s — only the board-level
+  // one had a test before this. Mirrors that test's structure: a zero count
+  // must read exactly as it always did (no suffix), and a nonzero count
+  // must both differ from it AND carry the suffix text.
+  it("appends the excludedForMissingWorkArrangement suffix only when nonzero, same as describeBoardOutcome", () => {
+    const okZeroExcluded: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 10,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 3,
+      excludedForMissingWorkArrangement: 0,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    const okNonzeroExcluded: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 10,
+      skippedCount: 0,
+      skipRate: 0,
+      survivedFilter: 3,
+      excludedForMissingWorkArrangement: 6,
+      errorMessage: undefined,
+      boardCoverage: [],
+    };
+    expect(describeSourceOutcome(okZeroExcluded)).not.toMatch(/excluded for missing/);
+    expect(describeSourceOutcome(okNonzeroExcluded)).toMatch(
+      /10 posting\(s\).*3 survived filtering \(\+6 more excluded for missing work-arrangement metadata\)/,
+    );
+    expect(describeSourceOutcome(okNonzeroExcluded)).not.toBe(
+      describeSourceOutcome(okZeroExcluded),
+    );
   });
 });
 
@@ -1710,6 +1781,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 1,
+        excludedForMissingWorkArrangement: 0,
       },
       {
         token: "no-name",
@@ -1719,6 +1791,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
         message: undefined,
         skippedCount: 0,
         survivedFilter: 0,
+        excludedForMissingWorkArrangement: 0,
       },
     ]);
     expect(warn).not.toHaveBeenCalled();
@@ -1827,6 +1900,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       message: undefined,
       skippedCount: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
     };
     const empty: BoardCoverageEntry = {
       token: "x",
@@ -1836,6 +1910,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       message: undefined,
       skippedCount: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
     };
     const errored: BoardCoverageEntry = {
       token: "x",
@@ -1845,6 +1920,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       message: "network error",
       skippedCount: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
     };
     const okNoSurvivors: BoardCoverageEntry = {
       token: "x",
@@ -1854,6 +1930,7 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       message: undefined,
       skippedCount: 0,
       survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
     };
     const okWithSurvivors: BoardCoverageEntry = {
       token: "x",
@@ -1863,6 +1940,22 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       message: undefined,
       skippedCount: 0,
       survivedFilter: 3,
+      excludedForMissingWorkArrangement: 0,
+    };
+    // Ticket 14289ac: a board contributing zero survivors for THIS reason
+    // must read differently from `okNoSurvivors` above (zero for every
+    // other, already-tracked reason) even though both have
+    // `survivedFilter: 0` — that's the acceptance criterion this case
+    // exists to prove.
+    const okZeroDueToMissingArrangement: BoardCoverageEntry = {
+      token: "x",
+      status: "ok",
+      postingCount: 10,
+      companyName: "X",
+      message: undefined,
+      skippedCount: 0,
+      survivedFilter: 0,
+      excludedForMissingWorkArrangement: 6,
     };
 
     const descriptions = new Set([
@@ -1871,15 +1964,64 @@ describe("buildBoardCoverage / describeBoardOutcome (ticket b723fb9)", () => {
       describeBoardOutcome(errored),
       describeBoardOutcome(okNoSurvivors),
       describeBoardOutcome(okWithSurvivors),
+      describeBoardOutcome(okZeroDueToMissingArrangement),
     ]);
-    // All five must read as distinct messages — that distinction is the
-    // entire point of this ticket.
-    expect(descriptions.size).toBe(5);
+    // All six must read as distinct messages — that distinction is the
+    // entire point of this ticket (and of b723fb9 before it).
+    expect(descriptions.size).toBe(6);
     expect(describeBoardOutcome(notFound)).toMatch(/404/);
     expect(describeBoardOutcome(empty)).toMatch(/0 postings/);
     expect(describeBoardOutcome(errored)).toMatch(/network error/);
     expect(describeBoardOutcome(okNoSurvivors)).toMatch(/10 posting\(s\), 0 survived/);
     expect(describeBoardOutcome(okWithSurvivors)).toMatch(/10 posting\(s\), 3 survived/);
+    expect(describeBoardOutcome(okZeroDueToMissingArrangement)).toMatch(
+      /10 posting\(s\), 0 survived.*\+6 more excluded for missing work-arrangement metadata/,
+    );
+  });
+
+  it("buildBoardCoverage attributes excludedForMissingWorkArrangement by company name, same mechanism as survivedFilter", () => {
+    const tokenOutcomes: TokenOutcome[] = [
+      outcome({ token: "temporal", status: "ok", postingCount: 55, companyName: "Temporal" }),
+      outcome({ token: "quiet-co", status: "empty", postingCount: 0, companyName: undefined }),
+    ];
+    // Nothing from "Temporal" survives the location filter this run — all
+    // 3 of its title-passing postings are us-wide with no work-arrangement
+    // evidence (the real shape ticket 14289ac measured live).
+    const filtered: NormalizedJob[] = [];
+    const excludedForMissingWorkArrangement: NormalizedJob[] = [
+      {
+        ...job("temporal-1", "Senior Software Engineer"),
+        company: "Temporal",
+        location: "United States",
+        locationType: undefined,
+      },
+      {
+        ...job("temporal-2", "Staff Software Engineer"),
+        company: "Temporal",
+        location: "United States",
+        locationType: undefined,
+      },
+      {
+        ...job("temporal-3", "Software Engineer"),
+        company: "Temporal",
+        location: "United States",
+        locationType: undefined,
+      },
+    ];
+    const warn = vi.fn();
+
+    const coverage = buildBoardCoverage(
+      tokenOutcomes,
+      filtered,
+      warn,
+      excludedForMissingWorkArrangement,
+    );
+
+    const temporalEntry = coverage.find((c) => c.token === "temporal");
+    expect(temporalEntry?.survivedFilter).toBe(0);
+    expect(temporalEntry?.excludedForMissingWorkArrangement).toBe(3);
+    const quietEntry = coverage.find((c) => c.token === "quiet-co");
+    expect(quietEntry?.excludedForMissingWorkArrangement).toBe(0);
   });
 });
 

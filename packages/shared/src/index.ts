@@ -327,6 +327,16 @@ export type BoardCoverageEntry = {
   message?: string;
   skippedCount: number;
   survivedFilter: number;
+  /**
+   * How many of this token's title-passing postings were excluded
+   * specifically because they're "somewhere in the US" with no evidence of
+   * a remote work arrangement (ticket 14289ac) — distinct from every other
+   * reason a token can contribute zero survivors (not-found, empty, error,
+   * or filtered out for an unrelated reason). See apps/api's
+   * `BoardCoverageEntry` (demo-match.ts) for the full reasoning; this is
+   * the same field, mirrored into the REST contract.
+   */
+  excludedForMissingWorkArrangement: number;
 };
 
 export type SourceOutcome = {
@@ -336,6 +346,10 @@ export type SourceOutcome = {
   skippedCount: number;
   skipRate: number;
   survivedFilter: number;
+  /** Source-level total of `BoardCoverageEntry.excludedForMissingWorkArrangement`
+   * across every token of this source — ticket 14289ac. See that field's
+   * doc comment. */
+  excludedForMissingWorkArrangement: number;
   errorMessage?: string;
   boardCoverage: BoardCoverageEntry[];
 };

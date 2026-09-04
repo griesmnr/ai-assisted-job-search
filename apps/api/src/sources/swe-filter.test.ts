@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   classifyGeography,
+  classifyLocationFilterOutcome,
+  excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
   matchesTitleExclusion,
   passesLocationFilter,
@@ -72,6 +74,11 @@ const ashbyRamp = loadFixture("ashby-real-response-ramp.json").jobs as Array<{
 }>;
 const ashbyNotion = loadFixture("ashby-real-response-notion.json").jobs as Array<{
   title: string;
+}>;
+const ashbyTemporal = loadFixture("ashby-real-response-temporal.json").jobs as Array<{
+  title: string;
+  location?: string;
+  workplaceType?: string | null;
 }>;
 const greenhouseAirbnb = loadFixture("greenhouse-real-response-airbnb.json").jobs as Array<{
   title: string;
@@ -793,6 +800,123 @@ describe("passesLocationFilter — geography and work arrangement recombined", (
 
   it("a location with no location string at all does not pass", () => {
     expect(passesLocationFilter({ location: undefined, locationType: undefined })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 14289ac: `passesLocationFilter` staying correct (it does — 4450f39's
+// rule that a us-wide posting needs a genuinely remote arrangement is
+// unchanged and untouched here) was never the problem. The problem was that
+// a `false` from it is silent about WHY, and one specific why — "somewhere
+// in the US," no structured `locationType`, no "remote" text either — is
+// exactly the shape that made Temporal's whole Ashby board (55 postings,
+// all real `workplaceType: null`) contribute zero survivors, indistinguishable
+// from a dead board. `classifyLocationFilterOutcome` and
+// `excludedForMissingWorkArrangement` exist to make that reason countable.
+//
+// ashby-real-response-temporal.json is REAL, live-fetched data (2026-09-03,
+// api.ashbyhq.com/posting-api/job-board/temporal) — not hand-invented, per
+// this file's own standing convention (see top-of-file comment). It carries
+// exactly one posting with `workplaceType: null` among Temporal's currently
+// live SOFTWARE-passing titles ("Senior Software Engineer, Infrastructure
+// Foundations," `location: "United States"`) — most of Temporal's board has
+// since moved to explicit `workplaceType: "Remote"` (a real, dated change
+// from the ticket's 2026-08-24 measurement, when ALL 55 were null; see
+// measure-missing-work-arrangement-exclusions.ts's own doc comment for the
+// 2026-09-03 re-measurement — only 3 of Temporal's now-64 postings are
+// still null). The second fixture posting ("Staff Software Engineer, Open Source
+// Server," `workplaceType: "Remote"`) is the contrasting real case: same
+// employer, same us-wide geography, genuinely remote — passes, and must NOT
+// land in this bucket.
+// ---------------------------------------------------------------------------
+describe("classifyLocationFilterOutcome / excludedForMissingWorkArrangement — ticket 14289ac", () => {
+  it("real Temporal posting: us-wide + locationType undefined (real workplaceType: null) classifies as us-wide-missing-work-arrangement, not a generic unknown-geography bucket", () => {
+    const posting = ashbyTemporal.find(
+      (j) => j.title === "Senior Software Engineer, Infrastructure Foundations",
+    );
+    if (!posting) throw new Error("fixture drift: expected the real Temporal posting");
+    expect(posting.workplaceType).toBeNull();
+    expect(posting.location).toBe("United States");
+
+    const job = { location: posting.location, locationType: undefined };
+    expect(passesLocationFilter(job)).toBe(false);
+    expect(classifyLocationFilterOutcome(job)).toEqual({
+      passed: false,
+      reason: "us-wide-missing-work-arrangement",
+    });
+  });
+
+  it("real contrasting Temporal posting: same employer, same us-wide geography, but a REAL workplaceType of 'Remote' passes and is not counted as missing metadata", () => {
+    const posting = ashbyTemporal.find(
+      (j) => j.title === "Staff Software Engineer, Open Source Server",
+    );
+    if (!posting) throw new Error("fixture drift: expected the real Temporal posting");
+    expect(posting.workplaceType).toBe("Remote");
+
+    const job = { location: posting.location, locationType: "remote" as const };
+    expect(passesLocationFilter(job)).toBe(true);
+    expect(classifyLocationFilterOutcome(job)).toEqual({ passed: true });
+  });
+
+  it("a us-wide posting with a KNOWN, structured non-remote arrangement (real airbnb onsite fixture) is 'us-wide-not-remote', distinct from missing metadata", () => {
+    // Same fixture data as the "real onsite-in-New-York/LA posting" case
+    // above — the source DID tell us the arrangement (onsite); nothing is
+    // missing here, so this must not be miscounted as this ticket's
+    // metadata-missing category.
+    expect(
+      classifyLocationFilterOutcome({
+        location: "New York, United States, Los Angeles, United States",
+        locationType: "onsite",
+      }),
+    ).toEqual({ passed: false, reason: "us-wide-not-remote" });
+  });
+
+  it("a posting with no recognizable geography at all is 'unknown-geography', distinct from missing metadata", () => {
+    expect(
+      classifyLocationFilterOutcome({ location: "Hyderabad", locationType: undefined }),
+    ).toEqual({ passed: false, reason: "unknown-geography" });
+  });
+
+  it("excludedForMissingWorkArrangement picks out exactly the real Temporal posting from a mixed pool, applying the SAME title filter filterSoftwareEngineeringJobs uses", () => {
+    const missingArrangement: NormalizedJob = {
+      externalId: "temporal-missing",
+      dataSource: "ashby",
+      title: "Senior Software Engineer, Infrastructure Foundations",
+      description: "",
+      company: "Temporal",
+      payType: undefined,
+      commitment: undefined,
+      locationType: undefined,
+      location: "United States",
+      linkToApply: "https://jobs.ashbyhq.com/temporal/1929137d",
+      postedAt: new Date("2026-08-12T23:28:55.909Z"),
+    };
+    const confirmedRemote: NormalizedJob = {
+      ...missingArrangement,
+      externalId: "temporal-remote",
+      title: "Staff Software Engineer, Open Source Server",
+      locationType: "remote",
+    };
+    const unknownGeography: NormalizedJob = {
+      ...missingArrangement,
+      externalId: "temporal-unknown-geo",
+      title: "Backend Software Engineer",
+      location: "Hyderabad",
+    };
+    const nonSoftwareTitle: NormalizedJob = {
+      ...missingArrangement,
+      externalId: "temporal-recruiter",
+      title: "GTM Recruiter, AMER",
+    };
+
+    const result = excludedForMissingWorkArrangement([
+      missingArrangement,
+      confirmedRemote,
+      unknownGeography,
+      nonSoftwareTitle,
+    ]);
+
+    expect(result.map((j) => j.externalId)).toEqual(["temporal-missing"]);
   });
 });
 
