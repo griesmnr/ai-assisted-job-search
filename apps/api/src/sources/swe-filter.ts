@@ -280,9 +280,39 @@ export function matchesTitleExclusion(title: string): boolean {
  * but every piece used to construct it is real, not invented. Would have
  * failed in the worst direction: DC federal jobs passing PNW unconditionally
  * (PNW ignores work arrangement), presenting as Washington-state postings.
+ *
+ * Ticket 7ab1b57 (found live during 84b879e's adversarial review, 2026-09-04):
+ * the `,\s*wa\b` alternation also matches "WA" as the ISO abbreviation for
+ * Western Australia, not just Washington State. Real trap, not a
+ * hypothetical: a live SmartRecruiters/Expeditors posting, "Manager -
+ * Project Cargo Services, AU/NZ", is onsite in "Jandakot, WA, Australia" --
+ * `classifyGeography` returned "pnw" for it, and it only failed to appear
+ * in results because of the UNRELATED `manager` title exclusion (see
+ * NOT below). Change the title and this regex presents a Perth-area
+ * job as a Seattle-area match. Fixed the same way the DC guard above
+ * handles its own false-positive trap: a negative lookahead naming the
+ * specific real disambiguator (here, a trailing "Australia") rather than
+ * trying to enumerate every non-Washington place that happens to abbreviate
+ * to "WA" — real captured evidence is "Jandakot, WA, Australia" (comma
+ * before AND after "WA"); the lookahead also tolerates "WA Australia" (no
+ * comma) since nothing rules that variant out and the DC guard's own
+ * `,?\s*` already sets the precedent of tolerating an optional comma. Does
+ * NOT touch the bare "washington"/"seattle"/"bellevue" alternations, which
+ * have no equivalent Australian collision.
+ *
+ * Known, deliberately unhandled gap (opus review, 2026-09-09): a postcode
+ * between region and country ("Jandakot, WA 6164, Australia") or a country
+ * CODE instead of the spelled-out name ("Jandakot, WA, AU") both still
+ * classify "pnw" — the lookahead only recognizes the exact shape the real
+ * trap used. Not widened speculatively: every real SmartRecruiters
+ * `fullLocation` sampled (`"Barcelona, CT, Spain"`, `"Sunnyvale, CA,
+ * United States"`, `"Reutlingen, BW, Germany"`) is `City, Region,
+ * CountrySpelledOut` — no postcode, never a country code — so neither gap
+ * shape is produced by the source that motivated this fix. Revisit if a
+ * future source's real data actually produces either shape.
  */
 const PNW =
-  /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*(?:d\.?c\.?|district of columbia))|,\s*wa\b/i;
+  /\b(?:seattle|bellevue)\b|\bwashington\b(?!,?\s*(?:d\.?c\.?|district of columbia))|,\s*wa\b(?!,?\s*australia)/i;
 
 /**
  * A broad "somewhere in the US" signal from free text — "United States",
