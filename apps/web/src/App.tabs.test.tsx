@@ -88,6 +88,11 @@ async function submitResume() {
   });
   fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+  // Ticket b9e6251: an empty location (no nearLocations, no remoteOk) now
+  // requires the explicit "Any location" opt-in before "Estimate search
+  // cost" is even enabled -- every test in this file estimates without
+  // ever setting a location, so this is needed unconditionally here.
+  fireEvent.click(screen.getByLabelText(/Any location/));
 }
 
 describe("App tabs (ticket f4a7f07)", () => {

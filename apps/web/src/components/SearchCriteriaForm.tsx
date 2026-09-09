@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { splitPhrases } from "../criteriaText";
 
 /**
  * Editable title-keyword chips + the two remaining plain-text criteria
@@ -33,6 +34,7 @@ export function SearchCriteriaForm({
   titleChips,
   nearLocations,
   remoteOk,
+  anyLocationOk,
   commitmentIn,
   onTitleChipsChange,
   onChange,
@@ -40,11 +42,18 @@ export function SearchCriteriaForm({
   titleChips: string[];
   nearLocations: string;
   remoteOk: boolean;
+  /** Ticket b9e6251: the explicit "I'll work anywhere" opt-in -- see this
+   * component's own `search-criteria-location-warning` paragraph below for
+   * why this exists as a real, separate field rather than just letting
+   * `nearLocations`/`remoteOk` both being empty silently mean the same
+   * thing. */
+  anyLocationOk: boolean;
   commitmentIn: ("full-time" | "part-time" | "contract")[];
   onTitleChipsChange: (next: string[]) => void;
   onChange: (next: {
     nearLocations: string;
     remoteOk: boolean;
+    anyLocationOk: boolean;
     commitmentIn: ("full-time" | "part-time" | "contract")[];
   }) => void;
 }) {
@@ -72,11 +81,24 @@ export function SearchCriteriaForm({
     patch: Partial<{
       nearLocations: string;
       remoteOk: boolean;
+      anyLocationOk: boolean;
       commitmentIn: ("full-time" | "part-time" | "contract")[];
     }>,
   ) {
-    onChange({ nearLocations, remoteOk, commitmentIn, ...patch });
+    onChange({ nearLocations, remoteOk, anyLocationOk, commitmentIn, ...patch });
   }
+
+  // Ticket b9e6251: leaving BOTH `nearLocations` and `remoteOk` empty used
+  // to mean "no location restriction, search anywhere" -- exactly the
+  // kind of silent, never-explicitly-chosen default Nicole's own principle
+  // already rejected for title keywords and the staff-level exclusion:
+  // "I'd rather have it be a really expensive search offered than a blind
+  // default." A real location restriction is present the instant EITHER
+  // field has content; only the fully-empty case needs the explicit
+  // `anyLocationOk` opt-in. Uses the shared `splitPhrases` (opus review
+  // F3), same as App.tsx's identical `hasLocationSignal` check -- a plain
+  // `.trim().length > 0` test would treat a lone "," as a real signal.
+  const hasLocationSignal = splitPhrases(nearLocations).length > 0 || remoteOk || anyLocationOk;
 
   function toggleCommitment(value: "full-time" | "part-time" | "contract", checked: boolean) {
     set({
@@ -144,6 +166,22 @@ export function SearchCriteriaForm({
         />
         Also show fully remote roles
       </label>
+      <label className="search-criteria-checkbox">
+        <input
+          type="checkbox"
+          checked={anyLocationOk}
+          onChange={(e) => set({ anyLocationOk: e.target.checked })}
+        />
+        Any location — I'm open to relocating or working anywhere
+      </label>
+      {!hasLocationSignal && (
+        <p className="search-criteria-location-warning" role="alert">
+          No location restriction is set. Leaving this blank means every real posting could match
+          regardless of where it is — check "Any location" above if that's genuinely what you want,
+          or add a commute location / remote above. Estimating is disabled until one of these is
+          set.
+        </p>
+      )}
       <fieldset className="search-criteria-commitment">
         <legend>
           {commitmentIn.length > 0

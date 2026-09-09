@@ -79,6 +79,9 @@ async function submitResume() {
   });
   fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+  // Ticket b9e6251: an empty location now requires the explicit "Any
+  // location" opt-in before "Estimate search cost" is enabled.
+  fireEvent.click(screen.getByLabelText(/Any location/));
 }
 
 describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2f98)", () => {

@@ -129,6 +129,28 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
   });
 
+  it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {
+    mockHappyPath();
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: RESUME_TEXT },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    cleanup();
+
+    render(<App />);
+
+    await screen.findByText("Resume ready.");
+    expect(screen.getByLabelText(/Any location/)).toBeChecked();
+    expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled(),
+    );
+  });
+
   it("sends the restored criteria on the next estimate, not the defaults", async () => {
     mockHappyPath();
     estimateSearch.mockResolvedValue(makeEstimate());
@@ -180,11 +202,16 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // No resume means nothing worth restoring; the empty screen IS the
     // right state, and no record should have been written to resurrect.
     expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("jobsearch.web.appState.v1")).toBeNull();
+    expect(sessionStorage.getItem("jobsearch.web.appState.v2")).toBeNull();
   });
 
   it("ignores a corrupt record and starts clean rather than crashing", async () => {
-    sessionStorage.setItem("jobsearch.web.appState.v1", '{"resumeId": 42}');
+    // Ticket b9e6251 bumped this key from .v1 to .v2 (CriteriaFormState
+    // gained `anyLocationOk`) -- must set the key the app ACTUALLY reads,
+    // or this test would silently pass for the wrong reason (never even
+    // attempting to read the "corrupt" data because it's under a key
+    // nothing reads anymore).
+    sessionStorage.setItem("jobsearch.web.appState.v2", '{"resumeId": 42}');
     mockHappyPath();
 
     render(<App />);
