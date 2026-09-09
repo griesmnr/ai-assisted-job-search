@@ -15,6 +15,34 @@ export type NormalizedJob = Omit<Job, "id">;
  * so every adapter keeps taking the same shape. */
 export type SearchCriteria = {
   keyword?: string;
+  /**
+   * Ticket d1fc9e2: multiple title PHRASES to search for, "ANY of these"
+   * semantics -- the same meaning `@app/shared`'s `SearchCriteria.
+   * titleInclude` already has for LOCAL filtering, now also usable at
+   * FETCH time by an adapter that can act on it. Deliberately separate
+   * from `keyword` (a single free-text term) rather than widening that
+   * field's type: USAJOBS's own `Keyword` query param does NOT support
+   * boolean OR (verified live, 2026-09-08 -- `Keyword=software engineer`
+   * returns FEWER results than either "software" or "engineer" alone, an
+   * AND/phrase match, not an OR), so "any of these titles" can only be
+   * honored as multiple separate searches, merged -- see `usajobs.ts`'s
+   * `search()` for the one adapter that currently reads THIS field.
+   *
+   * Correction (opus review F2): an earlier version of this comment
+   * claimed every OTHER adapter ignores `keyword`/`location` too, "same
+   * as they already ignore" them. That's wrong -- `greenhouse.ts`,
+   * `lever.ts`, `ashby.ts`, and `smartrecruiters.ts` all read
+   * `criteria.keyword` and apply it as a client-side substring filter
+   * (each has its own `itemMatchesCriteria`-shaped check). They only
+   * happen to be unaffected by THIS ticket specifically because
+   * `buildFetchCriteria` (routes/searches.ts) sets `keywords`, never
+   * plain `keyword`, for the multi-phrase case -- if a future change set
+   * BOTH fields, those four adapters would start substring-AND-filtering
+   * on `keyword` too, silently changing their own behavior. `keywords`
+   * itself genuinely IS USAJOBS-only for now; `keyword` is not adapter-
+   * specific at all.
+   */
+  keywords?: string[];
   location?: string;
 };
 

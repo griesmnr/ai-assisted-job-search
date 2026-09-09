@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AuthFailedError,
   ForbiddenError,
@@ -388,6 +388,195 @@ describe("UsajobsSource — error classification", () => {
     expect(err).toBeInstanceOf(UnexpectedStatusError);
     expect((err as UnexpectedStatusError).status).toBe(400);
     expect((err as UnexpectedStatusError).retryable).toBe(false);
+  });
+});
+
+describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY of these' search)", () => {
+  // Re-review N3: a spy left un-restored after an assertion throws mid-test
+  // leaks into the NEXT test (observed for real during mutation testing —
+  // breaking the cap made two tests fail, the second one spuriously,
+  // because the first test's thrown assertion skipped its own
+  // `warnSpy.mockRestore()`). A blanket restore after every test is cheap
+  // insurance regardless of whether a given test happens to spy.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Real per-item response for a given single-item page — used to build a
+  // fetchImpl that returns different items for different Keyword values,
+  // simulating each phrase genuinely matching a different (or overlapping)
+  // slice of USAJOBS.
+  function singleItemResponse(item: unknown): Response {
+    return jsonResponse({ SearchResult: { SearchResultCountAll: 1, SearchResultItems: [item] } });
+  }
+  function emptyResponse(): Response {
+    return jsonResponse({ SearchResult: { SearchResultCountAll: 0, SearchResultItems: [] } });
+  }
+
+  it("runs one fully-paginated search per phrase and merges the jobs", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      if (keyword === "engineering generalist") return singleItemResponse(engineeringGeneralist);
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["civil engineer", "engineering generalist"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const keywordsSent = fetchImpl.mock.calls
+      .map((call) => (call[0] as URL).searchParams.get("Keyword"))
+      .sort();
+    expect(keywordsSent).toEqual(["civil engineer", "engineering generalist"]);
+    expect(result.jobs).toHaveLength(2);
+    expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["846773600", "879434300"]);
+  });
+
+  it("dedupes by externalId when the SAME real posting matches more than one phrase", async () => {
+    // A fresh Response per call -- reusing one Response instance across
+    // multiple fetchImpl calls fails with "Body has already been read"
+    // once its stream is consumed by the first read.
+    const fetchImpl = vi.fn().mockImplementation(async () => singleItemResponse(civilEngineer));
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({
+      keywords: ["civil engineer", "structural engineer", "engineer"],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // All three phrases "found" the same real posting -- merged to one job,
+    // not three.
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]?.externalId).toBe("879434300");
+  });
+
+  it("caps at MAX_KEYWORD_SEARCHES (10, opus review F1): extra phrases beyond the cap are never searched, and a warning names the dropped ones", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await source.search({
+      keywords: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    const keywordsSent = fetchImpl.mock.calls.map((call) =>
+      (call[0] as URL).searchParams.get("Keyword"),
+    );
+    expect(keywordsSent.sort()).toEqual(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    // Re-review N4: `toContain("k, l")` alone also passes if the message
+    // names every phrase, not just the dropped ones -- assert the full
+    // dropped-list text exactly, and that a KEPT phrase is absent.
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("dropped: k, l");
+    expect(warnSpy.mock.calls[0]?.[0]).not.toContain("a, b");
+  });
+
+  it("does NOT warn when the number of phrases is within the cap", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await source.search({ keywords: ["a", "b", "c"] });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("dedupes skipped[] by externalId too, not just jobs[] (opus review F3), so skipRate stays honest across overlapping phrases", async () => {
+    // Both phrases "find" the same one real page, and that page's item is
+    // unmappable -- it should be reported as skipped ONCE, not twice, or
+    // skipRate would overstate how much of the pool genuinely failed to map.
+    const unmappable = cloneItem(civilEngineer);
+    delete unmappable.MatchedObjectDescriptor.UserArea.Details.RemoteIndicator;
+    const fetchImpl = vi.fn().mockImplementation(async () => singleItemResponse(unmappable));
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["civil engineer", "structural engineer"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.jobs).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipRate).toBe(1);
+  });
+
+  it("a job found via ANY phrase always wins over the SAME posting being unmappable via another phrase, regardless of fetch order (re-review N1)", async () => {
+    // Same real MatchedObjectId, but phrase A's copy is unmappable
+    // (RemoteIndicator missing) while phrase B's copy is a normal, fully
+    // mappable posting. A naive single-pass dedup keyed on "seen at all"
+    // would let whichever phrase's worker happens to finish FIRST decide
+    // the outcome -- if the unmappable copy is seen first, the real job
+    // from the other phrase is silently dropped as "already seen," and
+    // the posting is wrongly reported as skipped even though a mappable
+    // copy of it genuinely existed. A job must always win.
+    const unmappableCopy = cloneItem(civilEngineer);
+    delete unmappableCopy.MatchedObjectDescriptor.UserArea.Details.RemoteIndicator;
+    const mappableCopy = cloneItem(civilEngineer);
+
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "unmappable-first") return singleItemResponse(unmappableCopy);
+      return singleItemResponse(mappableCopy);
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({
+      keywords: ["unmappable-first", "mappable-second"],
+    });
+
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]?.externalId).toBe(civilEngineer.MatchedObjectId);
+    expect(result.skipped).toHaveLength(0);
+    expect(result.skipRate).toBe(0);
+  });
+
+  it("an empty keywords array behaves exactly like no criteria at all (falls back to a single unkeyworded search)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: [] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((fetchImpl.mock.calls[0]![0] as URL).searchParams.has("Keyword")).toBe(false);
+    expect(result.jobs).toHaveLength(2);
+  });
+
+  it("keywords takes priority over a plain keyword when both are somehow present", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({
+      keyword: "ignored plain keyword",
+      keywords: ["civil engineer"],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((fetchImpl.mock.calls[0]![0] as URL).searchParams.get("Keyword")).toBe("civil engineer");
+    expect(result.jobs).toHaveLength(1);
+  });
+
+  it("still fully paginates EACH phrase's own search (multi-phrase doesn't lose per-phrase pagination)", async () => {
+    const page1 = jsonResponse({
+      SearchResult: { SearchResultCountAll: 2, SearchResultItems: [cloneItem(civilEngineer)] },
+    });
+    const page2 = jsonResponse({
+      SearchResult: {
+        SearchResultCountAll: 2,
+        SearchResultItems: [{ ...cloneItem(civilEngineer), MatchedObjectId: "999999999" }],
+      },
+    });
+    const fetchImpl = vi.fn().mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["civil engineer"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["879434300", "999999999"]);
   });
 });
 

@@ -21,6 +21,40 @@ const DEFAULT_RESULTS_PER_PAGE = 25;
 // any single realistic search's result count at the default page size.
 const DEFAULT_MAX_PAGES = 200;
 const DEFAULT_TIMEOUT_MS = 15_000;
+// Ticket d1fc9e2: `criteria.keywords` runs one fully-paginated search PER
+// phrase (USAJOBS's Keyword param has no OR operator -- see
+// `SearchCriteria.keywords`'s doc comment in types.ts). Capped rather than
+// searching every title chip a user has (routes/searches.ts allows up to
+// 20).
+//
+// opus review, F1 (fixed from an original 5): a per-phrase search is NOT
+// "a full re-paginated USAJOBS fetch" in the sense the ticket's first
+// draft feared -- it's bounded by THAT PHRASE's own real result count,
+// not by `MAX_PAGES`'s 200-page ceiling. Live-measured via
+// `scripts/verify-usajobs-keyword-coverage.ts` (re-run that script for
+// today's numbers, since real per-phrase counts change daily): a 5-phrase
+// run of realistic titles totaled under 100 requests, well under the OLD
+// no-keyword path's 200 requests for a worse (unfocused) result -- unless
+// a phrase's own real total is itself large (a broad phrase like
+// "information technology" alone can approach the 200-page cap; see
+// ticket c419a12's note on this). 10 covers the realistic range with room
+// to spare:
+// `resume-title-inference.ts` prompts for "3-6" titles, and a user can add
+// a handful more chips by hand -- 5 was already silently dropping the
+// common 6-chip case, which review F1 flagged as a real regression
+// against ticket 16c824a's own rule that a cap must "never [bind]
+// silently." This file has no injected logger (see `#searchMultipleKeywords`
+// below for how binding is now surfaced instead), so raising the cap
+// itself is the primary mitigation -- 10 real searches is still bounded,
+// still far cheaper than the old unkeyworded fetch, and covers virtually
+// every real chip count this app actually produces.
+const MAX_KEYWORD_SEARCHES = 10;
+// Moderate, not full, parallelism for the same reason ticket b681d18 chose
+// 5 (not unbounded) for Greenhouse's board fan-out: each of these is a
+// fully-paginated multi-request fetch against a single external API,
+// heavier per-item than Greenhouse's one-request-per-board, so a lower
+// concurrency here is the conservative choice pending real measurement.
+const KEYWORD_SEARCH_CONCURRENCY = 3;
 
 export type UsajobsConfig = {
   /** From `USAJOBS_API_KEY`. Sent as the `Authorization-Key` header. */
@@ -94,6 +128,137 @@ export class UsajobsSource implements JobSource {
   }
 
   async search(criteria: SearchCriteria): Promise<SourceSearchResult> {
+    // Ticket d1fc9e2: `keywords` (multiple phrases, "ANY of these") takes
+    // priority over the plain single `keyword` when both are somehow
+    // present -- a caller providing `keywords` has already expressed the
+    // more specific intent.
+    if (criteria.keywords && criteria.keywords.length > 0) {
+      return this.#searchMultipleKeywords(criteria, criteria.keywords);
+    }
+    return this.#searchOne(criteria);
+  }
+
+  /**
+   * Runs one fully-independent, fully-paginated search per phrase (bounded
+   * concurrency, bounded phrase count -- see `MAX_KEYWORD_SEARCHES`/
+   * `KEYWORD_SEARCH_CONCURRENCY`'s doc comments), then merges the results.
+   *
+   * Deduped by `externalId`: the SAME real posting can and does match more
+   * than one phrase (e.g. a "Senior Software Engineer" role matches both
+   * "software engineer" and "senior engineer"). Ingestion is already safe
+   * without this -- `ingestJobs.ts` dedupes by `externalId` within a
+   * batch on its own, specifically as a guard against exactly this kind
+   * of pathological adapter response (see its own comment) -- so this
+   * dedup is NOT protecting the ingestion pipeline from a crash or a
+   * write conflict (an earlier version of this comment overclaimed that
+   * it was; opus review F2). It's here so `jobs.length` (and the derived
+   * `skipRate` below) reports the true number of DISTINCT postings this
+   * adapter found, not an inflated count double-billing the same job
+   * once per phrase that happened to match it -- a cleaner, more honest
+   * result for any caller inspecting this adapter's own numbers, ahead
+   * of whatever ingestion does with them later.
+   *
+   * If any sub-search throws, the whole call throws -- the same contract
+   * `#searchOne`/`search()` already had for a single keyword. Real,
+   * disclosed gap (opus review F4, not fixed here -- filed as ticket
+   * c419a12 for real per-phrase isolation matching SmartRecruiters'/
+   * Greenhouse's own precedent, tickets b723fb9/491cd88): unlike those
+   * adapters, one phrase's transient failure currently discards every
+   * OTHER phrase's already-completed results. `CompositeSource`
+   * (composite.ts) still isolates USAJOBS's total failure from the
+   * other configured sources, so this degrades USAJOBS to "failed" for
+   * this run rather than failing the whole search -- the blast radius is
+   * contained, just not as gracefully as it could be.
+   *
+   * Ticket 16c824a's rule ("[a cap] is reported explicitly, every single
+   * time it binds -- never silent") applies to `MAX_KEYWORD_SEARCHES`
+   * too (opus review F1) -- this file has no injected logger to route a
+   * structured event through, so a plain `console.warn` is the
+   * proportionate signal: real, visible in server logs, not silent,
+   * without a wider type change to `SourceSearchResult` (used uniformly
+   * by every adapter) to thread a "capped" flag all the way to the UI.
+   */
+  async #searchMultipleKeywords(
+    criteria: SearchCriteria,
+    keywords: string[],
+  ): Promise<SourceSearchResult> {
+    const phrases = keywords.slice(0, MAX_KEYWORD_SEARCHES);
+    if (keywords.length > MAX_KEYWORD_SEARCHES) {
+      console.warn(
+        `USAJOBS: ${keywords.length} title keywords given, only searching the first ` +
+          `${MAX_KEYWORD_SEARCHES} (MAX_KEYWORD_SEARCHES) -- dropped: ` +
+          `${keywords.slice(MAX_KEYWORD_SEARCHES).join(", ")}`,
+      );
+    }
+    const resultsByIndex: SourceSearchResult[] = new Array(phrases.length);
+    let nextIndex = 0;
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = nextIndex;
+        if (i >= phrases.length) return;
+        nextIndex = i + 1;
+        resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrases[i] });
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(KEYWORD_SEARCH_CONCURRENCY, phrases.length) }, () => worker()),
+    );
+
+    // Deduped by externalId -- opus review F3: the OLD version deduped
+    // `jobs` but pushed every sub-search's `skipped` unconditionally,
+    // so the SAME unmappable posting matching N phrases counted N times
+    // toward `skipRate`, which can spuriously trip
+    // `fetchSourceWorker.ts`'s high-skip-rate mapper-bug alert. Skipped
+    // records lack a stable identity field as clean as `NormalizedJob`'s
+    // `externalId` in the general case, but `SkippedRecord.externalId`
+    // (when present) is the same real id a job would have had, so
+    // dedup on it exactly like `jobs` below; a record with no
+    // extractable id (`externalId: undefined`) can't collide with
+    // itself this way and is kept as-is.
+    //
+    // Re-review F3-followup (N1): jobs and skips are collected in TWO
+    // separate passes, jobs first, deliberately NOT sharing one
+    // seen-ids set built incrementally phrase-by-phrase. A single
+    // shared set built in one pass over `resultsByIndex` in order made
+    // the outcome depend on which phrase happened to run first: if
+    // phrase A's copy of a posting was unmappable and got added to the
+    // set before phrase B's mappable copy of the SAME posting was seen,
+    // the real job from B was silently dropped as "already seen" --
+    // losing a genuine job AND still reporting it as skipped. A job,
+    // once found anywhere, must always win over a skip for the same
+    // posting, regardless of fetch order -- so all jobs are deduped and
+    // collected first, and only THEN are skips filtered against the
+    // now-complete set of job ids (plus their own separate dedup set).
+    const jobs: NormalizedJob[] = [];
+    const seenJobIds = new Set<string>();
+    for (const result of resultsByIndex) {
+      for (const job of result.jobs) {
+        if (seenJobIds.has(job.externalId)) continue;
+        seenJobIds.add(job.externalId);
+        jobs.push(job);
+      }
+    }
+    const skipped: SkippedRecord[] = [];
+    const seenSkipIds = new Set<string>();
+    for (const result of resultsByIndex) {
+      for (const skip of result.skipped) {
+        if (skip.externalId !== undefined) {
+          if (seenJobIds.has(skip.externalId)) continue;
+          if (seenSkipIds.has(skip.externalId)) continue;
+          seenSkipIds.add(skip.externalId);
+        }
+        skipped.push(skip);
+      }
+    }
+
+    const total = jobs.length + skipped.length;
+    const skipRate = total === 0 ? 0 : skipped.length / total;
+    return { jobs, skipped, skipRate };
+  }
+
+  async #searchOne(criteria: SearchCriteria): Promise<SourceSearchResult> {
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
 
