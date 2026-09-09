@@ -48,7 +48,7 @@ import type { EstimateSearchResponse } from "@app/shared";
 
 /** Bump the `.vN` suffix on any shape change: an old record then simply
  * fails to load and the app starts clean, instead of being hand-migrated. */
-const APP_STATE_KEY = "jobsearch.web.appState.v1";
+const APP_STATE_KEY = "jobsearch.web.appState.v2";
 const ACTIVE_SEARCH_KEY = "jobsearch.web.activeSearch.v1";
 
 export type Commitment = "full-time" | "part-time" | "contract";
@@ -56,6 +56,12 @@ export type Commitment = "full-time" | "part-time" | "contract";
 export type CriteriaFormState = {
   nearLocations: string;
   remoteOk: boolean;
+  /** Ticket b9e6251: the explicit "I'll work anywhere" opt-in -- required
+   * before an otherwise-empty location criteria is honored as "search
+   * every location" rather than blocking the estimate. Bumped
+   * `APP_STATE_KEY` to `.v2` for this field, per this file's own
+   * version-bump convention above. */
+  anyLocationOk: boolean;
   commitmentIn: Commitment[];
 };
 
@@ -134,12 +140,13 @@ const COMMITMENTS: readonly string[] = ["full-time", "part-time", "contract"];
 
 function parseCriteriaForm(value: unknown): CriteriaFormState | undefined {
   if (!isRecord(value)) return undefined;
-  const { nearLocations, remoteOk, commitmentIn } = value;
+  const { nearLocations, remoteOk, anyLocationOk, commitmentIn } = value;
   if (typeof nearLocations !== "string") return undefined;
   if (typeof remoteOk !== "boolean") return undefined;
+  if (typeof anyLocationOk !== "boolean") return undefined;
   if (!isStringArray(commitmentIn)) return undefined;
   if (!commitmentIn.every((entry) => COMMITMENTS.includes(entry))) return undefined;
-  return { nearLocations, remoteOk, commitmentIn: commitmentIn as Commitment[] };
+  return { nearLocations, remoteOk, anyLocationOk, commitmentIn: commitmentIn as Commitment[] };
 }
 
 export function readAppState(): PersistedAppState | undefined {

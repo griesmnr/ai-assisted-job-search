@@ -110,6 +110,7 @@ function App() {
     restored?.criteriaForm ?? {
       nearLocations: "",
       remoteOk: false,
+      anyLocationOk: false,
       commitmentIn: [],
     },
   );
@@ -117,6 +118,23 @@ function App() {
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
     [titleChips, criteriaForm],
   );
+  // Ticket b9e6251: an empty location (no nearLocations, no remoteOk) used
+  // to mean "no restriction, search anywhere" SILENTLY -- the same shape
+  // of never-explicitly-chosen default Nicole's own principle already
+  // rejected for title keywords ("I'd rather have it be a really
+  // expensive search offered than a blind default"). Now that state
+  // requires the explicit `anyLocationOk` opt-in (SearchCriteriaForm's own
+  // checkbox) before "Estimate search cost" is even reachable -- see the
+  // `disableEstimate` prop passed to SearchFlow below.
+  // Matches SearchCriteriaForm's own identical check (its warning text
+  // depends on the same condition) -- kept as a plain non-empty-string
+  // test, not full `splitPhrases` parsing, so the two can never disagree
+  // on an edge case like a lone "," (a non-empty string that splits to no
+  // real phrases).
+  const hasLocationSignal =
+    criteriaForm.nearLocations.trim().length > 0 ||
+    criteriaForm.remoteOk ||
+    criteriaForm.anyLocationOk;
 
   const { state: resultsState, refresh } = useResults(resumeId);
 
@@ -358,6 +376,7 @@ function App() {
                 titleChips={titleChips}
                 nearLocations={criteriaForm.nearLocations}
                 remoteOk={criteriaForm.remoteOk}
+                anyLocationOk={criteriaForm.anyLocationOk}
                 commitmentIn={criteriaForm.commitmentIn}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
@@ -375,6 +394,7 @@ function App() {
                 resumeId={resumeId}
                 sourceIds={[...selectedSourceIds]}
                 criteria={criteria}
+                disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => setHasFreshSearchResults(false)}
                 onSearchComplete={handleSearchComplete}
               />

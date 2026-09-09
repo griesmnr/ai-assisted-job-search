@@ -111,12 +111,21 @@ export function SearchFlow({
   resumeId,
   sourceIds,
   criteria,
+  disableEstimate,
   onEstimateStart,
   onSearchComplete,
 }: {
   resumeId: string;
   sourceIds: string[];
   criteria?: SearchCriteria;
+  /** Ticket b9e6251: App.tsx sets this when the location criteria has no
+   * real signal (no commute locations, remote not checked, "Any location"
+   * not checked) -- SearchFlow doesn't know or care WHY, it just keeps
+   * "Estimate search cost" disabled alongside its own existing
+   * `sourceIds.length === 0` check. Optional, defaulting to `false`
+   * (never disabled), so every other existing caller/test keeps working
+   * unchanged. */
+  disableEstimate?: boolean;
   /** Ticket f4a7f07: fired at the START of every estimate request (before
    * the network call), so App.tsx can clear its "current search results"
    * gate the same moment a new estimate is requested — Nicole: "cleared
@@ -458,7 +467,7 @@ export function SearchFlow({
         <button
           type="button"
           onClick={() => void handleEstimate()}
-          disabled={sourceIds.length === 0}
+          disabled={sourceIds.length === 0 || disableEstimate}
         >
           Estimate search cost
         </button>

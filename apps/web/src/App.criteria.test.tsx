@@ -105,12 +105,19 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       screen.getByText(/No title keywords yet.*leave this empty to search every title/),
     ).toBeInTheDocument();
 
+    // Ticket b9e6251: an empty location (no nearLocations, no remoteOk)
+    // now requires the explicit "Any location" opt-in before the estimate
+    // button is even enabled -- see SearchCriteriaForm's own location
+    // warning.
+    fireEvent.click(screen.getByLabelText(/Any location/));
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     // The critical assertion: {} (a real, empty, permissive object), NOT
     // undefined -- undefined would silently reproduce the old hardcoded
-    // default this ticket exists to remove.
+    // default this ticket exists to remove. `anyLocationOk` itself is a
+    // frontend-only gating signal -- it never appears in the criteria
+    // payload sent to the API.
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {});
   });
 
@@ -128,6 +135,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByLabelText(/Any location/));
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
@@ -148,6 +156,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     await submitResume();
 
     fireEvent.click(screen.getByRole("button", { name: 'Remove "Backend Engineer"' }));
+    fireEvent.click(screen.getByLabelText(/Any location/));
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
@@ -189,11 +198,108 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 
     fireEvent.click(screen.getByLabelText("Full-time"));
     fireEvent.click(screen.getByLabelText("Contract"));
+    fireEvent.click(screen.getByLabelText(/Any location/));
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
       commitmentIn: ["full-time", "contract"],
     });
+  });
+});
+
+// Ticket b9e6251: an empty location used to mean "search anywhere,
+// silently" -- the same shape of never-explicitly-chosen default Nicole's
+// own principle already rejected for title keywords. Now it requires a
+// real, explicit signal before "Estimate search cost" is even reachable.
+describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
+  it("disables Estimate search cost and shows a warning when no location signal is set", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/No location restriction is set/);
+  });
+
+  it("checking 'Any location' enables the button and clears the warning", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+  });
+
+  it("typing a commute location enables the button without needing 'Any location' checked", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.change(screen.getByLabelText(/Locations you'd commute to/), {
+      target: { value: "seattle" },
+    });
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("checking 'Also show fully remote roles' enables the button without needing 'Any location' checked", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.click(screen.getByLabelText("Also show fully remote roles"));
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("unchecking 'Any location' again re-disables the button (not a one-way opt-in)", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/No location restriction is set/);
+  });
+
+  it("'Any location' does not appear in the criteria payload sent to the API -- it's a frontend-only gate", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    const sentCriteria = estimateSearch.mock.calls[0]?.[2];
+    expect(sentCriteria).toEqual({});
+    expect(sentCriteria).not.toHaveProperty("anyLocationOk");
   });
 });
