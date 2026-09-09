@@ -352,7 +352,16 @@ export function SearchFlow({
     // startSearch priced for the OLD criteria against the NEW, possibly
     // much larger or smaller, real candidate set.
     const sameCriteriaValue = sameCriteria(phase.criteria, criteria);
-    if (!sameResume || !sameSources || !sameCriteriaValue) {
+    // Ticket b9e6251 fable/opus review F1 (blocking): `disableEstimate`
+    // (App.tsx's `!hasLocationSignal`) is NOT part of `criteria` --
+    // `anyLocationOk` is a pure frontend gate that never reaches the
+    // payload, so `sameCriteriaValue` alone can't see it change. Without
+    // this, un-checking "Any location" AFTER estimating left a stale,
+    // still-confirmable "Run search" button on screen for the exact
+    // unrestricted search the warning above it says is disabled -- the
+    // screen contradicted itself, and clicking through actually spent
+    // money on a criteria the UI was simultaneously calling invalid.
+    if (!sameResume || !sameSources || !sameCriteriaValue || disableEstimate) {
       setPhase({ kind: "idle" });
     }
     // `phase` IS in this dependency array (review round 3, git-bug 484889d):
@@ -379,7 +388,7 @@ export function SearchFlow({
     // (eslint.config.js is @eslint/js + typescript-eslint only), so there
     // is no exhaustive-deps rule enforcing this either way — the deps array
     // is maintained by hand.
-  }, [resumeId, sourceIds, criteria, phase]);
+  }, [resumeId, sourceIds, criteria, disableEstimate, phase]);
 
   /**
    * `fromStorage` marks a run this mount adopted from `sessionStorage`
@@ -464,13 +473,30 @@ export function SearchFlow({
   return (
     <div className="search-flow">
       {phase.kind === "idle" && (
-        <button
-          type="button"
-          onClick={() => void handleEstimate()}
-          disabled={sourceIds.length === 0 || disableEstimate}
-        >
-          Estimate search cost
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => void handleEstimate()}
+            disabled={sourceIds.length === 0 || disableEstimate}
+          >
+            Estimate search cost
+          </button>
+          {/* Ticket b9e6251, opus review F2: SearchCriteriaForm's own
+              location warning only explains ONE of the two things that can
+              disable this button. Checking "Any location" while zero
+              sources are selected used to make that warning disappear
+              while leaving the button disabled with no explanation
+              anywhere on screen -- a dead end after doing exactly what the
+              only visible instruction said to do. This message covers
+              BOTH real disable reasons, so at least one always explains
+              why, whichever is still unmet. */}
+          {(sourceIds.length === 0 || disableEstimate) && (
+            <p className="estimate-disabled-reason" role="alert">
+              {sourceIds.length === 0 && "Select at least one source above. "}
+              {disableEstimate && 'Set a location above, or check "Any location".'}
+            </p>
+          )}
+        </>
       )}
       {phase.kind === "estimating" && (
         <p className="estimating" role="status">

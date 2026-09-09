@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { splitPhrases } from "../criteriaText";
 
 /**
  * Editable title-keyword chips + the two remaining plain-text criteria
@@ -94,8 +95,10 @@ export function SearchCriteriaForm({
   // "I'd rather have it be a really expensive search offered than a blind
   // default." A real location restriction is present the instant EITHER
   // field has content; only the fully-empty case needs the explicit
-  // `anyLocationOk` opt-in.
-  const hasLocationSignal = nearLocations.trim().length > 0 || remoteOk || anyLocationOk;
+  // `anyLocationOk` opt-in. Uses the shared `splitPhrases` (opus review
+  // F3), same as App.tsx's identical `hasLocationSignal` check -- a plain
+  // `.trim().length > 0` test would treat a lone "," as a real signal.
+  const hasLocationSignal = splitPhrases(nearLocations).length > 0 || remoteOk || anyLocationOk;
 
   function toggleCommitment(value: "full-time" | "part-time" | "contract", checked: boolean) {
     set({

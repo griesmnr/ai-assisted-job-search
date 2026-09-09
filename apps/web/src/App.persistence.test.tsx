@@ -129,6 +129,28 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
   });
 
+  it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {
+    mockHappyPath();
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: RESUME_TEXT },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    cleanup();
+
+    render(<App />);
+
+    await screen.findByText("Resume ready.");
+    expect(screen.getByLabelText(/Any location/)).toBeChecked();
+    expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled(),
+    );
+  });
+
   it("sends the restored criteria on the next estimate, not the defaults", async () => {
     mockHappyPath();
     estimateSearch.mockResolvedValue(makeEstimate());

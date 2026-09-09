@@ -14,17 +14,7 @@ import { SourceToggles } from "./components/SourceToggles";
 import { useResults } from "./hooks/useResults";
 import { useSources } from "./hooks/useSources";
 import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
-
-/**
- * Splits a comma-separated text field into trimmed, non-empty phrases —
- * the one place this happens, shared by every SearchCriteria text field.
- */
-function splitPhrases(text: string): string[] {
-  return text
-    .split(",")
-    .map((phrase) => phrase.trim())
-    .filter((phrase) => phrase.length > 0);
-}
+import { splitPhrases } from "./criteriaText";
 
 /**
  * Derives the actual `SearchCriteria` to send from the current title chips
@@ -127,12 +117,15 @@ function App() {
   // checkbox) before "Estimate search cost" is even reachable -- see the
   // `disableEstimate` prop passed to SearchFlow below.
   // Matches SearchCriteriaForm's own identical check (its warning text
-  // depends on the same condition) -- kept as a plain non-empty-string
-  // test, not full `splitPhrases` parsing, so the two can never disagree
-  // on an edge case like a lone "," (a non-empty string that splits to no
-  // real phrases).
+  // depends on the same condition) -- both call the shared `splitPhrases`
+  // (opus review F3): a plain `.trim().length > 0` test treats a lone ","
+  // as a real signal (a non-empty string that actually splits to ZERO
+  // real phrases), silently letting exactly the punctuation-only input
+  // through that this ticket exists to stop. Real `splitPhrases` parsing
+  // in both places, not a cheaper substitute, closes that gap while still
+  // guaranteeing the two checks can't drift out of sync with each other.
   const hasLocationSignal =
-    criteriaForm.nearLocations.trim().length > 0 ||
+    splitPhrases(criteriaForm.nearLocations).length > 0 ||
     criteriaForm.remoteOk ||
     criteriaForm.anyLocationOk;
 

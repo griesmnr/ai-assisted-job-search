@@ -221,7 +221,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     await submitResume();
 
     expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent(/No location restriction is set/);
+    expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 
   it("checking 'Any location' enables the button and clears the warning", async () => {
@@ -236,7 +236,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     fireEvent.click(screen.getByLabelText(/Any location/));
 
     expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
@@ -255,7 +255,26 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     });
 
     expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
+  });
+
+  it("a lone comma in the commute-locations field does NOT count as a location signal (opus review F3)", async () => {
+    // Real bug this closes: `nearLocations.trim().length > 0` alone would
+    // have treated "," as a genuine signal (a non-empty string), silently
+    // enabling the exact unrestricted search this ticket exists to
+    // prevent. `splitPhrases(",")` correctly yields zero real phrases.
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    fireEvent.change(screen.getByLabelText(/Locations you'd commute to/), {
+      target: { value: "," },
+    });
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 
   it("checking 'Also show fully remote roles' enables the button without needing 'Any location' checked", async () => {
@@ -269,7 +288,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     fireEvent.click(screen.getByLabelText("Also show fully remote roles"));
 
     expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
   });
 
   it("unchecking 'Any location' again re-disables the button (not a one-way opt-in)", async () => {
@@ -284,7 +303,52 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     fireEvent.click(screen.getByLabelText(/Any location/));
 
     expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent(/No location restriction is set/);
+    expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
+  });
+
+  it("unchecking 'Any location' AFTER a real estimate invalidates it back to idle (opus review F1, blocking)", async () => {
+    // Real bug this closes: `anyLocationOk` is deliberately not part of
+    // `criteria` (it never reaches the API), so SearchFlow's own
+    // estimate-invalidation effect (keyed on resumeId/sourceIds/criteria)
+    // couldn't see it change on its own -- a stale, still-confirmable
+    // "Run search" button was left on screen for the exact unrestricted
+    // search the warning simultaneously said was disabled, and clicking
+    // through actually spent money on it.
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+
+    // The stale "Run search" confirmation must be gone -- back to a fresh
+    // (disabled) "Estimate search cost", not a spendable leftover.
+    expect(screen.queryByRole("button", { name: "Run search" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+  });
+
+  it("checking 'Any location' with zero sources selected still explains why the button is disabled (opus review F2)", async () => {
+    // Real bug this closes: the location warning disappears once "Any
+    // location" is checked, but if zero sources are ALSO selected, the
+    // button stays disabled with (before this fix) no explanation
+    // anywhere on screen -- a dead end after doing exactly what the only
+    // visible instruction said to do.
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+    fireEvent.click(screen.getByLabelText("USAJOBS")); // uncheck the only source
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByText(/Select at least one source/)).toBeInTheDocument();
   });
 
   it("'Any location' does not appear in the criteria payload sent to the API -- it's a frontend-only gate", async () => {
