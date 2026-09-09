@@ -40,6 +40,11 @@ vi.mock("./api/client", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Ticket 3f05144: this app now persists an in-progress resume/search to
+  // `sessionStorage`, which — unlike React state — is NOT torn down by
+  // `cleanup()`. Without this, one test's submitted resume or in-flight
+  // searchId would be restored by the next test's first render.
+  sessionStorage.clear();
 });
 
 const SOURCES: GetSourcesResponse = {

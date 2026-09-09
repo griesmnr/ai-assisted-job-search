@@ -42,6 +42,19 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /**
+     * The parsed JSON error body, when the response had one (ticket
+     * 3f05144). Some of this API's error responses carry more than a
+     * message: `POST /searches` answers a second, overlapping run for the
+     * same resume with `409 { error, searchId }`, and that `searchId` is
+     * the id of the run that is ALREADY spending money — the one thing a
+     * caller most needs after losing its own copy of it. Dropping the body
+     * on the floor (the previous behavior) turned a recoverable
+     * "reconnect to the run you already started" into a dead-end error
+     * message. `unknown`, not a typed shape: this is whatever that route
+     * sent, and every reader must narrow it itself.
+     */
+    public readonly body?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -66,13 +79,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
+    let body: unknown;
     try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) message = body.error;
+      body = await response.json();
+      const errorText = (body as { error?: unknown } | null)?.error;
+      if (typeof errorText === "string" && errorText.length > 0) message = errorText;
     } catch {
       // Body wasn't JSON (or was empty) — the status-line message stands.
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, body);
   }
 
   // 202/204 responses may have no body; guard rather than let .json() throw.

@@ -13,6 +13,7 @@ import { SearchFlow } from "./components/SearchFlow";
 import { SourceToggles } from "./components/SourceToggles";
 import { useResults } from "./hooks/useResults";
 import { useSources } from "./hooks/useSources";
+import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
 
 /**
  * Splits a comma-separated text field into trimmed, non-empty phrases —
@@ -43,12 +44,7 @@ function splitPhrases(text: string): string[] {
  * object, which is what "no restriction" already means to compileFilter)
  * -- never a silent fallback to the hidden default a user never chose.
  */
-function buildSearchCriteria(form: {
-  titleChips: string[];
-  nearLocations: string;
-  remoteOk: boolean;
-  commitmentIn: ("full-time" | "part-time" | "contract")[];
-}): SearchCriteria {
+function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] }): SearchCriteria {
   const nearLocations = splitPhrases(form.nearLocations);
   const criteria: SearchCriteria = {};
   if (form.titleChips.length > 0) criteria.titleInclude = form.titleChips;
@@ -87,23 +83,36 @@ function App() {
   // appearing inline the moment a resume is pasted, before any new search
   // runs, read as "jarring... old stuff".
   const [activeTab, setActiveTab] = useState<Tab>("search");
-  const [resumeId, setResumeId] = useState<string | undefined>(undefined);
+  // Ticket 3f05144: read ONCE, at first render, before any state below is
+  // initialized. A reload is indistinguishable from a first visit from
+  // inside React, so restoring has to happen in the state initializers
+  // themselves — an effect that re-set this state after mount would race
+  // the effects that clear/derive it (the "default every configured source
+  // to selected" effect below, in particular) and could be seen by the
+  // user as a visible flash of the empty state.
+  const [restored] = useState(readAppState);
+  const [resumeId, setResumeId] = useState<string | undefined>(restored?.resumeId);
+  // Held here, not only inside ResumeInput, so a reload can put the pasted
+  // text back in the box. Nicole's report led with exactly this ("it was
+  // all clear again"), and a restored resumeId with an empty paste box
+  // would read as a half-restored app.
+  const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(
+    () => new Set(restored?.selectedSourceIds ?? []),
+  );
   // Ticket 39b4a48: starts empty, populated from POST /resumes's real
   // suggestedTitles the moment a resume is submitted (handleResumeSubmit
   // below) -- never a hardcoded default.
-  const [titleChips, setTitleChips] = useState<string[]>([]);
-  const [criteriaForm, setCriteriaForm] = useState<{
-    nearLocations: string;
-    remoteOk: boolean;
-    commitmentIn: ("full-time" | "part-time" | "contract")[];
-  }>({
-    nearLocations: "",
-    remoteOk: false,
-    commitmentIn: [],
-  });
+  const [titleChips, setTitleChips] = useState<string[]>(restored?.titleChips ?? []);
+  const [criteriaForm, setCriteriaForm] = useState<CriteriaFormState>(
+    restored?.criteriaForm ?? {
+      nearLocations: "",
+      remoteOk: false,
+      commitmentIn: [],
+    },
+  );
   const criteria = useMemo(
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
     [titleChips, criteriaForm],
@@ -183,13 +192,46 @@ function App() {
   // they have to fill in themselves. An unconfigured source is never
   // auto-selected -- it doesn't even appear in the toggle list (ticket
   // d480357: SourceToggles drops unconfigured entries before rendering).
+  //
+  // Ticket 3f05144: skipped entirely when a selection was restored from
+  // this tab's session, even if that selection is EMPTY. "I unchecked
+  // every source" is a real state the user chose, and the `prev.size > 0`
+  // check alone cannot tell it apart from "nothing has been chosen yet" —
+  // so after a reload the defaults would silently check every source back
+  // on, which is worse than starting over: it is starting over while
+  // looking like it didn't.
+  const restoredSourceSelectionRef = useRef(restored !== undefined);
+
   useEffect(() => {
     if (sourcesState.status !== "ready") return;
+    if (restoredSourceSelectionRef.current) return;
     setSelectedSourceIds((prev) => {
       if (prev.size > 0) return prev;
       return new Set(sourcesState.sources.filter((s) => s.configured).map((s) => s.id));
     });
   }, [sourcesState]);
+
+  // Ticket 3f05144: the single writer of the app-state record. Mirrors
+  // SearchFlow's own persist effect (one writer, keyed on the state it
+  // persists) for the same reason.
+  //
+  // Gated on `resumeId`: with no resume there is nothing worth restoring —
+  // the app's initial screen IS the empty state — and writing a record
+  // then would only give a reload a way to resurrect stale toggles under a
+  // blank resume box.
+  useEffect(() => {
+    if (resumeId === undefined) {
+      clearAppState();
+      return;
+    }
+    writeAppState({
+      resumeId,
+      resumeText,
+      selectedSourceIds: [...selectedSourceIds],
+      titleChips,
+      criteriaForm,
+    });
+  }, [resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm]);
 
   function toggleSource(sourceId: string) {
     setSelectedSourceIds((prev) => {
@@ -206,6 +248,11 @@ function App() {
     try {
       const { id, suggestedTitles } = await createResume(resumeText);
       setResumeId(id);
+      // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
+      // text worth restoring is the text that actually produced this
+      // resumeId, and persisting a half-typed draft on each character
+      // would be a write per keystroke for no benefit.
+      setResumeText(resumeText);
       // Defensive, not just decorative: an older cached client build, a
       // test fixture written before this field existed, or any future API
       // response shape drift should degrade to "no suggestions" rather
@@ -275,6 +322,7 @@ function App() {
           <ResumeInput
             onSubmit={(text) => void handleResumeSubmit(text)}
             submitting={resumeSubmitting}
+            initialText={resumeText}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}
