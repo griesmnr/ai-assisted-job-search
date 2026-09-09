@@ -8,7 +8,12 @@ import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../demo-match.js";
 import { loadEnvFile } from "../load-env.js";
 import { __testing } from "./searches.js";
-import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/types.js";
+import type {
+  JobSource,
+  NormalizedJob,
+  SearchCriteria as SourceFetchCriteria,
+  SourceSearchResult,
+} from "../sources/types.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
 loadEnvFile();
@@ -845,5 +850,98 @@ describe("searchRuns bound (ticket 59fdc52 review round 2)", () => {
     } finally {
       searchRuns.clear();
     }
+  });
+});
+
+// Ticket d1fc9e2: `?criteria.titleInclude` must reach each source's own
+// `search()` as FETCH-level `criteria.keywords`, not just as the local
+// post-fetch `filter` — that's the actual fix (USAJOBS narrowing its own
+// query instead of fetching an unfiltered, pagination-capped sample of
+// everything). A source that just returns a fixed job list (FakeSource
+// above) can't observe this; this one records what it was called with.
+class RecordingFakeSource implements JobSource {
+  readonly dataSource = DATA_SOURCE;
+  received: SourceFetchCriteria[] = [];
+  async search(criteria: SourceFetchCriteria): Promise<SourceSearchResult> {
+    this.received.push(criteria);
+    return { jobs: [], skipped: [], skipRate: 0 };
+  }
+}
+
+describe("fetch-level criteria reaches the source's own search() (ticket d1fc9e2)", () => {
+  it("POST /searches/estimate: titleInclude becomes criteria.keywords", async () => {
+    const recorder = new RecordingFakeSource();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: () => ({ sources: [recorder], skipped: [] }),
+    });
+    const resumeId = await createResume(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { titleInclude: ["software engineer", "backend engineer"] },
+      },
+    });
+
+    expect(recorder.received).toHaveLength(1);
+    expect(recorder.received[0]).toEqual({
+      keywords: ["software engineer", "backend engineer"],
+    });
+  });
+
+  it("POST /searches: same wiring on the real (billed) run path", async () => {
+    const recorder = new RecordingFakeSource();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: () => ({ sources: [recorder], skipped: [] }),
+    });
+    const resumeId = await createResume(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { titleInclude: ["civil engineer"] },
+      },
+    });
+    const { searchId } = response.json() as { searchId: string };
+    await pollUntilDone(app, searchId);
+
+    expect(recorder.received).toHaveLength(1);
+    expect(recorder.received[0]).toEqual({ keywords: ["civil engineer"] });
+  });
+
+  it("an empty/absent titleInclude sends NO keyword at all -- 'search every title' stays unrestricted at fetch time too, not just locally", async () => {
+    const recorder = new RecordingFakeSource();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: () => ({ sources: [recorder], skipped: [] }),
+    });
+    const resumeId = await createResume(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    expect(recorder.received).toHaveLength(1);
+    expect(recorder.received[0]).toEqual({});
   });
 });

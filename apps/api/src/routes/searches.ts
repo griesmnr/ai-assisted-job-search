@@ -61,7 +61,7 @@ import { runDemoMatch, type RunDemoMatchResult, type ScoreJobFn } from "../demo-
 import { resumes, searches as searchesTable } from "../db/schema.js";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
-import type { JobSource } from "../sources/types.js";
+import type { JobSource, SearchCriteria as SourceFetchCriteria } from "../sources/types.js";
 
 const searchCriteriaSchema = {
   type: "object",
@@ -129,6 +129,30 @@ const MAX_TRACKED_SEARCHES = 500;
  * above; production code never imports this export.
  */
 export const __testing = { searchRuns, MAX_TRACKED_SEARCHES, pruneSearchRuns };
+
+/**
+ * Ticket d1fc9e2: builds the FETCH-level criteria (`sources/types.ts`'s
+ * `SearchCriteria` — `keyword(s)`/`location`) from the caller's LOCAL
+ * filter criteria (`@app/shared`'s `SearchCriteria` — `titleInclude`/etc),
+ * so USAJOBS's own search actually narrows by title instead of fetching
+ * an unfiltered, pagination-capped sample of everything currently open
+ * (measured live, 2026-09-08: 10,000 total open postings, a 5,000-post
+ * fetch cap, no way to know which half of the 10,000 a keyword-less fetch
+ * happens to land on). Every other configured source ignores this object
+ * entirely (see `sources/types.ts`'s `SearchCriteria.keywords` doc
+ * comment) — it is inert, not harmful, for them.
+ *
+ * Deliberately omitted when `titleInclude` is empty/absent: that already
+ * means "no title restriction, search every title" (ticket 39b4a48's
+ * explicit no-silent-default rule) — sending a keyword in that case would
+ * silently narrow a search the caller asked to leave unrestricted.
+ */
+function buildFetchCriteria(criteria: SearchCriteria | undefined): SourceFetchCriteria {
+  if (criteria?.titleInclude && criteria.titleInclude.length > 0) {
+    return { keywords: criteria.titleInclude };
+  }
+  return {};
+}
 
 function pruneSearchRuns(): void {
   if (searchRuns.size <= MAX_TRACKED_SEARCHES) return;
@@ -243,6 +267,7 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
+        criteria: buildFetchCriteria(criteria),
         scoreJob: NEVER_SCORE,
         filter: compileFilter(criteria),
         excludedForMissingWorkArrangement: compileExcludedForMissingWorkArrangement(criteria),
@@ -343,6 +368,7 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
+        criteria: buildFetchCriteria(criteria),
         scoreJob,
         filter: compileFilter(criteria),
         excludedForMissingWorkArrangement: compileExcludedForMissingWorkArrangement(criteria),
