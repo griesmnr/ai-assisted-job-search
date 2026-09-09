@@ -407,6 +407,27 @@ describe("classifyGeography — real location strings", () => {
     expect(classifyGeography("Seattle, WA")).toBe("pnw");
   });
 
+  it('classifies "Jandakot, WA, Australia" as NOT pnw — ticket 7ab1b57, the Western Australia trap', () => {
+    // Real trap, found live during 84b879e's adversarial review
+    // (2026-09-04): a real SmartRecruiters/Expeditors posting, "Manager -
+    // Project Cargo Services, AU/NZ", is onsite in "Jandakot, WA,
+    // Australia" -- the OLD `,\s*wa\b` alternation matched "WA" as the
+    // ISO abbreviation for Western Australia, not just Washington State,
+    // and this classified "pnw". It only failed to appear in real results
+    // because of the UNRELATED `manager` title exclusion -- change the
+    // title and the old regex presents a Perth-area job as a
+    // Seattle-area match.
+    expect(classifyGeography("Jandakot, WA, Australia")).not.toBe("pnw");
+  });
+
+  it('a genuine "City, WA" US posting still classifies pnw after the Australia fix', () => {
+    // The fix must not be so broad it breaks the real case it exists to
+    // protect -- same convention `washington`'s own DC guard test pairs a
+    // negative case with a positive one.
+    expect(classifyGeography("Walla Walla, WA")).toBe("pnw");
+    expect(classifyGeography("Tacoma, WA")).toBe("pnw");
+  });
+
   it('classifies "Washington, D.C." (lever palantir) as NOT pnw — the DC trap', () => {
     // Real trap: the OLD `PLACE` regex's bare `washington` match let a
     // Washington-D.C.-onsite posting through as if it were Washington
