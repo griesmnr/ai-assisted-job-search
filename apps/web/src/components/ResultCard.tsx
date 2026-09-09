@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ScoredJobResult, UserJobStatus } from "@app/shared";
+import { createHandoff, handoffFetchUrl, RESUME_OPTIMIZER_APP_URL } from "../api/client";
 
 // State pill labels (past-tense/state form) -- shown once result.status is
 // SET, describing what already happened. Distinct from ACTION_LABELS
@@ -21,11 +22,14 @@ const ACTION_LABELS: Record<UserJobStatus, string> = {
   dismissed: "Dismiss",
 };
 
-// Ticket 3d80a85: "saved"/"resume_optimized"/"dismissed" render as plain
-// buttons (pure state changes). "applied" is handled separately below --
-// it's a real link to the posting AND a state change together, not just
-// a button.
-const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "resume_optimized", "dismissed"];
+// Ticket 3d80a85 merged "Open posting" into "Apply" (Apply became the
+// link). Dogfooding feedback (2026-09-08) reverted that: Nicole wants
+// Apply back as a plain status button, with a SEPARATE real link to the
+// posting -- "Open Job Page". So "saved"/"applied"/"dismissed" are all
+// plain buttons now; only "resume_optimized" is handled separately below
+// (a real navigation to Nicole's resume-tailoring app AND a state change
+// together, unlike a bare status button).
+const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "applied", "dismissed"];
 
 /**
  * One job in the curated list. Status buttons call the caller's
@@ -38,13 +42,25 @@ const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "resume_optimized", "dismissed
  */
 export function ResultCard({
   result,
+  resumeId,
   onSetStatus,
+  onClearStatus,
 }: {
   result: ScoredJobResult;
+  /** Needed for "Optimize Resume" (ticket dbfd594): `POST /handoffs`
+   * snapshots THIS resume's text alongside the job description. Always
+   * defined in practice — a ResultCard only ever renders once a resume
+   * exists (App.tsx gates the whole results section behind `resumeId &&`)
+   * — required, not optional, so that invariant is visible in the type. */
+  resumeId: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
+  /** "Untoggle" (dogfooding, 2026-09-08 — Nicole: "you should be able to
+   * untoggle the buttons, like undismiss") — clears back to no-action-taken
+   * rather than writing a new status value. */
+  onClearStatus: (jobId: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [pending, setPending] = useState<UserJobStatus | null>(null);
+  const [pending, setPending] = useState<UserJobStatus | "clearing" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSetStatus(status: UserJobStatus) {
@@ -52,6 +68,43 @@ export function ResultCard({
     setError(null);
     try {
       await onSetStatus(result.jobId, status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function handleClearStatus() {
+    setPending("clearing");
+    setError(null);
+    try {
+      await onClearStatus(result.jobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  // Ticket dbfd594: unlike Apply, the target URL isn't known up front --
+  // it depends on a real handoff being minted first (POST /handoffs), so
+  // this can't be a plain `<a href>` the way Apply is. `window.open`
+  // (rather than `location.href`) keeps the click's semantics the same as
+  // Apply's `target="_blank"`: this app's own tab stays put, the other
+  // app opens alongside it.
+  async function handleOptimizeResume() {
+    setPending("resume_optimized");
+    setError(null);
+    try {
+      const handoff = await createHandoff(result.jobId, resumeId);
+      const importUrl = `${RESUME_OPTIMIZER_APP_URL}?import=${encodeURIComponent(
+        handoffFetchUrl(handoff.id),
+      )}`;
+      window.open(importUrl, "_blank", "noreferrer");
+      if (result.status !== "resume_optimized") {
+        await onSetStatus(result.jobId, "resume_optimized");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -79,7 +132,18 @@ export function ResultCard({
           </p>
         </div>
         {result.status && (
-          <span className="result-current-status">{STATUS_LABELS[result.status]}</span>
+          <span className="result-current-status">
+            {STATUS_LABELS[result.status]}
+            <button
+              type="button"
+              className="link-button result-status-clear"
+              aria-label={`Undo "${STATUS_LABELS[result.status]}"`}
+              disabled={pending !== null}
+              onClick={() => void handleClearStatus()}
+            >
+              {pending === "clearing" ? "Undoing..." : "Undo"}
+            </button>
+          </span>
         )}
       </div>
 
@@ -114,33 +178,33 @@ export function ResultCard({
       )}
 
       <div className="result-actions">
-        {/* Ticket 3d80a85: "Apply" IS the link to the real posting now --
-            Nicole: "apply should be a link to apply for the job... That
-            should have come through in the job description, or in the
-            job from the data source." Absorbs the old separate "Open
-            posting" link rather than duplicating it. Clicking it opens
-            the real posting (a normal link navigation, never blocked)
-            AND records status=applied -- both happen from the one click,
-            matching her framing that clicking Apply means "I'm going to
-            apply." The status write is fire-and-forget from the link's
-            own click handler: a failure to RECORD the status must not
-            stop the real-world navigation the user's browser has already
-            started (the `error` state below still surfaces it). */}
-        {/* Deliberately NOT aria-disabled/blocked once already applied --
-            the link stays genuinely navigable (re-opening a posting you
-            already applied to is a normal, useful thing to do); only the
-            STATUS WRITE is skipped on a repeat click, to avoid a
-            redundant PATCH, not the navigation itself. */}
-        <a
-          href={result.applyUrl}
-          target="_blank"
-          rel="noreferrer"
-          onClick={() => {
-            if (result.status !== "applied") void handleSetStatus("applied");
-          }}
-        >
-          {pending === "applied" ? "Applying..." : ACTION_LABELS.applied}
+        {/* Ticket dbfd594-followup (dogfooding, 2026-09-08): reverted
+            ticket 3d80a85's merge of "Open posting" into "Apply" -- back
+            to two separate elements, per Nicole: "make apply a button
+            again... Open job page... have it be a link, and have it be
+            separate than the Apply button." A pure navigation link, no
+            status side effect at all -- "I looked at the posting" isn't
+            the same fact as "I applied," and conflating them was the
+            thing being undone here. */}
+        <a href={result.applyUrl} target="_blank" rel="noreferrer">
+          Open Job Page
         </a>
+        {/* Ticket dbfd594: opens Nicole's separate resume-tailoring app
+            with this job's description + resume text handed over via a
+            short-lived server-side handoff (see handleOptimizeResume
+            above and apps/api/src/routes/handoffs.ts's own doc comment
+            for why it can't just be a link with the payload inlined).
+            Same precedent as Apply above: NOT disabled once already
+            `resume_optimized` -- re-opening the tailoring app again
+            (e.g. against an updated base resume) is a normal, useful
+            thing to do, not a mistake to block. */}
+        <button
+          type="button"
+          disabled={pending !== null}
+          onClick={() => void handleOptimizeResume()}
+        >
+          {pending === "resume_optimized" ? "Opening..." : ACTION_LABELS.resume_optimized}
+        </button>
         {BUTTON_ACTIONS.map((status) => (
           <button
             key={status}

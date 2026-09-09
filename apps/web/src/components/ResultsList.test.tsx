@@ -53,7 +53,9 @@ describe("ResultsList", () => {
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
       />,
     );
 
@@ -77,7 +79,9 @@ describe("ResultsList", () => {
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse"])}
+        resumeId="resume-1"
         onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
       />,
     );
 
@@ -87,7 +91,15 @@ describe("ResultsList", () => {
   });
 
   it("shows an honest empty state when no selected source has any results, not a blank screen", () => {
-    render(<ResultsList data={DATA} selectedSourceIds={new Set()} onSetStatus={async () => {}} />);
+    render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set()}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
 
     expect(screen.getByText("No jobs match the current source selection.")).toBeInTheDocument();
   });

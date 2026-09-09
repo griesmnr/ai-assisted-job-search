@@ -251,3 +251,58 @@ describe("POST /jobs/:id/status", () => {
     expect(response.statusCode).toBe(400);
   });
 });
+
+// Dogfooding feedback, 2026-09-08 -- Nicole: "you should be able to
+// untoggle the buttons, like undismiss." Removes the row entirely rather
+// than writing a fourth "none" enum value -- see this file's own header
+// comment for why a missing row already means "no action taken"
+// everywhere else in this codebase.
+describe("DELETE /jobs/:id/status", () => {
+  it("removes an existing status row, reverting the job to no-action-taken", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+    await app.inject({
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "saved" },
+    });
+
+    const response = await app.inject({ method: "DELETE", url: `/jobs/${jobId}/status` });
+    expect(response.statusCode).toBe(204);
+
+    const rows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.jobId, jobId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("is idempotent: clearing a job with no status row at all is not an error", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    const response = await app.inject({ method: "DELETE", url: `/jobs/${jobId}/status` });
+    expect(response.statusCode).toBe(204);
+  });
+
+  it("404s for an unknown job id", async () => {
+    const app = buildTestApp();
+    const response = await app.inject({ method: "DELETE", url: "/jobs/does-not-exist/status" });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("clearing one job's status does not affect a different job's status row", async () => {
+    const app = buildTestApp();
+    const jobA = await seedJob();
+    const jobB = await seedJob();
+    await app.inject({ method: "POST", url: `/jobs/${jobA}/status`, payload: { status: "saved" } });
+    await app.inject({
+      method: "POST",
+      url: `/jobs/${jobB}/status`,
+      payload: { status: "dismissed" },
+    });
+
+    await app.inject({ method: "DELETE", url: `/jobs/${jobA}/status` });
+
+    const bRows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.jobId, jobB));
+    expect(bRows).toHaveLength(1);
+    expect(bRows[0]?.status).toBe("dismissed");
+  });
+});

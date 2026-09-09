@@ -20,6 +20,10 @@ const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
 const setJobStatus = vi.fn();
+// Ticket dbfd594: ResultCard's "Optimize Resume" now calls these -- not
+// exercised by this file's own tests, but must exist so a click doesn't
+// throw "createHandoff is not a function" from the mocked module.
+const createHandoff = vi.fn().mockResolvedValue({ id: "handoff-1", expiresAt: "2026-01-01" });
 
 vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
@@ -29,6 +33,9 @@ vi.mock("./api/client", () => ({
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
+  createHandoff: (...args: unknown[]) => createHandoff(...args),
+  handoffFetchUrl: (id: string) => `https://api.example.com/handoffs/${id}`,
+  RESUME_OPTIMIZER_APP_URL: "https://optimizer.example.com/",
 }));
 
 afterEach(() => {
@@ -180,7 +187,10 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // Job titles ("Saved Job", etc.) also render as level-3 headings
     // (ResultCard's own `<h3>`), so filter down to just the GROUP labels
     // rather than asserting on every level-3 heading in the tree.
-    const GROUP_LABELS = ["Saved", "No action taken", "Resume Optimized", "Applied", "Dismissed"];
+    // Ticket bec2f98's original order (Saved, No action taken, Resume
+    // Optimized, Applied, Dismissed) was revised in dogfooding feedback
+    // (2026-09-08): Applied moved up ahead of No action taken.
+    const GROUP_LABELS = ["Saved", "Applied", "No action taken", "Resume Optimized", "Dismissed"];
     const headings = await screen.findAllByRole("heading", { level: 3 });
     const groupHeadings = headings
       .map((h) => h.textContent)
@@ -199,6 +209,10 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
   });
 
   it("a status change updates the card in place but does NOT move it to a new group until the tab is next opened", async () => {
+    // "Optimize Resume" (ticket dbfd594) calls window.open -- jsdom has no
+    // real implementation of it, so this stubs it rather than letting it
+    // log a "not implemented" error.
+    vi.spyOn(window, "open").mockImplementation(() => null);
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValueOnce(GROUPED_RESULTS);

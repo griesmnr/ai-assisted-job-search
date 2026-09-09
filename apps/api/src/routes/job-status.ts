@@ -18,10 +18,17 @@
  * Scope, deliberately narrow: set a job's status and read it back
  * (piggybacked on the results list, not a separate GET route — the ticket
  * asks for "GET current status per job in a results response," and results
- * are the only place the frontend needs it). No history, no "unset",
- * no bulk endpoint — none of those were asked for and the schema doesn't
- * model history either (a status row is overwritten in place, not
- * versioned).
+ * are the only place the frontend needs it). No history — a status row is
+ * overwritten in place, not versioned.
+ *
+ * `DELETE /jobs/:id/status` (dogfooding feedback, 2026-09-08 — Nicole:
+ * "you should be able to untoggle the buttons, like undismiss") adds the
+ * "unset" this file's own header comment used to say was out of scope.
+ * Removes the row entirely rather than writing some fourth "none" status
+ * value into the enum — "no action taken" is already exactly what a
+ * missing row means everywhere else in this codebase (routes/resumes.ts's
+ * `status: r.status ?? null`), so deleting the row is the state that was
+ * already being modeled, not a new one.
  */
 import { randomUUID } from "node:crypto";
 import { type SetJobStatusResponse, type UserJobStatus, USER_JOB_STATUSES } from "@app/shared";
@@ -155,4 +162,26 @@ export function registerJobStatusRoutes(
       return reply.send(response);
     },
   );
+
+  app.delete<{ Params: { id: string } }>("/jobs/:id/status", async (request, reply) => {
+    const jobId = request.params.id;
+
+    const jobRows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
+      .where(eq(jobsTable.id, jobId))
+      .limit(1);
+    if (jobRows.length === 0) {
+      return reply.code(404).send({ error: `No job with id "${jobId}".` });
+    }
+
+    // Idempotent: deleting a job that has no status row (already cleared,
+    // or never had one) is not an error — the caller asked for "no status
+    // recorded" and that's already true. Drizzle's delete doesn't error on
+    // zero matched rows, so no existence check is needed here beyond the
+    // job-id check above.
+    await db.delete(userJobStatuses).where(eq(userJobStatuses.jobId, jobId));
+
+    return reply.code(204).send();
+  });
 }

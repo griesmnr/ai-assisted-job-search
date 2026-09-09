@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ScoredJobResult, SearchCriteria, UserJobStatus } from "@app/shared";
-import { createResume, setJobStatus } from "./api/client";
+import { clearJobStatus, createResume, setJobStatus } from "./api/client";
 import {
   GroupedResultsList,
   groupKeyForStatus,
@@ -270,6 +270,11 @@ function App() {
     refresh();
   }
 
+  async function handleClearStatus(jobId: string) {
+    await clearJobStatus(jobId);
+    refresh();
+  }
+
   function handleSearchComplete() {
     refresh();
     // The one place `hasFreshSearchResults` is ever set true — SearchFlow
@@ -399,7 +404,9 @@ function App() {
                   <ResultsList
                     data={resultsState.data}
                     selectedSourceIds={selectedSourceIds}
+                    resumeId={resumeId}
                     onSetStatus={handleSetStatus}
+                    onClearStatus={handleClearStatus}
                   />
                 ) : (
                   <p>No jobs matched this search.</p>
@@ -412,7 +419,21 @@ function App() {
 
       <div hidden={activeTab !== "scored"}>
         <section className="results-section">
-          <h2>Results</h2>
+          {/* Nicole, dogfooding: a bare "Results" heading here read as a
+              stray leftover (the tab button itself already says "Already
+              Scored Jobs") and she separately wanted the total count
+              visible up top. Both are addressed by one heading: the count
+              is EVERY scored job for this resume, shown or not (a job
+              hidden below the match-quality floor was still scored, and
+              still cost real money to score, so it counts here) -- only
+              shown once there's real data to count (`resultsState.status
+              === "ready"`); before that the heading has no number rather
+              than a misleading "(0)". */}
+          <h2>
+            Already Scored Jobs
+            {resultsState.status === "ready" &&
+              ` (${resultsState.data.results.length + (resultsState.data.hiddenBelowFloor ?? 0)})`}
+          </h2>
           {!resumeId && <p>Paste a resume in "New Job Search" to see your results here.</p>}
           {resumeId && resultsState.status === "loading" && <p>Loading results...</p>}
           {resumeId && resultsState.status === "error" && (
@@ -425,8 +446,10 @@ function App() {
               <GroupedResultsList
                 data={resultsState.data}
                 selectedSourceIds={selectedSourceIds}
+                resumeId={resumeId}
                 groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
+                onClearStatus={handleClearStatus}
               />
             ) : (
               // Ticket f4a7f07: unlike ticket 093d9fe's inline-surprise

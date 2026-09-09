@@ -30,6 +30,19 @@ export type ResultsState =
  * missing — Nicole: "I think that should always happen, even ones that
  * have already been dismissed. They should show up in the search results,
  * but they can say that they've already been dismissed."
+ *
+ * A REFRESH (after a status write) does NOT reset `state` to "loading" if
+ * data is already showing — real bug Nicole hit dogfooding: every
+ * `refresh()` used to force `status: "loading"` unconditionally, which
+ * made every caller's `status === "ready"` render check briefly go
+ * false, unmounting the whole results list until the refetch resolved —
+ * "it flashes... the page behaves a little weirdly", and on the "Already
+ * Scored Jobs" tab specifically, that unmount/remount reset the page's
+ * scroll position back to the top on every single status click (Dismiss,
+ * Save, ...). Staying on the OLD "ready" data until the NEW data actually
+ * arrives (a stale-while-revalidate read, not a fresh loading state) means
+ * the DOM subtree never unmounts for a refresh — only the very first
+ * fetch for a given `resumeId` (starting from "idle") shows "loading".
  */
 export function useResults(resumeId: string | undefined): {
   state: ResultsState;
@@ -44,7 +57,7 @@ export function useResults(resumeId: string | undefined): {
       return;
     }
     let cancelled = false;
-    setState({ status: "loading" });
+    setState((prev) => (prev.status === "ready" ? prev : { status: "loading" }));
     getResults(resumeId, { minScore: MATCH_SCORE_FLOOR, includeDismissed: true })
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
