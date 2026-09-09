@@ -155,6 +155,14 @@ export function setJobStatus(
   });
 }
 
+/** Ticket dbfd594-followup (dogfooding, 2026-09-08): "untoggle" a job back
+ * to no-action-taken -- removes the status row entirely rather than
+ * writing a new "none" enum value (see routes/job-status.ts's own doc
+ * comment on why). */
+export function clearJobStatus(jobId: string): Promise<void> {
+  return request<void>(`/jobs/${encodeURIComponent(jobId)}/status`, { method: "DELETE" });
+}
+
 export type CreateHandoffResponse = {
   id: string;
   expiresAt: string;

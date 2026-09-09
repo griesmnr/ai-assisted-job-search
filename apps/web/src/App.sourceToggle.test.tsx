@@ -126,9 +126,12 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
 // "Already Scored Jobs" tab, hidden by default (activeTab starts
 // "search") -- these tests now switch tabs before asserting on its
 // content. Superseded from ticket 093d9fe's original design: that tab
-// ALWAYS shows its "Results" heading now (it's somewhere the user
-// deliberately navigates to, not an inline surprise), only the CONTENT
-// varies -- see App.tsx's own comment on this exact change.
+// ALWAYS shows a heading now (it's somewhere the user deliberately
+// navigates to, not an inline surprise), only the CONTENT varies -- see
+// App.tsx's own comment on this exact change. The heading itself was
+// later reworked from a bare "Results" to "Already Scored Jobs (N)"
+// (dogfooding feedback, 2026-09-08: the bare heading read as a stray
+// leftover next to the tab button's own "Already Scored Jobs" label).
 describe("App — Already Scored Jobs tab always shows a heading, content varies (ticket f4a7f07, superseding 093d9fe)", () => {
   async function submitResumeAndOpenScoredTab() {
     render(<App />);
@@ -147,7 +150,9 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
     await submitResumeAndOpenScoredTab();
 
-    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Already Scored Jobs (0)" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("No jobs scored yet.")).toBeInTheDocument();
   });
 
@@ -158,7 +163,9 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
     await submitResumeAndOpenScoredTab();
 
-    expect(await screen.findByRole("heading", { name: "Results" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Already Scored Jobs (3)" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("No jobs scored yet.")).not.toBeInTheDocument();
   });
 

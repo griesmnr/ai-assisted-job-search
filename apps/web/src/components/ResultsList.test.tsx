@@ -55,6 +55,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         resumeId="resume-1"
         onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
       />,
     );
 
@@ -80,6 +81,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse"])}
         resumeId="resume-1"
         onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
       />,
     );
 
@@ -95,6 +97,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set()}
         resumeId="resume-1"
         onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
       />,
     );
 

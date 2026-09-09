@@ -45,20 +45,26 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
 // pill (once a status is set) stays past-tense/state form ("Saved") --
 // two different labels for the same status, deliberately.
 describe("ResultCard — present-tense action buttons vs. state pill (ticket bed37bd)", () => {
-  it("shows all four actions as present-tense verbs, regardless of current status -- Apply as a link (ticket 3d80a85), the rest as buttons", () => {
-    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={async () => {}} />);
+  it("shows all four actions as present-tense verbs, regardless of current status -- Open Job Page as a separate link (dogfooding revert of 3d80a85), the rest as buttons", () => {
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
 
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Optimize Resume" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Job Page" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
 
     // Old past-tense button wording must be gone.
     expect(screen.queryByRole("button", { name: "Saved" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Applied" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Dismissed" })).not.toBeInTheDocument();
-    // No separate "Open posting" link duplicating Apply's job.
-    expect(screen.queryByRole("link", { name: "Open posting" })).not.toBeInTheDocument();
   });
 
   it("shows the state pill in past-tense/state form once a status is set, alongside unchanged present-tense actions", () => {
@@ -66,6 +72,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult({ status: "applied" })}
         resumeId="resume-1"
+        onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -75,12 +82,19 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     // The action: still present-tense, unaffected by the current status
     // (Nicole: "there should be no reason why there is not an option to
     // do anything you want").
-    expect(screen.getByRole("link", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
   });
 
   it("calls onSetStatus with the right status when a present-tense action button is clicked", async () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -92,7 +106,14 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     createHandoff.mockResolvedValue({ id: "handoff-1", expiresAt: new Date().toISOString() });
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
-    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
 
@@ -107,49 +128,74 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
   });
 });
 
-// Ticket 3d80a85: Apply is a real link to the posting AND a status write,
-// together, from one click.
-describe("ResultCard — Apply is a real posting link + status write (ticket 3d80a85)", () => {
-  it("links to the real applyUrl and opens it in a new tab", () => {
+// Dogfooding revert of ticket 3d80a85 (2026-09-08): Nicole asked for Apply
+// and Open Job Page to be split back into two separate elements -- a
+// pure-navigation link (no status side effect) and a pure status button
+// (no navigation), rather than one element doing both.
+describe("ResultCard — Open Job Page (pure link) and Apply (pure status button) are separate", () => {
+  it("Open Job Page links to the real applyUrl and opens it in a new tab, with no status side effect", () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
       <ResultCard
         result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
         resumeId="resume-1"
-        onSetStatus={async () => {}}
-      />,
-    );
-
-    const link = screen.getByRole("link", { name: "Apply" });
-    expect(link).toHaveAttribute("href", "https://boards.example.com/jobs/42");
-    expect(link).toHaveAttribute("target", "_blank");
-  });
-
-  it("records status=applied when clicked", () => {
-    const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(<ResultCard result={makeResult()} resumeId="resume-1" onSetStatus={onSetStatus} />);
-
-    fireEvent.click(screen.getByRole("link", { name: "Apply" }));
-
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied");
-  });
-
-  it("does not re-write status when clicked again after already applied (still navigable)", () => {
-    const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    render(
-      <ResultCard
-        result={makeResult({ status: "applied" })}
-        resumeId="resume-1"
+        onClearStatus={async () => {}}
         onSetStatus={onSetStatus}
       />,
     );
 
-    const link = screen.getByRole("link", { name: "Apply" });
-    fireEvent.click(link);
+    const link = screen.getByRole("link", { name: "Open Job Page" });
+    expect(link).toHaveAttribute("href", "https://boards.example.com/jobs/42");
+    expect(link).toHaveAttribute("target", "_blank");
 
+    fireEvent.click(link);
     expect(onSetStatus).not.toHaveBeenCalled();
-    // Still a real, functional link -- re-opening a posting you already
-    // applied to is a normal thing to do.
+  });
+
+  it("Apply is a plain button that records status=applied and does not navigate", () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const applyButton = screen.getByRole("button", { name: "Apply" });
+    expect(applyButton).not.toHaveAttribute("href");
+    fireEvent.click(applyButton);
+
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied");
+  });
+
+  it("Apply is disabled once already applied, same as Save/Dismiss disable once set", () => {
+    render(
+      <ResultCard
+        result={makeResult({ status: "applied" })}
+        resumeId="resume-1"
+        onClearStatus={async () => {}}
+        onSetStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+  });
+
+  it("Open Job Page stays fully navigable regardless of status (re-opening a posting you already applied to is normal)", () => {
+    render(
+      <ResultCard
+        result={makeResult({ status: "applied" })}
+        resumeId="resume-1"
+        onClearStatus={async () => {}}
+        onSetStatus={async () => {}}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "Open Job Page" });
     expect(link).toHaveAttribute("href", "https://example.com/apply");
+    expect(link).not.toHaveAttribute("aria-disabled");
   });
 });
 
@@ -159,6 +205,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ company: "Wealthfront", dataSource: "lever" })}
         resumeId="resume-1"
+        onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -172,6 +219,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: "Seattle, WA", locationType: "hybrid" })}
         resumeId="resume-1"
+        onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -185,11 +233,45 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: null, locationType: null })}
         resumeId="resume-1"
+        onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
     );
 
     expect(screen.queryByText(/Location:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Work arrangement:/)).not.toBeInTheDocument();
+  });
+});
+
+// Dogfooding feedback, 2026-09-08 -- Nicole: "you should be able to
+// untoggle the buttons, like undismiss."
+describe("ResultCard — undo a status back to no-action-taken", () => {
+  it("shows no Undo control when no status is set", () => {
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
+  });
+
+  it("calls onClearStatus for the right job when Undo is clicked on a set status", async () => {
+    const onClearStatus = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ResultCard
+        result={makeResult({ status: "dismissed" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={onClearStatus}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: 'Undo "Dismissed"' }));
+
+    expect(onClearStatus).toHaveBeenCalledWith("job-1");
   });
 });

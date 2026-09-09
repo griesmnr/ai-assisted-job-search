@@ -182,7 +182,10 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // Job titles ("Saved Job", etc.) also render as level-3 headings
     // (ResultCard's own `<h3>`), so filter down to just the GROUP labels
     // rather than asserting on every level-3 heading in the tree.
-    const GROUP_LABELS = ["Saved", "No action taken", "Resume Optimized", "Applied", "Dismissed"];
+    // Ticket bec2f98's original order (Saved, No action taken, Resume
+    // Optimized, Applied, Dismissed) was revised in dogfooding feedback
+    // (2026-09-08): Applied moved up ahead of No action taken.
+    const GROUP_LABELS = ["Saved", "Applied", "No action taken", "Resume Optimized", "Dismissed"];
     const headings = await screen.findAllByRole("heading", { level: 3 });
     const groupHeadings = headings
       .map((h) => h.textContent)

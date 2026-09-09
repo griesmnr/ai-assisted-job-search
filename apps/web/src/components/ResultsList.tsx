@@ -18,11 +18,13 @@ export function ResultsList({
   selectedSourceIds,
   resumeId,
   onSetStatus,
+  onClearStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
   resumeId: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
+  onClearStatus: (jobId: string) => Promise<void>;
 }) {
   const visible = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
   const hiddenBySourceToggle = data.results.length - visible.length;
@@ -55,6 +57,7 @@ export function ResultsList({
               result={result}
               resumeId={resumeId}
               onSetStatus={onSetStatus}
+              onClearStatus={onClearStatus}
             />
           ))}
         </ul>

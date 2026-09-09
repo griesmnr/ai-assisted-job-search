@@ -4,18 +4,20 @@ import { ResultCard } from "./ResultCard";
 /**
  * "Already Scored Jobs" grouping (ticket bec2f98). Nicole: "saved can
  * maybe be on the top, no action taken, and then the other statuses at
- * your discretion." Ordering below is this component's own discretion
- * call, applying that instruction: Saved first, then untouched, then the
- * three statuses that represent something already having happened to the
- * job, roughly least-to-most "done with it".
+ * your discretion." Order revised in dogfooding feedback (2026-09-08):
+ * "let's put applied before no action taken" -- when asked for the FULL
+ * order, she deferred back ("I just don't know what I want here... gonna
+ * let you decide"), so Applied simply moves up one slot from its old
+ * position rather than being reshuffled further -- the smallest change
+ * that satisfies the literal request.
  */
 export type ScoredGroupKey = "saved" | "no_action" | "resume_optimized" | "applied" | "dismissed";
 
 const GROUP_ORDER: ScoredGroupKey[] = [
   "saved",
+  "applied",
   "no_action",
   "resume_optimized",
-  "applied",
   "dismissed",
 ];
 
@@ -51,12 +53,14 @@ export function GroupedResultsList({
   resumeId,
   groupFor,
   onSetStatus,
+  onClearStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
   resumeId: string;
   groupFor: (result: ScoredJobResult) => ScoredGroupKey;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
+  onClearStatus: (jobId: string) => Promise<void>;
 }) {
   const visible = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
   const hiddenBySourceToggle = data.results.length - visible.length;
@@ -82,11 +86,26 @@ export function GroupedResultsList({
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.
         </p>
       )}
+      {/* Quick links (dogfooding feedback, 2026-09-08 -- Nicole's own
+          suggestion when she punted on the exact group order: "I think
+          there should be quick links at the top of the page"). Only
+          non-empty groups get a link -- jumping to an empty group's
+          heading would be pointless. Plain in-page anchors (`#group-id`),
+          no JS needed. */}
+      {GROUP_ORDER.some((key) => buckets.get(key)!.length > 0) && (
+        <nav className="results-group-quicklinks" aria-label="Jump to group">
+          {GROUP_ORDER.filter((key) => buckets.get(key)!.length > 0).map((key) => (
+            <a key={key} href={`#results-group-${key}`}>
+              {GROUP_LABELS[key]} ({buckets.get(key)!.length})
+            </a>
+          ))}
+        </nav>
+      )}
       {GROUP_ORDER.map((key) => {
         const results = buckets.get(key)!;
         if (results.length === 0) return null;
         return (
-          <section key={key} className="results-group">
+          <section key={key} id={`results-group-${key}`} className="results-group">
             <h3>{GROUP_LABELS[key]}</h3>
             <ul className="result-cards">
               {results.map((result) => (
@@ -95,6 +114,7 @@ export function GroupedResultsList({
                   result={result}
                   resumeId={resumeId}
                   onSetStatus={onSetStatus}
+                  onClearStatus={onClearStatus}
                 />
               ))}
             </ul>
