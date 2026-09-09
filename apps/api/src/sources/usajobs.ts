@@ -30,10 +30,15 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 // opus review, F1 (fixed from an original 5): a per-phrase search is NOT
 // "a full re-paginated USAJOBS fetch" in the sense the ticket's first
 // draft feared -- it's bounded by THAT PHRASE's own real result count,
-// not by `MAX_PAGES`'s 200-page ceiling. Live-measured, 2026-09-09: a
-// 5-phrase run made ~49 total requests (4+17+23+2+3) against the SAME
-// USAJOBS API the OLD no-keyword path made 200 requests to for a worse
-// (unfocused) result. 10 covers the realistic range with room to spare:
+// not by `MAX_PAGES`'s 200-page ceiling. Live-measured via
+// `scripts/verify-usajobs-keyword-coverage.ts` (re-run that script for
+// today's numbers, since real per-phrase counts change daily): a 5-phrase
+// run of realistic titles totaled under 100 requests, well under the OLD
+// no-keyword path's 200 requests for a worse (unfocused) result -- unless
+// a phrase's own real total is itself large (a broad phrase like
+// "information technology" alone can approach the 200-page cap; see
+// ticket c419a12's note on this). 10 covers the realistic range with room
+// to spare:
 // `resume-title-inference.ts` prompts for "3-6" titles, and a user can add
 // a handful more chips by hand -- 5 was already silently dropping the
 // common 6-chip case, which review F1 flagged as a real regression
@@ -209,21 +214,41 @@ export class UsajobsSource implements JobSource {
     // records lack a stable identity field as clean as `NormalizedJob`'s
     // `externalId` in the general case, but `SkippedRecord.externalId`
     // (when present) is the same real id a job would have had, so
-    // dedup on it exactly like `jobs` above; a record with no
+    // dedup on it exactly like `jobs` below; a record with no
     // extractable id (`externalId: undefined`) can't collide with
     // itself this way and is kept as-is.
-    const seenExternalIds = new Set<string>();
+    //
+    // Re-review F3-followup (N1): jobs and skips are collected in TWO
+    // separate passes, jobs first, deliberately NOT sharing one
+    // seen-ids set built incrementally phrase-by-phrase. A single
+    // shared set built in one pass over `resultsByIndex` in order made
+    // the outcome depend on which phrase happened to run first: if
+    // phrase A's copy of a posting was unmappable and got added to the
+    // set before phrase B's mappable copy of the SAME posting was seen,
+    // the real job from B was silently dropped as "already seen" --
+    // losing a genuine job AND still reporting it as skipped. A job,
+    // once found anywhere, must always win over a skip for the same
+    // posting, regardless of fetch order -- so all jobs are deduped and
+    // collected first, and only THEN are skips filtered against the
+    // now-complete set of job ids (plus their own separate dedup set).
     const jobs: NormalizedJob[] = [];
-    const skipped: SkippedRecord[] = [];
+    const seenJobIds = new Set<string>();
     for (const result of resultsByIndex) {
       for (const job of result.jobs) {
-        if (seenExternalIds.has(job.externalId)) continue;
-        seenExternalIds.add(job.externalId);
+        if (seenJobIds.has(job.externalId)) continue;
+        seenJobIds.add(job.externalId);
         jobs.push(job);
       }
+    }
+    const skipped: SkippedRecord[] = [];
+    const seenSkipIds = new Set<string>();
+    for (const result of resultsByIndex) {
       for (const skip of result.skipped) {
-        if (skip.externalId !== undefined && seenExternalIds.has(skip.externalId)) continue;
-        if (skip.externalId !== undefined) seenExternalIds.add(skip.externalId);
+        if (skip.externalId !== undefined) {
+          if (seenJobIds.has(skip.externalId)) continue;
+          if (seenSkipIds.has(skip.externalId)) continue;
+          seenSkipIds.add(skip.externalId);
+        }
         skipped.push(skip);
       }
     }

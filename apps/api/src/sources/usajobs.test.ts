@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AuthFailedError,
   ForbiddenError,
@@ -392,6 +392,16 @@ describe("UsajobsSource — error classification", () => {
 });
 
 describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY of these' search)", () => {
+  // Re-review N3: a spy left un-restored after an assertion throws mid-test
+  // leaks into the NEXT test (observed for real during mutation testing —
+  // breaking the cap made two tests fail, the second one spuriously,
+  // because the first test's thrown assertion skipped its own
+  // `warnSpy.mockRestore()`). A blanket restore after every test is cheap
+  // insurance regardless of whether a given test happens to spy.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // Real per-item response for a given single-item page — used to build a
   // fetchImpl that returns different items for different Keyword values,
   // simulating each phrase genuinely matching a different (or overlapping)
@@ -456,8 +466,11 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     );
     expect(keywordsSent.sort()).toEqual(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("k, l");
-    warnSpy.mockRestore();
+    // Re-review N4: `toContain("k, l")` alone also passes if the message
+    // names every phrase, not just the dropped ones -- assert the full
+    // dropped-list text exactly, and that a KEPT phrase is absent.
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("dropped: k, l");
+    expect(warnSpy.mock.calls[0]?.[0]).not.toContain("a, b");
   });
 
   it("does NOT warn when the number of phrases is within the cap", async () => {
@@ -486,6 +499,36 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(result.jobs).toHaveLength(0);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipRate).toBe(1);
+  });
+
+  it("a job found via ANY phrase always wins over the SAME posting being unmappable via another phrase, regardless of fetch order (re-review N1)", async () => {
+    // Same real MatchedObjectId, but phrase A's copy is unmappable
+    // (RemoteIndicator missing) while phrase B's copy is a normal, fully
+    // mappable posting. A naive single-pass dedup keyed on "seen at all"
+    // would let whichever phrase's worker happens to finish FIRST decide
+    // the outcome -- if the unmappable copy is seen first, the real job
+    // from the other phrase is silently dropped as "already seen," and
+    // the posting is wrongly reported as skipped even though a mappable
+    // copy of it genuinely existed. A job must always win.
+    const unmappableCopy = cloneItem(civilEngineer);
+    delete unmappableCopy.MatchedObjectDescriptor.UserArea.Details.RemoteIndicator;
+    const mappableCopy = cloneItem(civilEngineer);
+
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "unmappable-first") return singleItemResponse(unmappableCopy);
+      return singleItemResponse(mappableCopy);
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({
+      keywords: ["unmappable-first", "mappable-second"],
+    });
+
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]?.externalId).toBe(civilEngineer.MatchedObjectId);
+    expect(result.skipped).toHaveLength(0);
+    expect(result.skipRate).toBe(0);
   });
 
   it("an empty keywords array behaves exactly like no criteria at all (falls back to a single unkeyworded search)", async () => {
