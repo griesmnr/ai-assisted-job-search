@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { NormalizedJob } from "../sources/types.js";
 import {
   buildStratifiedSample,
+  checkSpendCeiling,
   computeControlTally,
   computeFloorCrossings,
+  computeMeanAbsDiff,
   computeNoiseVsEffect,
   computeRankChanges,
   estimateValidationCost,
@@ -15,6 +17,13 @@ import {
   mapWithConcurrency,
   matchCorpusToLivePool,
   rankJobs,
+  scoreBothArms,
+  withRetry,
+  CONTROL_MINIMUM,
+  MAX_ESTIMATED_SPEND_USD,
+  MAX_SAMPLE_SIZE,
+  REPEAT_SUBSET_SIZE,
+  SAMPLE_SIZE,
   type HistoricalMatchEntry,
   type SampleCandidate,
 } from "./validate-level-fit.js";
@@ -208,7 +217,7 @@ describe("buildStratifiedSample", () => {
     expect(result.fillAddedCount).toBe(2);
   });
 
-  it("caps the total sample at targetSize when tier1+tier2+controls already satisfy it", () => {
+  it("selects exactly what's available (no artificial padding) when that's already under targetSize", () => {
     const candidates = Array.from({ length: 20 }, (_, i) =>
       makeCandidate({ jobId: `x-${i}`, oldMatchScore: 60 }),
     );
@@ -219,7 +228,42 @@ describe("buildStratifiedSample", () => {
       matchScoreFloor: 55,
     });
 
+    // All 20 are tier-1 (>= floor) and already satisfy controlMinimum, so
+    // tier 2/4 have nothing left to add -- the result is exactly the 20
+    // available, not padded up toward targetSize=50.
     expect(result.selected).toHaveLength(20);
+    expect(result.tier2AddedCount).toBe(0);
+    expect(result.fillAddedCount).toBe(0);
+    expect(result.hardCapped).toBe(false);
+  });
+
+  it("truncates the sample to hardCap when tier 1 alone (unconditional) exceeds it (S4 secondary defense, opus review round 1)", () => {
+    const hugeTier1 = Array.from({ length: 80 }, (_, i) =>
+      makeCandidate({ jobId: `t1-${i}`, oldMatchScore: 70 }),
+    );
+
+    const result = buildStratifiedSample(hugeTier1, {
+      targetSize: 50,
+      controlMinimum: 15,
+      matchScoreFloor: 55,
+      hardCap: 60,
+    });
+
+    expect(result.tier1Count).toBe(80);
+    expect(result.selected).toHaveLength(60);
+    expect(result.hardCapped).toBe(true);
+  });
+
+  it("does not truncate when the sample is already at or under the default MAX_SAMPLE_SIZE", () => {
+    const candidates = Array.from({ length: 10 }, (_, i) =>
+      makeCandidate({ jobId: `x-${i}`, oldMatchScore: 70 }),
+    );
+    expect(10).toBeLessThan(MAX_SAMPLE_SIZE);
+
+    const result = buildStratifiedSample(candidates, { matchScoreFloor: 55 });
+
+    expect(result.selected).toHaveLength(10);
+    expect(result.hardCapped).toBe(false);
   });
 
   it("never duplicates a candidate across tiers", () => {
@@ -322,6 +366,50 @@ describe("estimateValidationCost", () => {
   });
 });
 
+describe("checkSpendCeiling (R5/S4, the actual spend gate)", () => {
+  it("is within ceiling for the ticket's own approved ~$2.65 worked estimate", () => {
+    const estimate = estimateValidationCost(3874.5, 454.2, SAMPLE_SIZE, REPEAT_SUBSET_SIZE);
+    const check = checkSpendCeiling(estimate);
+
+    expect(check.withinCeiling).toBe(true);
+    expect(check.ceilingUsd).toBe(MAX_ESTIMATED_SPEND_USD);
+  });
+
+  it("refuses a sample size large enough to reproduce S4's identified ~$3.22 worst case (large tier-1 count stacked with the guaranteed control minimum)", () => {
+    // S4's worst case: tier 1 (unconditional) alone spikes past
+    // targetSize, and tier 3 still guarantees CONTROL_MINIMUM controls on
+    // top of that -- reproduced here directly against
+    // `buildStratifiedSample` rather than hand-picking a sample size, so
+    // this test would catch a regression in EITHER the sampling logic or
+    // the ceiling check.
+    const hugeTier1 = Array.from({ length: 65 }, (_, i) =>
+      makeCandidate({ jobId: `t1-${i}`, oldMatchScore: 70 }),
+    );
+    const sampleResult = buildStratifiedSample(hugeTier1, {
+      targetSize: SAMPLE_SIZE,
+      controlMinimum: CONTROL_MINIMUM,
+      matchScoreFloor: 55,
+      hardCap: Number.POSITIVE_INFINITY, // isolate the cost check itself, not the S4 construction-time cap
+    });
+    const estimate = estimateValidationCost(
+      3874.5,
+      454.2,
+      sampleResult.selected.length,
+      REPEAT_SUBSET_SIZE,
+    );
+
+    expect(estimate.totalCostUsd).toBeGreaterThan(MAX_ESTIMATED_SPEND_USD);
+    const check = checkSpendCeiling(estimate);
+    expect(check.withinCeiling).toBe(false);
+  });
+
+  it("respects a caller-supplied ceiling override", () => {
+    const estimate = estimateValidationCost(1000, 500, 10, 0);
+    expect(checkSpendCeiling(estimate, estimate.totalCostUsd - 0.01).withinCeiling).toBe(false);
+    expect(checkSpendCeiling(estimate, estimate.totalCostUsd + 0.01).withinCeiling).toBe(true);
+  });
+});
+
 describe("rankJobs / computeRankChanges (shipped tiebreak ordering)", () => {
   it("ranks strictly by matchScore descending", () => {
     const ranked = rankJobs([
@@ -362,7 +450,7 @@ describe("rankJobs / computeRankChanges (shipped tiebreak ordering)", () => {
     expect(ranked.map((r) => r.jobId)).toEqual(["a", "b"]);
   });
 
-  it("computes rank deltas only for jobs present in both the old and new lists", () => {
+  it("ranks BOTH the old and new lists over the SAME intersection of jobs present in both (R1 fix, opus review round 1)", () => {
     const oldJobs = [
       { jobId: "a", title: "A", company: "Co", matchScore: 80 },
       { jobId: "b", title: "B", company: "Co", matchScore: 60 },
@@ -379,15 +467,56 @@ describe("rankJobs / computeRankChanges (shipped tiebreak ordering)", () => {
     expect(rows.map((r) => r.jobId).sort()).toEqual(["a", "b"]);
     const a = rows.find((r) => r.jobId === "a")!;
     const b = rows.find((r) => r.jobId === "b")!;
-    // Old ranking (2 jobs): a (#1, 80), b (#2, 60).
-    // New ranking (3 jobs, "only-new" at 90 outranks both): only-new (#1,
-    // 90), b (#2, 80), a (#3, 55).
+    // "only-old" and "only-new" are excluded from BOTH rankings entirely,
+    // not just missing from the output rows -- the intersection is {a, b}.
+    // Old ranking (2 jobs, over the intersection only): a (#1, 80), b (#2,
+    // 60). New ranking (2 jobs, same intersection): b (#1, 80) outranks a
+    // (#2, 55).
+    //
+    // Before the R1 fix, the old list was ranked over ALL 3 old-list rows
+    // while the new list was ranked over ALL 3 new-list rows (two
+    // DIFFERENTLY-SIZED rankings) -- "only-new" (90) would then outrank
+    // both a and b in the new ranking, fabricating oldRank=1/newRank=3
+    // (rankDelta=-2) for "a" and oldRank=2/newRank=2 (rankDelta=0) for "b",
+    // even though neither of those numbers reflects a's or b's position
+    // relative to each other.
     expect(a.oldRank).toBe(1);
-    expect(a.newRank).toBe(3);
-    expect(a.rankDelta).toBe(-2);
+    expect(a.newRank).toBe(2);
+    expect(a.rankDelta).toBe(-1);
     expect(b.oldRank).toBe(2);
-    expect(b.newRank).toBe(2);
-    expect(b.rankDelta).toBe(0);
+    expect(b.newRank).toBe(1);
+    expect(b.rankDelta).toBe(1);
+  });
+
+  it("does not skew unrelated jobs' ranks when one job's arm-B call failed (R1 regression, opus review round 1)", () => {
+    // Worst case identified in review: if the single TOP-scoring job's
+    // arm-B call fails and is absent from the new list, ranking the old
+    // list over ALL its rows (including the failed job) while ranking the
+    // new list over only the survivors used to shift every remaining job's
+    // new rank up by one relative to its old rank -- fabricating "moved up
+    // by 1" for every other job, none of which actually changed at all.
+    const oldJobs = [
+      { jobId: "top", title: "Top", company: "Co", matchScore: 90 },
+      { jobId: "mid", title: "Mid", company: "Co", matchScore: 70 },
+      { jobId: "low", title: "Low", company: "Co", matchScore: 50 },
+    ];
+    // "top"'s arm-B call failed -- it's simply absent from the new list,
+    // exactly like a `rows.filter((r) => r.armB)` result would produce.
+    const newJobs = [
+      { jobId: "mid", title: "Mid", company: "Co", matchScore: 70 },
+      { jobId: "low", title: "Low", company: "Co", matchScore: 50 },
+    ];
+
+    const rows = computeRankChanges(oldJobs, newJobs);
+
+    const mid = rows.find((r) => r.jobId === "mid")!;
+    const low = rows.find((r) => r.jobId === "low")!;
+    expect(mid.oldRank).toBe(1);
+    expect(mid.newRank).toBe(1);
+    expect(mid.rankDelta).toBe(0);
+    expect(low.oldRank).toBe(2);
+    expect(low.newRank).toBe(2);
+    expect(low.rankDelta).toBe(0);
   });
 });
 
@@ -482,6 +611,26 @@ describe("computeNoiseVsEffect", () => {
   });
 });
 
+describe("computeMeanAbsDiff (R3: mean |A - old| drift; R4: arm B's own noise floor)", () => {
+  it("computes the mean absolute difference across pairs", () => {
+    const result = computeMeanAbsDiff([
+      { a: 60, b: 65 },
+      { a: 40, b: 30 },
+    ]);
+
+    // mean(|65-60|, |30-40|) = mean(5, 10) = 7.5
+    expect(result.mean).toBeCloseTo(7.5, 5);
+    expect(result.sampleSize).toBe(2);
+  });
+
+  it("reports mean as undefined (not 0 or NaN) when there are no pairs", () => {
+    const result = computeMeanAbsDiff([]);
+
+    expect(result.mean).toBeUndefined();
+    expect(result.sampleSize).toBe(0);
+  });
+});
+
 describe("computeControlTally", () => {
   it("tallies well_matched vs. misses among controls", () => {
     const tally = computeControlTally([
@@ -550,5 +699,123 @@ describe("mapWithConcurrency", () => {
     expect(results[0]).toEqual({ status: "fulfilled", value: 10 });
     expect(results[1]!.status).toBe("rejected");
     expect(results[2]).toEqual({ status: "fulfilled", value: 30 });
+  });
+});
+
+describe("withRetry (S1: one bounded retry with backoff)", () => {
+  it("returns the result on the first try without retrying when fn succeeds", async () => {
+    let calls = 0;
+    const result = await withRetry(async () => {
+      calls++;
+      return "ok";
+    });
+
+    expect(result).toBe("ok");
+    expect(calls).toBe(1);
+  });
+
+  it("retries once after a failure and succeeds on the second attempt", async () => {
+    let calls = 0;
+    const result = await withRetry(
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error("transient");
+        return "ok";
+      },
+      { retries: 1, baseDelayMs: 1 },
+    );
+
+    expect(result).toBe("ok");
+    expect(calls).toBe(2);
+  });
+
+  it("throws the last error after exhausting all retries", async () => {
+    let calls = 0;
+    await expect(
+      withRetry(
+        async () => {
+          calls++;
+          throw new Error(`fail ${calls}`);
+        },
+        { retries: 1, baseDelayMs: 1 },
+      ),
+    ).rejects.toThrow("fail 2");
+    expect(calls).toBe(2);
+  });
+
+  it("never retries when retries: 0", async () => {
+    let calls = 0;
+    await expect(
+      withRetry(
+        async () => {
+          calls++;
+          throw new Error("nope");
+        },
+        { retries: 0, baseDelayMs: 1 },
+      ),
+    ).rejects.toThrow("nope");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("scoreBothArms (S1: one shared concurrency pool across both arms)", () => {
+  it("returns arm-A and arm-B results in the same order as the input items", async () => {
+    const items = ["x", "y", "z"];
+    const { armA, armB } = await scoreBothArms(
+      items,
+      2,
+      async (item) => `A:${item}`,
+      async (item) => `B:${item}`,
+    );
+
+    expect(armA.map((r) => (r.status === "fulfilled" ? r.value : undefined))).toEqual([
+      "A:x",
+      "A:y",
+      "A:z",
+    ]);
+    expect(armB.map((r) => (r.status === "fulfilled" ? r.value : undefined))).toEqual([
+      "B:x",
+      "B:y",
+      "B:z",
+    ]);
+  });
+
+  it("never runs more than `concurrency` calls in flight TOTAL across both arms combined (the S1 bug: two separate pools each bounded to the same limit used to double the real concurrency)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const track = async (): Promise<void> => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+    };
+    const items = Array.from({ length: 10 }, (_, i) => i);
+
+    await scoreBothArms(
+      items,
+      3,
+      async () => track(),
+      async () => track(),
+    );
+
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+  });
+
+  it("isolates one arm's rejection from the other arm and from other items", async () => {
+    const items = [1, 2, 3];
+    const { armA, armB } = await scoreBothArms(
+      items,
+      2,
+      async (n) => {
+        if (n === 2) throw new Error("armA boom");
+        return `A:${n}`;
+      },
+      async (n) => `B:${n}`,
+    );
+
+    expect(armA[0]).toEqual({ status: "fulfilled", value: "A:1" });
+    expect(armA[1]!.status).toBe("rejected");
+    expect(armA[2]).toEqual({ status: "fulfilled", value: "A:3" });
+    expect(armB.every((r) => r.status === "fulfilled")).toBe(true);
   });
 });
