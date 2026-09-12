@@ -113,6 +113,7 @@ export function SearchFlow({
   criteria,
   disableEstimate,
   onEstimateStart,
+  onInvalidEstimateAttempt,
   onSearchComplete,
 }: {
   resumeId: string;
@@ -120,11 +121,18 @@ export function SearchFlow({
   criteria?: SearchCriteria;
   /** Ticket b9e6251: App.tsx sets this when the location criteria has no
    * real signal (no commute locations, remote not checked, "Any location"
-   * not checked) -- SearchFlow doesn't know or care WHY, it just keeps
-   * "Estimate search cost" disabled alongside its own existing
-   * `sourceIds.length === 0` check. Optional, defaulting to `false`
-   * (never disabled), so every other existing caller/test keeps working
-   * unchanged. */
+   * not checked). Ticket 371713d changed HOW this blocks the estimate --
+   * see the "Estimate search cost" button below: it used to be the native
+   * `disabled` attribute, which is why the gate still keeps
+   * `sourceIds.length === 0` as a REAL `disabled` (no reason to scroll
+   * anywhere for that one -- "select a source" isn't a location problem).
+   * `disableEstimate` on its own is now checked inside the click handler
+   * instead, because a real `disabled` button never fires `onClick` at
+   * all, and Nicole explicitly wants an attempted click while invalid to
+   * scroll the location section into view (`onInvalidEstimateAttempt`
+   * below) -- something a `disabled` button structurally cannot do.
+   * Optional, defaulting to `false` (never blocks), so every other
+   * existing caller/test keeps working unchanged. */
   disableEstimate?: boolean;
   /** Ticket f4a7f07: fired at the START of every estimate request (before
    * the network call), so App.tsx can clear its "current search results"
@@ -132,6 +140,16 @@ export function SearchFlow({
    * every time a new search is estimated." Optional so every other
    * existing caller/test keeps working unchanged. */
   onEstimateStart?: () => void;
+  /** Ticket 371713d: fired when "Estimate search cost" is clicked while
+   * `disableEstimate` is true -- i.e. an attempt that this component
+   * blocks from ever reaching `handleEstimate`. App.tsx is the one place
+   * that also holds the ref into SIBLING component `SearchCriteriaForm`'s
+   * location section (see that component's `locationSectionRef` prop), so
+   * this callback is how a click here becomes a scroll over there --
+   * SearchFlow itself doesn't know or need to know what's on the other
+   * side of the callback. Optional so every other existing caller/test
+   * (none of which care about scrolling) keeps working unchanged. */
+  onInvalidEstimateAttempt?: () => void;
   onSearchComplete: () => void;
 }) {
   // Ticket 3f05144: the first thing this component does on EVERY mount is
@@ -476,8 +494,24 @@ export function SearchFlow({
         <>
           <button
             type="button"
-            onClick={() => void handleEstimate()}
-            disabled={sourceIds.length === 0 || disableEstimate}
+            onClick={() => {
+              // Ticket 371713d: `disableEstimate` is checked HERE, inside
+              // the handler, rather than folded into the `disabled`
+              // attribute below -- a real `disabled` button never fires
+              // `onClick`, so that would make it impossible for an
+              // attempted click to trigger the scroll-back-to-location
+              // behavior Nicole asked for. `sourceIds.length === 0` stays
+              // on the real `disabled` attribute instead (see below): that
+              // gate has no associated field to scroll to, so there's
+              // nothing lost by leaving it as a plain native disable.
+              if (disableEstimate) {
+                onInvalidEstimateAttempt?.();
+                return;
+              }
+              void handleEstimate();
+            }}
+            disabled={sourceIds.length === 0}
+            aria-disabled={disableEstimate}
           >
             Estimate search cost
           </button>

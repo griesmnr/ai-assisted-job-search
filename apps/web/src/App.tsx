@@ -129,6 +129,21 @@ function App() {
     criteriaForm.remoteOk ||
     criteriaForm.anyLocationOk;
 
+  // Ticket 371713d: the cross-component link between "Estimate search
+  // cost" (SearchFlow) and "the location section" (SearchCriteriaForm) --
+  // real siblings, no parent/child relationship between them. App.tsx
+  // already coordinates every other cross-sibling interaction in this file
+  // (onEstimateStart clearing hasFreshSearchResults, onSearchComplete
+  // triggering refresh, etc.), so this follows the same shape: a plain ref
+  // object owned here, handed DOWN into SearchCriteriaForm to attach to the
+  // DOM node, and read back here inside a callback handed DOWN into
+  // SearchFlow. Neither sibling needs to know the other exists.
+  const locationSectionRef = useRef<HTMLDivElement | null>(null);
+
+  function handleInvalidEstimateAttempt() {
+    locationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   const { state: resultsState, refresh } = useResults(resumeId);
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
@@ -376,6 +391,7 @@ function App() {
                 // that knows `"usajobs"` is a source ID, same as the
                 // `SOURCES` fixtures already do in this file's tests.
                 showFederalTitleSuggestions={selectedSourceIds.has("usajobs")}
+                locationSectionRef={locationSectionRef}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
               />
@@ -394,6 +410,7 @@ function App() {
                 criteria={criteria}
                 disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => setHasFreshSearchResults(false)}
+                onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
               />
             </section>

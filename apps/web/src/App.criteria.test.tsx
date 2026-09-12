@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type {
   EstimateSearchResponse,
   GetResumeResultsResponse,
@@ -36,6 +36,21 @@ vi.mock("./api/client", () => ({
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));
+
+// Ticket 371713d: jsdom does not implement `scrollIntoView` at all -- calling
+// it throws `TypeError: ... is not a function`. Most tests in this file
+// never trigger it (they check "Any location" or type a location before
+// clicking "Estimate search cost"), but several of the b9e6251 tests below
+// deliberately click it WHILE invalid to prove the click is blocked, which
+// (as of this ticket) now also calls App.tsx's `handleInvalidEstimateAttempt`
+// -> `locationSectionRef.current?.scrollIntoView(...)`. A file-level
+// `beforeEach` (not nested in any one `describe`) stubs it for every test
+// here, so an incidental invalid click anywhere in this file can't crash
+// with an unrelated jsdom gap; the dedicated ticket-371713d `describe` below
+// re-stubs it locally too, to get its own fresh mock reference to assert on.
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn<typeof Element.prototype.scrollIntoView>();
+});
 
 afterEach(() => {
   cleanup();
@@ -213,32 +228,43 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 // own principle already rejected for title keywords. Now it requires a
 // real, explicit signal before "Estimate search cost" is even reachable.
 describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
-  it("disables Estimate search cost and shows a warning when no location signal is set", async () => {
+  it("blocks Estimate search cost (without a real `disabled` attribute) and shows a warning when no location signal is set", async () => {
+    // Ticket 371713d: the button is no longer natively `disabled` for THIS
+    // reason (see SearchFlow.tsx's own comment on why -- a real `disabled`
+    // button can't fire onClick, which is needed for the "attempted click
+    // scrolls back to the location section" behavior). The functional
+    // gate must still hold: clicking it must not call the real estimate.
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    const button = screen.getByRole("button", { name: "Estimate search cost" });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(button);
+    expect(estimateSearch).not.toHaveBeenCalled();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 
-  it("checking 'Any location' enables the button and clears the warning", async () => {
+  it("checking 'Any location' allows the button to actually estimate, and clears the warning", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    const button = screen.getByRole("button", { name: "Estimate search cost" });
+    fireEvent.click(button);
+    expect(estimateSearch).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "false");
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(button);
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
   });
 
@@ -273,7 +299,8 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       target: { value: "," },
     });
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    expect(estimateSearch).not.toHaveBeenCalled();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 
@@ -291,18 +318,22 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
   });
 
-  it("unchecking 'Any location' again re-disables the button (not a one-way opt-in)", async () => {
+  it("unchecking 'Any location' again re-blocks the button (not a one-way opt-in)", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Estimate search cost" })).toHaveAttribute(
+      "aria-disabled",
+      "false",
+    );
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    expect(estimateSearch).not.toHaveBeenCalled();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 
@@ -326,10 +357,17 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    // The stale "Run search" confirmation must be gone -- back to a fresh
-    // (disabled) "Estimate search cost", not a spendable leftover.
+    // The stale "Run search" confirmation must be gone -- back to a fresh,
+    // blocked "Estimate search cost", not a spendable leftover.
     expect(screen.queryByRole("button", { name: "Run search" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
+
+    // Ticket 371713d: the button is no longer natively `disabled` for this
+    // reason, so this is the regression-proof that a click while invalid
+    // still does not fire a SECOND, real estimate call against the
+    // now-invalid criteria.
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    expect(estimateSearch).toHaveBeenCalledTimes(1);
   });
 
   it("checking 'Any location' with zero sources selected still explains why the button is disabled (opus review F2)", async () => {
@@ -458,5 +496,72 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
 
     // Still exactly one "Program Analyst" chip -- no duplicate got through.
     expect(screen.getAllByText("Program Analyst")).toHaveLength(1);
+  });
+});
+
+// Ticket 371713d: Nicole, live -- "when they go to try to do the next
+// step, it should force them to do that [set a location]." These tests
+// exercise the actual cross-component mechanism (App.tsx holds a ref into
+// SIBLING SearchCriteriaForm's location section, and hands a callback that
+// reads it down into SIBLING SearchFlow -- see both components' own doc
+// comments on `locationSectionRef`/`onInvalidEstimateAttempt`), through the
+// real App tree rather than either component in isolation, since the
+// mechanism's whole point is the link BETWEEN them.
+describe("App — attempting to estimate without a location scrolls back to it (ticket 371713d)", () => {
+  // jsdom does not implement `scrollIntoView` at all (calling it throws
+  // "not a function" without this) -- a plain spy is the standard
+  // workaround and also doubles as the "real, verifiable signal" the
+  // ticket's acceptance criteria explicitly asks for, rather than a purely
+  // visual claim.
+  let scrollIntoViewMock: Mock<typeof Element.prototype.scrollIntoView>;
+
+  beforeEach(() => {
+    scrollIntoViewMock = vi.fn<typeof Element.prototype.scrollIntoView>();
+    Element.prototype.scrollIntoView = scrollIntoViewMock;
+  });
+
+  it("clicking 'Estimate search cost' with no location signal scrolls the location section into view and does NOT call the real estimate", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    expect(estimateSearch).not.toHaveBeenCalled();
+  });
+
+  it("a valid location (typed, not the checkbox) does not trigger the scroll and lets the estimate proceed normally", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.change(screen.getByLabelText(/Locations you'd commute to/), {
+      target: { value: "seattle" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+  });
+
+  it("'Any location' checked also lets the estimate proceed without triggering the scroll", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.click(screen.getByLabelText(/Any location/));
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
   });
 });
