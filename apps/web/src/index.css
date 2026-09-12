@@ -187,6 +187,12 @@ section {
 /* Ticket 09b8e4d: visually distinct from the actual `.title-chip-list`
    above -- these are suggestions, not the active chip set, so they read as
    addable buttons rather than removable chips. */
+.federal-title-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
 .federal-title-suggestion-list {
   list-style: none;
   padding: 0;
@@ -197,6 +203,8 @@ section {
 }
 
 .federal-title-suggestion {
+  font-family: inherit;
+  color: inherit;
   border: 1px dashed var(--border);
   border-radius: 999px;
   background: none;

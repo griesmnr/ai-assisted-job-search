@@ -191,7 +191,7 @@ export function SearchCriteriaForm({
         <div className="federal-title-suggestions">
           <p className="search-criteria-hint">
             USAJOBS uses federal job-series titles that don't overlap much with private-sector
-            phrasing -- click to add any that fit:
+            phrasing — click to add any that fit:
           </p>
           <ul className="federal-title-suggestion-list" aria-label="Suggested federal job titles">
             {FEDERAL_TITLE_SUGGESTIONS.map((title) => (
