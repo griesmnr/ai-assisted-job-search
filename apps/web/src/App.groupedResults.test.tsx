@@ -68,6 +68,8 @@ function job(
     strengths: [],
     gaps: [],
     status: null,
+    levelFit: null,
+    levelFitNote: null,
     ...overrides,
   };
 }

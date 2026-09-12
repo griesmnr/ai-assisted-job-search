@@ -16,7 +16,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { Job } from "@app/shared";
+import type { Job, LevelFit } from "@app/shared";
 import { MATCH_SCORE_FLOOR } from "@app/shared";
 import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
@@ -115,8 +115,23 @@ const MAX_OUTPUT_TOKENS = 2000;
  * the bootstrap path generally, not something this ticket's output-side
  * estimate needs to solve differently from the input-side one it sits
  * next to.
+ *
+ * UPDATED 2026-09-12 (ticket b182bde) for the two new schema fields
+ * (`levelFit`, `levelFitNote` — see `SCHEMA` above): `levelFit` is a short
+ * enum string (under 20 chars including the JSON key), `levelFitNote` is
+ * "one short sentence" per its own schema description — call it a par with
+ * one `strengths`/`gaps` array entry. Together, roughly 150-170 chars of
+ * additional JSON per response. This is an ESTIMATE, not a re-measurement
+ * of a real corpus: this ticket makes no live Claude calls (see its Notes —
+ * no API spend), so there is no fresh 200-job run to re-derive the base
+ * 1,232-char figure from the way that figure was originally derived. Adding
+ * the estimated addition to the prior measured average (1,232 + 160 ≈
+ * 1,392) and rounding up for headroom, the same way the prior constant
+ * rounded 1,232 up to 1,300, gives 1,450. Revisit this with a real
+ * measurement once the money-gated follow-up ticket (af0fca6-b) actually
+ * re-scores a corpus with the new fields live.
  */
-const TYPICAL_OUTPUT_CHARS_PER_JOB = 1300;
+const TYPICAL_OUTPUT_CHARS_PER_JOB = 1450;
 
 /**
  * Spend-guard threshold (ticket 16c824a) — replaces `MAX_JOBS`, which used
@@ -178,10 +193,32 @@ const SCHEMA = {
       type: "string",
       description: "One or two sentences. What lines up, and what is missing.",
     },
+    // Ticket b182bde: added AFTER rationale, BEFORE strengths/gaps — see
+    // that ticket's Context for the evidence (matchScore values of 42-78 for
+    // the SAME leveling mismatch across six real postings) and
+    // SCORING_PREAMBLE below for the instruction that keeps this judgment
+    // separate from matchScore.
+    levelFit: {
+      type: "string",
+      enum: ["underqualified", "well_matched", "overqualified"],
+      description:
+        "Where the candidate's seniority sits against the level THIS POSTING is written for. " +
+        "Judge against the posting's own stated level and years-of-experience range, not against " +
+        "their skills. 'overqualified' when they are clearly above it, 'underqualified' when the " +
+        "posting's level is above them, 'well_matched' otherwise.",
+    },
+    levelFitNote: {
+      type: "string",
+      description:
+        "One short sentence, plain language, addressed to the candidate, on how level fit affects " +
+        "their real chance of being hired here -- screening risk, compensation mismatch, or a stretch. " +
+        "Quote the posting's own stated level or years range when it states one. " +
+        "Empty string when levelFit is 'well_matched'.",
+    },
     strengths: { type: "array", items: { type: "string" } },
     gaps: { type: "array", items: { type: "string" } },
   },
-  required: ["matchScore", "rationale", "strengths", "gaps"],
+  required: ["matchScore", "rationale", "levelFit", "levelFitNote", "strengths", "gaps"],
   additionalProperties: false,
 };
 
@@ -197,6 +234,17 @@ const SCHEMA = {
 export type ScoredJob = {
   matchScore: number;
   rationale: string;
+  /**
+   * Leveling fit, judged separately from `matchScore` in this same call —
+   * see `SCHEMA`/`SCORING_PREAMBLE` above and `LevelFit` in
+   * packages/shared/src/index.ts. Optional on this TYPE only (matching the
+   * existing `usage?` precedent right below) so every existing `ScoreJobFn`
+   * test fake in demo-match.test.ts keeps compiling without being forced to
+   * add these two fields everywhere — a real `makeClaudeScorer` call always
+   * returns them (they're in `required` above).
+   */
+  levelFit?: "underqualified" | "well_matched" | "overqualified";
+  levelFitNote?: string;
   strengths: string[];
   gaps: string[];
   /**
@@ -242,6 +290,16 @@ export type ScoreJobFn = (job: NormalizedJob, resumeText: string) => Promise<Sco
 const SCORING_PREAMBLE = [
   "Score how well this candidate matches this job posting.",
   "Be honest and calibrated — most candidates are not a 90.",
+  "",
+  "Judge two separate things and report both.",
+  "",
+  "matchScore is CAPABILITY fit: how well this candidate's skills and experience cover what",
+  "the posting asks for. Do not lower it because the candidate has MORE experience than the",
+  "posting asks for.",
+  "",
+  "levelFit is LEVELING fit: whether the candidate sits below, at, or above the level this",
+  "posting is written for. levelFitNote is one plain sentence to the candidate about how that",
+  'affects their real chance of being hired; leave it empty when levelFit is "well_matched".',
 ].join("\n");
 
 /**
@@ -1088,6 +1146,19 @@ export type RankedResult = {
   rationale: string;
   strengths: string[];
   gaps: string[];
+  /**
+   * Ticket b182bde. Optional on this TYPE (matching `ScoredJob.usage?` and
+   * `ScoredJob.levelFit?` above) so the ~10 existing `makeRankedResult` test
+   * fixtures in demo-match.test.ts keep compiling unchanged — this is an
+   * internal CLI-path type (see `fetchRankedResults`'s own doc comment:
+   * `routes/resumes.ts` reads straight from the database and does not go
+   * through this type), not the public REST shape (`ScoredJobResult` in
+   * packages/shared, where these two fields are NOT optional). A real
+   * `fetchRankedResults` call always sets both (to `null` for an unjudged
+   * row, never omits them).
+   */
+  levelFit?: LevelFit | null;
+  levelFitNote?: string | null;
 };
 
 export type RunDemoMatchOptions = {
@@ -1856,6 +1927,8 @@ async function fetchRankedResults(
       rationale: jobMatches.rationale,
       strengths: jobMatches.strengths,
       gaps: jobMatches.gaps,
+      levelFit: jobMatches.levelFit,
+      levelFitNote: jobMatches.levelFitNote,
     })
     .from(jobMatches)
     .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
@@ -1867,9 +1940,54 @@ async function fetchRankedResults(
       ...r,
       strengths: r.strengths ?? [],
       gaps: r.gaps ?? [],
+      // `levelFit`/`levelFitNote` stay `null` as-is — never coerced (ticket
+      // b182bde): unlike strengths/gaps, a `null` here is a real, distinct
+      // state ("never judged"), not "the model returned nothing".
     }));
-  results.sort((a, b) => b.matchScore - a.matchScore);
+  results.sort(compareRankedResults);
   return results;
+}
+
+/**
+ * Ticket b182bde: `matchScore DESC` is the whole ranking; `levelFit` is a
+ * TIEBREAK ONLY, applied exclusively when two results share the exact same
+ * `matchScore` — it must never move a job ahead of one with a strictly
+ * higher score (both of Nicole's real applied-to postings are in the
+ * "overqualified" bucket; a design that let level fit override the score
+ * would have hidden her own real choices). `jobId ASC` as the final
+ * tiebreak makes the order fully deterministic — see git-bug b182bde's
+ * Context: 21 of 25 displayed jobs were tied on `matchScore` with no
+ * secondary sort key at all before this ticket.
+ *
+ * Duplicates the CASE expression `routes/resumes.ts` builds in SQL for the
+ * same ordering — see that file's `levelFitRank` — because this file's
+ * `fetchRankedResults` sorts an already-fetched JS array instead of
+ * ordering the SQL query itself. Kept in sync by the rank NUMBERS matching
+ * (0/1/2/3 below), not by shared code, since one lives in SQL and the other
+ * in JS.
+ */
+function levelFitTiebreakRank(levelFit: LevelFit | null | undefined): number {
+  switch (levelFit) {
+    case "well_matched":
+      return 0;
+    case "underqualified":
+      return 2;
+    case "overqualified":
+      return 3;
+    default:
+      // `null`/`undefined`: an unjudged (legacy, or pre-migration) row.
+      // Deliberately BETWEEN well_matched and underqualified, not lumped in
+      // with either — an unjudged row is neither known-good nor
+      // known-mismatched.
+      return 1;
+  }
+}
+
+export function compareRankedResults(a: RankedResult, b: RankedResult): number {
+  if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+  const rankDiff = levelFitTiebreakRank(a.levelFit) - levelFitTiebreakRank(b.levelFit);
+  if (rankDiff !== 0) return rankDiff;
+  return a.jobId < b.jobId ? -1 : a.jobId > b.jobId ? 1 : 0;
 }
 
 /**
@@ -2307,6 +2425,13 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
             jobId: r.jobId,
             matchScore: r.matchScore,
             rationale: r.rationale,
+            // `ScoredJob.levelFit`/`levelFitNote` are optional on the TYPE
+            // only (see that type's doc comment) — a real scorer always
+            // sets them (SCHEMA's `required`), so `?? null` here only ever
+            // fires for a test fake that omits them, never for a real
+            // Claude call.
+            levelFit: r.levelFit ?? null,
+            levelFitNote: r.levelFitNote ?? null,
             strengths: r.strengths,
             gaps: r.gaps,
           })),

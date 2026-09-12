@@ -133,6 +133,19 @@ export type GetResumeResponse = {
 export const USER_JOB_STATUSES = ["saved", "resume_optimized", "applied", "dismissed"] as const;
 export type UserJobStatus = (typeof USER_JOB_STATUSES)[number];
 
+/**
+ * Leveling fit (ticket b182bde), judged separately from `matchScore` in the
+ * SAME scoring call — see `SCHEMA`/`SCORING_PREAMBLE` in
+ * apps/api/src/demo-match.ts. `matchScore` alone conflated capability fit
+ * with leveling fit: the same structural fact ("candidate has far more
+ * experience than the posting asks for") produced `matchScore` values
+ * ranging 42-78 across six real postings, because nothing told the model to
+ * separate the two judgments. Three values, not a single "overqualified"
+ * flag, because the corpus shows the mismatch in both directions (a
+ * Staff-level posting scores someone under-leveled for it too).
+ */
+export type LevelFit = "underqualified" | "well_matched" | "overqualified";
+
 export type ScoredJobResult = {
   jobId: string;
   externalId: string;
@@ -156,6 +169,30 @@ export type ScoredJobResult = {
    * column at all; see that ticket's report for what else was missing).
    */
   status: UserJobStatus | null;
+  /**
+   * `null` for a row scored before this ticket, or any row a caller
+   * declines to judge — NEVER coerced to `"well_matched"` on read (that
+   * would fabricate a claim the model never made). By convention, a real
+   * `levelFit` usually comes with a `levelFitNote` (see that field's own
+   * comment for why this is convention, not a guarantee).
+   */
+  levelFit: LevelFit | null;
+  /**
+   * One plain sentence for the candidate on how level fit affects their
+   * real chance of being hired here. Empty string (not null) when
+   * `levelFit` is `"well_matched"` — see `SCHEMA` in demo-match.ts.
+   *
+   * By convention, a real `levelFit` usually comes with a `levelFitNote`,
+   * but this is NOT enforced at the schema level (no DB constraint, no
+   * runtime check) — treat `levelFitNote` as independently nullable.
+   * Confirmed non-enforced by the ticket b182bde review: that ticket's own
+   * `resumes.test.ts` tiebreak-ordering fixtures seed rows with
+   * `levelFit: "overqualified"` and `levelFitNote: null`, contradicting the
+   * old "always coupled" claim this comment used to make. The app degrades
+   * gracefully either way (pill renders, no tooltip, no note block), so
+   * this is a documentation-accuracy fix, not a bug fix.
+   */
+  levelFitNote: string | null;
 };
 
 export type GetResumeResultsResponse = {

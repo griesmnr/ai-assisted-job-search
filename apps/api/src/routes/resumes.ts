@@ -38,7 +38,7 @@ import {
 } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { SQL } from "drizzle-orm";
-import { and, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { getOrCreateResumeId } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
@@ -233,6 +233,25 @@ export function registerResumeRoutes(
     if (source !== undefined) conditions.push(eq(jobsTable.dataSource, source));
     if (minScoreNum !== undefined) conditions.push(gte(jobMatches.matchScore, minScoreNum));
 
+    // Ticket b182bde: `matchScore DESC` stays the whole ranking; this is a
+    // TIEBREAK ONLY, used exclusively when two rows share the exact same
+    // matchScore -- it can never move a row ahead of one with a strictly
+    // higher score, because it's a second ORDER BY key, evaluated only
+    // where the first key is equal. `well_matched` sorts first among ties,
+    // `null` (never judged -- a legacy row, or one this ticket's own
+    // migration just added a nullable column for) sits between a
+    // known-good and a known-mismatch rather than being lumped in with
+    // either, `underqualified` next, `overqualified` last. Mirrors
+    // `levelFitTiebreakRank` in demo-match.ts's own (separate, JS-side)
+    // sort for `fetchRankedResults` -- see that function's doc comment for
+    // why the two aren't shared code.
+    const levelFitRank = sql<number>`CASE ${jobMatches.levelFit}
+      WHEN 'well_matched' THEN 0
+      WHEN 'underqualified' THEN 2
+      WHEN 'overqualified' THEN 3
+      ELSE 1
+    END`;
+
     const rows = await db
       .select({
         jobId: jobsTable.id,
@@ -247,13 +266,15 @@ export function registerResumeRoutes(
         rationale: jobMatches.rationale,
         strengths: jobMatches.strengths,
         gaps: jobMatches.gaps,
+        levelFit: jobMatches.levelFit,
+        levelFitNote: jobMatches.levelFitNote,
         status: userJobStatuses.status,
       })
       .from(jobMatches)
       .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
       .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
       .where(and(...conditions))
-      .orderBy(desc(jobMatches.matchScore));
+      .orderBy(desc(jobMatches.matchScore), levelFitRank, asc(jobsTable.id));
 
     // The "hidden count" the frontend's score-floor design (git-bug
     // 484889d/1b9f81e) needs: a short filtered list must never read as a
@@ -286,6 +307,13 @@ export function registerResumeRoutes(
         strengths: r.strengths ?? [],
         gaps: r.gaps ?? [],
         status: r.status ?? null,
+        // levelFit/levelFitNote are NOT coerced (ticket b182bde) -- unlike
+        // strengths/gaps, `null` here is a real, distinct state ("this row
+        // was never judged for level fit"), not "the model returned
+        // nothing" -- defaulting it to a value (e.g. "well_matched") would
+        // fabricate a claim nobody made. drizzle already returns `null` for
+        // an unset column, so no `?? null` is needed here; this comment
+        // exists so a future edit doesn't "fix" that into a default.
       })),
       hiddenBelowFloor,
     };
