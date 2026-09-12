@@ -93,7 +93,19 @@ export function ResultCard({
   // (rather than `location.href`) keeps the click's semantics the same as
   // Apply's `target="_blank"`: this app's own tab stays put, the other
   // app opens alongside it.
+  //
+  // Ticket e367a63: this button is now a toggle like the others. If
+  // `resume_optimized` is already the active status, clicking it undoes
+  // that status ONLY -- no new handoff, no new tab (Nicole, dogfooding:
+  // "if optimize resume or apply are highlighted and you want to undo
+  // those, it should not launch the page again"). Re-running the
+  // optimize flow against an updated resume still works exactly as
+  // before, but only from the not-yet-optimized state.
   async function handleOptimizeResume() {
+    if (result.status === "resume_optimized") {
+      await handleClearStatus();
+      return;
+    }
     setPending("resume_optimized");
     setError(null);
     try {
@@ -102,9 +114,7 @@ export function ResultCard({
         handoffFetchUrl(handoff.id),
       )}`;
       window.open(importUrl, "_blank", "noreferrer");
-      if (result.status !== "resume_optimized") {
-        await onSetStatus(result.jobId, "resume_optimized");
-      }
+      await onSetStatus(result.jobId, "resume_optimized");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -131,19 +141,14 @@ export function ResultCard({
             {result.locationType && <> · Work arrangement: {result.locationType}</>}
           </p>
         </div>
+        {/* Ticket e367a63: the top-right Undo control is gone -- Nicole
+            wants the status button itself to undo (see the toggle logic
+            on BUTTON_ACTIONS and handleOptimizeResume below). This pill
+            is now a plain, non-interactive state label; the buttons in
+            the action row carry `aria-pressed` + a highlighted style as
+            the indication of which one is active. */}
         {result.status && (
-          <span className="result-current-status">
-            {STATUS_LABELS[result.status]}
-            <button
-              type="button"
-              className="link-button result-status-clear"
-              aria-label={`Undo "${STATUS_LABELS[result.status]}"`}
-              disabled={pending !== null}
-              onClick={() => void handleClearStatus()}
-            >
-              {pending === "clearing" ? "Undoing..." : "Undo"}
-            </button>
-          </span>
+          <span className="result-current-status">{STATUS_LABELS[result.status]}</span>
         )}
       </div>
 
@@ -194,27 +199,48 @@ export function ResultCard({
             short-lived server-side handoff (see handleOptimizeResume
             above and apps/api/src/routes/handoffs.ts's own doc comment
             for why it can't just be a link with the payload inlined).
-            Same precedent as Apply above: NOT disabled once already
-            `resume_optimized` -- re-opening the tailoring app again
-            (e.g. against an updated base resume) is a normal, useful
-            thing to do, not a mistake to block. */}
+            Ticket e367a63: this is now a toggle -- while NOT yet
+            `resume_optimized`, clicking still re-opens the tailoring app
+            (e.g. against an updated base resume) same as before; once it
+            IS the active status, clicking it undoes instead of
+            re-opening (handleOptimizeResume decides which). Never
+            disabled on its own status so the undo path always works. */}
         <button
           type="button"
+          className={
+            result.status === "resume_optimized"
+              ? "result-action result-action-active"
+              : "result-action"
+          }
+          aria-pressed={result.status === "resume_optimized"}
           disabled={pending !== null}
           onClick={() => void handleOptimizeResume()}
         >
-          {pending === "resume_optimized" ? "Opening..." : ACTION_LABELS.resume_optimized}
+          {pending === "resume_optimized"
+            ? "Opening..."
+            : result.status === "resume_optimized" && pending === "clearing"
+              ? "Undoing..."
+              : ACTION_LABELS.resume_optimized}
         </button>
-        {BUTTON_ACTIONS.map((status) => (
-          <button
-            key={status}
-            type="button"
-            disabled={pending !== null || result.status === status}
-            onClick={() => void handleSetStatus(status)}
-          >
-            {pending === status ? "Saving..." : ACTION_LABELS[status]}
-          </button>
-        ))}
+        {BUTTON_ACTIONS.map((status) => {
+          const isActive = result.status === status;
+          return (
+            <button
+              key={status}
+              type="button"
+              className={isActive ? "result-action result-action-active" : "result-action"}
+              aria-pressed={isActive}
+              disabled={pending !== null}
+              onClick={() => void (isActive ? handleClearStatus() : handleSetStatus(status))}
+            >
+              {pending === status
+                ? "Saving..."
+                : isActive && pending === "clearing"
+                  ? "Undoing..."
+                  : ACTION_LABELS[status]}
+            </button>
+          );
+        })}
       </div>
       {error && (
         <p role="alert" className="result-error">
