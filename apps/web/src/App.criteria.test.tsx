@@ -367,3 +367,96 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     expect(sentCriteria).not.toHaveProperty("anyLocationOk");
   });
 });
+
+// Ticket 09b8e4d: follow-up from d1fc9e2's Scope section. d1fc9e2 fixed
+// USAJOBS to actually search on whatever title chips the user has, which
+// makes the gap concrete -- a private-sector resume's inferred titles
+// ("Software Engineer" etc, ticket 39b4a48) never contain OPM job-series
+// names, so a user searching USAJOBS off resume-inferred chips alone
+// silently misses federal postings. These suggestions are gated on
+// `selectedSourceIds.has("usajobs")` in App.tsx (SearchCriteriaForm itself
+// stays "dumb" about source IDs), and -- same "suggest, don't silently
+// default" principle as the resume-inferred chips -- are never auto-added.
+describe("App — federal job-series title suggestions when USAJOBS is selected (ticket 09b8e4d)", () => {
+  it("surfaces the federal suggestions once USAJOBS is selected, distinct from resume-inferred chips, and does NOT auto-add them", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      suggestedTitles: ["Backend Engineer"],
+    });
+    getResults.mockResolvedValue(RESULTS);
+
+    // `submitResume` waits for the USAJOBS toggle to be checked, so by the
+    // time it resolves the suggestion row must already be showing.
+    await submitResume();
+
+    expect(screen.getByRole("list", { name: "Suggested federal job titles" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ Program Analyst" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ IT Specialist" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ Computer Scientist" })).toBeInTheDocument();
+
+    // Resume-inferred chip is present, but none of the federal suggestions
+    // were silently folded into the active chip list just because USAJOBS
+    // is selected -- suggesting is not the same as adding.
+    expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
+    expect(screen.queryByText("IT Specialist")).not.toBeInTheDocument();
+    expect(screen.queryByText("Computer Scientist")).not.toBeInTheDocument();
+  });
+
+  it("hides the federal suggestions once USAJOBS is deselected", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+    expect(screen.getByRole("list", { name: "Suggested federal job titles" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("USAJOBS"));
+
+    expect(
+      screen.queryByRole("list", { name: "Suggested federal job titles" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clicking a suggestion adds it as a real title chip, sent to the API like any other", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Program Analyst" }));
+
+    // Now a real chip -- rendered with its own remove button, same as a
+    // resume-inferred or manually-typed one.
+    expect(screen.getByRole("button", { name: 'Remove "Program Analyst"' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
+      titleInclude: ["Program Analyst"],
+    });
+  });
+
+  it("clicking an already-added suggestion again does not duplicate the chip (the button disables instead)", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: ["Program Analyst"] });
+    getResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    // Already present via resume-inferred titles -- the matching suggestion
+    // button must reflect that immediately, not just after a click.
+    const suggestionButton = screen.getByRole("button", { name: "+ Program Analyst" });
+    expect(suggestionButton).toBeDisabled();
+
+    fireEvent.click(suggestionButton);
+
+    // Still exactly one "Program Analyst" chip -- no duplicate got through.
+    expect(screen.getAllByText("Program Analyst")).toHaveLength(1);
+  });
+});
