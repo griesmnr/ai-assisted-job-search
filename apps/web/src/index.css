@@ -353,6 +353,34 @@ section {
   align-items: center;
 }
 
+/* Ticket e367a63: status buttons (Save/Optimize Resume/Apply/Dismiss) are
+   toggles now -- clicking the already-active one undoes it instead of a
+   separate top-right Undo control. `.result-action-active` (driven by
+   `aria-pressed`) is the only remaining indication of which status is
+   set -- opus review (e367a63) caught that `.tab-button[aria-pressed=
+   "true"]`'s tint only reads correctly because `.tab-button` ALSO has a
+   base rule neutralizing native button theming first (`background: none;
+   border: 1px solid var(--border); color: inherit`); without that base
+   rule here, `currentColor` stayed at the UA's default `buttontext`, so
+   in dark mode the "active" tint came out DARKER than a plain native
+   button -- reading as disabled, the opposite of the intended meaning.
+   `.result-action` supplies that same base rule for these four buttons. */
+.result-action {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.result-action-active {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+  font-weight: 600;
+}
+
 .result-error {
   color: #c0392b;
   font-size: 0.85rem;

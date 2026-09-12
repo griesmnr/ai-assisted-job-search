@@ -170,7 +170,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied");
   });
 
-  it("Apply is disabled once already applied, same as Save/Dismiss disable once set", () => {
+  it("Apply stays enabled once already applied -- it's a toggle now (ticket e367a63), not a disabled state", () => {
     render(
       <ResultCard
         result={makeResult({ status: "applied" })}
@@ -180,7 +180,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply" })).not.toBeDisabled();
   });
 
   it("Open Job Page stays fully navigable regardless of status (re-opening a posting you already applied to is normal)", () => {
@@ -243,11 +243,14 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
   });
 });
 
-// Dogfooding feedback, 2026-09-08 -- Nicole: "you should be able to
-// untoggle the buttons, like undismiss."
-describe("ResultCard — undo a status back to no-action-taken", () => {
-  it("shows no Undo control when no status is set", () => {
-    render(
+// Ticket e367a63 (dogfooding, 2026-09-12) -- Nicole: "I do not want an undo
+// button in the top right... What I want is an undoable toggle button. I
+// should be able to hit the save button again and have it undo the save."
+// This replaces the separate top-right Undo control (ticket 3c603ef) with
+// the status buttons themselves acting as toggles.
+describe("ResultCard — status buttons are undo-able toggles, no separate Undo control", () => {
+  it("has no Undo control anywhere in the card, whether or not a status is set", () => {
+    const { rerender } = render(
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
@@ -255,23 +258,129 @@ describe("ResultCard — undo a status back to no-action-taken", () => {
         onClearStatus={async () => {}}
       />,
     );
-
     expect(screen.queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Undo/ })).not.toBeInTheDocument();
+
+    rerender(
+      <ResultCard
+        result={makeResult({ status: "dismissed" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Undo/ })).not.toBeInTheDocument();
   });
 
-  it("calls onClearStatus for the right job when Undo is clicked on a set status", async () => {
+  it("clicking the already-active status's own button clears it (calls onClearStatus, not onSetStatus)", async () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
     const onClearStatus = vi.fn().mockResolvedValue(undefined);
     render(
       <ResultCard
         result={makeResult({ status: "dismissed" })}
         resumeId="resume-1"
-        onSetStatus={async () => {}}
+        onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: 'Undo "Dismissed"' }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
-    expect(onClearStatus).toHaveBeenCalledWith("job-1");
+    await waitFor(() => expect(onClearStatus).toHaveBeenCalledWith("job-1"));
+    expect(onSetStatus).not.toHaveBeenCalled();
+  });
+
+  it("clicking a different, non-active status button still sets that new status (regression: switching statuses is untouched)", async () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    const onClearStatus = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ResultCard
+        result={makeResult({ status: "saved" })}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={onClearStatus}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() => expect(onSetStatus).toHaveBeenCalledWith("job-1", "dismissed"));
+    expect(onClearStatus).not.toHaveBeenCalled();
+  });
+
+  it("marks the active status's button aria-pressed=true, and the others aria-pressed=false", () => {
+    render(
+      <ResultCard
+        result={makeResult({ status: "saved" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Save" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Apply" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Dismiss" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Optimize Resume" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it('clicking "Optimize Resume" while already resume_optimized clears the status only -- no new handoff, no new tab', async () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    const onClearStatus = vi.fn().mockResolvedValue(undefined);
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(
+      <ResultCard
+        result={makeResult({ status: "resume_optimized" })}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={onClearStatus}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Optimize Resume" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
+
+    await waitFor(() => expect(onClearStatus).toHaveBeenCalledWith("job-1"));
+    expect(createHandoff).not.toHaveBeenCalled();
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(onSetStatus).not.toHaveBeenCalled();
+  });
+
+  it('clicking "Optimize Resume" while NOT yet optimized still mints a handoff, opens a tab, and sets the status (unchanged path)', async () => {
+    const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    createHandoff.mockResolvedValue({ id: "handoff-1", expiresAt: new Date().toISOString() });
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(
+      <ResultCard
+        result={makeResult()}
+        resumeId="resume-1"
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
+
+    await waitFor(() => expect(createHandoff).toHaveBeenCalledWith("job-1", "resume-1"));
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://optimizer.example.com/?import=" +
+        encodeURIComponent("https://api.example.com/handoffs/handoff-1"),
+      "_blank",
+      "noreferrer",
+    );
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized");
   });
 });
