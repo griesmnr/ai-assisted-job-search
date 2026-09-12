@@ -136,6 +136,53 @@ section {
   gap: 0.4rem;
 }
 
+/* Ticket 371713d: wraps the location text input, both location-related
+   checkboxes, and the text warning -- the single unit `SearchFlow` (a
+   SIBLING component, via a ref App.tsx hands down) scrolls into view when
+   "Estimate search cost" is clicked with no location signal set. Keeps the
+   same flex/gap rhythm as `.search-criteria-form` itself, since wrapping
+   these children in a div would otherwise drop them out of the parent's
+   `gap`. */
+.search-criteria-location-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* Ticket 371713d, Nicole: "I really want to force the issue because I
+   don't read text on sites" -- a strong, hard-to-miss red border/outline on
+   the location input and the "Any location" checkbox row for as long as
+   `hasLocationSignal` is false (SearchCriteriaForm.tsx), reusing the same
+   red (`#c0392b`) already used for `.result-error` elsewhere in this file
+   so error-coded color stays consistent across the app. Gated on the exact
+   same condition as the existing `.search-criteria-location-warning` text
+   below -- this is an ADDITIONAL visual cue, not a replacement, so the text
+   warning stays for anyone who does read it / for screen readers. */
+/* Opus review F3/F7: this used to set `outline` directly, which overrides
+   the browser's native, `outline`-based focus ring on the SAME element
+   regardless of specificity -- since this file has zero `:focus`/
+   `:focus-visible` rules of its own, that left a keyboard user with NO
+   visible focus indicator at all while tabbed onto an invalid, red input
+   (a real WCAG 2.4.7 regression). `box-shadow` gives the same strong red
+   ring without touching `outline`, so the native focus ring still renders
+   on top of it. Deliberately NOT adding/widening a `border` here either
+   (F7): `.search-criteria-field input` sets no `border` of its own, so a
+   real border would only appear in the invalid state and change the
+   input's rendered box size going from valid <-> invalid -- `box-shadow`
+   doesn't participate in layout at all, so there is no size delta either
+   way. */
+.search-criteria-input-invalid {
+  box-shadow: 0 0 0 2px #c0392b;
+  border-radius: 3px;
+}
+
+.search-criteria-checkbox-invalid {
+  outline: 2px solid #c0392b;
+  outline-offset: 3px;
+  border-radius: 4px;
+  background-color: rgba(192, 57, 43, 0.08);
+}
+
 .title-chip-list {
   list-style: none;
   padding: 0;
@@ -216,6 +263,18 @@ section {
 .federal-title-suggestion:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+/* Opus review F2: ticket 371713d moved the location-invalid gate off the
+   real `disabled` attribute (SearchFlow.tsx's own comment on why) and onto
+   `aria-disabled` plus a click-time check, so the button's previous
+   "looks unavailable" appearance -- entirely the browser's native
+   `disabled` greying -- no longer applies to that case. There was no
+   `button:disabled` rule to have been relying on instead; this restores an
+   equivalent visual cue for the `aria-disabled` case specifically. */
+button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .estimating {

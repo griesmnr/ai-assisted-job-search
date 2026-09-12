@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { splitPhrases } from "../criteriaText";
 
 /**
@@ -50,6 +50,7 @@ export function SearchCriteriaForm({
   anyLocationOk,
   commitmentIn,
   showFederalTitleSuggestions,
+  locationSectionRef,
   onTitleChipsChange,
   onChange,
 }: {
@@ -68,6 +69,20 @@ export function SearchCriteriaForm({
    * one place that knows `"usajobs"` is a source ID, this just gets told
    * yes/no whether to show the federal suggestions. */
   showFederalTitleSuggestions: boolean;
+  /** Ticket 371713d: a plain ref object, lifted to and owned by App.tsx
+   * (the coordinator between this component and its SIBLING `SearchFlow`),
+   * attached to the DOM node wrapping the location input/checkboxes below.
+   * App.tsx hands the SAME ref object to `SearchFlow` indirectly, via an
+   * `onInvalidEstimateAttempt` callback that calls
+   * `locationSectionRef.current?.scrollIntoView(...)` -- that is the "some
+   * cross-component mechanism" this ticket's Notes flagged as needed,
+   * chosen over e.g. a global DOM id/querySelector because it keeps the
+   * link typed and keeps App.tsx (which already coordinates every other
+   * cross-sibling interaction in this file -- onEstimateStart,
+   * onSearchComplete, etc.) as the one place that knows about it. Optional
+   * so every other existing caller/test (none of which care about
+   * scrolling) keeps working unchanged. */
+  locationSectionRef?: RefObject<HTMLDivElement | null>;
   onTitleChipsChange: (next: string[]) => void;
   onChange: (next: {
     nearLocations: string;
@@ -209,39 +224,64 @@ export function SearchCriteriaForm({
           </ul>
         </div>
       )}
-      <label className="search-criteria-field">
-        Locations you'd commute to (comma-separated)
-        <input
-          type="text"
-          value={nearLocations}
-          placeholder="e.g. seattle, bellevue"
-          onChange={(e) => set({ nearLocations: e.target.value })}
-        />
-      </label>
-      <label className="search-criteria-checkbox">
-        <input
-          type="checkbox"
-          checked={remoteOk}
-          onChange={(e) => set({ remoteOk: e.target.checked })}
-        />
-        Also show fully remote roles
-      </label>
-      <label className="search-criteria-checkbox">
-        <input
-          type="checkbox"
-          checked={anyLocationOk}
-          onChange={(e) => set({ anyLocationOk: e.target.checked })}
-        />
-        Any location — I'm open to relocating or working anywhere
-      </label>
-      {!hasLocationSignal && (
-        <p className="search-criteria-location-warning" role="alert">
-          No location restriction is set. Leaving this blank means every real posting could match
-          regardless of where it is — check "Any location" above if that's genuinely what you want,
-          or add a commute location / remote above. Estimating is disabled until one of these is
-          set.
-        </p>
-      )}
+      {/* Ticket 371713d: this whole block is what "Estimate search cost"
+          (SearchFlow, a SIBLING component) scrolls into view when clicked
+          with no location signal set -- see `locationSectionRef`'s own doc
+          comment above. Grouping the text input, both location checkboxes,
+          AND the text warning under one ref means a single scroll always
+          brings every red-highlighted field on screen together, rather
+          than picking just one of them and risking the other still being
+          off-screen. */}
+      <div ref={locationSectionRef} className="search-criteria-location-section">
+        <label className="search-criteria-field">
+          Locations you'd commute to (comma-separated)
+          <input
+            type="text"
+            value={nearLocations}
+            placeholder="e.g. seattle, bellevue"
+            onChange={(e) => set({ nearLocations: e.target.value })}
+            // Ticket 371713d, Nicole: "I really want to force the issue
+            // because I don't read text on sites" -- a strong, hard-to-miss
+            // visual cue instead of (not in addition to needing) the text
+            // warning below. Reactive to the exact same `hasLocationSignal`
+            // the warning already uses, so it clears the instant either
+            // this field or "Any location" below gains a real signal.
+            className={hasLocationSignal ? undefined : "search-criteria-input-invalid"}
+            aria-invalid={!hasLocationSignal}
+          />
+        </label>
+        <label className="search-criteria-checkbox">
+          <input
+            type="checkbox"
+            checked={remoteOk}
+            onChange={(e) => set({ remoteOk: e.target.checked })}
+          />
+          Also show fully remote roles
+        </label>
+        <label
+          className={
+            hasLocationSignal
+              ? "search-criteria-checkbox"
+              : "search-criteria-checkbox search-criteria-checkbox-invalid"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={anyLocationOk}
+            onChange={(e) => set({ anyLocationOk: e.target.checked })}
+            aria-invalid={!hasLocationSignal}
+          />
+          Any location — I'm open to relocating or working anywhere
+        </label>
+        {!hasLocationSignal && (
+          <p className="search-criteria-location-warning" role="alert">
+            No location restriction is set. Leaving this blank means every real posting could match
+            regardless of where it is — check "Any location" above if that's genuinely what you
+            want, or add a commute location / remote above. Estimating won't work until one of these
+            is set.
+          </p>
+        )}
+      </div>
       <fieldset className="search-criteria-commitment">
         <legend>
           {commitmentIn.length > 0

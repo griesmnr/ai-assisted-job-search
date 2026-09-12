@@ -129,6 +129,34 @@ function App() {
     criteriaForm.remoteOk ||
     criteriaForm.anyLocationOk;
 
+  // Ticket 371713d: the cross-component link between "Estimate search
+  // cost" (SearchFlow) and "the location section" (SearchCriteriaForm) --
+  // real siblings, no parent/child relationship between them. App.tsx
+  // already coordinates every other cross-sibling interaction in this file
+  // (onEstimateStart clearing hasFreshSearchResults, onSearchComplete
+  // triggering refresh, etc.), so this follows the same shape: a plain ref
+  // object owned here, handed DOWN into SearchCriteriaForm to attach to the
+  // DOM node, and read back here inside a callback handed DOWN into
+  // SearchFlow. Neither sibling needs to know the other exists.
+  const locationSectionRef = useRef<HTMLDivElement | null>(null);
+
+  function handleInvalidEstimateAttempt() {
+    locationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Ticket 371713d, opus review F4: scrolling alone leaves DOM focus on
+    // the "Estimate search cost" button itself, which sits AFTER this
+    // section in DOM order -- a keyboard user tabbing onward from there
+    // moves further away from the field that needs fixing, and a screen
+    // reader user gets no re-announcement at all on a blocked attempt.
+    // Moving real focus onto the location text input fixes both: Tab now
+    // continues naturally from the location section, and most screen
+    // readers announce the newly-focused input (including its
+    // `aria-invalid`/label) on focus change. `locationSectionRef` already
+    // wraps exactly one `<input>` (the commute-locations text field), so a
+    // plain `querySelector` is simpler than adding a second, single-purpose
+    // ref just for this.
+    locationSectionRef.current?.querySelector("input")?.focus({ preventScroll: true });
+  }
+
   const { state: resultsState, refresh } = useResults(resumeId);
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
@@ -376,6 +404,7 @@ function App() {
                 // that knows `"usajobs"` is a source ID, same as the
                 // `SOURCES` fixtures already do in this file's tests.
                 showFederalTitleSuggestions={selectedSourceIds.has("usajobs")}
+                locationSectionRef={locationSectionRef}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
               />
@@ -394,6 +423,7 @@ function App() {
                 criteria={criteria}
                 disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => setHasFreshSearchResults(false)}
+                onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
               />
             </section>
