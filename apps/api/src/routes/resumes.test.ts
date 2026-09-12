@@ -225,6 +225,12 @@ describe("GET /resumes/:id/results", () => {
     resumeId: string,
     matchScore: number,
     title: string,
+    // Ticket b182bde: optional, defaults to `undefined` (drizzle writes
+    // `NULL`) so every EXISTING call site — none of which cares about level
+    // fit — keeps compiling and keeps writing an unjudged row, exactly as
+    // before this ticket.
+    levelFit?: "underqualified" | "well_matched" | "overqualified",
+    levelFitNote?: string,
   ): Promise<string> {
     const jobId = randomUUID();
     await db.insert(jobsTable).values({
@@ -245,6 +251,8 @@ describe("GET /resumes/:id/results", () => {
       rationale: "fake rationale",
       strengths: [],
       gaps: [],
+      levelFit,
+      levelFitNote,
     });
     return jobId;
   }
@@ -511,5 +519,183 @@ describe("GET /resumes/:id/results", () => {
       url: `/resumes/${resumeId}/results?minScore=not-a-number`,
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  // Ticket b182bde: `levelFit`/`levelFitNote` come straight off `job_matches`
+  // with no coercion — unlike strengths/gaps, a legacy row's `null` must
+  // stay `null` (never defaulted to "well_matched", which would fabricate a
+  // claim the model never made).
+  it("returns levelFit/levelFitNote null (not coerced to well_matched or []) for a legacy row never judged for level fit", async () => {
+    const app = buildTestApp();
+    const resumeText = `Legacy level-fit resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedScoredJob(resumeId, 80, "Never judged for level fit");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as {
+      results: Array<{ levelFit: string | null; levelFitNote: string | null }>;
+    };
+    expect(body.results).toHaveLength(1);
+    expect(body.results[0]?.levelFit).toBeNull();
+    expect(body.results[0]?.levelFitNote).toBeNull();
+  });
+
+  it("returns a real levelFit/levelFitNote when the row was judged", async () => {
+    const app = buildTestApp();
+    const resumeText = `Judged level-fit resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedScoredJob(
+      resumeId,
+      78,
+      "Overqualified job",
+      "overqualified",
+      "This posting asks for 1.5-2 years; you have far more.",
+    );
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as {
+      results: Array<{ levelFit: string | null; levelFitNote: string | null }>;
+    };
+    expect(body.results[0]?.levelFit).toBe("overqualified");
+    expect(body.results[0]?.levelFitNote).toBe(
+      "This posting asks for 1.5-2 years; you have far more.",
+    );
+  });
+});
+
+// Ticket b182bde: `ORDER BY match_score DESC, level_fit_rank ASC, job_id
+// ASC`. The whole point of these tests is the two guarantees git-bug
+// b182bde's acceptance criteria call out by name: level fit is a TIEBREAK
+// ONLY (never overrides a strictly higher matchScore), and the tiebreak
+// order itself (well_matched, then null/unjudged, then underqualified, then
+// overqualified) is real and deterministic.
+describe("GET /resumes/:id/results — level fit tiebreak (ticket b182bde)", () => {
+  async function seedScoredJob(
+    resumeId: string,
+    matchScore: number,
+    title: string,
+    levelFit?: "underqualified" | "well_matched" | "overqualified",
+  ): Promise<string> {
+    const jobId = randomUUID();
+    await db.insert(jobsTable).values({
+      id: jobId,
+      externalId: `tiebreak-test-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title,
+      description: "a job description",
+      company: "Test Co",
+      linkToApply: `https://example.com/${jobId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await db.insert(jobMatches).values({
+      id: randomUUID(),
+      resumeId,
+      jobId,
+      matchScore,
+      rationale: "fake rationale",
+      strengths: [],
+      gaps: [],
+      levelFit,
+    });
+    return jobId;
+  }
+
+  it(
+    "same matchScore, different levelFit: well_matched, then null (unjudged), then " +
+      "underqualified, then overqualified",
+    async () => {
+      const app = buildTestApp();
+      const resumeText = `Tiebreak resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      // Seeded deliberately out of the expected order, so a passing test
+      // proves the database is doing the ordering, not fixture insertion
+      // order happening to already match it.
+      await seedScoredJob(resumeId, 60, "Overqualified", "overqualified");
+      await seedScoredJob(resumeId, 60, "Underqualified", "underqualified");
+      await seedScoredJob(resumeId, 60, "Never judged");
+      await seedScoredJob(resumeId, 60, "Well matched", "well_matched");
+
+      const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+      const body = response.json() as { results: Array<{ title: string }> };
+      expect(body.results.map((r) => r.title)).toEqual([
+        "Well matched",
+        "Never judged",
+        "Underqualified",
+        "Overqualified",
+      ]);
+    },
+  );
+
+  it(
+    "NEVER downranks a higher-scoring overqualified job below a lower-scoring well_matched job " +
+      "-- the core 'never hide/downrank overqualified' guarantee, shaped like Nicole's own real " +
+      "applied-to postings (high score + leveling mismatch)",
+    async () => {
+      const app = buildTestApp();
+      const resumeText = `Never-downrank resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      // Shaped like the real evidence in git-bug b182bde's Context: Samsara
+      // SWE II scored 78% and Smartsheet SWE II scored 58%, both flagged
+      // overqualified. A well_matched job at a LOWER score must still rank
+      // BELOW both of them -- the tiebreak must never win over the primary
+      // score sort.
+      await seedScoredJob(
+        resumeId,
+        78,
+        "Samsara SWE II (overqualified, high score)",
+        "overqualified",
+      );
+      await seedScoredJob(
+        resumeId,
+        58,
+        "Smartsheet SWE II (overqualified, mid score)",
+        "overqualified",
+      );
+      await seedScoredJob(resumeId, 65, "Well-matched but lower than Samsara", "well_matched");
+
+      const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+      const body = response.json() as { results: Array<{ title: string; matchScore: number }> };
+
+      // Pure score order: 78, then 65, then 58 -- levelFit never moves the
+      // 78% overqualified job behind the 65% well_matched job, and never
+      // moves the 65% well_matched job behind the 58% overqualified job.
+      expect(body.results.map((r) => r.matchScore)).toEqual([78, 65, 58]);
+      expect(body.results.map((r) => r.title)).toEqual([
+        "Samsara SWE II (overqualified, high score)",
+        "Well-matched but lower than Samsara",
+        "Smartsheet SWE II (overqualified, mid score)",
+      ]);
+    },
+  );
+
+  it("job_id ASC makes ties within the same (matchScore, levelFit) pair fully deterministic", async () => {
+    const app = buildTestApp();
+    const resumeText = `Deterministic-tie resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    const idA = await seedScoredJob(resumeId, 60, "Tie A", "well_matched");
+    const idB = await seedScoredJob(resumeId, 60, "Tie B", "well_matched");
+    const expectedOrder = [idA, idB].sort();
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<{ jobId: string }> };
+    expect(body.results.map((r) => r.jobId)).toEqual(expectedOrder);
   });
 });

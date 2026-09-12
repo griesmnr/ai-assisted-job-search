@@ -280,6 +280,16 @@ section {
   color: var(--muted);
 }
 
+/* Ticket b182bde: opt-in, default-off "Hide roles above my level" filter. */
+.hide-overqualified-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0.35rem 0;
+}
+
 .result-cards {
   list-style: none;
   padding: 0;
@@ -327,6 +337,37 @@ section {
   border-radius: 999px;
   background: color-mix(in srgb, currentColor 12%, transparent);
   white-space: nowrap;
+}
+
+/* Ticket b182bde: leveling-fit pill. Neutral/informational, not a
+   pass/fail signal -- deliberately NOT red (error) or green (success),
+   since both an "overqualified" and "underqualified" job are still real,
+   viable results, not a warning. Muted amber vs. muted blue only to make
+   the two directions visually distinct at a glance. */
+.result-level-fit {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.result-level-fit-over {
+  color: #8a5a00;
+  background: color-mix(in srgb, #8a5a00 14%, transparent);
+}
+
+.result-level-fit-under {
+  color: #1f5f8b;
+  background: color-mix(in srgb, #1f5f8b 14%, transparent);
+}
+
+.result-level-fit-note {
+  margin-bottom: 0.75rem;
+}
+
+.result-level-fit-note p {
+  margin: 0.15rem 0 0;
 }
 
 .link-button {

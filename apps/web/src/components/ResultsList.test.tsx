@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GetResumeResultsResponse } from "@app/shared";
 import { ResultsList } from "./ResultsList";
@@ -28,6 +28,8 @@ const DATA: GetResumeResultsResponse = {
       strengths: ["TypeScript", "Postgres"],
       gaps: ["Kafka"],
       status: null,
+      levelFit: null,
+      levelFitNote: null,
     },
     {
       jobId: "job-2",
@@ -43,6 +45,8 @@ const DATA: GetResumeResultsResponse = {
       strengths: [],
       gaps: [],
       status: "saved",
+      levelFit: "overqualified",
+      levelFitNote: "This posting is written below your level, which may hurt at screening.",
     },
   ],
 };
@@ -102,5 +106,56 @@ describe("ResultsList", () => {
     );
 
     expect(screen.getByText("No jobs match the current source selection.")).toBeInTheDocument();
+  });
+});
+
+// Ticket b182bde: opt-in, default-off client-side filter. Of DATA's two
+// jobs, only "Platform Engineer" (job-2) is levelFit "overqualified" —
+// "Senior Backend Engineer" (job-1) has levelFit null (an unjudged row),
+// which must behave like "not overqualified", never get swept into the
+// hidden set alongside a real overqualified job.
+describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', () => {
+  it("defaults unchecked, shows every job (including the one above-level), and states the live overqualified count", () => {
+    render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /Hide roles above my level/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText("Hide roles above my level (1)")).toBeInTheDocument();
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+  });
+
+  it("checking the box hides only the overqualified job, client-side, and unchecking restores it", () => {
+    render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    // Never a silent server-side drop -- the summary line still reflects
+    // what's actually rendered.
+    expect(
+      screen.getByText("Showing 1 of 2 scored jobs from the sources you've selected."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
 });

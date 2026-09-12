@@ -13,6 +13,15 @@ export const sourceDescriptors = pgTable("source_descriptors", {
 export const payTypeEnum = pgEnum("pay_type", ["hourly", "salary"]);
 export const commitmentEnum = pgEnum("commitment", ["full-time", "part-time", "contract"]);
 export const locationTypeEnum = pgEnum("location_type", ["remote", "onsite", "hybrid"]);
+// Ticket b182bde: leveling fit, judged separately from `matchScore`
+// (capability fit) in the same scoring call. See `SCHEMA`/`SCORING_PREAMBLE`
+// in demo-match.ts for the prompt side of this and `jobMatches.levelFit`'s
+// own doc comment below for why the column is nullable.
+export const levelFitEnum = pgEnum("level_fit", [
+  "underqualified",
+  "well_matched",
+  "overqualified",
+]);
 
 export const jobs = pgTable(
   "jobs",
@@ -79,6 +88,15 @@ export const jobMatches = pgTable(
     // demo-match.ts's ScoredJob). See ticket 620ca30.
     strengths: jsonb("strengths").$type<string[]>(),
     gaps: jsonb("gaps").$type<string[]>(),
+    // Ticket b182bde: same nullability story as strengths/gaps above — rows
+    // scored before this column existed (and any future row a caller
+    // deliberately declines to judge) have no level-fit opinion at all.
+    // `null` must never be treated as (or defaulted to) "well_matched" —
+    // that would fabricate a claim the model never made; see
+    // routes/resumes.ts's ORDER BY and the frontend render path for the
+    // same rule applied on read.
+    levelFit: levelFitEnum("level_fit"),
+    levelFitNote: text("level_fit_note"),
   },
   // Makes a duplicate scoring attempt (redelivery, a second demo-match run,
   // a retried score.job message) harmless instead of an expensive repeat

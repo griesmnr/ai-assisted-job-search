@@ -24,6 +24,7 @@ import {
   buildJobSuffix,
   buildScoringPrompt,
   buildSourceOutcomes,
+  compareRankedResults,
   describeBoardOutcome,
   describeCostEstimate,
   describeSourceOutcome,
@@ -2239,7 +2240,12 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     // Long enough to be a realistic "just under the minimum" resume (not a
     // one-line placeholder) — chosen so its heuristic-estimated prefix
     // token count is comfortably under CACHE_MIN_PREFIX_TOKENS (1,024).
-    const SHORT_RESUME = "Cache-minimum probe resume text. ".repeat(115);
+    // Repeat count lowered from 115 (ticket b182bde, 2026-09-12): SCORING_PREAMBLE
+    // grew by ~511 chars for the new levelFit/levelFitNote instructions,
+    // which alone pushed the old repeat count's prefix over the minimum —
+    // 100 restores roughly the same margin under the threshold this fixture
+    // had before that preamble grew.
+    const SHORT_RESUME = "Cache-minimum probe resume text. ".repeat(100);
     const prefixTokens = Math.round(buildCachedPrefix(SHORT_RESUME).length / 4);
     expect(prefixTokens).toBeLessThan(1024); // guards the fixture itself
 
@@ -2920,5 +2926,82 @@ describe("applyMatchScoreFloor (ticket 1b9f81e)", () => {
     const { displayed, belowFloorCount } = applyMatchScoreFloor([]);
     expect(displayed).toHaveLength(0);
     expect(belowFloorCount).toBe(0);
+  });
+});
+
+// Ticket b182bde: `fetchRankedResults` sorts an already-fetched JS array
+// with this exact comparator (a separate, JS-side duplicate of
+// routes/resumes.ts's SQL `ORDER BY match_score DESC, level_fit_rank ASC,
+// job_id ASC` — see that route's own tests for the DB-backed version of
+// these same two guarantees). Pure function — no DB needed.
+describe("compareRankedResults (ticket b182bde)", () => {
+  function makeRankedResult(
+    matchScore: number,
+    title: string,
+    levelFit?: "underqualified" | "well_matched" | "overqualified" | null,
+  ): RankedResult {
+    return {
+      jobId: `job-${title}`,
+      externalId: `ext-${title}`,
+      title,
+      company: "Test Co",
+      location: "Remote",
+      locationType: "remote",
+      applyUrl: "https://example.com",
+      matchScore,
+      rationale: "test rationale",
+      strengths: [],
+      gaps: [],
+      levelFit,
+    };
+  }
+
+  it("sorts by matchScore DESC as the primary key, regardless of levelFit", () => {
+    const results = [
+      makeRankedResult(50, "Low", "overqualified"),
+      makeRankedResult(90, "High", "underqualified"),
+      makeRankedResult(70, "Mid", "well_matched"),
+    ];
+    results.sort(compareRankedResults);
+    expect(results.map((r) => r.title)).toEqual(["High", "Mid", "Low"]);
+  });
+
+  it("uses levelFit as a tiebreak ONLY among jobs sharing the exact same matchScore: well_matched, null, underqualified, overqualified", () => {
+    const results = [
+      makeRankedResult(60, "Overqualified", "overqualified"),
+      makeRankedResult(60, "Underqualified", "underqualified"),
+      makeRankedResult(60, "Unjudged", null),
+      makeRankedResult(60, "WellMatched", "well_matched"),
+    ];
+    results.sort(compareRankedResults);
+    expect(results.map((r) => r.title)).toEqual([
+      "WellMatched",
+      "Unjudged",
+      "Underqualified",
+      "Overqualified",
+    ]);
+  });
+
+  it("never lets the levelFit tiebreak move a job past one with a strictly higher matchScore", () => {
+    // Same shape as the real evidence in git-bug b182bde's Context: a
+    // higher-scoring overqualified job must still outrank a lower-scoring
+    // well_matched job.
+    const results = [
+      makeRankedResult(65, "WellMatched-65", "well_matched"),
+      makeRankedResult(78, "Overqualified-78", "overqualified"),
+    ];
+    results.sort(compareRankedResults);
+    expect(results.map((r) => r.title)).toEqual(["Overqualified-78", "WellMatched-65"]);
+  });
+
+  it("falls back to jobId ASC for a fully-tied (matchScore, levelFit) pair", () => {
+    const results = [
+      makeRankedResult(60, "Z", "well_matched"),
+      makeRankedResult(60, "A", "well_matched"),
+    ];
+    results.sort(compareRankedResults);
+    // makeRankedResult derives jobId from title ("job-Z" / "job-A"), so
+    // jobId ASC sorts "A" before "Z".
+    expect(results.map((r) => r.title)).toEqual(["A", "Z"]);
   });
 });

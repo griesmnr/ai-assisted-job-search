@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { GetResumeResultsResponse, UserJobStatus } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
@@ -26,8 +27,21 @@ export function ResultsList({
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
 }) {
-  const visible = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
-  const hiddenBySourceToggle = data.results.length - visible.length;
+  // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter on already-
+  // fetched results, same pattern as `selectedSourceIds` above -- never a
+  // silent server-side drop (both of Nicole's real applied-to postings are
+  // in the "overqualified" bucket; hiding them by default would have hidden
+  // her own real choices). Local state, not lifted to a caller prop:
+  // nothing else in the app needs to know this filter is on, unlike
+  // `selectedSourceIds`, which is also scoped by the search flow.
+  const [hideOverqualified, setHideOverqualified] = useState(false);
+
+  const bySource = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
+  const overqualifiedCount = bySource.filter((r) => r.levelFit === "overqualified").length;
+  const visible = hideOverqualified
+    ? bySource.filter((r) => r.levelFit !== "overqualified")
+    : bySource;
+  const hiddenBySourceToggle = data.results.length - bySource.length;
 
   return (
     <div className="results-list">
@@ -43,6 +57,17 @@ export function ResultsList({
               ? ` (${hiddenBySourceToggle} hidden by source toggles.)`
               : "")}
       </p>
+      {/* Ticket b182bde: the count is shown regardless of whether the
+          checkbox is checked -- same pattern as the "(N hidden by source
+          toggles.)" text above. */}
+      <label className="hide-overqualified-toggle">
+        <input
+          type="checkbox"
+          checked={hideOverqualified}
+          onChange={() => setHideOverqualified((v) => !v)}
+        />
+        Hide roles above my level ({overqualifiedCount})
+      </label>
       {data.hiddenBelowFloor !== undefined && (
         <p className="results-hidden-floor">
           {data.hiddenBelowFloor} more job{data.hiddenBelowFloor === 1 ? "" : "s"} scored below the

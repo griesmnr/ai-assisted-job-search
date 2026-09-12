@@ -150,6 +150,34 @@ export function ResultCard({
         {result.status && (
           <span className="result-current-status">{STATUS_LABELS[result.status]}</span>
         )}
+        {/* Ticket b182bde: visible WITHOUT expanding the card -- before this,
+            a leveling mismatch was buried two clicks deep in the gaps list.
+            `null`/`"well_matched"` render nothing (an unjudged legacy row
+            must never read as either qualified state). `aria-label` carries
+            the same note text as `title`, which isn't reliably exposed to
+            assistive tech. */}
+        {result.levelFit === "overqualified" && (
+          <span
+            className="result-level-fit result-level-fit-over"
+            title={result.levelFitNote ?? undefined}
+            aria-label={
+              result.levelFitNote ? `Above this level: ${result.levelFitNote}` : "Above this level"
+            }
+          >
+            Above this level
+          </span>
+        )}
+        {result.levelFit === "underqualified" && (
+          <span
+            className="result-level-fit result-level-fit-under"
+            title={result.levelFitNote ?? undefined}
+            aria-label={
+              result.levelFitNote ? `Below this level: ${result.levelFitNote}` : "Below this level"
+            }
+          >
+            Below this level
+          </span>
+        )}
       </div>
 
       <button type="button" className="link-button" onClick={() => setExpanded((e) => !e)}>
@@ -159,6 +187,15 @@ export function ResultCard({
       {expanded && (
         <div className="result-details">
           <p>{result.rationale}</p>
+          {/* Ticket b182bde: full levelFitNote, above Strengths -- only when
+              there's real text to show (empty string for well_matched, null
+              for an unjudged row, both render nothing here). */}
+          {result.levelFitNote && (
+            <div className="result-level-fit-note">
+              <strong>Level fit</strong>
+              <p>{result.levelFitNote}</p>
+            </div>
+          )}
           {result.strengths.length > 0 && (
             <div>
               <strong>Strengths</strong>

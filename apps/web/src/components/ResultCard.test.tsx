@@ -37,6 +37,8 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
     strengths: [],
     gaps: [],
     status: null,
+    levelFit: null,
+    levelFitNote: null,
     ...overrides,
   };
 }
@@ -382,5 +384,119 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       "noreferrer",
     );
     expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized");
+  });
+});
+
+// Ticket b182bde: matchScore alone conflated capability fit with leveling
+// fit. This adds a separate levelFit + levelFitNote pill/detail, visible
+// WITHOUT expanding the card, and null/well_matched must render nothing.
+describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
+  it('shows "Above this level" without expanding the card when levelFit is overqualified, carrying the note as both title and aria-label', () => {
+    render(
+      <ResultCard
+        result={makeResult({
+          levelFit: "overqualified",
+          levelFitNote: "This posting asks for 1.5-2 years; you have far more.",
+        })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const pill = screen.getByText("Above this level");
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveAttribute("title", "This posting asks for 1.5-2 years; you have far more.");
+    expect(pill).toHaveAttribute(
+      "aria-label",
+      "Above this level: This posting asks for 1.5-2 years; you have far more.",
+    );
+    // No need to expand the card to see it.
+    expect(screen.getByRole("button", { name: "Why this match?" })).toBeInTheDocument();
+  });
+
+  it('shows "Below this level" when levelFit is underqualified', () => {
+    render(
+      <ResultCard
+        result={makeResult({
+          levelFit: "underqualified",
+          levelFitNote: "This posting is written for a Staff-level candidate.",
+        })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.getByText("Below this level")).toBeInTheDocument();
+    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
+  });
+
+  it("shows no pill at all when levelFit is well_matched", () => {
+    render(
+      <ResultCard
+        result={makeResult({ levelFit: "well_matched", levelFitNote: "" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
+    expect(screen.queryByText("Below this level")).not.toBeInTheDocument();
+  });
+
+  // Regression: a legacy pre-migration row has levelFit: null. It must
+  // render exactly like well_matched (nothing) -- NOT get coerced into
+  // either qualified state anywhere in the render path.
+  it("shows no pill when levelFit is null (legacy row, never judged) -- not coerced to a qualified state", () => {
+    render(
+      <ResultCard
+        result={makeResult({ levelFit: null, levelFitNote: null })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
+    expect(screen.queryByText("Below this level")).not.toBeInTheDocument();
+  });
+
+  it("shows the full levelFitNote in the expanded details, above Strengths", () => {
+    render(
+      <ResultCard
+        result={makeResult({
+          levelFit: "overqualified",
+          levelFitNote: "This may hurt at screening for a role this junior.",
+          strengths: ["TypeScript"],
+        })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Why this match?" }));
+
+    expect(screen.getByText("Level fit")).toBeInTheDocument();
+    expect(
+      screen.getByText("This may hurt at screening for a role this junior."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no Level fit block in expanded details when levelFitNote is absent or empty", () => {
+    render(
+      <ResultCard
+        result={makeResult({ levelFit: null, levelFitNote: null })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Why this match?" }));
+
+    expect(screen.queryByText("Level fit")).not.toBeInTheDocument();
   });
 });
