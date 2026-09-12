@@ -90,4 +90,40 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
 
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
+
+  it("shows a level-filter-specific empty state (not the generic source-selection one) when every source-visible job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
+    // Same regression as ResultsList.test.tsx's identical case: with every
+    // source-visible job overqualified and the checkbox checked,
+    // `visible.length` is 0, but the old code blamed source selection
+    // ("No jobs match the current source selection.") when the level
+    // filter -- not source selection -- is what hid them.
+    const ALL_OVERQUALIFIED: GetResumeResultsResponse = {
+      ...DATA,
+      results: DATA.results.map((r) => ({ ...r, levelFit: "overqualified" as const })),
+    };
+
+    render(
+      <GroupedResultsList
+        data={ALL_OVERQUALIFIED}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+
+    expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+      ),
+    ).toBeInTheDocument();
+  });
 });

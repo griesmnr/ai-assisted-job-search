@@ -149,13 +149,55 @@ describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', 
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     // Never a silent server-side drop -- the summary line still reflects
-    // what's actually rendered.
+    // what's actually rendered, AND (fixed, ticket b182bde review F1a)
+    // correctly attributes the hide to the level filter, not to source
+    // toggles -- the count itself was always honest here, but before the
+    // fix this scenario's missing job had NO explanatory clause at all
+    // (only the "hidden by source toggles" clause existed, and it hadn't
+    // hidden anything).
     expect(
-      screen.getByText("Showing 1 of 2 scored jobs from the sources you've selected."),
+      screen.getByText(
+        "Showing 1 of 2 scored jobs from the sources you've selected. (1 above your level hidden.)",
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
 
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+  });
+
+  it("shows a level-filter-specific empty state (not the generic source-selection one) when every source-visible job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
+    // Regression for the reviewer's false-empty-state finding: if EVERY
+    // source-visible job happens to be overqualified and the checkbox is
+    // checked, `visible.length` becomes 0. The old code fired "No jobs
+    // match the current source selection." here, which is false -- the
+    // jobs DO match the source selection; the level filter hid them.
+    const ALL_OVERQUALIFIED: GetResumeResultsResponse = {
+      ...DATA,
+      results: DATA.results.map((r) => ({ ...r, levelFit: "overqualified" as const })),
+    };
+
+    render(
+      <ResultsList
+        data={ALL_OVERQUALIFIED}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+
+    expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+      ),
+    ).toBeInTheDocument();
   });
 });

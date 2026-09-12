@@ -74,6 +74,9 @@ export function GroupedResultsList({
     ? bySource.filter((r) => r.levelFit !== "overqualified")
     : bySource;
   const hiddenBySourceToggle = data.results.length - bySource.length;
+  // Ticket b182bde review (F1): see ResultsList.tsx's identical variable for
+  // the full reasoning.
+  const hiddenByLevelFilter = hideOverqualified ? overqualifiedCount : 0;
 
   const buckets = new Map<ScoredGroupKey, ScoredJobResult[]>(GROUP_ORDER.map((k) => [k, []]));
   for (const result of visible) {
@@ -84,11 +87,19 @@ export function GroupedResultsList({
     <div className="results-list">
       <p className="results-summary">
         {visible.length === 0
-          ? "No jobs match the current source selection."
+          ? // Ticket b182bde review (F1b): see ResultsList.tsx's identical
+            // branch for the full reasoning -- don't blame source selection
+            // for a hide the level filter actually did.
+            hideOverqualified && bySource.length > 0
+            ? 'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.'
+            : "No jobs match the current source selection."
           : `Showing ${visible.length} of ${data.results.length} scored jobs from the sources you've selected.` +
             (hiddenBySourceToggle > 0
               ? ` (${hiddenBySourceToggle} hidden by source toggles.)`
-              : "")}
+              : "") +
+            // Ticket b182bde review (F1a): see ResultsList.tsx's identical
+            // clause for the full reasoning.
+            (hiddenByLevelFilter > 0 ? ` (${hiddenByLevelFilter} above your level hidden.)` : "")}
       </p>
       {/* Ticket b182bde: count always shown, same pattern as the source-
           toggle hidden count above. */}

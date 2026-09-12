@@ -172,17 +172,25 @@ export type ScoredJobResult = {
   /**
    * `null` for a row scored before this ticket, or any row a caller
    * declines to judge — NEVER coerced to `"well_matched"` on read (that
-   * would fabricate a claim the model never made). Both `levelFit` and
-   * `levelFitNote` travel together: a real levelFit always comes with a
-   * real (possibly empty, for `well_matched`) note, and a `null` levelFit
-   * always comes with a `null` note.
+   * would fabricate a claim the model never made). By convention, a real
+   * `levelFit` usually comes with a `levelFitNote` (see that field's own
+   * comment for why this is convention, not a guarantee).
    */
   levelFit: LevelFit | null;
   /**
    * One plain sentence for the candidate on how level fit affects their
    * real chance of being hired here. Empty string (not null) when
-   * `levelFit` is `"well_matched"` — see `SCHEMA` in demo-match.ts. `null`
-   * exactly when `levelFit` is `null`.
+   * `levelFit` is `"well_matched"` — see `SCHEMA` in demo-match.ts.
+   *
+   * By convention, a real `levelFit` usually comes with a `levelFitNote`,
+   * but this is NOT enforced at the schema level (no DB constraint, no
+   * runtime check) — treat `levelFitNote` as independently nullable.
+   * Confirmed non-enforced by the ticket b182bde review: that ticket's own
+   * `resumes.test.ts` tiebreak-ordering fixtures seed rows with
+   * `levelFit: "overqualified"` and `levelFitNote: null`, contradicting the
+   * old "always coupled" claim this comment used to make. The app degrades
+   * gracefully either way (pill renders, no tooltip, no note block), so
+   * this is a documentation-accuracy fix, not a bug fix.
    */
   levelFitNote: string | null;
 };

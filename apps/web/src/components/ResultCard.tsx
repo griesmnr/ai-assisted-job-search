@@ -155,10 +155,17 @@ export function ResultCard({
             `null`/`"well_matched"` render nothing (an unjudged legacy row
             must never read as either qualified state). `aria-label` carries
             the same note text as `title`, which isn't reliably exposed to
-            assistive tech. */}
+            assistive tech.
+            Ticket b182bde review (F3): a bare `<span>` has the ARIA
+            `generic` role, on which `aria-label` isn't guaranteed to reach
+            assistive tech. `role="note"` permits an accessible name and
+            fits this element semantically (supplementary info alongside
+            the job), without needing a visually-hidden-text utility class
+            this stylesheet doesn't otherwise have. */}
         {result.levelFit === "overqualified" && (
           <span
             className="result-level-fit result-level-fit-over"
+            role="note"
             title={result.levelFitNote ?? undefined}
             aria-label={
               result.levelFitNote ? `Above this level: ${result.levelFitNote}` : "Above this level"
@@ -170,6 +177,7 @@ export function ResultCard({
         {result.levelFit === "underqualified" && (
           <span
             className="result-level-fit result-level-fit-under"
+            role="note"
             title={result.levelFitNote ?? undefined}
             aria-label={
               result.levelFitNote ? `Below this level: ${result.levelFitNote}` : "Below this level"
