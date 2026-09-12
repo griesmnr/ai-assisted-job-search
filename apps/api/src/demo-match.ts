@@ -80,8 +80,12 @@ export const MODEL = "claude-sonnet-5";
  * actually reached, but it's the real, code-enforced upper bound on output
  * tokens per call and is reused below as the worst-case input to
  * `estimateScoringCost`'s bootstrap path.
+ *
+ * Exported (ticket d8746eb) so `scripts/validate-level-fit.ts` can send the
+ * SAME `max_tokens` demo-match.ts actually sends for both of its arms,
+ * rather than a second, driftable literal.
  */
-const MAX_OUTPUT_TOKENS = 2000;
+export const MAX_OUTPUT_TOKENS = 2000;
 
 /**
  * Typical (not worst-case) scoring-response size, grounded in `SCHEMA`
@@ -182,7 +186,15 @@ const TYPICAL_OUTPUT_CHARS_PER_JOB = 1450;
  */
 export const DEFAULT_SCORE_THRESHOLD = 200;
 
-const SCHEMA = {
+/**
+ * Exported (ticket d8746eb) so `scripts/validate-level-fit.ts` can import
+ * the LIVE, shipped schema directly instead of re-typing it — the whole
+ * point of that script's "arm B" is that it can never drift from what this
+ * file actually ships, which only holds if it imports this constant rather
+ * than copying it. Was a private `const` before this ticket; nothing else
+ * about it changed.
+ */
+export const SCHEMA = {
   type: "object",
   properties: {
     matchScore: {
@@ -287,7 +299,14 @@ export type ScoreJobFn = (job: NormalizedJob, resumeText: string) => Promise<Sco
  * request; this project uses exactly one) with no functional difference,
  * since neither ever varies independently of the other.
  */
-const SCORING_PREAMBLE = [
+/**
+ * Exported (ticket d8746eb) for the same reason `SCHEMA` above now is —
+ * `scripts/validate-level-fit.ts`'s "arm B" imports this live preamble
+ * directly rather than copying it, so it can never silently drift from
+ * what a real scoring call actually sends. Was a private `const` before
+ * this ticket.
+ */
+export const SCORING_PREAMBLE = [
   "Score how well this candidate matches this job posting.",
   "Be honest and calibrated — most candidates are not a 90.",
   "",
@@ -445,8 +464,12 @@ export function makeClaudeScorer(anthropic: Anthropic): ScoreJobFn {
  * model-ab.ts exactly), so every estimate below is conservative on top of
  * the bootstrap path already assuming worst-case output — see
  * `describeCostEstimate`.
+ *
+ * Exported (ticket d8746eb) so `scripts/validate-level-fit.ts` can price its
+ * own pre-run cost estimate off the SAME real rate this file uses, instead
+ * of re-typing `{ in: 3, out: 15 }` as a second, driftable literal.
  */
-const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
+export const SONNET_PRICE_PER_MILLION_TOKENS = { in: 3, out: 15 };
 
 /**
  * Prompt-cache pricing multipliers (ticket aff284b), applied to the
