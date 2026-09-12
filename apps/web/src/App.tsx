@@ -371,6 +371,11 @@ function App() {
                 remoteOk={criteriaForm.remoteOk}
                 anyLocationOk={criteriaForm.anyLocationOk}
                 commitmentIn={criteriaForm.commitmentIn}
+                // Ticket 09b8e4d: SearchCriteriaForm stays "dumb" about
+                // source IDs (see its own comment) -- this is the one place
+                // that knows `"usajobs"` is a source ID, same as the
+                // `SOURCES` fixtures already do in this file's tests.
+                showFederalTitleSuggestions={selectedSourceIds.has("usajobs")}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
               />
