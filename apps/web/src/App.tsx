@@ -142,6 +142,19 @@ function App() {
 
   function handleInvalidEstimateAttempt() {
     locationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Ticket 371713d, opus review F4: scrolling alone leaves DOM focus on
+    // the "Estimate search cost" button itself, which sits AFTER this
+    // section in DOM order -- a keyboard user tabbing onward from there
+    // moves further away from the field that needs fixing, and a screen
+    // reader user gets no re-announcement at all on a blocked attempt.
+    // Moving real focus onto the location text input fixes both: Tab now
+    // continues naturally from the location section, and most screen
+    // readers announce the newly-focused input (including its
+    // `aria-invalid`/label) on focus change. `locationSectionRef` already
+    // wraps exactly one `<input>` (the commute-locations text field), so a
+    // plain `querySelector` is simpler than adding a second, single-purpose
+    // ref just for this.
+    locationSectionRef.current?.querySelector("input")?.focus();
   }
 
   const { state: resultsState, refresh } = useResults(resumeId);

@@ -158,10 +158,21 @@ section {
    same condition as the existing `.search-criteria-location-warning` text
    below -- this is an ADDITIONAL visual cue, not a replacement, so the text
    warning stays for anyone who does read it / for screen readers. */
+/* Opus review F3/F7: this used to set `outline` directly, which overrides
+   the browser's native, `outline`-based focus ring on the SAME element
+   regardless of specificity -- since this file has zero `:focus`/
+   `:focus-visible` rules of its own, that left a keyboard user with NO
+   visible focus indicator at all while tabbed onto an invalid, red input
+   (a real WCAG 2.4.7 regression). `box-shadow` gives the same strong red
+   ring without touching `outline`, so the native focus ring still renders
+   on top of it. Deliberately NOT adding/widening a `border` here either
+   (F7): `.search-criteria-field input` sets no `border` of its own, so a
+   real border would only appear in the invalid state and change the
+   input's rendered box size going from valid <-> invalid -- `box-shadow`
+   doesn't participate in layout at all, so there is no size delta either
+   way. */
 .search-criteria-input-invalid {
-  border: 2px solid #c0392b;
-  outline: 2px solid #c0392b;
-  outline-offset: 1px;
+  box-shadow: 0 0 0 2px #c0392b;
   border-radius: 3px;
 }
 
@@ -252,6 +263,18 @@ section {
 .federal-title-suggestion:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+/* Opus review F2: ticket 371713d moved the location-invalid gate off the
+   real `disabled` attribute (SearchFlow.tsx's own comment on why) and onto
+   `aria-disabled` plus a click-time check, so the button's previous
+   "looks unavailable" appearance -- entirely the browser's native
+   `disabled` greying -- no longer applies to that case. There was no
+   `button:disabled` rule to have been relying on instead; this restores an
+   equivalent visual cue for the `aria-disabled` case specifically. */
+button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .estimating {

@@ -520,7 +520,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
     Element.prototype.scrollIntoView = scrollIntoViewMock;
   });
 
-  it("clicking 'Estimate search cost' with no location signal scrolls the location section into view and does NOT call the real estimate", async () => {
+  it("clicking 'Estimate search cost' with no location signal scrolls the location section (not some unrelated element) into view, moves focus to the location input, and does NOT call the real estimate", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
     getResults.mockResolvedValue(RESULTS);
@@ -530,6 +530,20 @@ describe("App — attempting to estimate without a location scrolls back to it (
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    // Opus review F1 (blocking): asserting the CALL alone doesn't prove
+    // WHICH element scrolled -- the reviewer proved this by moving the ref
+    // to an unrelated element and confirming the old assertion still
+    // passed. `mock.contexts[0]` is the actual `this` the spy was invoked
+    // on (i.e. the real element `scrollIntoView` was called against, since
+    // it's stubbed on `Element.prototype`), so asserting on it is a real
+    // check of which element scrolled.
+    expect(scrollIntoViewMock.mock.contexts[0]).toHaveClass("search-criteria-location-section");
+    // Opus review F4: scrolling alone leaves focus on the button itself
+    // (which is AFTER the location section in DOM order); moving real DOM
+    // focus onto the location input as well gives a keyboard user a
+    // sensible next Tab target and gives a screen reader user a
+    // re-announcement of the invalid, labeled field.
+    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveFocus();
     expect(estimateSearch).not.toHaveBeenCalled();
   });
 

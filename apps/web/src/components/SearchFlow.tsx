@@ -511,7 +511,13 @@ export function SearchFlow({
               void handleEstimate();
             }}
             disabled={sourceIds.length === 0}
-            aria-disabled={disableEstimate}
+            // Opus review F5: `aria-disabled` must reflect EVERY reason this
+            // click is blocked, not just the location one -- otherwise zero
+            // sources selected + a valid location produced a real
+            // `disabled={true}` (from the sources check) alongside a
+            // self-contradictory `aria-disabled="false"` on the same
+            // button.
+            aria-disabled={sourceIds.length === 0 || disableEstimate}
           >
             Estimate search cost
           </button>

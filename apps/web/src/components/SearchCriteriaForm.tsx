@@ -277,8 +277,8 @@ export function SearchCriteriaForm({
           <p className="search-criteria-location-warning" role="alert">
             No location restriction is set. Leaving this blank means every real posting could match
             regardless of where it is — check "Any location" above if that's genuinely what you
-            want, or add a commute location / remote above. Estimating is disabled until one of
-            these is set.
+            want, or add a commute location / remote above. Estimating won't work until one of these
+            is set.
           </p>
         )}
       </div>
