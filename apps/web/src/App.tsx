@@ -154,7 +154,7 @@ function App() {
     // wraps exactly one `<input>` (the commute-locations text field), so a
     // plain `querySelector` is simpler than adding a second, single-purpose
     // ref just for this.
-    locationSectionRef.current?.querySelector("input")?.focus();
+    locationSectionRef.current?.querySelector("input")?.focus({ preventScroll: true });
   }
 
   const { state: resultsState, refresh } = useResults(resumeId);
