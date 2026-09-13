@@ -349,6 +349,18 @@ button[aria-disabled="true"] {
   margin: 0.35rem 0;
 }
 
+/* Ticket 1ea4bf3: quick-jump links to each "Already Scored Jobs" group.
+   Same flex/gap convention as `.hide-overqualified-toggle` above -- without
+   it the anchors render as one contiguous run of text, looking like a
+   single hyperlink. `flex-wrap` so a long list of group links doesn't
+   overflow a narrow viewport. */
+.results-group-quicklinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin: 0.5rem 0;
+}
+
 /* Ticket ffbf9fb: user-configurable match-score floor slider. */
 .score-floor-control {
   display: flex;
