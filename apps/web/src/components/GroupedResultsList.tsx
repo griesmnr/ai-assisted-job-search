@@ -141,10 +141,20 @@ export function GroupedResultsList({
       )}
       {/* Quick links (dogfooding feedback, 2026-09-08 -- Nicole's own
           suggestion when she punted on the exact group order: "I think
-          there should be quick links at the top of the page"). Only
-          non-empty groups get a link -- jumping to an empty group's
-          heading would be pointless. Plain in-page anchors (`#group-id`),
-          no JS needed. */}
+          there should be quick links at the top of the page"). Plain
+          in-page anchors (`#group-id`), no JS needed.
+
+          Ticket 1ea4bf3: membership and counts here come from LIVE status
+          (`liveBuckets`), while which sections actually exist in the DOM
+          below comes from the FROZEN `groupFor` (`buckets`) -- so a link
+          can point at `#results-group-X` while no such section is
+          currently rendered (a status change made a group non-empty live,
+          but the card hasn't moved sections yet), and conversely a
+          rendered section can have no link pointing at it (the reverse
+          case). This is a known, accepted product tradeoff, not a bug --
+          reopening the tab reconciles both. Flagged to Nicole rather than
+          silently choosing a different design (e.g. suppressing a link
+          whose section doesn't exist yet) when this shipped. */}
       {GROUP_ORDER.some((key) => liveBuckets.get(key)!.length > 0) && (
         <nav className="results-group-quicklinks" aria-label="Jump to group">
           {GROUP_ORDER.filter((key) => liveBuckets.get(key)!.length > 0).map((key) => (

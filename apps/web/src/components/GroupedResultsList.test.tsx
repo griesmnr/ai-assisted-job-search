@@ -230,7 +230,14 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     expect(screen.queryByRole("heading", { name: "Applied" })).not.toBeInTheDocument();
   });
 
-  it("a group gains a live quick-link when it goes from empty to non-empty, and loses it when it goes from non-empty to empty", () => {
+  it("a group gains a live quick-link when it goes from empty to non-empty, and loses it when it goes from non-empty to empty -- under a FROZEN groupFor, so this actually proves liveness rather than just re-deriving from live data", () => {
+    // `groupFor` frozen to "saved" for this one job for the whole test,
+    // exactly like the test above -- if this used an unfrozen groupFor
+    // (`(r) => groupKeyForStatus(r.status)`), it would pass even with the
+    // bug this ticket exists to fix (liveBuckets accidentally reading the
+    // frozen groupFor instead of live status), since both would agree.
+    const frozenGroupFor = () => "saved" as const;
+
     // Only "saved" is non-empty at first -- no other group (including
     // "dismissed") should have a quick-link yet.
     const ONLY_SAVED: GetResumeResultsResponse = {
@@ -243,7 +250,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         data={ONLY_SAVED}
         selectedSourceIds={new Set(["usajobs"])}
         resumeId="resume-1"
-        groupFor={(r) => groupKeyForStatus(r.status)}
+        groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -252,11 +259,11 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     expect(screen.getByText("Saved (1)")).toBeInTheDocument();
     expect(screen.queryByText("Dismissed (1)")).not.toBeInTheDocument();
 
-    // Status flips to "dismissed": "saved" should lose its link (now
-    // empty), "dismissed" should gain one (now non-empty) -- both live.
-    // Card title text is unrelated to the job's title -- use a distinct
-    // title here so it can't be confused with the "Saved (1)"/"Dismissed
-    // (1)" quick-link text below.
+    // Status flips to "dismissed": `frozenGroupFor` still says "saved" for
+    // card placement, but the LIVE quick-links must react to the new
+    // status -- "saved" should lose its link (now empty live), "dismissed"
+    // should gain one (now non-empty live) -- both live, despite groupFor
+    // never changing.
     const NOW_DISMISSED: GetResumeResultsResponse = {
       resumeId: "resume-1",
       results: [job({ jobId: "job-saved", title: "A Job Title", status: "dismissed" })],
@@ -267,7 +274,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         data={NOW_DISMISSED}
         selectedSourceIds={new Set(["usajobs"])}
         resumeId="resume-1"
-        groupFor={(r) => groupKeyForStatus(r.status)}
+        groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -275,5 +282,33 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
 
     expect(screen.queryByText("Saved (1)")).not.toBeInTheDocument();
     expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
+  });
+
+  it("live quick-link counts respect source toggles -- a job hidden by a deselected source is not counted", () => {
+    const TWO_SOURCES: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [
+        job({ jobId: "job-a", title: "Job A", status: "saved", dataSource: "usajobs" }),
+        job({ jobId: "job-b", title: "Job B", status: "saved", dataSource: "greenhouse" }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={TWO_SOURCES}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    // Only job-a's source is selected -- the live count must reflect just
+    // the source-filtered set, not both jobs. If the live computation read
+    // `data.results` directly instead of the already-source-filtered
+    // `visible` array, this would incorrectly show "Saved (2)".
+    expect(screen.getByText("Saved (1)")).toBeInTheDocument();
+    expect(screen.queryByText("Saved (2)")).not.toBeInTheDocument();
   });
 });
