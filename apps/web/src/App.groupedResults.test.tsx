@@ -265,3 +265,77 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     });
   });
 });
+
+describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
+  const GROUPED_RESULTS: GetResumeResultsResponse = {
+    resumeId: "resume-1",
+    results: [
+      job({ jobId: "job-saved", title: "Saved Job", status: "saved" }),
+      job({ jobId: "job-dismissed", title: "Dismissed Job", status: "dismissed" }),
+    ],
+  };
+
+  // CRITICAL REGRESSION TEST: this is the scenario the ticket calls out as
+  // easy to get wrong -- someone "fixing" the frozen quick-link counts by
+  // un-freezing `scoredGroupFor` entirely, which would silently undo ticket
+  // bec2f98's card-placement freeze. This test follows the same shape as
+  // bec2f98's own "does NOT move it to a new group" test above, but adds
+  // assertions on the quick-link counts for BOTH the old and new groups,
+  // checked in the SAME render as the frozen-placement assertion -- so a
+  // regression in either direction (placement moving, or counts staying
+  // stale) fails this one test.
+  it("quick-link counts update live off a status change while the card's SECTION PLACEMENT stays frozen at tab-open (bec2f98)", async () => {
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    getResults.mockResolvedValueOnce(GROUPED_RESULTS);
+    setJobStatus.mockResolvedValue({
+      jobId: "job-saved",
+      status: "resume_optimized",
+      updatedAt: new Date().toISOString(),
+    });
+
+    await submitResume();
+    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    await screen.findByRole("heading", { name: "Saved" });
+
+    // Quick-links reflect the initial state: one Saved, one Dismissed, no
+    // "Resume Optimized" link yet (that group is empty).
+    expect(screen.getByText("Saved (1)")).toBeInTheDocument();
+    expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
+    expect(screen.queryByText(/^Resume Optimized/)).not.toBeInTheDocument();
+
+    // Refetch after the status write returns job-saved with its status
+    // flipped to resume_optimized -- same as bec2f98's own test above.
+    const afterStatusChange: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: GROUPED_RESULTS.results.map((r) =>
+        r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
+      ),
+    };
+    getResults.mockResolvedValueOnce(afterStatusChange);
+
+    const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
+    fireEvent.click(within(savedSection).getByRole("button", { name: "Optimize Resume" }));
+
+    // The card's own badge updates in place...
+    await waitFor(() =>
+      expect(within(savedSection).getByText("Resume optimized")).toBeInTheDocument(),
+    );
+
+    // LIVE quick-link counts have already updated, in this same render,
+    // without leaving the tab: "Saved" lost its job, "Resume Optimized"
+    // gained one, "Dismissed" is unaffected.
+    await waitFor(() => expect(screen.getByText("Resume Optimized (1)")).toBeInTheDocument());
+    expect(screen.queryByText("Saved (1)")).not.toBeInTheDocument();
+    expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
+
+    // FROZEN card placement, checked in this SAME render as the live counts
+    // above: the card is still rendered under "Saved" -- it has NOT moved
+    // to a new "Resume Optimized" section. This is ticket bec2f98's
+    // guarantee, and it must hold even though the quick-link counts above
+    // just changed.
+    expect(within(savedSection).getByText("Saved Job")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Resume Optimized" })).not.toBeInTheDocument();
+  });
+});

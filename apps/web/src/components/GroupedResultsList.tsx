@@ -47,6 +47,11 @@ export function groupKeyForStatus(status: UserJobStatus | null): ScoredGroupKey 
  * Real UX problem Nicole caught herself, live: "if somebody clicks
  * optimize resume on a saved job, it's going to suddenly disappear...
  * from that current state."
+ *
+ * Ticket 1ea4bf3: the quick-links nav above the sections is the one
+ * exception -- its counts and which groups get a link are computed LIVE
+ * (`groupKeyForStatus(result.status)` applied directly), not from
+ * `groupFor`. See `liveBuckets` below.
  */
 export function GroupedResultsList({
   data,
@@ -81,6 +86,23 @@ export function GroupedResultsList({
   const buckets = new Map<ScoredGroupKey, ScoredJobResult[]>(GROUP_ORDER.map((k) => [k, []]));
   for (const result of visible) {
     buckets.get(groupFor(result))!.push(result);
+  }
+
+  // Ticket 1ea4bf3: the quick-links nav needs LIVE counts (Nicole,
+  // dogfooding: "they need to update because I just updated one and the
+  // shortcut links didn't get updated"), but card placement above must stay
+  // frozen per bec2f98 -- so this is a SECOND, separate bucket computation
+  // over the same `visible` array, keyed by `groupKeyForStatus(result.status)`
+  // directly instead of the caller's (possibly snapshot-frozen) `groupFor`.
+  // Do NOT merge this with `buckets` above -- that's exactly the trap the
+  // ticket calls out ("easy to accidentally fix by just un-freezing
+  // `groupFor` entirely, which would silently undo bec2f98"). The known,
+  // accepted consequence (see ticket 1ea4bf3 Scope) is that a quick-link's
+  // live count can then differ from the number of cards actually visible
+  // under its (frozen) target section for the rest of the tab-open session.
+  const liveBuckets = new Map<ScoredGroupKey, ScoredJobResult[]>(GROUP_ORDER.map((k) => [k, []]));
+  for (const result of visible) {
+    liveBuckets.get(groupKeyForStatus(result.status))!.push(result);
   }
 
   return (
@@ -119,15 +141,25 @@ export function GroupedResultsList({
       )}
       {/* Quick links (dogfooding feedback, 2026-09-08 -- Nicole's own
           suggestion when she punted on the exact group order: "I think
-          there should be quick links at the top of the page"). Only
-          non-empty groups get a link -- jumping to an empty group's
-          heading would be pointless. Plain in-page anchors (`#group-id`),
-          no JS needed. */}
-      {GROUP_ORDER.some((key) => buckets.get(key)!.length > 0) && (
+          there should be quick links at the top of the page"). Plain
+          in-page anchors (`#group-id`), no JS needed.
+
+          Ticket 1ea4bf3: membership and counts here come from LIVE status
+          (`liveBuckets`), while which sections actually exist in the DOM
+          below comes from the FROZEN `groupFor` (`buckets`) -- so a link
+          can point at `#results-group-X` while no such section is
+          currently rendered (a status change made a group non-empty live,
+          but the card hasn't moved sections yet), and conversely a
+          rendered section can have no link pointing at it (the reverse
+          case). This is a known, accepted product tradeoff, not a bug --
+          reopening the tab reconciles both. Flagged to Nicole rather than
+          silently choosing a different design (e.g. suppressing a link
+          whose section doesn't exist yet) when this shipped. */}
+      {GROUP_ORDER.some((key) => liveBuckets.get(key)!.length > 0) && (
         <nav className="results-group-quicklinks" aria-label="Jump to group">
-          {GROUP_ORDER.filter((key) => buckets.get(key)!.length > 0).map((key) => (
+          {GROUP_ORDER.filter((key) => liveBuckets.get(key)!.length > 0).map((key) => (
             <a key={key} href={`#results-group-${key}`}>
-              {GROUP_LABELS[key]} ({buckets.get(key)!.length})
+              {GROUP_LABELS[key]} ({liveBuckets.get(key)!.length})
             </a>
           ))}
         </nav>
