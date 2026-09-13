@@ -349,6 +349,21 @@ button[aria-disabled="true"] {
   margin: 0.35rem 0;
 }
 
+/* Ticket ffbf9fb: user-configurable match-score floor slider. */
+.score-floor-control {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0.35rem 0;
+}
+
+.score-floor-value {
+  font-weight: 600;
+  min-width: 3ch;
+}
+
 .result-cards {
   list-style: none;
   padding: 0;
