@@ -28,6 +28,7 @@ function job(
     status: null,
     levelFit: null,
     levelFitNote: null,
+    isContractOrTemp: false,
     ...overrides,
   };
 }
@@ -123,6 +124,162 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
     expect(
       screen.getByText(
         'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+// Ticket 8f5a79c: same guarantees as ResultsList's identical checkbox (see
+// that file's tests) -- exercised here too since GroupedResultsList
+// duplicates the filtering logic rather than sharing it with ResultsList.
+describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', () => {
+  const WITH_CONTRACT: GetResumeResultsResponse = {
+    resumeId: "resume-1",
+    results: [
+      job({ jobId: "job-1", title: "Senior Backend Engineer" }),
+      job({
+        jobId: "job-2",
+        title: "Platform Engineer",
+        levelFit: "overqualified",
+        levelFitNote: "This posting is written below your level.",
+      }),
+      job({ jobId: "job-3", title: "Software Engineer (Contract)", isContractOrTemp: true }),
+    ],
+  };
+
+  it("defaults unchecked, shows every job (including the contract/temp one), and states the live contract/temp count", () => {
+    render(
+      <GroupedResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText("Hide contract/temp roles (1)")).toBeInTheDocument();
+    expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
+  });
+
+  it("checking the box hides only the contract/temp job, client-side, and unchecking restores it", () => {
+    render(
+      <GroupedResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
+  });
+
+  it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
+    const ALL_CONTRACT: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [
+        job({ jobId: "job-a", title: "Contract Software Engineer", isContractOrTemp: true }),
+        job({ jobId: "job-b", title: "Software Engineer, Temp", isContractOrTemp: true }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={ALL_CONTRACT}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.queryByText("Contract Software Engineer")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("composes correctly with the level filter active simultaneously, without double-counting a job hidden by more than one filter", () => {
+    render(
+      <GroupedResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 3 scored jobs from the sources you've selected. (1 above your level hidden.) (1 contract/temp hidden.)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("a job that is BOTH overqualified AND contract/temp is claimed by the level filter (which runs first) and is not double-counted in the contract-filter's own clause", () => {
+    const DATA_BOTH: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [
+        job({ jobId: "job-1", title: "Senior Backend Engineer" }),
+        job({
+          jobId: "job-2",
+          title: "Software Engineer (Contract)",
+          levelFit: "overqualified",
+          levelFitNote: "Overqualified for this contract role.",
+          isContractOrTemp: true,
+        }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={DATA_BOTH}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 2 scored jobs from the sources you've selected. (1 above your level hidden.)",
       ),
     ).toBeInTheDocument();
   });

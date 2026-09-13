@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { GetResumeResultsResponse } from "@app/shared";
+import type { GetResumeResultsResponse, ScoredJobResult } from "@app/shared";
 import { ResultsList } from "./ResultsList";
 
 // See SourceToggles.test.tsx's comment on this same line: this repo's root
@@ -30,6 +30,7 @@ const DATA: GetResumeResultsResponse = {
       status: null,
       levelFit: null,
       levelFitNote: null,
+      isContractOrTemp: false,
     },
     {
       jobId: "job-2",
@@ -47,6 +48,7 @@ const DATA: GetResumeResultsResponse = {
       status: "saved",
       levelFit: "overqualified",
       levelFitNote: "This posting is written below your level, which may hurt at screening.",
+      isContractOrTemp: false,
     },
   ],
 };
@@ -197,6 +199,179 @@ describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', 
     expect(
       screen.getByText(
         'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+// Ticket 8f5a79c: opt-in, DEFAULT-OFF client-side filter, same pattern as
+// "Hide roles above my level" (ticket b182bde) -- contract/temp postings are
+// shown by default (Nicole's explicit "just another job to apply for"
+// framing), this checkbox is for hiding them, never an opt-in gate.
+describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', () => {
+  // Of DATA's two jobs, neither is contract/temp -- a third job is added
+  // here so both directions (has the tag / doesn't) are exercised, and so
+  // this third job can ALSO be marked overqualified in some tests below to
+  // exercise the three-filter interaction the ticket's own acceptance
+  // criteria calls out.
+  const CONTRACT_JOB: ScoredJobResult = {
+    jobId: "job-3",
+    externalId: "ext-3",
+    title: "Software Engineer (Contract)",
+    company: "Acme",
+    dataSource: "greenhouse",
+    location: "Seattle, WA",
+    locationType: "hybrid",
+    applyUrl: "https://example.com/job-3",
+    matchScore: 85,
+    rationale: "Good fit for a contract role.",
+    strengths: [],
+    gaps: [],
+    status: null,
+    levelFit: null,
+    levelFitNote: null,
+    isContractOrTemp: true,
+  };
+
+  const WITH_CONTRACT: GetResumeResultsResponse = {
+    ...DATA,
+    results: [...DATA.results, CONTRACT_JOB],
+  };
+
+  it("defaults unchecked, shows every job (including the contract/temp one), and states the live contract/temp count", () => {
+    render(
+      <ResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText("Hide contract/temp roles (1)")).toBeInTheDocument();
+    expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
+  });
+
+  it("checking the box hides only the contract/temp job, client-side, and unchecking restores it", () => {
+    render(
+      <ResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 2 of 3 scored jobs from the sources you've selected. (1 contract/temp hidden.)",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
+  });
+
+  it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
+    const ALL_CONTRACT: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [CONTRACT_JOB, { ...CONTRACT_JOB, jobId: "job-4", externalId: "ext-4" }],
+    };
+
+    render(
+      <ResultsList
+        data={ALL_CONTRACT}
+        selectedSourceIds={new Set(["greenhouse"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("composes correctly with source toggles AND the level filter all active simultaneously, without double-counting a job hidden by more than one filter", () => {
+    // job-2 (Platform Engineer) is overqualified; the contract job is
+    // separately contract/temp -- both hide-toggles checked at once must
+    // list BOTH clauses, with counts that sum exactly to what's actually
+    // hidden (no double count, no contradiction).
+    render(
+      <ResultsList
+        data={WITH_CONTRACT}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 3 scored jobs from the sources you've selected. (1 above your level hidden.) (1 contract/temp hidden.)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("a job that is BOTH overqualified AND contract/temp is claimed by the level filter (which runs first) and is not double-counted in the contract-filter's own clause -- this is the edge case that would silently mis-add if the two counts weren't telescoped off each other", () => {
+    const OVERQUALIFIED_AND_CONTRACT = {
+      ...CONTRACT_JOB,
+      levelFit: "overqualified" as const,
+      levelFitNote: "Overqualified for this contract role.",
+    };
+    const DATA_BOTH: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [DATA.results[0]!, OVERQUALIFIED_AND_CONTRACT],
+    };
+
+    render(
+      <ResultsList
+        data={DATA_BOTH}
+        selectedSourceIds={new Set(["greenhouse"])}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    // The one overqualified+contract job is hidden by the level filter
+    // (which runs first) -- the contract filter's own marginal removal is
+    // 0, so its clause must NOT also appear (that would double-count the
+    // same job as if two jobs were hidden when only one was).
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 2 scored jobs from the sources you've selected. (1 above your level hidden.)",
       ),
     ).toBeInTheDocument();
   });

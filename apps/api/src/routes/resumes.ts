@@ -43,6 +43,7 @@ import type { FastifyInstance } from "fastify";
 import { getOrCreateResumeId } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
+import { looksLikeContractOrTemp } from "../sources/swe-filter.js";
 
 /**
  * Generous ceiling for a pasted resume — well above any real resume, well
@@ -261,6 +262,12 @@ export function registerResumeRoutes(
         dataSource: jobsTable.dataSource,
         location: jobsTable.location,
         locationType: jobsTable.locationType,
+        // Ticket 8f5a79c: read only to compute `isContractOrTemp` below —
+        // never sent over the wire itself (see ScoredJobResult's doc
+        // comment on that field for why: it's fully derivable, so exposing
+        // the raw enum too would just be a second, redundant way to ask the
+        // same question).
+        commitment: jobsTable.commitment,
         applyUrl: jobsTable.linkToApply,
         matchScore: jobMatches.matchScore,
         rationale: jobMatches.rationale,
@@ -302,19 +309,28 @@ export function registerResumeRoutes(
 
     const response: GetResumeResultsResponse = {
       resumeId,
-      results: rows.map((r) => ({
-        ...r,
-        strengths: r.strengths ?? [],
-        gaps: r.gaps ?? [],
-        status: r.status ?? null,
-        // levelFit/levelFitNote are NOT coerced (ticket b182bde) -- unlike
-        // strengths/gaps, `null` here is a real, distinct state ("this row
-        // was never judged for level fit"), not "the model returned
-        // nothing" -- defaulting it to a value (e.g. "well_matched") would
-        // fabricate a claim nobody made. drizzle already returns `null` for
-        // an unset column, so no `?? null` is needed here; this comment
-        // exists so a future edit doesn't "fix" that into a default.
-      })),
+      results: rows.map((r) => {
+        // `commitment` is destructured OUT here rather than spread into the
+        // response (ticket 8f5a79c): it's read from the query purely to
+        // compute `isContractOrTemp` below and was never part of the
+        // `ScoredJobResult` wire contract -- see that field's doc comment
+        // in packages/shared for why the raw enum itself isn't exposed too.
+        const { commitment, ...rest } = r;
+        return {
+          ...rest,
+          strengths: r.strengths ?? [],
+          gaps: r.gaps ?? [],
+          status: r.status ?? null,
+          // levelFit/levelFitNote are NOT coerced (ticket b182bde) -- unlike
+          // strengths/gaps, `null` here is a real, distinct state ("this row
+          // was never judged for level fit"), not "the model returned
+          // nothing" -- defaulting it to a value (e.g. "well_matched") would
+          // fabricate a claim nobody made. drizzle already returns `null` for
+          // an unset column, so no `?? null` is needed here; this comment
+          // exists so a future edit doesn't "fix" that into a default.
+          isContractOrTemp: looksLikeContractOrTemp({ title: r.title, commitment }),
+        };
+      }),
       hiddenBelowFloor,
     };
     return reply.send(response);

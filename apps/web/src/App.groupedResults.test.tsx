@@ -70,6 +70,7 @@ function job(
     status: null,
     levelFit: null,
     levelFitNote: null,
+    isContractOrTemp: false,
     ...overrides,
   };
 }
