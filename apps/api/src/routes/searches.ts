@@ -146,10 +146,27 @@ export const __testing = { searchRuns, MAX_TRACKED_SEARCHES, pruneSearchRuns };
  * means "no title restriction, search every title" (ticket 39b4a48's
  * explicit no-silent-default rule) — sending a keyword in that case would
  * silently narrow a search the caller asked to leave unrestricted.
+ *
+ * Ticket c419a12, N7: chips are trimmed and blank ones dropped BEFORE that
+ * emptiness check, not after. `criteria.titleInclude` reaching here as
+ * `[""]` (or `["  "]`) used to survive the `.length > 0` check (one
+ * element, non-empty array) and get sent straight through as
+ * `keywords: [""]` — which `UsajobsSource#search` (usajobs.ts) treats as
+ * one real phrase, spreads into `{ ...criteria, keyword: "" }`, and
+ * `#fetchPage`'s `if (criteria.keyword)` then treats as falsy, silently
+ * falling back to a full unkeyworded fetch — the exact pre-ticket-d1fc9e2
+ * pathology (a keywordless, pagination-capped sample of the whole board)
+ * this criteria-plumbing exists to prevent. Not reachable from the current
+ * UI (chips are add-button-gated on non-empty trimmed text), so this was
+ * never a live regression — closed anyway since the fix is one line and
+ * the failure mode is silent by nature.
  */
 function buildFetchCriteria(criteria: SearchCriteria | undefined): SourceFetchCriteria {
-  if (criteria?.titleInclude && criteria.titleInclude.length > 0) {
-    return { keywords: criteria.titleInclude };
+  const titlePhrases = criteria?.titleInclude
+    ?.map((title) => title.trim())
+    .filter((title) => title.length > 0);
+  if (titlePhrases && titlePhrases.length > 0) {
+    return { keywords: titlePhrases };
   }
   return {};
 }

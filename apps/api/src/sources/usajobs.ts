@@ -158,17 +158,63 @@ export class UsajobsSource implements JobSource {
    * result for any caller inspecting this adapter's own numbers, ahead
    * of whatever ingestion does with them later.
    *
-   * If any sub-search throws, the whole call throws -- the same contract
-   * `#searchOne`/`search()` already had for a single keyword. Real,
-   * disclosed gap (opus review F4, not fixed here -- filed as ticket
-   * c419a12 for real per-phrase isolation matching SmartRecruiters'/
-   * Greenhouse's own precedent, tickets b723fb9/491cd88): unlike those
-   * adapters, one phrase's transient failure currently discards every
-   * OTHER phrase's already-completed results. `CompositeSource`
-   * (composite.ts) still isolates USAJOBS's total failure from the
-   * other configured sources, so this degrades USAJOBS to "failed" for
-   * this run rather than failing the whole search -- the blast radius is
-   * contained, just not as gracefully as it could be.
+   * Ticket c419a12: per-phrase failure isolation, matching Greenhouse's own
+   * isolate-some/abort-others split (greenhouse.ts's `#search`) rather than
+   * SmartRecruiters' catch-everything shape -- the real acceptance
+   * criterion (see the ticket body, `git-bug bug show c419a12`) is
+   * narrower than "return something useful no matter what fails": "one
+   * phrase's TRANSIENT failure no longer discards other phrases' completed
+   * results." Note "transient" -- a phrase's `TransientSourceError`,
+   * `ForbiddenError` (transient WAF edge behavior, see that type's doc
+   * comment), or `RateLimitedError` says nothing about whether some OTHER
+   * phrase's independent request is broken too, so isolating those three
+   * as a `SkippedRecord` naming the failed phrase and moving on is the
+   * right degrade. `AuthFailedError`, `MalformedResponseError`, and any
+   * unmapped/unexpected kind (e.g. `UnexpectedStatusError`) are different:
+   * they mean either our own credentials/request are broken or USAJOBS
+   * sent back something we don't know how to read at all, in a way that
+   * says nothing good about the OTHER phrases either (in practice, they'll
+   * fail identically, since every phrase hits the same API with the same
+   * credentials) -- for those, `#searchMultipleKeywords` sets `abortError`
+   * and lets the whole call reject once every worker has stopped, exactly
+   * like Greenhouse's `abortError` mechanism. See the isolate/abort split
+   * in the worker's catch block below for the exact boundary (opus review
+   * on this ticket's first draft, B1: an earlier version of this fix
+   * isolated EVERY error kind, including auth failures and malformed
+   * responses -- see the `successCount === 0` rethrow below for why a
+   * TOTAL outage made up entirely of isolated failures must still surface
+   * as a real error too, not as an all-empty "0 jobs found" result).
+   *
+   * Before this fix (the original d1fc9e2 regression), ANY phrase throwing
+   * discarded every OTHER phrase's already-completed results (opus review
+   * F4 on ticket d1fc9e2, confirmed live: a reviewer's own verification
+   * run hit a real transient USAJOBS socket drop mid-fetch and lost
+   * multiple already-completed phrases as a result). `CompositeSource`
+   * (composite.ts) only sets a source's `status: "error"` when the
+   * search() PROMISE REJECTS -- so with the isolate/abort split above, a
+   * genuinely fatal per-phrase failure (or a total outage across every
+   * phrase) still rejects and still reaches `CompositeSource` as a real
+   * failure, exactly as it did before per-phrase isolation existed; only a
+   * TRANSIENT failure on a strict subset of phrases now degrades USAJOBS
+   * one phrase at a time instead of discarding the whole call.
+   *
+   * Shared stop flag, mirroring Greenhouse's `rateLimitedBy` (ticket
+   * b681d18): a `RateLimitedError` on any phrase sets `rateLimitedByPhrase`,
+   * which every worker checks before claiming its NEXT phrase -- no new
+   * phrase search is started once USAJOBS has told us to back off. Scoped
+   * to rate-limiting ONLY, not every error kind, deliberately: a single
+   * phrase's `TransientSourceError` (timeout, network blip, or -- see the
+   * N5 fix below -- a socket drop mid-parse) or `ForbiddenError` (transient
+   * WAF edge behavior per that type's own doc comment) says nothing about
+   * whether the NEXT phrase's independent request will fail the same way,
+   * so aborting the rest on one of those would throw away likely-successful
+   * work for no real benefit. A 429, by contrast, is USAJOBS explicitly
+   * telling us to stop, and every phrase shares the same rate limit bucket
+   * (one API key) -- continuing to fire off new requests after that is
+   * pure waste, exactly the case Greenhouse's flag exists for. Phrases
+   * already claimed by a worker before the flag was set are allowed to
+   * finish naturally (their outcome is genuine information), matching
+   * Greenhouse's own documented semantics.
    *
    * Ticket 16c824a's rule ("[a cap] is reported explicitly, every single
    * time it binds -- never silent") applies to `MAX_KEYWORD_SEARCHES`
@@ -190,21 +236,119 @@ export class UsajobsSource implements JobSource {
           `${keywords.slice(MAX_KEYWORD_SEARCHES).join(", ")}`,
       );
     }
-    const resultsByIndex: SourceSearchResult[] = new Array(phrases.length);
+    const resultsByIndex: (SourceSearchResult | undefined)[] = new Array(phrases.length);
     let nextIndex = 0;
+    let rateLimitedByPhrase: string | undefined;
+    // Greenhouse's `abortError` (greenhouse.ts), same semantics: set only by
+    // an error kind severe enough to fail the WHOLE call (see the isolate-
+    // vs-abort split in the big doc comment above), checked by every worker
+    // before claiming its next phrase, and rethrown unconditionally after
+    // `Promise.all` below -- even if some phrases already succeeded. A
+    // genuinely fatal, non-transient failure for one phrase should not be
+    // hidden behind other phrases' partial results.
+    let abortError: unknown;
+    // The first ISOLATED (per-phrase-skip) failure seen, kept only so that
+    // if literally nothing succeeds -- every phrase either isolated-failed
+    // or was never attempted -- search() can rethrow a real error instead
+    // of silently returning an all-empty, all-skipped success (see the
+    // `successCount === 0` check below).
+    let firstIsolatedError: unknown;
+    // Real successes only -- NOT `jobs.length` after merging (a phrase that
+    // genuinely matched zero postings still counts as a success here, and
+    // must, or the total-outage check below would misfire on a healthy
+    // phrase that simply found nothing). Opus re-review (c419a12, round 2):
+    // an earlier version of this gated on `jobs.length === 0` post-merge,
+    // which is a strictly broader condition than "nothing succeeded" -- it
+    // also fires when one phrase legitimately matches zero postings while
+    // another phrase fails, incorrectly rejecting a call that had one real
+    // success.
+    let successCount = 0;
 
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (rateLimitedByPhrase !== undefined || abortError !== undefined) return;
         const i = nextIndex;
         if (i >= phrases.length) return;
+        // Claim happens synchronously, before any `await` below -- no two
+        // workers can ever claim the same index, regardless of concurrency.
         nextIndex = i + 1;
-        resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrases[i] });
+        const phrase = phrases[i]!;
+
+        try {
+          resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrase });
+          successCount++;
+        } catch (err) {
+          if (
+            err instanceof TransientSourceError ||
+            err instanceof ForbiddenError ||
+            err instanceof RateLimitedError
+          ) {
+            // Mirrors Greenhouse's tokenOutcomes formatting: a
+            // RateLimitedError carries its `retryAfterMs` as a separate
+            // field, not in `message` itself (see types.ts) -- surface it
+            // here too, since it's the one piece of information most useful
+            // to whoever reads this skip.
+            const message = err instanceof Error ? err.message : String(err);
+            const detail =
+              err instanceof RateLimitedError && err.retryAfterMs !== undefined
+                ? `${message} (retry after ${err.retryAfterMs}ms)`
+                : message;
+            resultsByIndex[i] = {
+              jobs: [],
+              skipped: [
+                {
+                  externalId: undefined,
+                  reason: `USAJOBS search for title phrase "${phrase}" failed: ${detail}`,
+                },
+              ],
+              skipRate: 1,
+            };
+            firstIsolatedError ??= err;
+            if (err instanceof RateLimitedError) {
+              rateLimitedByPhrase ??= phrase;
+            }
+            continue;
+          }
+          // AuthFailedError, MalformedResponseError, or any unmapped/
+          // unexpected error kind (e.g. an UnexpectedStatusError) --
+          // abort-worthy. Record which error wins (first one observed) and
+          // stop THIS worker; other in-flight workers stop claiming new
+          // work on their next loop iteration, matching Greenhouse's
+          // `abortError` mechanism exactly.
+          abortError ??= err;
+          return;
+        }
       }
     };
 
     await Promise.all(
       Array.from({ length: Math.min(KEYWORD_SEARCH_CONCURRENCY, phrases.length) }, () => worker()),
     );
+
+    if (abortError !== undefined) throw abortError;
+
+    // Every phrase a worker never got around to claiming before the
+    // rate-limit stop flag was set -- recorded individually, matching
+    // Greenhouse's "not checked" per-token outcome, rather than silently
+    // vanishing from the merged result.
+    if (rateLimitedByPhrase !== undefined) {
+      for (let i = 0; i < phrases.length; i++) {
+        if (resultsByIndex[i] !== undefined) continue;
+        resultsByIndex[i] = {
+          jobs: [],
+          skipped: [
+            {
+              externalId: undefined,
+              reason:
+                `USAJOBS search for title phrase "${phrases[i]}" was not attempted -- search() ` +
+                `stopped issuing new phrase searches after phrase "${rateLimitedByPhrase}" was ` +
+                `rate-limited (HTTP 429)`,
+            },
+          ],
+          skipRate: 1,
+        };
+      }
+    }
 
     // Deduped by externalId -- opus review F3: the OLD version deduped
     // `jobs` but pushed every sub-search's `skipped` unconditionally,
@@ -231,18 +375,42 @@ export class UsajobsSource implements JobSource {
     // posting, regardless of fetch order -- so all jobs are deduped and
     // collected first, and only THEN are skips filtered against the
     // now-complete set of job ids (plus their own separate dedup set).
+    // Every index is populated by this point: the worker loop above sets
+    // `resultsByIndex[i]` (success or caught-error placeholder) for every
+    // phrase it claims, and the rate-limit gap-fill loop above covers every
+    // phrase no worker got to claim at all. Filtered with a type guard
+    // (matching Greenhouse's `tokenOutcomes` filter in greenhouse.ts) rather
+    // than a bare `!` non-null assertion, so a future refactor that leaves a
+    // gap can't silently produce a runtime TypeError here.
+    const results = resultsByIndex.filter((r): r is SourceSearchResult => r !== undefined);
     const jobs: NormalizedJob[] = [];
     const seenJobIds = new Set<string>();
-    for (const result of resultsByIndex) {
+    for (const result of results) {
       for (const job of result.jobs) {
         if (seenJobIds.has(job.externalId)) continue;
         seenJobIds.add(job.externalId);
         jobs.push(job);
       }
     }
+
+    // Total-outage case: literally zero phrases succeeded -- every phrase
+    // either isolated-failed or was never attempted (rate-limit gap-fill).
+    // Gated on `successCount`, NOT `jobs.length`: a phrase that genuinely
+    // matched zero postings still counts as a success, so `jobs.length ===
+    // 0` would incorrectly reject a call where one phrase legitimately
+    // found nothing while a DIFFERENT phrase failed -- that call has a real
+    // success in it and must return normally with the failure recorded as
+    // a skip, not be thrown away. `firstIsolatedError` is only set when at
+    // least one phrase actually threw one of the isolated kinds, so a
+    // legitimate all-phrases-matched-nothing search (no error ever thrown)
+    // still returns normally below.
+    if (successCount === 0 && firstIsolatedError !== undefined) {
+      throw firstIsolatedError;
+    }
+
     const skipped: SkippedRecord[] = [];
     const seenSkipIds = new Set<string>();
-    for (const result of resultsByIndex) {
+    for (const result of results) {
       for (const skip of result.skipped) {
         if (skip.externalId !== undefined) {
           if (seenJobIds.has(skip.externalId)) continue;
@@ -378,10 +546,68 @@ async function parseResponse(response: Response): Promise<UsajobsSearchResponse>
   try {
     body = await response.json();
   } catch (err) {
+    // Ticket c419a12, N5: a socket drop mid-parse (the connection is
+    // terminated while the body is still streaming in) throws from
+    // `response.json()` exactly the same way a genuinely malformed JSON
+    // payload does -- both are just "the promise rejected here" from this
+    // catch block's point of view. But they are not the same failure: a
+    // socket drop is a transient network condition (the same request,
+    // retried, has every reason to succeed) where malformed JSON is the
+    // source's own, permanent bug (the identical request would produce the
+    // identical broken body again). Observed for real, repeatedly, during
+    // this project's own live verification runs (2 of 3 runs of
+    // scripts/verify-usajobs-keyword-coverage.ts): undici raises this as a
+    // `TypeError` with message `"terminated"`, `.cause.code ===
+    // "UND_ERR_SOCKET"` -- see `isConnectionTerminatedError`. This
+    // classification is what `#searchMultipleKeywords`'s isolate-vs-abort
+    // split (see its doc comment, and the B1 fix on this same ticket)
+    // actually keys off of, so misclassifying it matters concretely, not
+    // just semantically: `TransientSourceError` is one of the ISOLATED
+    // kinds, so a socket drop on one phrase becomes a single skipped
+    // phrase and the OTHER phrases' work still returns; `MalformedResponseError`
+    // is ABORT-worthy, so misclassifying a socket drop as one would fail
+    // the entire multi-phrase call over what was really just one flaky
+    // connection -- especially costly now that `#searchMultipleKeywords`
+    // issues far more requests per user search than the old single-keyword
+    // path did, so this fires often. And in the total-outage case (every
+    // phrase hits a socket drop), correct classification is also what lets
+    // `#searchMultipleKeywords`'s all-phrases-failed rethrow (see that
+    // check) surface a `TransientSourceError` rather than a
+    // `MalformedResponseError` -- which is what lets a caller's retry
+    // logic (fetchSourceWorker.ts's `classify()`) actually recognize this
+    // as retryable and recover it, instead of writing it off as a
+    // permanent, non-retryable failure.
+    if (isConnectionTerminatedError(err)) {
+      throw new TransientSourceError(
+        "USAJOBS connection was terminated while reading the response body (socket drop) — retryable",
+        { cause: err },
+      );
+    }
     throw new MalformedResponseError("USAJOBS response was not valid JSON", { cause: err });
   }
 
   return parseSearchResponseShape(body);
+}
+
+/**
+ * Detects the undici "connection terminated mid-body" failure (ticket
+ * c419a12, N5) — see `parseResponse`'s catch block for the full reasoning.
+ * Checked two ways, either sufficient on its own, since either individual
+ * signal has been observed live: the exact message undici raises
+ * (`"terminated"`) and the underlying socket error code it wraps as
+ * `.cause` (`UND_ERR_SOCKET`). Deliberately narrow — this must only catch
+ * a genuine connection drop, never a real malformed-JSON bug, or a source
+ * data problem would start being silently retried forever instead of
+ * surfaced.
+ */
+function isConnectionTerminatedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.message === "terminated") return true;
+  const cause = (err as { cause?: unknown }).cause;
+  if (cause !== null && typeof cause === "object" && "code" in cause) {
+    return (cause as { code?: unknown }).code === "UND_ERR_SOCKET";
+  }
+  return false;
 }
 
 function parseRetryAfter(header: string | null): number | undefined {
