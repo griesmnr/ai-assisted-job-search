@@ -944,4 +944,61 @@ describe("fetch-level criteria reaches the source's own search() (ticket d1fc9e2
     expect(recorder.received).toHaveLength(1);
     expect(recorder.received[0]).toEqual({});
   });
+
+  it("blank/whitespace-only title chips are dropped, not sent as a keyword or falsely treated as 'no restriction' (ticket c419a12, N7)", async () => {
+    const recorder = new RecordingFakeSource();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: () => ({ sources: [recorder], skipped: [] }),
+    });
+    const resumeId = await createResume(app);
+
+    // A blank chip alongside real ones: the blank one must be dropped, and
+    // the real ones must still narrow the fetch -- not fall back to an
+    // unkeyworded search just because one chip was empty.
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { titleInclude: ["  ", "civil engineer", "   backend engineer   "] },
+      },
+    });
+
+    expect(recorder.received).toHaveLength(1);
+    expect(recorder.received[0]).toEqual({
+      keywords: ["civil engineer", "backend engineer"],
+    });
+  });
+
+  it("a titleInclude of ONLY blank chips is treated as no restriction at all -- no keyword sent, not a silent full-board fetch triggered by a falsy empty string (ticket c419a12, N7)", async () => {
+    const recorder = new RecordingFakeSource();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: () => ({ sources: [recorder], skipped: [] }),
+    });
+    const resumeId = await createResume(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { titleInclude: ["", "   "] },
+      },
+    });
+
+    expect(recorder.received).toHaveLength(1);
+    expect(recorder.received[0]).toEqual({});
+  });
 });

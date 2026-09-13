@@ -372,6 +372,48 @@ describe("UsajobsSource — error classification", () => {
     expect((err as MalformedResponseError).retryable).toBe(false);
   });
 
+  it("classifies a socket-drop/connection-terminated error during response.json() as TransientSourceError, not MalformedResponseError (ticket c419a12, N5)", async () => {
+    // The exact shape undici raises when the connection is terminated
+    // mid-body (observed live, 2 of 3 runs of
+    // scripts/verify-usajobs-keyword-coverage.ts): a `TypeError` with
+    // message "terminated" whose `.cause.code` is `UND_ERR_SOCKET`. This is
+    // a transient network condition, not malformed data -- the same
+    // request retried has every reason to succeed.
+    const socketDropErr = new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } });
+    const fetchImpl = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: () => Promise.reject(socketDropErr),
+    } as unknown as Response);
+    const source = makeSource(fetchImpl);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransientSourceError);
+    expect(err).not.toBeInstanceOf(MalformedResponseError);
+    expect((err as TransientSourceError).retryable).toBe(true);
+    expect((err as TransientSourceError).cause).toBe(socketDropErr);
+  });
+
+  it("still classifies a same-message-shaped but unrelated TypeError as MalformedResponseError (the detection isn't overly broad)", async () => {
+    // Guards against a detection so loose it swallows a genuine
+    // malformed-response bug as "just retry it" -- a TypeError with an
+    // unrelated message and no UND_ERR_SOCKET cause must still be treated
+    // as non-retryable malformed data.
+    const unrelatedErr = new TypeError("Cannot read properties of undefined");
+    const fetchImpl = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: () => Promise.reject(unrelatedErr),
+    } as unknown as Response);
+    const source = makeSource(fetchImpl);
+
+    const err = await source.search({}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MalformedResponseError);
+    expect((err as MalformedResponseError).retryable).toBe(false);
+  });
+
   it("classifies well-formed JSON with an unexpected shape as MalformedResponseError", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ notWhatWeExpected: true }));
     const source = makeSource(fetchImpl);
@@ -577,6 +619,123 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["879434300", "999999999"]);
+  });
+});
+
+describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function singleItemResponse(item: unknown): Response {
+    return jsonResponse({ SearchResult: { SearchResultCountAll: 1, SearchResultItems: [item] } });
+  }
+  function emptyResponse(): Response {
+    return jsonResponse({ SearchResult: { SearchResultCountAll: 0, SearchResultItems: [] } });
+  }
+
+  it("a transient failure on ONE phrase doesn't discard other phrases' already-completed results", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      if (keyword === "engineering generalist") return singleItemResponse(engineeringGeneralist);
+      if (keyword === "flaky phrase") throw new Error("ECONNRESET");
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({
+      keywords: ["civil engineer", "flaky phrase", "engineering generalist"],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // The two healthy phrases' jobs are still returned in full -- the
+    // failure on "flaky phrase" did NOT throw and discard them.
+    expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["846773600", "879434300"]);
+
+    // The failed phrase is recorded as a skip, not silently dropped either.
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.externalId).toBeUndefined();
+    expect(result.skipped[0]?.reason).toContain('"flaky phrase"');
+    expect(result.skipped[0]?.reason).toMatch(/network error/i);
+
+    // 2 jobs + 1 collection-level skip -- an honest, non-1.0 skipRate.
+    expect(result.skipRate).toBeCloseTo(1 / 3);
+  });
+
+  it("still throws normally when the FIRST (non-multi-keyword) search path fails -- this fix is scoped to #searchMultipleKeywords only", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const source = makeSource(fetchImpl);
+
+    await expect(source.search({ keyword: "engineer" })).rejects.toThrow(TransientSourceError);
+  });
+
+  // Mirrors greenhouse.test.ts's equivalent 429-mid-fan-out test: with
+  // KEYWORD_SEARCH_CONCURRENCY (3) workers, all three of the first three
+  // phrases dispatch immediately, so a 4th phrase is needed for there to be
+  // any "not yet claimed" work left to stop. The two non-rate-limited
+  // in-flight phrases are deliberately held open (deferred) so the
+  // rate-limited phrase's 429 is guaranteed to be observed, and the stop
+  // flag set, BEFORE any worker can finish and claim the 4th phrase --
+  // otherwise whether the 4th phrase gets requested is a genuine race, not
+  // a deterministic thing to assert on.
+  it("a 429 on one phrase stops issuing new phrase searches, but every phrase already claimed still completes and is returned", async () => {
+    function deferredResponse() {
+      let resolve!: (value: Response) => void;
+      const promise = new Promise<Response>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    const healthy2Deferred = deferredResponse();
+    const healthy3Deferred = deferredResponse();
+    const neverRequested = vi.fn(() => emptyResponse());
+
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "rate-limited") {
+        return new Response("Too Many Requests", {
+          status: 429,
+          headers: { "Retry-After": "30" },
+        });
+      }
+      if (keyword === "healthy-2") return healthy2Deferred.promise;
+      if (keyword === "healthy-3") return healthy3Deferred.promise;
+      if (keyword === "never-requested") return neverRequested();
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    const resultPromise = source.search({
+      keywords: ["rate-limited", "healthy-2", "healthy-3", "never-requested"],
+    });
+
+    // Let the rate-limited worker's microtasks (fetch resolve -> 429
+    // classification -> catch -> set the stop flag) run to completion
+    // before releasing the other two in-flight requests.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    healthy2Deferred.resolve(singleItemResponse(civilEngineer));
+    healthy3Deferred.resolve(singleItemResponse(engineeringGeneralist));
+
+    const result = await resultPromise;
+
+    // Not rejected -- resolves with a partial result, and the 4th phrase
+    // was never even requested.
+    expect(neverRequested).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+    expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["846773600", "879434300"]);
+
+    const byReason = (needle: string) => result.skipped.find((s) => s.reason.includes(needle));
+    expect(byReason("rate-limited")?.reason).toMatch(/retry after 30000ms/);
+    expect(byReason("never-requested")?.reason).toMatch(
+      /not attempted.*stopped issuing new phrase searches.*"rate-limited".*rate-limited \(HTTP 429\)/,
+    );
   });
 });
 
