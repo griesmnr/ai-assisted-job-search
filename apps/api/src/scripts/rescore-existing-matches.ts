@@ -75,6 +75,7 @@ import {
   estimateScoringCost,
   makeClaudeScorer,
   readUsageStats,
+  recordUsageStats,
   type ScoredJob,
 } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes } from "../db/schema.js";
@@ -99,7 +100,16 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
 
 /** Directory the per-run report is written into -- same `prep/` directory
  * `validate-level-fit.ts`'s own report/snapshot files already live in
- * (gitignored: this is personal job-search content, never checked in). */
+ * (gitignored: this is personal job-search content, never checked in).
+ * Relative to the process's cwd, matching `validate-level-fit.ts`'s own
+ * `REPORT_PATH`/`CORPUS_PATH`/etc. convention exactly -- that file does not
+ * resolve these relative to `import.meta.url` either, so both scripts are
+ * equally cwd-sensitive by the same established convention (run from the
+ * repo root, per both files' own "Usage" doc comments). `main()` creates
+ * this directory (`fs.mkdirSync(REPORT_DIR, {recursive: true})`) before the
+ * scoring loop starts, so a fresh worktree/checkout or a different-cwd
+ * invocation fails LOUDLY before any spend, not with an ENOENT thrown only
+ * after every job has already been scored and billed. */
 export const REPORT_DIR = "prep";
 
 /**
@@ -115,15 +125,87 @@ export const REPORT_DIR = "prep";
  * `validate-level-fit.ts`'s `MAX_ESTIMATED_SPEND_USD`, which WAS tuned
  * against a specific approved spend and a specific worst-case sample size,
  * because that ticket's whole sample was under this codebase's control).
- * $5 covers a few hundred single-call re-scores comfortably at this
- * project's real per-call cost (see `demo-match.ts`'s own measurements --
- * a 200-job live run has historically landed under $2 with prompt caching
- * warm) while still catching a wildly larger-than-expected batch. If your
- * real `job_matches` count for this resume needs a higher ceiling, raise
- * this constant deliberately -- it is not something this script will ever
- * raise on your behalf.
+ *
+ * CORRECTED, 2026-09-13 (adversarial review of this ticket, round 1): an
+ * earlier version of this comment claimed "$5 covers a few hundred
+ * single-call re-scores comfortably" -- that was never checked against the
+ * real `estimateScoringCost`/`MAX_OUTPUT_TOKENS` math and is false. Running
+ * the REAL `estimateScoringCost` (this file's own `_cost-check-tmp.mjs`
+ * scratch script, deleted after use -- see this commit) against a realistic
+ * ~4-6k-character resume and `MAX_OUTPUT_TOKENS` (2000, `demo-match.ts`) at
+ * $15/MTok output:
+ *
+ *   - "bootstrap" basis (no `prep/scoring-usage-stats.json` yet -- a fresh
+ *     checkout, exactly this sandbox's own state): `maxCostUsd` crosses $5
+ *     between 141 jobs ($4.98) and 142 jobs ($5.02).
+ *   - "measured" basis (real historical per-call averages -- 3,874.5 in /
+ *     454.2 out tokens/call, the same pre-b182bde figures
+ *     `validate-level-fit.ts`'s own `$0.01843/call uncached` figure is
+ *     built from): `maxCostUsd` crosses $5 between 118 jobs ($4.96) and 119
+ *     jobs ($5.01).
+ *
+ * So the real ceiling this $5 default permits is **roughly 120-140 jobs**,
+ * not "a few hundred" -- depending on which basis a real run lands on
+ * (`describeCostEstimate`'s own log line at run time says which). This is
+ * NOT being raised to compensate: $5 was never a measured figure to begin
+ * with (see above), a real per-resume `job_matches` count is unknown here,
+ * and raising it "to get the comment to match a rounder job count" would be
+ * exactly the unilateral-raise this file already says never to do. If a
+ * real batch needs a higher ceiling, raise this constant deliberately, with
+ * the real job count that justifies it.
  */
 export const MAX_ESTIMATED_SPEND_USD = 5.0;
+
+/** How many times a single scoring call is retried after a failure, with
+ * exponential backoff, before being reported as failed. Copied from
+ * `validate-level-fit.ts`'s `SCORING_RETRY_COUNT`/`withRetry` (same value,
+ * same rationale) rather than imported: that file is itself a one-off
+ * script, not a shared library, and its own top comment establishes the
+ * precedent of copying small frozen pieces of prior-reviewed shape into a
+ * sibling script instead of reaching across two scripts for them (see this
+ * file's own `OLD_SCHEMA`-less design note above -- this is the analogous
+ * case for retry infra instead of scoring schema). The Anthropic SDK client
+ * already retries some errors itself at the HTTP layer (`maxRetries`,
+ * default 2) before ever throwing into this script; `withRetry` below is a
+ * second, independent layer catching whatever the SDK gave up on or that
+ * isn't SDK-retryable (this file's own `JSON.parse`/schema-shape failures
+ * inside `makeClaudeScorer`), not the primary retry mechanism. Deliberately
+ * just ONE retry (two attempts total), matching `validate-level-fit.ts`'s
+ * own tuning: recovers most transient 429/5xx blips without risking a
+ * runaway retry storm against a real rate limit. */
+export const SCORING_RETRY_COUNT = 1;
+
+/** Base delay before the first retry (doubled on each subsequent attempt).
+ * See `SCORING_RETRY_COUNT`'s doc comment. */
+export const SCORING_RETRY_BASE_DELAY_MS = 1000;
+
+/**
+ * Runs `fn`, retrying up to `retries` more times with exponential backoff if
+ * it throws. Copied verbatim (shape and behavior) from
+ * `validate-level-fit.ts`'s own `withRetry` -- see `SCORING_RETRY_COUNT`'s
+ * doc comment for why this is a copy, not an import. Without this, a single
+ * transient failure (e.g. a 429 burst) previously left that job's existing
+ * `job_matches` row silently untouched with no automatic recovery -- the
+ * per-job try/catch in `main()` would just count it as failed and move on.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: { retries?: number; baseDelayMs?: number } = {},
+): Promise<T> {
+  const { retries = SCORING_RETRY_COUNT, baseDelayMs = SCORING_RETRY_BASE_DELAY_MS } = options;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt === retries) break;
+      const delayMs = baseDelayMs * 2 ** attempt;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
 
 // ---------------------------------------------------------------------------
 // PURE functions -- argv parsing, update-payload construction, spend-ceiling
@@ -300,6 +382,15 @@ export type ExistingMatchRow = JobDescriptionRow & {
   oldRationale: string;
   oldLevelFit: LevelFit | null;
   oldLevelFitNote: string | null;
+  /** Fetched alongside the other `old*` fields so the per-job report can
+   * show a genuinely complete OLD -> NEW diff (R2, adversarial review of
+   * this ticket): `strengths`/`gaps` are overwritten by the same UPDATE as
+   * `matchScore`/`rationale`/`levelFit`/`levelFitNote`, so this ticket's own
+   * stated purpose ("nothing is silently overwritten without a visible
+   * record") applies to them too, even though they weren't in the ticket's
+   * literal acceptance-criteria minimum. */
+  oldStrengths: string[] | null;
+  oldGaps: string[] | null;
 };
 
 async function fetchResumeText(
@@ -330,6 +421,8 @@ async function fetchExistingMatches(
       oldRationale: jobMatches.rationale,
       oldLevelFit: jobMatches.levelFit,
       oldLevelFitNote: jobMatches.levelFitNote,
+      oldStrengths: jobMatches.strengths,
+      oldGaps: jobMatches.gaps,
       externalId: jobsTable.externalId,
       dataSource: jobsTable.dataSource,
       title: jobsTable.title,
@@ -394,7 +487,23 @@ async function main(): Promise<void> {
   );
 
   const client = connectDb();
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (err) {
+    // Not wrapped in the same try/finally as the rest of main() below (a
+    // connection failure means there is nothing yet to `client.end()`) --
+    // caught separately here so it gets the same clean, actionable
+    // messaging every other early-exit path in this script uses, instead of
+    // a raw `pg` stack trace surfacing through main()'s top-level
+    // `.catch(console.error)`.
+    console.error(
+      `Failed to connect to the database: ${err instanceof Error ? err.message : String(err)} -- ` +
+        "check POSTGRES_HOST/POSTGRES_PORT/POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB in your .env " +
+        "and that Postgres is actually running (`docker compose up -d`, from the host).",
+    );
+    process.exitCode = 1;
+    return;
+  }
   const db = drizzle(client);
 
   try {
@@ -452,25 +561,76 @@ async function main(): Promise<void> {
       return;
     }
 
-    console.log(
-      `\nProceeding to LIVE rescoring of ${existing.length} job(s) -- this spends real Anthropic API ` +
-        "credit.",
-    );
-    const anthropic = new Anthropic();
-    const scoreJob = makeClaudeScorer(anthropic);
+    // R6 (adversarial review): created before the loop starts, not just
+    // before the final report write -- a missing `prep/` (fresh worktree,
+    // or the script invoked from a different cwd, e.g. `apps/api/`) must
+    // fail LOUDLY here, before a single dollar is spent, not silently wait
+    // to throw on the last line after every job has already been billed.
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
 
-    const lines: string[] = [];
+    // R7 (adversarial review): the resumeId alone is not a unique report
+    // filename -- re-running this script for the same resume (a later
+    // rescore after more sources are added, a retry after some jobs failed,
+    // simple curiosity) would silently overwrite the PREVIOUS run's report.
+    // Combined with R2's fix (the report now records genuine pre-rescore OLD
+    // values), an innocent second run would destroy the only on-disk record
+    // of the FIRST run's original values, since the second run's "old"
+    // values are the first run's "new" ones. A timestamp in the filename
+    // means every run gets its own permanent record.
+    const runTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const reportPath = path.join(REPORT_DIR, `rescore-report-${resumeId}-${runTimestamp}.txt`);
+
+    // R1 (adversarial review): every `job_matches` UPDATE below commits
+    // immediately, but before this fix the report was only written to disk
+    // AFTER the entire loop finished -- an interruption (Ctrl-C, dropped
+    // connection, crash) at job 90 of 100 left ~90 rows irreversibly
+    // overwritten and ~90 real API calls already billed, with ZERO durable
+    // record of what the OLD values were (console scrollback only, lost the
+    // moment the terminal closes). `emit` now appends each line to
+    // `reportPath` immediately, in the same tick it's produced -- a crash
+    // at any point still leaves a complete, accurate record of every job
+    // processed before it, same safety-net philosophy as
+    // `validate-level-fit.ts`'s `RAW_RESULTS_PATH` (see that constant's own
+    // doc comment: "all that paid-for data was previously unrecoverable
+    // short of re-running (and re-spending). This file is the safety net."),
+    // adapted here to this script's per-job (not single-batch) structure.
+    fs.writeFileSync(reportPath, "");
     const emit = (line: string = ""): void => {
-      lines.push(line);
       console.log(line);
+      fs.appendFileSync(reportPath, line + "\n");
     };
     emit(
       `=== rescore-existing-matches report -- resumeId=${resumeId} -- ${new Date().toISOString()} ===`,
     );
     emit(`${existing.length} job(s) considered.\n`);
 
+    console.log(
+      `\nProceeding to LIVE rescoring of ${existing.length} job(s) -- this spends real Anthropic API ` +
+        `credit. Report: ${reportPath} (written incrementally, one job at a time).`,
+    );
+    const anthropic = new Anthropic();
+    const scoreJob = makeClaudeScorer(anthropic);
+
     let succeeded = 0;
     const failures: { jobId: string; title: string; company: string; error: string }[] = [];
+    // Accumulated across the loop and recorded once, AFTER it finishes --
+    // real usage from this run feeds the next run's cost estimate (nit,
+    // adversarial review; mirrors `runDemoMatch`'s own `recordUsageStats`
+    // call site in demo-match.ts, including the "after persistence,
+    // best-effort" ordering below).
+    let usageCalls = 0;
+    let usageInputTokens = 0;
+    let usageOutputTokens = 0;
+    let usageCacheReadTokens = 0;
+    let usageCacheCreationTokens = 0;
+
+    /** Renders one OLD -> NEW line, or just the OLD value (prefixed
+     * "(unchanged)") when `newVal` is omitted -- used for the failure path,
+     * where nothing was actually written. */
+    const diffLine = (label: string, oldVal: string, newVal?: string): string =>
+      newVal === undefined
+        ? `    ${label} (unchanged): ${oldVal}`
+        : `    ${label}: ${oldVal} -> ${newVal}`;
 
     // Sequential, not concurrency-pooled: each job's update is independent
     // (no shared A/B pairing to keep in lockstep, unlike
@@ -483,21 +643,58 @@ async function main(): Promise<void> {
     for (const row of existing) {
       const job = toNormalizedJob(row);
       try {
-        const scored = await scoreJob(job, resumeText);
+        // R5 (adversarial review): wrapped in the same `withRetry` shape
+        // `validate-level-fit.ts` uses -- see `SCORING_RETRY_COUNT`'s doc
+        // comment for why this sits alongside, not instead of, the
+        // Anthropic SDK's own built-in retry.
+        const scored = await withRetry(() => scoreJob(job, resumeText));
         const update = buildJobMatchUpdate(scored);
         await updateJobMatch(db, resumeId, row.jobId, update);
         succeeded++;
+        if (scored.usage) {
+          usageCalls++;
+          usageInputTokens += scored.usage.inputTokens;
+          usageOutputTokens += scored.usage.outputTokens;
+          usageCacheReadTokens += scored.usage.cacheReadTokens ?? 0;
+          usageCacheCreationTokens += scored.usage.cacheCreationTokens ?? 0;
+        }
+
+        // R2 (adversarial review): a genuinely complete OLD -> NEW diff --
+        // previously this line showed only `oldMatchScore`, silently
+        // dropping the fact that `rationale`/`levelFit`/`levelFitNote`/
+        // `strengths`/`gaps` are ALSO overwritten by the same UPDATE, which
+        // defeated this report's whole stated purpose ("nothing is silently
+        // overwritten without a visible record").
+        emit(`${row.company} — ${row.title} (jobId ${row.jobId})`);
+        emit(diffLine("matchScore", `${row.oldMatchScore}%`, `${update.matchScore}%`));
+        emit(diffLine("levelFit", row.oldLevelFit ?? "n/a", update.levelFit ?? "n/a"));
         emit(
-          `OLD ${row.oldMatchScore}% -> NEW ${update.matchScore}%  [${update.levelFit ?? "n/a"}]  ` +
-            `${row.company} — ${row.title}`,
+          diffLine(
+            "levelFitNote",
+            row.oldLevelFitNote ? `"${row.oldLevelFitNote}"` : "n/a",
+            update.levelFitNote ? `"${update.levelFitNote}"` : "n/a",
+          ),
         );
-        if (update.levelFitNote) emit(`    note: "${update.levelFitNote}"`);
+        emit(diffLine("rationale", `"${row.oldRationale}"`, `"${update.rationale}"`));
+        emit(
+          diffLine(
+            "strengths",
+            JSON.stringify(row.oldStrengths ?? []),
+            JSON.stringify(update.strengths ?? []),
+          ),
+        );
+        emit(
+          diffLine("gaps", JSON.stringify(row.oldGaps ?? []), JSON.stringify(update.gaps ?? [])),
+        );
+        emit();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         failures.push({ jobId: row.jobId, title: row.title, company: row.company, error: message });
-        emit(
-          `OLD ${row.oldMatchScore}% -> FAILED (row left untouched)  ${row.company} — ${row.title}: ${message}`,
-        );
+        emit(`${row.company} — ${row.title} (jobId ${row.jobId}): FAILED, row left untouched`);
+        emit(diffLine("matchScore", `${row.oldMatchScore}%`));
+        emit(diffLine("levelFit", row.oldLevelFit ?? "n/a"));
+        emit(`    error: ${message}`);
+        emit();
       }
     }
 
@@ -506,10 +703,30 @@ async function main(): Promise<void> {
       emit("Failures (existing job_matches row left untouched for each):");
       for (const f of failures) emit(`  ${f.company} — ${f.title} (jobId ${f.jobId}): ${f.error}`);
     }
-
-    const reportPath = path.join(REPORT_DIR, `rescore-report-${resumeId}.txt`);
-    fs.writeFileSync(reportPath, lines.join("\n") + "\n");
     console.log(`\nFull report written to ${reportPath}.`);
+
+    if (usageCalls > 0) {
+      try {
+        recordUsageStats(USAGE_STATS_PATH, {
+          calls: usageCalls,
+          totalInputTokens: usageInputTokens,
+          totalOutputTokens: usageOutputTokens,
+          totalCacheReadTokens: usageCacheReadTokens,
+          totalCacheCreationTokens: usageCacheCreationTokens,
+        });
+      } catch (err) {
+        // Best-effort, same as runDemoMatch's own call site: this runs
+        // AFTER every DB update above has already committed, so a failure
+        // here can never take an already-persisted rescore down with it --
+        // the only consequence is the NEXT run's cost estimate falls back
+        // to the bootstrap path instead of a measured one.
+        console.error(
+          `  WARNING: failed to record usage stats to "${USAGE_STATS_PATH}" -- the ${usageCalls} ` +
+            `call(s) from this run are NOT reflected in future cost estimates: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   } finally {
     await client.end();
   }

@@ -187,10 +187,18 @@ describe("toNormalizedJob", () => {
     expect(job.commitment).toBeUndefined();
     expect(job.locationType).toBeUndefined();
     expect(job.location).toBeUndefined();
-    // Explicitly not present as "null" -- NormalizedJob's optional fields
-    // must be genuinely absent, matching how a live-fetched job with no
-    // stated location type already behaves.
-    expect("payType" in job ? job.payType : undefined).toBeUndefined();
+    // NOT "genuinely absent as a key" -- `toNormalizedJob` sets these as an
+    // explicit `undefined` VALUE on an always-present key (`payType: row
+    // .payType ?? undefined`), the same "present key, possibly-undefined
+    // value" shape every real job-source normalizer already produces
+    // (`ashby.ts`/`lever.ts`'s own `mapPayType` returns, spread into their
+    // `Job` object literals the identical way). The property-access
+    // assertions above already correctly test that shape; the previous
+    // version of this line additionally claimed the key was "genuinely
+    // absent" and asserted it via `"payType" in job ? job.payType :
+    // undefined` -- a tautology that evaluates to `undefined` whether or
+    // not the key exists, so it could never have caught a regression to a
+    // real `null` (or any other non-undefined value) either.
   });
 
   it("preserves title/company/description/externalId/linkToApply/postedAt exactly", () => {
@@ -274,5 +282,61 @@ describe("cost estimate math (via the real, shipped estimateScoringCost)", () =>
     expect(estimate.jobCount).toBe(0);
     expect(estimate.probableCostUsd).toBe(0);
     expect(estimate.maxCostUsd).toBe(0);
+  });
+});
+
+describe("spend ceiling wired to the REAL estimateScoringCost output (R4, adversarial review)", () => {
+  // Every test above either hand-feeds an arbitrary number to
+  // checkSpendCeiling in isolation, or checks estimateScoringCost's output
+  // in isolation -- nothing exercises the actual composition main() performs
+  // (call the real estimator, then check ITS OUTPUT against the ceiling).
+  // That gap matters concretely: main() must pass `costEstimate.maxCostUsd`
+  // (the genuine worst case) to checkSpendCeiling, not `.probableCostUsd`
+  // (the merely-likely figure, ~2-4x smaller at this scale) -- and no
+  // existing test would have caught main() accidentally using the wrong
+  // one. This test closes that gap by routing REALISTIC inputs through the
+  // real estimator and asserting on `.maxCostUsd` specifically.
+  //
+  // "Realistic" here means this codebase's own already-established
+  // historical per-call token averages -- 3,874.5 input / 454.2 output
+  // tokens/call -- the exact figures `validate-level-fit.test.ts` cites as
+  // producing "$0.01843/call uncached" (see that file's "reproduces ticket
+  // d8746eb's own worked cost estimate" test), NOT arbitrary numbers.
+  const realisticUsageStats: UsageStats = {
+    model: "claude-sonnet-5",
+    calls: 1000,
+    totalInputTokens: 3_874_500, // 3,874.5 tokens/call
+    totalOutputTokens: 454_200, // 454.2 tokens/call
+  };
+  const resumeText = "A".repeat(6000); // clears the cache-prefix minimum, same as the suite above
+
+  function makeJobs(n: number): NormalizedJob[] {
+    return Array.from({ length: n }, (_, i) => makeNormalizedJob({ externalId: `ext-${i}` }));
+  }
+
+  it("refuses a batch whose REAL worst-case cost exceeds the default ceiling", () => {
+    // 150 jobs at these real per-call averages: maxCostUsd ~= $6.32 (worst
+    // case, MAX_OUTPUT_TOKENS per job) vs. probableCostUsd ~= $2.85 (typical
+    // case) -- comfortably on opposite sides of the $5 default ceiling.
+    // Mutating the ceiling check to use `probableCostUsd` instead of
+    // `maxCostUsd` would flip this specific assertion from refused to
+    // allowed, which is exactly the under-check this test exists to catch.
+    const estimate = estimateScoringCost(makeJobs(150), resumeText, realisticUsageStats);
+    expect(estimate.probableCostUsd).toBeLessThan(MAX_ESTIMATED_SPEND_USD);
+    expect(estimate.maxCostUsd).toBeGreaterThan(MAX_ESTIMATED_SPEND_USD);
+
+    const check = checkSpendCeiling(estimate.maxCostUsd);
+    expect(check.withinCeiling).toBe(false);
+  });
+
+  it("allows a batch whose REAL worst-case cost is within the default ceiling", () => {
+    // 100 jobs at the same real per-call averages: maxCostUsd ~= $4.22,
+    // safely under the $5 ceiling -- confirms the ceiling isn't simply
+    // refusing everything, only batches that actually exceed it.
+    const estimate = estimateScoringCost(makeJobs(100), resumeText, realisticUsageStats);
+    expect(estimate.maxCostUsd).toBeLessThan(MAX_ESTIMATED_SPEND_USD);
+
+    const check = checkSpendCeiling(estimate.maxCostUsd);
+    expect(check.withinCeiling).toBe(true);
   });
 });
