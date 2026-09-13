@@ -277,6 +277,14 @@ export function matchesTitleExclusion(title: string): boolean {
 // (real-fixture search coming up empty, realistic titles all surviving) is
 // the evidence for it.
 //
+// Also confirms the ticket's separate acceptance-criteria question -- do
+// contract/temp titles hit the location/work-arrangement filters incorrectly
+// -- is structurally impossible, not just untested: `resolveWorkArrangement`
+// takes only `(location, locationType)` and `passesLocationFilter` /
+// `classifyLocationFilterOutcome` are typed over `Pick<NormalizedJob,
+// "location" | "locationType">` -- none of them accepts or reads `title` at
+// all, so contract/temp phrasing in a title has no path to reach them.
+//
 // RELATED FINDING (informs `looksLikeContractOrTemp` below, not a
 // swe-filter.ts bug): `Job.commitment` already carries a structured
 // `"contract"` value for three of the four sources (see lever.ts's,
@@ -319,8 +327,40 @@ export function matchesTitleExclusion(title: string): boolean {
  * over-matching "Temporary"-unrelated words that merely contain "temp" as a
  * substring not at a word boundary ("Attempt", "Contemporary", "Templar",
  * "Temperature" -- all verified false, swe-filter.test.ts).
+ *
+ * F1 (opus review, real false positive, 2026-09-13): the negative lookbehind
+ * `(?<!\bsmart\s)` in front of the `contract` alternative exists because
+ * "contract" is not only an employment-type word -- "Smart Contract" is a
+ * standard, real, FULL-TIME title category in blockchain/crypto engineering.
+ * Not hypothetical: `.env.example` configures **coinbase** and **robinhood**
+ * as live Greenhouse boards in this exact project, and "Smart Contract
+ * Engineer" is a real title at exactly those employers. Without the guard,
+ * checking "Hide contract/temp roles" would silently hide a real full-time
+ * engineering role -- exactly the class of silent miscategorization bug
+ * ticket 8f5a79c exists to prevent, just relocated into this ticket's own
+ * new filter. The lookbehind only excludes "contract" immediately preceded
+ * by "smart " (word-boundary-anchored, so it doesn't fire on some other word
+ * merely ending in those letters) -- "Software Engineer (Contract) - Smart
+ * Home" still tags correctly, since "Smart" there sits elsewhere in the
+ * title, not immediately before "Contract". Verified against all six of the
+ * reviewer's test titles directly (node -e, 2026-09-13) and in
+ * swe-filter.test.ts.
+ *
+ * Known, NOT-required-to-fix residual gap (same review): a title like
+ * "Software Engineer, Contract Lifecycle Management" or "Full Stack
+ * Engineer, Contract Management Systems" -- the kind of title a company
+ * whose PRODUCT is literally called "Contract [X]" (e.g. Icertis, Ironclad,
+ * DocuSign) would post -- still incorrectly tags, since "contract" there is
+ * a product-domain term, not an employment-type indicator, same class of
+ * false positive as "Smart Contract" but with no "smart " prefix for this
+ * lookbehind to catch. Not fixed here: no real fixture/corpus evidence of
+ * this shape exists in this codebase today (unlike Smart Contract, which has
+ * the coinbase/robinhood board evidence above), so a second exception would
+ * be guessing rather than following real data. Revisit if a real posting
+ * from a contract-management-software employer's board ever surfaces.
  */
-const CONTRACT_OR_TEMP_TITLE = /\bcontract(?:ors?|ing)?\b|\bc2c\b|\b1099\b|\btemp(?:orary)?\b/i;
+const CONTRACT_OR_TEMP_TITLE =
+  /(?<!\bsmart\s)\bcontract(?:ors?|ing)?\b|\bc2c\b|\b1099\b|\btemp(?:orary)?\b/i;
 
 /**
  * `commitment === "contract"` first: a source-reported, structured signal

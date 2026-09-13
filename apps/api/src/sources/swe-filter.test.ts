@@ -521,6 +521,34 @@ describe("looksLikeContractOrTemp (ticket 8f5a79c)", () => {
     ).toBe(false);
   });
 
+  it('does NOT over-match "Smart Contract" — real false positive (opus review, 2026-09-13): "contract" as a bare word also matches the DOMAIN term "Smart Contract" (blockchain/crypto engineering), not an employment-type indicator. Not hypothetical: `.env.example` configures coinbase and robinhood as live Greenhouse boards in this project, and "Smart Contract Engineer" is a real, full-time title category at exactly those employers -- without this guard, checking "Hide contract/temp roles" would silently hide a real full-time role. The reviewer\'s own six-title test matrix, verified directly against the exported `looksLikeContractOrTemp` (node -e, 2026-09-13, before this fix landed)', () => {
+    for (const title of [
+      "Senior Smart Contract Software Engineer",
+      "Backend Engineer - Smart Contract Platform",
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(false);
+    }
+    // Ordinary "Contract" phrasing must keep working -- the guard only
+    // excludes "contract" immediately preceded by "smart ", not "contract"
+    // generally.
+    for (const title of [
+      "Software Engineer (Contract)",
+      "Contract Software Engineer",
+      "Senior Software Engineer - Contractor",
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(true);
+    }
+    // The lookbehind must not over-trigger just because "Smart" appears
+    // SOMEWHERE in the title -- only immediately before "Contract" disqualifies
+    // it. "Smart Home" here is unrelated to "(Contract)", so this must still tag.
+    expect(
+      looksLikeContractOrTemp({
+        title: "Software Engineer (Contract) - Smart Home",
+        commitment: undefined,
+      }),
+    ).toBe(true);
+  });
+
   it("does NOT flag an ordinary full-time title with neither a structured contract commitment nor contract/temp phrasing in the title (both directions of the audit's own real fixture titles)", () => {
     for (const title of [
       "Backend Software Engineer - Defense", // real: lever-real-response-palantir.json

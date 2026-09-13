@@ -246,6 +246,51 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     ).toBeInTheDocument();
   });
 
+  it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the source-selection message) when the only two source-visible jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
+    const ONLY_OVERQUALIFIED_AND_CONTRACT: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      results: [
+        job({
+          jobId: "job-2",
+          title: "Platform Engineer",
+          levelFit: "overqualified",
+          levelFitNote: "This posting is written below your level.",
+        }),
+        job({ jobId: "job-3", title: "Software Engineer (Contract)", isContractOrTemp: true }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={ONLY_OVERQUALIFIED_AND_CONTRACT}
+        selectedSourceIds={new Set(["usajobs"])}
+        resumeId="resume-1"
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
+
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Every remaining job (after hiding roles above your level) is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+  });
+
   it("a job that is BOTH overqualified AND contract/temp is claimed by the level filter (which runs first) and is not double-counted in the contract-filter's own clause", () => {
     const DATA_BOTH: GetResumeResultsResponse = {
       resumeId: "resume-1",
