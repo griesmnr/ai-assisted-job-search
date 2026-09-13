@@ -181,7 +181,7 @@ export class UsajobsSource implements JobSource {
    * in the worker's catch block below for the exact boundary (opus review
    * on this ticket's first draft, B1: an earlier version of this fix
    * isolated EVERY error kind, including auth failures and malformed
-   * responses -- see the `jobs.length === 0` rethrow below for why a
+   * responses -- see the `successCount === 0` rethrow below for why a
    * TOTAL outage made up entirely of isolated failures must still surface
    * as a real error too, not as an all-empty "0 jobs found" result).
    *
@@ -251,7 +251,7 @@ export class UsajobsSource implements JobSource {
     // if literally nothing succeeds -- every phrase either isolated-failed
     // or was never attempted -- search() can rethrow a real error instead
     // of silently returning an all-empty, all-skipped success (see the
-    // `jobs.length === 0` check below).
+    // `successCount === 0` check below).
     let firstIsolatedError: unknown;
     // Real successes only -- NOT `jobs.length` after merging (a phrase that
     // genuinely matched zero postings still counts as a success here, and
