@@ -737,6 +737,87 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
       /not attempted.*stopped issuing new phrase searches.*"rate-limited".*rate-limited \(HTTP 429\)/,
     );
   });
+
+  // Opus review of this ticket's first draft, B1: the original fix isolated
+  // EVERY error kind a phrase could throw, including AuthFailedError and
+  // MalformedResponseError -- which meant a dead API key, or USAJOBS
+  // sending back a shape we can't parse, silently reported as
+  // `jobs: []`/skipped, indistinguishable from a legitimate "0 postings
+  // matched" search, and never reaching `CompositeSource`'s error handling
+  // at all (`composite.ts` only marks a source `status: "error"` when the
+  // search() PROMISE REJECTS). These tests pin down the corrected boundary:
+  // only TransientSourceError/ForbiddenError/RateLimitedError isolate;
+  // everything else aborts the whole call, matching Greenhouse's
+  // isolate/abort split (greenhouse.test.ts's own boundary-pinning test,
+  // "still aborts the whole search() for 401 ... a malformed body, and an
+  // unmapped 4xx").
+  it("aborts the whole call (rejects) when EVERY phrase fails with AuthFailedError, ForbiddenError-adjacent 401s are not silently swallowed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+    const source = makeSource(fetchImpl);
+
+    await expect(
+      source.search({ keywords: ["civil engineer", "engineering generalist"] }),
+    ).rejects.toBeInstanceOf(AuthFailedError);
+  });
+
+  it("aborts the whole call (rejects) when EVERY phrase fails with MalformedResponseError", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("not json{{{", { status: 200 }));
+    const source = makeSource(fetchImpl);
+
+    await expect(
+      source.search({ keywords: ["civil engineer", "engineering generalist"] }),
+    ).rejects.toBeInstanceOf(MalformedResponseError);
+  });
+
+  it("aborts the whole call (rejects) when EVERY phrase fails with an unmapped/unexpected status", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("Bad Request", { status: 400 }));
+    const source = makeSource(fetchImpl);
+
+    await expect(
+      source.search({ keywords: ["civil engineer", "engineering generalist"] }),
+    ).rejects.toBeInstanceOf(UnexpectedStatusError);
+  });
+
+  it("rethrows the first recorded error when every phrase fails with an ISOLATED kind and zero phrases succeed, rather than returning a silent all-empty result", async () => {
+    // Every phrase hits the same transient (isolatable) failure -- a total
+    // outage made entirely of "isolatable" errors must still surface as a
+    // real rejection, or a dead-USAJOBS run would report
+    // `jobs: []`/`skipRate: 1` indistinguishable from "found nothing."
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const source = makeSource(fetchImpl);
+
+    const err = await source
+      .search({ keywords: ["civil engineer", "engineering generalist"] })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(TransientSourceError);
+  });
+
+  it("a single-phrase keywords array whose one phrase fails transiently rejects (0 of 1 phrases succeeded), consistent with the all-phrases-failed rule", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const source = makeSource(fetchImpl);
+
+    const err = await source.search({ keywords: ["only phrase"] }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(TransientSourceError);
+  });
+
+  it("a mix where SOME phrases succeed and ANOTHER fails with an abort-worthy error still rejects the whole call -- aborting takes priority over partial success, matching Greenhouse's own abortError mechanism", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      if (keyword === "bad credentials") return new Response("Unauthorized", { status: 401 });
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    // Confirms the rejection happens even though "civil engineer" would
+    // have succeeded and contributed a real job -- that partial success is
+    // discarded, not returned alongside or instead of the rejection.
+    await expect(
+      source.search({ keywords: ["civil engineer", "bad credentials"] }),
+    ).rejects.toBeInstanceOf(AuthFailedError);
+  });
 });
 
 describe("createUsajobsSourceFromEnv", () => {

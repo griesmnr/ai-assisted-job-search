@@ -158,29 +158,45 @@ export class UsajobsSource implements JobSource {
    * result for any caller inspecting this adapter's own numbers, ahead
    * of whatever ingestion does with them later.
    *
-   * Ticket c419a12: per-phrase failure isolation, matching SmartRecruiters'
-   * per-company `search()` catch (smartrecruiters.ts) rather than
-   * Greenhouse's isolate-some/abort-others split -- this ticket's own
-   * acceptance criteria wants `search()` to "return SOMETHING useful even
-   * if 1 of N phrases failed", full stop, not just for a subset of error
-   * kinds. So every error a phrase's `#searchOne` can throw (network,
-   * rate-limit, auth, malformed response, unexpected status -- see
-   * types.ts's `SourceError` subclasses) is caught HERE and turned into a
-   * `SkippedRecord` naming the failed phrase and the underlying error,
-   * exactly like `#searchCompany`'s per-company catch in
-   * smartrecruiters.ts treats a whole failed company. This is a
-   * collection-level skip, not a per-posting one -- see
-   * `SourceSearchResult.skipRate`'s own doc comment for why that's an
-   * expected, named exception to "skipped means one unmappable posting".
-   * Before this fix, ANY phrase throwing discarded every OTHER phrase's
-   * already-completed results (opus review F4 on ticket d1fc9e2,
-   * confirmed live: a reviewer's own verification run hit a real
-   * transient USAJOBS socket drop mid-fetch and lost multiple
-   * already-completed phrases as a result). `CompositeSource`
-   * (composite.ts) still isolates USAJOBS's total failure from the other
-   * configured sources -- that safety net is unchanged, this fix just
-   * makes USAJOBS itself degrade one phrase at a time instead of all at
-   * once.
+   * Ticket c419a12: per-phrase failure isolation, matching Greenhouse's own
+   * isolate-some/abort-others split (greenhouse.ts's `#search`) rather than
+   * SmartRecruiters' catch-everything shape -- the real acceptance
+   * criterion (see the ticket body, `git-bug bug show c419a12`) is
+   * narrower than "return something useful no matter what fails": "one
+   * phrase's TRANSIENT failure no longer discards other phrases' completed
+   * results." Note "transient" -- a phrase's `TransientSourceError`,
+   * `ForbiddenError` (transient WAF edge behavior, see that type's doc
+   * comment), or `RateLimitedError` says nothing about whether some OTHER
+   * phrase's independent request is broken too, so isolating those three
+   * as a `SkippedRecord` naming the failed phrase and moving on is the
+   * right degrade. `AuthFailedError`, `MalformedResponseError`, and any
+   * unmapped/unexpected kind (e.g. `UnexpectedStatusError`) are different:
+   * they mean either our own credentials/request are broken or USAJOBS
+   * sent back something we don't know how to read at all, in a way that
+   * says nothing good about the OTHER phrases either (in practice, they'll
+   * fail identically, since every phrase hits the same API with the same
+   * credentials) -- for those, `#searchMultipleKeywords` sets `abortError`
+   * and lets the whole call reject once every worker has stopped, exactly
+   * like Greenhouse's `abortError` mechanism. See the isolate/abort split
+   * in the worker's catch block below for the exact boundary (opus review
+   * on this ticket's first draft, B1: an earlier version of this fix
+   * isolated EVERY error kind, including auth failures and malformed
+   * responses -- see the `jobs.length === 0` rethrow below for why a
+   * TOTAL outage made up entirely of isolated failures must still surface
+   * as a real error too, not as an all-empty "0 jobs found" result).
+   *
+   * Before this fix (the original d1fc9e2 regression), ANY phrase throwing
+   * discarded every OTHER phrase's already-completed results (opus review
+   * F4 on ticket d1fc9e2, confirmed live: a reviewer's own verification
+   * run hit a real transient USAJOBS socket drop mid-fetch and lost
+   * multiple already-completed phrases as a result). `CompositeSource`
+   * (composite.ts) only sets a source's `status: "error"` when the
+   * search() PROMISE REJECTS -- so with the isolate/abort split above, a
+   * genuinely fatal per-phrase failure (or a total outage across every
+   * phrase) still rejects and still reaches `CompositeSource` as a real
+   * failure, exactly as it did before per-phrase isolation existed; only a
+   * TRANSIENT failure on a strict subset of phrases now degrades USAJOBS
+   * one phrase at a time instead of discarding the whole call.
    *
    * Shared stop flag, mirroring Greenhouse's `rateLimitedBy` (ticket
    * b681d18): a `RateLimitedError` on any phrase sets `rateLimitedByPhrase`,
@@ -223,10 +239,24 @@ export class UsajobsSource implements JobSource {
     const resultsByIndex: (SourceSearchResult | undefined)[] = new Array(phrases.length);
     let nextIndex = 0;
     let rateLimitedByPhrase: string | undefined;
+    // Greenhouse's `abortError` (greenhouse.ts), same semantics: set only by
+    // an error kind severe enough to fail the WHOLE call (see the isolate-
+    // vs-abort split in the big doc comment above), checked by every worker
+    // before claiming its next phrase, and rethrown unconditionally after
+    // `Promise.all` below -- even if some phrases already succeeded. A
+    // genuinely fatal, non-transient failure for one phrase should not be
+    // hidden behind other phrases' partial results.
+    let abortError: unknown;
+    // The first ISOLATED (per-phrase-skip) failure seen, kept only so that
+    // if literally nothing succeeds -- every phrase either isolated-failed
+    // or was never attempted -- search() can rethrow a real error instead
+    // of silently returning an all-empty, all-skipped success (see the
+    // `jobs.length === 0` check below).
+    let firstIsolatedError: unknown;
 
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (rateLimitedByPhrase !== undefined) return;
+        if (rateLimitedByPhrase !== undefined || abortError !== undefined) return;
         const i = nextIndex;
         if (i >= phrases.length) return;
         // Claim happens synchronously, before any `await` below -- no two
@@ -237,28 +267,45 @@ export class UsajobsSource implements JobSource {
         try {
           resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrase });
         } catch (err) {
-          // Mirrors Greenhouse's tokenOutcomes formatting: a RateLimitedError
-          // carries its `retryAfterMs` as a separate field, not in `message`
-          // itself (see types.ts) -- surface it here too, since it's the one
-          // piece of information most useful to whoever reads this skip.
-          const message = err instanceof Error ? err.message : String(err);
-          const detail =
-            err instanceof RateLimitedError && err.retryAfterMs !== undefined
-              ? `${message} (retry after ${err.retryAfterMs}ms)`
-              : message;
-          resultsByIndex[i] = {
-            jobs: [],
-            skipped: [
-              {
-                externalId: undefined,
-                reason: `USAJOBS search for title phrase "${phrase}" failed: ${detail}`,
-              },
-            ],
-            skipRate: 1,
-          };
-          if (err instanceof RateLimitedError) {
-            rateLimitedByPhrase ??= phrase;
+          if (
+            err instanceof TransientSourceError ||
+            err instanceof ForbiddenError ||
+            err instanceof RateLimitedError
+          ) {
+            // Mirrors Greenhouse's tokenOutcomes formatting: a
+            // RateLimitedError carries its `retryAfterMs` as a separate
+            // field, not in `message` itself (see types.ts) -- surface it
+            // here too, since it's the one piece of information most useful
+            // to whoever reads this skip.
+            const message = err instanceof Error ? err.message : String(err);
+            const detail =
+              err instanceof RateLimitedError && err.retryAfterMs !== undefined
+                ? `${message} (retry after ${err.retryAfterMs}ms)`
+                : message;
+            resultsByIndex[i] = {
+              jobs: [],
+              skipped: [
+                {
+                  externalId: undefined,
+                  reason: `USAJOBS search for title phrase "${phrase}" failed: ${detail}`,
+                },
+              ],
+              skipRate: 1,
+            };
+            firstIsolatedError ??= err;
+            if (err instanceof RateLimitedError) {
+              rateLimitedByPhrase ??= phrase;
+            }
+            continue;
           }
+          // AuthFailedError, MalformedResponseError, or any unmapped/
+          // unexpected error kind (e.g. an UnexpectedStatusError) --
+          // abort-worthy. Record which error wins (first one observed) and
+          // stop THIS worker; other in-flight workers stop claiming new
+          // work on their next loop iteration, matching Greenhouse's
+          // `abortError` mechanism exactly.
+          abortError ??= err;
+          return;
         }
       }
     };
@@ -266,6 +313,8 @@ export class UsajobsSource implements JobSource {
     await Promise.all(
       Array.from({ length: Math.min(KEYWORD_SEARCH_CONCURRENCY, phrases.length) }, () => worker()),
     );
+
+    if (abortError !== undefined) throw abortError;
 
     // Every phrase a worker never got around to claiming before the
     // rate-limit stop flag was set -- recorded individually, matching
@@ -318,21 +367,36 @@ export class UsajobsSource implements JobSource {
     // Every index is populated by this point: the worker loop above sets
     // `resultsByIndex[i]` (success or caught-error placeholder) for every
     // phrase it claims, and the rate-limit gap-fill loop above covers every
-    // phrase no worker got to claim at all -- so `!` here is a real
-    // invariant, not an unchecked assumption.
+    // phrase no worker got to claim at all. Filtered with a type guard
+    // (matching Greenhouse's `tokenOutcomes` filter in greenhouse.ts) rather
+    // than a bare `!` non-null assertion, so a future refactor that leaves a
+    // gap can't silently produce a runtime TypeError here.
+    const results = resultsByIndex.filter((r): r is SourceSearchResult => r !== undefined);
     const jobs: NormalizedJob[] = [];
     const seenJobIds = new Set<string>();
-    for (const result of resultsByIndex) {
-      for (const job of result!.jobs) {
+    for (const result of results) {
+      for (const job of result.jobs) {
         if (seenJobIds.has(job.externalId)) continue;
         seenJobIds.add(job.externalId);
         jobs.push(job);
       }
     }
+
+    // Total-outage case: every phrase either isolated-failed or was never
+    // attempted (rate-limit gap-fill) -- nothing succeeded at all. Returning
+    // normally here would report this as `jobs: []`/`status: "empty"`,
+    // indistinguishable from a search that genuinely matched zero postings.
+    // `firstIsolatedError` is only set when at least one phrase actually
+    // threw one of the isolated kinds, so a legitimate all-phrases-matched-
+    // nothing search (no error ever thrown) still returns normally below.
+    if (jobs.length === 0 && firstIsolatedError !== undefined) {
+      throw firstIsolatedError;
+    }
+
     const skipped: SkippedRecord[] = [];
     const seenSkipIds = new Set<string>();
-    for (const result of resultsByIndex) {
-      for (const skip of result!.skipped) {
+    for (const result of results) {
+      for (const skip of result.skipped) {
         if (skip.externalId !== undefined) {
           if (seenJobIds.has(skip.externalId)) continue;
           if (seenSkipIds.has(skip.externalId)) continue;
@@ -479,15 +543,25 @@ async function parseResponse(response: Response): Promise<UsajobsSearchResponse>
     // this project's own live verification runs (2 of 3 runs of
     // scripts/verify-usajobs-keyword-coverage.ts): undici raises this as a
     // `TypeError` with message `"terminated"`, `.cause.code ===
-    // "UND_ERR_SOCKET"` -- see `isConnectionTerminatedError`. Misclassifying
-    // it as `MalformedResponseError` (non-retryable) means a phrase that
-    // could have succeeded on retry gets permanently marked failed instead
-    // -- especially costly now that `#searchMultipleKeywords` issues far
-    // more requests per user search than the old single-keyword path did,
-    // so this fires often, and per-phrase isolation (this same ticket)
-    // means a retryable failure being marked non-retryable is the
-    // difference between one phrase quietly missing every real posting and
-    // a caller's retry logic (fetchSourceWorker.ts) actually recovering it.
+    // "UND_ERR_SOCKET"` -- see `isConnectionTerminatedError`. This
+    // classification is what `#searchMultipleKeywords`'s isolate-vs-abort
+    // split (see its doc comment, and the B1 fix on this same ticket)
+    // actually keys off of, so misclassifying it matters concretely, not
+    // just semantically: `TransientSourceError` is one of the ISOLATED
+    // kinds, so a socket drop on one phrase becomes a single skipped
+    // phrase and the OTHER phrases' work still returns; `MalformedResponseError`
+    // is ABORT-worthy, so misclassifying a socket drop as one would fail
+    // the entire multi-phrase call over what was really just one flaky
+    // connection -- especially costly now that `#searchMultipleKeywords`
+    // issues far more requests per user search than the old single-keyword
+    // path did, so this fires often. And in the total-outage case (every
+    // phrase hits a socket drop), correct classification is also what lets
+    // `#searchMultipleKeywords`'s all-phrases-failed rethrow (see that
+    // check) surface a `TransientSourceError` rather than a
+    // `MalformedResponseError` -- which is what lets a caller's retry
+    // logic (fetchSourceWorker.ts's `classify()`) actually recognize this
+    // as retryable and recover it, instead of writing it off as a
+    // permanent, non-retryable failure.
     if (isConnectionTerminatedError(err)) {
       throw new TransientSourceError(
         "USAJOBS connection was terminated while reading the response body (socket drop) — retryable",
