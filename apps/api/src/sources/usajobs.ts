@@ -253,6 +253,16 @@ export class UsajobsSource implements JobSource {
     // of silently returning an all-empty, all-skipped success (see the
     // `jobs.length === 0` check below).
     let firstIsolatedError: unknown;
+    // Real successes only -- NOT `jobs.length` after merging (a phrase that
+    // genuinely matched zero postings still counts as a success here, and
+    // must, or the total-outage check below would misfire on a healthy
+    // phrase that simply found nothing). Opus re-review (c419a12, round 2):
+    // an earlier version of this gated on `jobs.length === 0` post-merge,
+    // which is a strictly broader condition than "nothing succeeded" -- it
+    // also fires when one phrase legitimately matches zero postings while
+    // another phrase fails, incorrectly rejecting a call that had one real
+    // success.
+    let successCount = 0;
 
     const worker = async (): Promise<void> => {
       for (;;) {
@@ -266,6 +276,7 @@ export class UsajobsSource implements JobSource {
 
         try {
           resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrase });
+          successCount++;
         } catch (err) {
           if (
             err instanceof TransientSourceError ||
@@ -382,14 +393,18 @@ export class UsajobsSource implements JobSource {
       }
     }
 
-    // Total-outage case: every phrase either isolated-failed or was never
-    // attempted (rate-limit gap-fill) -- nothing succeeded at all. Returning
-    // normally here would report this as `jobs: []`/`status: "empty"`,
-    // indistinguishable from a search that genuinely matched zero postings.
-    // `firstIsolatedError` is only set when at least one phrase actually
-    // threw one of the isolated kinds, so a legitimate all-phrases-matched-
-    // nothing search (no error ever thrown) still returns normally below.
-    if (jobs.length === 0 && firstIsolatedError !== undefined) {
+    // Total-outage case: literally zero phrases succeeded -- every phrase
+    // either isolated-failed or was never attempted (rate-limit gap-fill).
+    // Gated on `successCount`, NOT `jobs.length`: a phrase that genuinely
+    // matched zero postings still counts as a success, so `jobs.length ===
+    // 0` would incorrectly reject a call where one phrase legitimately
+    // found nothing while a DIFFERENT phrase failed -- that call has a real
+    // success in it and must return normally with the failure recorded as
+    // a skip, not be thrown away. `firstIsolatedError` is only set when at
+    // least one phrase actually threw one of the isolated kinds, so a
+    // legitimate all-phrases-matched-nothing search (no error ever thrown)
+    // still returns normally below.
+    if (successCount === 0 && firstIsolatedError !== undefined) {
       throw firstIsolatedError;
     }
 

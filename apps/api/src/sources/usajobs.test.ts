@@ -769,12 +769,50 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
     ).rejects.toBeInstanceOf(MalformedResponseError);
   });
 
+  // Opus re-review, round 2: the all-fail MalformedResponseError test above
+  // also passes if MalformedResponseError were wrongly ISOLATED instead of
+  // aborted, because the all-isolated-and-zero-successes rethrow would have
+  // caught it for the wrong reason. This mixed-success variant is the one
+  // that actually pins the isolate/abort boundary for this error kind --
+  // mirrors the AuthFailedError mixed test below.
+  it("a mix where ONE phrase succeeds and ANOTHER fails with MalformedResponseError still rejects -- pins the boundary, not just the all-fail case", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      if (keyword === "bad response") return new Response("not json{{{", { status: 200 });
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    await expect(
+      source.search({ keywords: ["civil engineer", "bad response"] }),
+    ).rejects.toBeInstanceOf(MalformedResponseError);
+  });
+
   it("aborts the whole call (rejects) when EVERY phrase fails with an unmapped/unexpected status", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("Bad Request", { status: 400 }));
     const source = makeSource(fetchImpl);
 
     await expect(
       source.search({ keywords: ["civil engineer", "engineering generalist"] }),
+    ).rejects.toBeInstanceOf(UnexpectedStatusError);
+  });
+
+  // Same reasoning as the MalformedResponseError mixed test above -- the
+  // all-fail unmapped-status test alone can't distinguish "correctly
+  // aborted" from "incorrectly isolated, then rethrown by the
+  // zero-successes fallback."
+  it("a mix where ONE phrase succeeds and ANOTHER fails with an unmapped/unexpected status still rejects -- pins the boundary, not just the all-fail case", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
+      if (keyword === "bad request") return new Response("Bad Request", { status: 400 });
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    await expect(
+      source.search({ keywords: ["civil engineer", "bad request"] }),
     ).rejects.toBeInstanceOf(UnexpectedStatusError);
   });
 
@@ -791,6 +829,28 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(TransientSourceError);
+  });
+
+  // Opus re-review, round 2: gating the total-outage rethrow on
+  // `jobs.length === 0` (rather than a real success count) would
+  // incorrectly reject THIS call -- "civil engineer" is a genuine success
+  // that happens to match zero postings, while "flaky phrase" transiently
+  // fails. There IS a real success here; the failure must be recorded as a
+  // skip, not thrown away.
+  it("returns normally (does not reject) when one phrase succeeds but genuinely matches zero postings, even while another phrase fails transiently", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      const keyword = url.searchParams.get("Keyword");
+      if (keyword === "civil engineer") return emptyResponse();
+      if (keyword === "flaky phrase") throw new Error("ECONNRESET");
+      return emptyResponse();
+    });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["civil engineer", "flaky phrase"] });
+
+    expect(result.jobs).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.reason).toContain('"flaky phrase"');
   });
 
   it("a single-phrase keywords array whose one phrase fails transiently rejects (0 of 1 phrases succeeded), consistent with the all-phrases-failed rule", async () => {
