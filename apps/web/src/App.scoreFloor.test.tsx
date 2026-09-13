@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MATCH_SCORE_FLOOR,
+  type EstimateSearchResponse,
   type GetResumeResultsResponse,
   type GetSourcesResponse,
   type ScoredJobResult,
@@ -79,6 +80,63 @@ async function submitResumeAndOpenScoredTab() {
   fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
   await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+}
+
+function makeEstimate(): EstimateSearchResponse {
+  return {
+    resumeId: "resume-1",
+    costEstimate: {
+      jobCount: 1,
+      estimatedInputTokens: 0,
+      estimatedCacheReadTokens: 0,
+      estimatedCacheCreationTokens: 0,
+      estimatedOutputTokens: 0,
+      estimatedCostUsd: 0,
+      maxCostUsd: 0.1,
+      probableCostUsd: 0.05,
+      basis: "bootstrap",
+    },
+    candidatesNeedingScore: 1,
+    scoreThreshold: 100,
+    cappedCount: 0,
+    alreadyScored: 0,
+    sourceOutcomes: [],
+    skippedSources: [],
+  };
+}
+
+/**
+ * Drives a REAL completed search end to end (estimate -> run -> poll to
+ * "complete"), the same sequence App.tabs.test.tsx uses to reach
+ * `hasFreshSearchResults`. That flag is what makes "New Job Search" render
+ * its OWN `ScoreFloorControl` instance -- "Already Scored Jobs" always
+ * renders its instance once a `resumeId` exists, but the search tab's copy
+ * only appears after a search has actually completed. Both instances are
+ * simultaneously in the DOM the moment this resolves (App.tsx keeps both
+ * tabs mounted at all times via `hidden`, not conditional rendering) --
+ * this is the exact shape the opus review's duplicate-id finding needed a
+ * real reproduction for, since every other test in this file only ever
+ * reaches the scored tab WITHOUT completing a search first, so only one
+ * `ScoreFloorControl` instance was ever mounted.
+ */
+async function submitResumeAndCompleteASearch() {
+  render(<App />);
+  fireEvent.change(screen.getByLabelText("Paste your resume"), {
+    target: { value: "some resume text" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+  fireEvent.click(screen.getByLabelText(/Any location/));
+
+  fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+  await screen.findByRole("button", { name: "Run search" });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+  await act(async () => {
+    await vi.waitFor(() => expect(getSearchStatus).toHaveBeenCalled(), { timeout: 3000 });
+  });
+
+  await screen.findByRole("heading", { name: "Results from this search" });
 }
 
 describe("Score floor slider (ticket ffbf9fb)", () => {
@@ -176,5 +234,80 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
     expect(await screen.findByLabelText("Minimum match score to show")).toHaveValue("25");
+  });
+
+  describe("two simultaneously-mounted instances (opus review, ticket ffbf9fb BLOCKING)", () => {
+    /**
+     * Every OTHER test in this file reaches the "Already Scored Jobs" tab
+     * via `submitResumeAndOpenScoredTab`, which never completes a real
+     * search -- so `hasFreshSearchResults` stays false, "New Job Search"
+     * never renders its own `ScoreFloorControl`, and only ONE instance is
+     * ever mounted. That's exactly why the opus review's duplicate-id bug
+     * slipped past every existing test: with a hardcoded
+     * `id="score-floor-slider"`, a single mounted instance can never
+     * collide with itself. This test drives a REAL completed search
+     * (`submitResumeAndCompleteASearch`), the app's primary path, so BOTH
+     * tabs' `ScoreFloorControl` instances are actually in the DOM at once
+     * (App.tsx keeps both tabs mounted simultaneously via `hidden`, not
+     * conditional rendering -- see its own comment on that).
+     */
+    it("gives each mounted slider a distinct id whose label truly resolves to it", async () => {
+      getSources.mockResolvedValue(SOURCES);
+      createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+      getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+      estimateSearch.mockResolvedValue(makeEstimate());
+      startSearch.mockResolvedValue({
+        searchId: "search-1",
+        status: "pending",
+        skippedSources: [],
+      });
+      getSearchStatus.mockResolvedValue({
+        status: "complete",
+        newlyScored: 0,
+        failed: 0,
+        skipped: 0,
+        costEstimate: makeEstimate().costEstimate,
+        sourceOutcomes: [],
+      });
+
+      await submitResumeAndCompleteASearch();
+
+      // Both instances are mounted now: the visible "New Job Search" tab's
+      // (active tab by default) and the hidden "Already Scored Jobs" tab's.
+      // `getAllByLabelText` does not filter by the `hidden` attribute (only
+      // role-based queries do), so this genuinely proves both are in the
+      // DOM at once -- not just that one query happens to find one of them.
+      const sliders = screen.getAllByLabelText("Minimum match score to show");
+      expect(sliders).toHaveLength(2);
+      const [searchTabSlider, scoredTabSlider] = sliders as [HTMLInputElement, HTMLInputElement];
+
+      // BLOCKING bug: a hardcoded `id="score-floor-slider"` would make
+      // these equal.
+      expect(searchTabSlider.id).not.toBe(scoredTabSlider.id);
+      expect(searchTabSlider.id.length).toBeGreaterThan(0);
+      expect(scoredTabSlider.id.length).toBeGreaterThan(0);
+
+      // Each slider's label must resolve back to THAT SAME slider, not the
+      // other tab's -- scoped with `within()` per instance so this can't
+      // accidentally pass by matching the wrong tab's copy.
+      const searchTabContainer = searchTabSlider.closest(".score-floor-control");
+      const scoredTabContainer = scoredTabSlider.closest(".score-floor-control");
+      if (searchTabContainer === null || scoredTabContainer === null) {
+        throw new Error("expected each slider to be wrapped in .score-floor-control");
+      }
+      const searchTabLabel = within(searchTabContainer as HTMLElement).getByText(
+        "Minimum match score to show",
+      );
+      const scoredTabLabel = within(scoredTabContainer as HTMLElement).getByText(
+        "Minimum match score to show",
+      );
+      expect((searchTabLabel as HTMLLabelElement).control).toBe(searchTabSlider);
+      expect((scoredTabLabel as HTMLLabelElement).control).toBe(scoredTabSlider);
+      // And explicitly NOT cross-wired to the other tab's slider -- this is
+      // the precise failure mode the bug produced (visible tab's label
+      // pointing at the other, hidden tab's control).
+      expect((searchTabLabel as HTMLLabelElement).control).not.toBe(scoredTabSlider);
+      expect((scoredTabLabel as HTMLLabelElement).control).not.toBe(searchTabSlider);
+    });
   });
 });

@@ -2,10 +2,11 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  EstimateSearchResponse,
-  GetResumeResultsResponse,
-  GetSourcesResponse,
+import {
+  MATCH_SCORE_FLOOR,
+  type EstimateSearchResponse,
+  type GetResumeResultsResponse,
+  type GetSourcesResponse,
 } from "@app/shared";
 import App from "./App";
 
@@ -219,5 +220,53 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     expect(screen.getByLabelText("Paste your resume")).toHaveValue("");
     expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the default floor when a persisted scoreFloor is out of the slider's 0-90 range (opus review, ticket ffbf9fb minor)", async () => {
+    // Otherwise-valid record (every other field matches what setUpRealState
+    // would have written), but `scoreFloor` is a hand-edited/otherwise
+    // corrupt value far outside the slider's actual bounds. Before this
+    // fix, `readAppState` only checked "is a finite number" -- this would
+    // have loaded straight through and gone to `?minScore=` as 1e6, while
+    // the slider itself renders clamped at 90 (a visible mismatch between
+    // what the UI shows and what's actually sent to the server).
+    sessionStorage.setItem(
+      "jobsearch.web.appState.v3",
+      JSON.stringify({
+        resumeId: "resume-1",
+        resumeText: RESUME_TEXT,
+        selectedSourceIds: ["usajobs"],
+        titleChips: ["Backend Engineer"],
+        criteriaForm: {
+          nearLocations: "",
+          remoteOk: false,
+          anyLocationOk: true,
+          commitmentIn: [],
+        },
+        scoreFloor: 1_000_000,
+      }),
+    );
+    mockHappyPath();
+
+    render(<App />);
+
+    // The whole record is treated as invalid (matching how every other
+    // rejected field in this file's "corrupt record" test behaves) rather
+    // than salvaging the in-range fields — falls back to a clean start.
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue("");
+    expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
+
+    // And once a fresh resume is submitted from this clean state, the
+    // floor sent to the server is the real default, not the corrupt value.
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: RESUME_TEXT },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() =>
+      expect(getResults).toHaveBeenCalledWith("resume-1", {
+        minScore: MATCH_SCORE_FLOOR,
+        includeDismissed: true,
+      }),
+    );
   });
 });
