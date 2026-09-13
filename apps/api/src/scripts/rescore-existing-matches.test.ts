@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NormalizedJob } from "../sources/types.js";
-import type { ScoredJob, UsageStats } from "../demo-match.js";
+import type { CostEstimate, ScoredJob, UsageStats } from "../demo-match.js";
 import { estimateScoringCost } from "../demo-match.js";
 import {
   MAX_ESTIMATED_SPEND_USD,
@@ -139,7 +139,7 @@ describe("buildJobMatchUpdate", () => {
 
 describe("checkSpendCeiling", () => {
   it("is within ceiling when cost is under the default ceiling", () => {
-    const result = checkSpendCeiling(1.23);
+    const result = checkSpendCeiling({ maxCostUsd: 1.23 });
     expect(result).toEqual({
       withinCeiling: true,
       ceilingUsd: MAX_ESTIMATED_SPEND_USD,
@@ -148,17 +148,31 @@ describe("checkSpendCeiling", () => {
   });
 
   it("is within ceiling exactly at the boundary", () => {
-    expect(checkSpendCeiling(MAX_ESTIMATED_SPEND_USD).withinCeiling).toBe(true);
+    expect(checkSpendCeiling({ maxCostUsd: MAX_ESTIMATED_SPEND_USD }).withinCeiling).toBe(true);
   });
 
   it("refuses when cost exceeds the default ceiling", () => {
-    const result = checkSpendCeiling(MAX_ESTIMATED_SPEND_USD + 0.01);
+    const result = checkSpendCeiling({ maxCostUsd: MAX_ESTIMATED_SPEND_USD + 0.01 });
     expect(result.withinCeiling).toBe(false);
   });
 
   it("respects an explicit custom ceiling instead of the default", () => {
-    expect(checkSpendCeiling(2.5, 2.0).withinCeiling).toBe(false);
-    expect(checkSpendCeiling(1.5, 2.0).withinCeiling).toBe(true);
+    expect(checkSpendCeiling({ maxCostUsd: 2.5 }, 2.0).withinCeiling).toBe(false);
+    expect(checkSpendCeiling({ maxCostUsd: 1.5 }, 2.0).withinCeiling).toBe(true);
+  });
+
+  // Opus re-review (45e238e, round 3): `checkSpendCeiling` now takes the
+  // WHOLE estimate and reads `.maxCostUsd` internally specifically so this
+  // test can prove it reads the right field -- passing an object where
+  // `probableCostUsd` is under the ceiling but `maxCostUsd` is over it, and
+  // asserting the result follows `maxCostUsd`, fails if the implementation
+  // is ever mutated to read `probableCostUsd` instead.
+  it("reads maxCostUsd, not probableCostUsd, from the estimate -- these can genuinely disagree", () => {
+    const estimate = { maxCostUsd: MAX_ESTIMATED_SPEND_USD + 1, probableCostUsd: 0.01 } as Pick<
+      CostEstimate,
+      "maxCostUsd" | "probableCostUsd"
+    >;
+    expect(checkSpendCeiling(estimate).withinCeiling).toBe(false);
   });
 });
 
@@ -290,12 +304,17 @@ describe("spend ceiling wired to the REAL estimateScoringCost output (R4, advers
   // checkSpendCeiling in isolation, or checks estimateScoringCost's output
   // in isolation -- nothing exercises the actual composition main() performs
   // (call the real estimator, then check ITS OUTPUT against the ceiling).
-  // That gap matters concretely: main() must pass `costEstimate.maxCostUsd`
-  // (the genuine worst case) to checkSpendCeiling, not `.probableCostUsd`
-  // (the merely-likely figure, ~2-4x smaller at this scale) -- and no
-  // existing test would have caught main() accidentally using the wrong
-  // one. This test closes that gap by routing REALISTIC inputs through the
-  // real estimator and asserting on `.maxCostUsd` specifically.
+  // That gap matters concretely: `checkSpendCeiling` must use
+  // `estimate.maxCostUsd` (the genuine worst case), not `.probableCostUsd`
+  // (the merely-likely figure, ~2-4x smaller at this scale). Opus re-review
+  // round 3 found the FIRST version of this test still passed a bare
+  // `estimate.maxCostUsd` NUMBER to `checkSpendCeiling`, so the field
+  // selection happened here in the test rather than inside the function
+  // under test -- mutating `checkSpendCeiling`'s internals (or main()'s call
+  // site, before checkSpendCeiling took the whole estimate) to use
+  // `probableCostUsd` would NOT have failed this test. Passing the whole
+  // `estimate` object below, now that `checkSpendCeiling` reads the field
+  // itself, closes that gap for real.
   //
   // "Realistic" here means this codebase's own already-established
   // historical per-call token averages -- 3,874.5 input / 454.2 output
@@ -325,7 +344,10 @@ describe("spend ceiling wired to the REAL estimateScoringCost output (R4, advers
     expect(estimate.probableCostUsd).toBeLessThan(MAX_ESTIMATED_SPEND_USD);
     expect(estimate.maxCostUsd).toBeGreaterThan(MAX_ESTIMATED_SPEND_USD);
 
-    const check = checkSpendCeiling(estimate.maxCostUsd);
+    // Pass the WHOLE estimate, not `estimate.maxCostUsd` -- a bare number
+    // here would let checkSpendCeiling's field choice go untested (see the
+    // describe block's own comment for why this matters).
+    const check = checkSpendCeiling(estimate);
     expect(check.withinCeiling).toBe(false);
   });
 
@@ -336,7 +358,7 @@ describe("spend ceiling wired to the REAL estimateScoringCost output (R4, advers
     const estimate = estimateScoringCost(makeJobs(100), resumeText, realisticUsageStats);
     expect(estimate.maxCostUsd).toBeLessThan(MAX_ESTIMATED_SPEND_USD);
 
-    const check = checkSpendCeiling(estimate.maxCostUsd);
+    const check = checkSpendCeiling(estimate);
     expect(check.withinCeiling).toBe(true);
   });
 });

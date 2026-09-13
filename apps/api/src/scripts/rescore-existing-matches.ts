@@ -76,6 +76,7 @@ import {
   makeClaudeScorer,
   readUsageStats,
   recordUsageStats,
+  type CostEstimate,
   type ScoredJob,
 } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes } from "../db/schema.js";
@@ -309,18 +310,29 @@ export type SpendCeilingCheck = {
 };
 
 /**
- * The actual spend gate: whether `costUsd` (this script always passes
- * `CostEstimate.maxCostUsd`, the genuine worst case -- see `main()`)
+ * The actual spend gate: whether `estimate.maxCostUsd` (the genuine worst
+ * case, every job at MAX_OUTPUT_TOKENS -- never the merely-probable figure)
  * exceeds `ceilingUsd`. `--live`/no-flag only decide whether a run is
  * ALLOWED to spend at all; THIS decides whether the amount it would spend
  * is one within the approved ceiling, checked against the real computed
  * estimate rather than against job count directly, so it catches any way
  * the real cost ends up larger than expected.
+ *
+ * Takes the WHOLE estimate object (matching `validate-level-fit.ts`'s own
+ * `checkSpendCeiling`) and reads `.maxCostUsd` INSIDE this function, rather
+ * than a bare `costUsd` number the caller extracts itself -- opus re-review
+ * (45e238e, round 3) found the bare-number version could not be
+ * mutation-tested: nothing would fail if `main()` were changed to pass
+ * `probableCostUsd` instead of `maxCostUsd`, since the field selection
+ * happened at the call site, outside any test's reach. Moving the field
+ * choice in here means a test can call this function directly with a real
+ * `CostEstimate` and prove which field it actually uses.
  */
 export function checkSpendCeiling(
-  costUsd: number,
+  estimate: Pick<CostEstimate, "maxCostUsd">,
   ceilingUsd: number = MAX_ESTIMATED_SPEND_USD,
 ): SpendCeilingCheck {
+  const costUsd = estimate.maxCostUsd;
   return { withinCeiling: costUsd <= ceilingUsd, ceilingUsd, costUsd };
 }
 
@@ -540,7 +552,7 @@ async function main(): Promise<void> {
     // (every job at MAX_OUTPUT_TOKENS), not the merely-probable figure, and
     // even in dry-run mode so an oversized batch is caught before anyone
     // bothers re-running with --live.
-    const spendCheck = checkSpendCeiling(costEstimate.maxCostUsd);
+    const spendCheck = checkSpendCeiling(costEstimate);
     if (!spendCheck.withinCeiling) {
       console.error(
         `\nWorst-case estimated cost ~$${spendCheck.costUsd.toFixed(2)} exceeds the approved ceiling ` +
