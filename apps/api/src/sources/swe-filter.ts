@@ -219,6 +219,169 @@ export function matchesTitleExclusion(title: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// AUDIT (ticket 8f5a79c, 2026-09-13): does SOFTWARE/NOT silently exclude a
+// real contract/temp-titled SWE posting? Nicole wants contract/temp roles
+// widening her funnel (lower bar to entry with an employment gap), and this
+// ticket is the audit her own read of NOT (correctly) found no obvious
+// "contract"/"contractor"/"temp" alternative in -- but "no alternative
+// targets it" isn't the same as "verified against a real title," per the
+// standing lesson of 06b09cf/894b4ef/9cac9a9/14289ac (a rule correct for
+// the titles it was checked against, silently wrong for a neighboring one).
+//
+// Searched every committed fixture under __fixtures__/ (all four sources'
+// real responses) for a title containing "contract"/"contractor"/"temp"/
+// "temporary"/"c2c"/"1099" in any form. Exactly two real fixture titles
+// contain any of these words at all:
+//   - "Marketing Media Strategist, International (Contract)"
+//     (ashby-real-response-ramp.json)
+//   - "Talent Sourcer (Contractor)" (lever-real-response-palantir.json)
+// Neither is a software-engineering title -- neither matches SOFTWARE at
+// all (verified directly, node -e, 2026-09-13: both `false`), so neither
+// can prove anything about a contract/temp SWE title surviving OR being
+// wrongly dropped; the first would also independently hit the `marketing`
+// NOT alternative if it ever did match SOFTWARE. Zero real fixture titles
+// exist that would exercise this ticket's actual question ("does a genuine
+// contract/temp SOFTWARE ENGINEER title survive the filter"), which is
+// itself informative: this project's four current sources (Greenhouse,
+// Lever, Ashby, SmartRecruiters) are general employer boards, not
+// contract-staffing platforms, and none of the real postings pulled from
+// them so far happens to be a contract-titled SWE role. Consistent with the
+// ticket's own "Out of scope" note that a dedicated contract-source
+// integration (Toptal/Upwork/staffing agencies) would be a separate ticket
+// if this audit found real volume worth chasing here -- it doesn't.
+//
+// With no real fixture able to exercise the question, verified instead
+// against realistic (explicitly labeled, invented per this file's own
+// established convention for exactly this situation -- see the `staff`
+// section's "Search for Staff Engineers" synthetic case, and the intern
+// section's "does NOT wrongly exclude... no fixture title... isolates this
+// case" note) contract/temp phrasings a real Greenhouse/Lever/Ashby posting
+// would plausibly use: "Software Engineer (Contract)", "Contract Software
+// Engineer", "Senior Software Engineer - Contractor", "Backend Engineer
+// (Contract-to-Hire)", "Software Engineer, Temporary Assignment", "Full
+// Stack Engineer (C2C)", "Software Engineer (1099)", "Software Engineer
+// Contractor - Remote US". Every one matches SOFTWARE and is NOT excluded
+// by NOT (verified directly against the exported `NOT`/`matchesTitleExclusion`
+// regex, 2026-09-13 -- see swe-filter.test.ts). The one case that DOES get
+// excluded, "Staff Software Engineer (Contract)", is excluded correctly and
+// for an unrelated reason (the existing, deliberate `staff` exclusion, F1's
+// range-aware precision fix from ticket 6b2313a) -- not because of the
+// "(Contract)" suffix; stripping "(Contract)" from that title still
+// excludes it, confirming the contract phrasing itself isn't what NOT is
+// reacting to.
+//
+// FINDING: no live exclusion bug. SOFTWARE/NOT do not silently drop
+// contract/temp-titled SWE postings -- no fix was needed or made here. This
+// is the ticket's own explicitly anticipated "nothing was broken, say so
+// plainly" outcome, not an invented negative result: the audit trail above
+// (real-fixture search coming up empty, realistic titles all surviving) is
+// the evidence for it.
+//
+// Also confirms the ticket's separate acceptance-criteria question -- do
+// contract/temp titles hit the location/work-arrangement filters incorrectly
+// -- is structurally impossible, not just untested: `resolveWorkArrangement`
+// takes only `(location, locationType)` and `passesLocationFilter` /
+// `classifyLocationFilterOutcome` are typed over `Pick<NormalizedJob,
+// "location" | "locationType">` -- none of them accepts or reads `title` at
+// all, so contract/temp phrasing in a title has no path to reach them.
+//
+// RELATED FINDING (informs `looksLikeContractOrTemp` below, not a
+// swe-filter.ts bug): `Job.commitment` already carries a structured
+// `"contract"` value for three of the four sources (see lever.ts's,
+// ashby.ts's, and smartrecruiters.ts's own `mapCommitment` -- Greenhouse's
+// board API has no equivalent field at all, per this file's header
+// comment). Ashby's own documented `employmentType` enum additionally has a
+// `"Temporary"` value (ashby.ts's `mapCommitment` doc comment: "real data
+// ... exercised ... Temporary (3)") that Ashby's `mapCommitment` correctly
+// leaves `undefined` rather than force into `commitment`'s 3-value enum (no
+// "temp" member exists on it) -- a genuinely temp-tagged Ashby posting is
+// therefore invisible to `commitment` entirely and can ONLY be caught by
+// title text. Not a bug to fix in THIS ticket (widening `Job.commitment`'s
+// enum is a schema change with its own migration and `criteria.ts`
+// `commitmentIn` implications, well beyond a title-filter audit) -- named
+// here so `looksLikeContractOrTemp`'s title-text fallback is understood as
+// load-bearing for Ashby "Temporary" postings, not a redundant belt-and-
+// suspenders check.
+// ---------------------------------------------------------------------------
+
+/**
+ * Title-phrasing signal for "does this read as a contract/temp posting" —
+ * ticket 8f5a79c. Deliberately separate from `NOT`: this is NOT an
+ * exclusion (contract/temp postings still pass `filterSoftwareEngineeringJobs`
+ * the same as any other SWE title, per Nicole's explicit ask that they be
+ * mixed into the same results, never dropped) — it's a tag a caller can
+ * filter on client-side, feeding `ScoredJobResult.isContractOrTemp` (see
+ * apps/api/src/routes/resumes.ts and packages/shared).
+ *
+ * `contract(?:ors?|ing)?` rather than bare `\bcontract\b`: the same
+ * suffix-boundary lesson as ticket 06b09cf's `\bintern\b`/"Internship" miss
+ * -- a bare `\bcontract\b` would require a word boundary immediately after
+ * "contract", which "Contractor"/"Contractors"/"Contracting" all fail (the
+ * next character is a word character, not a boundary). Verified this does
+ * NOT over-match "Contractual" (real risk: "contract" is itself a substring
+ * of "contractual") -- the optional suffix group only accepts "or(s)"/"ing",
+ * neither of which prefixes "ual", so the trailing `\b` correctly fails
+ * against "Contractual" (see swe-filter.test.ts).
+ *
+ * `temp(?:orary)?` catches "Temp"/"Temporary" the same way, without
+ * over-matching "Temporary"-unrelated words that merely contain "temp" as a
+ * substring not at a word boundary ("Attempt", "Contemporary", "Templar",
+ * "Temperature" -- all verified false, swe-filter.test.ts).
+ *
+ * F1 (opus review, real false positive, 2026-09-13): the negative lookbehind
+ * `(?<!\bsmart\s)` in front of the `contract` alternative exists because
+ * "contract" is not only an employment-type word -- "Smart Contract" is a
+ * standard, real, FULL-TIME title category in blockchain/crypto engineering.
+ * Not hypothetical: `.env.example` configures **coinbase** and **robinhood**
+ * as live Greenhouse boards in this exact project, and "Smart Contract
+ * Engineer" is a real title at exactly those employers. Without the guard,
+ * checking "Hide contract/temp roles" would silently hide a real full-time
+ * engineering role -- exactly the class of silent miscategorization bug
+ * ticket 8f5a79c exists to prevent, just relocated into this ticket's own
+ * new filter. The lookbehind only excludes "contract" immediately preceded
+ * by "smart " (word-boundary-anchored, so it doesn't fire on some other word
+ * merely ending in those letters) -- "Software Engineer (Contract) - Smart
+ * Home" still tags correctly, since "Smart" there sits elsewhere in the
+ * title, not immediately before "Contract". Verified against all six of the
+ * reviewer's test titles directly (node -e, 2026-09-13) and in
+ * swe-filter.test.ts.
+ *
+ * Known, NOT-required-to-fix residual gap (same review): a title like
+ * "Software Engineer, Contract Lifecycle Management" or "Full Stack
+ * Engineer, Contract Management Systems" -- the kind of title a company
+ * whose PRODUCT is literally called "Contract [X]" (e.g. Icertis, Ironclad,
+ * DocuSign) would post -- still incorrectly tags, since "contract" there is
+ * a product-domain term, not an employment-type indicator, same class of
+ * false positive as "Smart Contract" but with no "smart " prefix for this
+ * lookbehind to catch. Not fixed here: no real fixture/corpus evidence of
+ * this shape exists in this codebase today (unlike Smart Contract, which has
+ * the coinbase/robinhood board evidence above), so a second exception would
+ * be guessing rather than following real data. Revisit if a real posting
+ * from a contract-management-software employer's board ever surfaces.
+ */
+const CONTRACT_OR_TEMP_TITLE =
+  /(?<!\bsmart\s)\bcontract(?:ors?|ing)?\b|\bc2c\b|\b1099\b|\btemp(?:orary)?\b/i;
+
+/**
+ * `commitment === "contract"` first: a source-reported, structured signal
+ * beats a title guess wherever the source actually supplies it (same
+ * "structured beats substring" principle as `resolveWorkArrangement`) —
+ * see the AUDIT comment above for which sources populate `commitment` and
+ * the known Ashby "Temporary" gap the title fallback exists to partially
+ * cover. Falls back to `CONTRACT_OR_TEMP_TITLE` against the title whenever
+ * `commitment` is absent or not `"contract"` (Greenhouse never reports
+ * `commitment` at all; a genuinely temp Ashby posting reports `commitment:
+ * undefined`, not `"contract"`) — so a Greenhouse or Ashby-temp posting can
+ * still be tagged from its own title text.
+ */
+export function looksLikeContractOrTemp(
+  job: Pick<NormalizedJob, "title"> & { commitment?: NormalizedJob["commitment"] | null },
+): boolean {
+  if (job.commitment === "contract") return true;
+  return CONTRACT_OR_TEMP_TITLE.test(job.title);
+}
+
+// ---------------------------------------------------------------------------
 // Location filter: two independent questions, kept as two independent
 // predicates (ticket 4450f39).
 //

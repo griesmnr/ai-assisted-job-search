@@ -39,6 +39,7 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
     status: null,
     levelFit: null,
     levelFitNote: null,
+    isContractOrTemp: false,
     ...overrides,
   };
 }

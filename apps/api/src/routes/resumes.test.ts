@@ -699,3 +699,93 @@ describe("GET /resumes/:id/results — level fit tiebreak (ticket b182bde)", () 
     expect(body.results.map((r) => r.jobId)).toEqual(expectedOrder);
   });
 });
+
+// Ticket 8f5a79c: `isContractOrTemp` is a derived signal, computed at read
+// time from the job's own `title`/`commitment` (never its own DB column —
+// see ScoredJobResult's doc comment for why). Exercised end to end here
+// through the real route, not just against `looksLikeContractOrTemp`
+// directly (swe-filter.test.ts already covers that unit in isolation), so
+// the wiring from `jobs.commitment`/`jobs.title` through the SELECT and into
+// the wire response is proven, not just the helper function itself.
+describe("GET /resumes/:id/results — isContractOrTemp (ticket 8f5a79c)", () => {
+  async function seedJob(
+    resumeId: string,
+    title: string,
+    commitment?: "full-time" | "part-time" | "contract",
+  ): Promise<string> {
+    const jobId = randomUUID();
+    await db.insert(jobsTable).values({
+      id: jobId,
+      externalId: `contract-signal-test-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title,
+      description: "a job description",
+      company: "Test Co",
+      commitment,
+      linkToApply: `https://example.com/${jobId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await db.insert(jobMatches).values({
+      id: randomUUID(),
+      resumeId,
+      jobId,
+      matchScore: 80,
+      rationale: "fake rationale",
+      strengths: [],
+      gaps: [],
+    });
+    return jobId;
+  }
+
+  it('true when the job\'s structured commitment is "contract", even for an ordinary-sounding title', async () => {
+    const app = buildTestApp();
+    const resumeText = `Contract commitment resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedJob(resumeId, "Backend Software Engineer", "contract");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<{ isContractOrTemp: boolean }> };
+    expect(body.results[0]?.isContractOrTemp).toBe(true);
+  });
+
+  it("true from title phrasing alone when commitment is absent (e.g. Greenhouse, which never populates commitment at all)", async () => {
+    const app = buildTestApp();
+    const resumeText = `Contract title resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedJob(resumeId, "Software Engineer (Contract)");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<{ isContractOrTemp: boolean }> };
+    expect(body.results[0]?.isContractOrTemp).toBe(true);
+  });
+
+  it("false for an ordinary full-time posting with neither signal present", async () => {
+    const app = buildTestApp();
+    const resumeText = `Ordinary posting resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedJob(resumeId, "Backend Software Engineer", "full-time");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<{ isContractOrTemp: boolean }> };
+    expect(body.results[0]?.isContractOrTemp).toBe(false);
+  });
+
+  it("does not leak the raw commitment field onto the wire — isContractOrTemp is the only signal exposed", async () => {
+    const app = buildTestApp();
+    const resumeText = `No commitment leak resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedJob(resumeId, "Backend Software Engineer", "contract");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<Record<string, unknown>> };
+    expect(body.results[0]).not.toHaveProperty("commitment");
+  });
+});

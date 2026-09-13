@@ -69,6 +69,7 @@ function makeJob(jobId: string, title: string): ScoredJobResult {
     status: null,
     levelFit: null,
     levelFitNote: null,
+    isContractOrTemp: false,
   };
 }
 

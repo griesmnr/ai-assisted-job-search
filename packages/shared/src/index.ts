@@ -193,6 +193,27 @@ export type ScoredJobResult = {
    * this is a documentation-accuracy fix, not a bug fix.
    */
   levelFitNote: string | null;
+  /**
+   * Ticket 8f5a79c: does this posting read as contract/temp work? Computed
+   * server-side at read time (`apps/api/src/sources/swe-filter.ts`'s
+   * `looksLikeContractOrTemp` — a structured `commitment === "contract"`
+   * signal where the source reports one, falling back to title phrasing
+   * otherwise), never stored as its own DB column: it's fully derivable
+   * from data the row already has, so persisting a duplicate of it would
+   * just be another place for it to drift stale.
+   *
+   * Deliberately NOT an exclusion — contract/temp postings pass the same
+   * SOFTWARE/NOT title filter as any other SWE title and are mixed into
+   * this same ranked list, per Nicole's explicit ask (git-bug 8f5a79c
+   * correction: "they should be able to choose whether they want it... i
+   * just thought you were saying that theyd be in a different result
+   * section"). This field exists so the frontend's "Hide contract/temp
+   * roles" toggle (ResultsList.tsx/GroupedResultsList.tsx) can filter the
+   * existing corpus client-side — same pattern as `levelFit` feeding "Hide
+   * roles above my level" — never a separate section/tab and never a
+   * server round-trip.
+   */
+  isContractOrTemp: boolean;
 };
 
 export type GetResumeResultsResponse = {

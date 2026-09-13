@@ -6,6 +6,7 @@ import {
   classifyLocationFilterOutcome,
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
+  looksLikeContractOrTemp,
   matchesTitleExclusion,
   passesLocationFilter,
   resolveWorkArrangement,
@@ -399,6 +400,164 @@ describe('filterSoftwareEngineeringJobs — "fellow" dropped from NOT entirely (
 
   it('does NOT exclude "American Tech Fellowship" (real fixture title: lever-real-response-palantir.json) -- same word-boundary shape as ticket 06b09cf\'s "Internship" miss regardless (no boundary right after "fellow" in "Fellowship"), now doubly moot since "fellow" carries no NOT alternative at all', () => {
     expect(matchesTitleExclusion("American Tech Fellowship")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AUDIT (ticket 8f5a79c): does SOFTWARE/NOT silently exclude a real
+// contract/temp-titled SWE posting? See the module-level comment above
+// `looksLikeContractOrTemp` in swe-filter.ts for the full audit trail —
+// this describe block is that audit's executable evidence.
+// ---------------------------------------------------------------------------
+describe("filterSoftwareEngineeringJobs — contract/temp title audit (ticket 8f5a79c)", () => {
+  it('the only two real fixture titles containing "contract"/"contractor" anywhere in this repo are NOT software-engineering titles, and neither matches SOFTWARE — so neither can demonstrate a live exclusion bug either way', () => {
+    const ashbyContract = "Marketing Media Strategist, International (Contract)";
+    const leverContract = "Talent Sourcer (Contractor)";
+    expect(ashbyRamp.some((j) => j.title === ashbyContract)).toBe(true);
+    expect(leverPalantir.some((j) => j.text === leverContract)).toBe(true);
+
+    // Neither survives filterSoftwareEngineeringJobs -- but for reasons
+    // unrelated to their contract phrasing: neither matches SOFTWARE at
+    // all (verified via the end-to-end filter, which would report `false`
+    // survival either way SOFTWARE fails or NOT excludes).
+    expect(
+      filterSoftwareEngineeringJobs([job({ title: ashbyContract, company: "ramp" })]),
+    ).toHaveLength(0);
+    expect(
+      filterSoftwareEngineeringJobs([job({ title: leverContract, company: "palantir" })]),
+    ).toHaveLength(0);
+  });
+
+  it("FINDING: no real fixture title in this repo is a genuine contract/temp-titled SOFTWARE ENGINEER posting, so the audit is verified instead against realistic (explicitly invented, per this file's own convention for exactly this situation) contract/temp phrasings — every one SURVIVES the filter unchanged, proving SOFTWARE/NOT do not silently exclude them", () => {
+    const realisticContractOrTempSweTitles = [
+      "Software Engineer (Contract)",
+      "Contract Software Engineer",
+      "Senior Software Engineer - Contractor",
+      "Backend Engineer (Contract-to-Hire)",
+      "Software Engineer, Temporary Assignment",
+      "Full Stack Engineer (C2C)",
+      "Software Engineer (1099)",
+      "Software Engineer Contractor - Remote US",
+    ];
+    for (const title of realisticContractOrTempSweTitles) {
+      expect(matchesTitleExclusion(title), title).toBe(false);
+      const result = filterSoftwareEngineeringJobs([job({ title, company: "synthetic" })]);
+      expect(result, `expected "${title}" to survive (not be excluded)`).toHaveLength(1);
+    }
+  });
+
+  it('"Staff Software Engineer (Contract)" IS excluded, but for an unrelated reason (the existing, deliberate `staff` exclusion, ticket 6b2313a) — not because of the "(Contract)" suffix. Confirms NOT isn\'t reacting to the contract phrasing itself: stripping "(Contract)" still excludes it', () => {
+    expect(matchesTitleExclusion("Staff Software Engineer (Contract)")).toBe(true);
+    expect(matchesTitleExclusion("Staff Software Engineer")).toBe(true);
+  });
+});
+
+describe("looksLikeContractOrTemp (ticket 8f5a79c)", () => {
+  it('a structured commitment of "contract" is sufficient on its own, regardless of title phrasing', () => {
+    expect(
+      looksLikeContractOrTemp({
+        title: "Backend Software Engineer - Defense",
+        commitment: "contract",
+      }),
+    ).toBe(true);
+  });
+
+  it('falls back to title phrasing when commitment is absent or not "contract" (Greenhouse never reports commitment at all; a genuinely temp Ashby posting reports commitment: undefined per ashby.ts\'s mapCommitment, not "contract")', () => {
+    for (const commitment of [undefined, null, "full-time" as const, "part-time" as const]) {
+      expect(looksLikeContractOrTemp({ title: "Software Engineer (Contract)", commitment })).toBe(
+        true,
+      );
+      expect(looksLikeContractOrTemp({ title: "Software Engineer, Temp", commitment })).toBe(true);
+      expect(
+        looksLikeContractOrTemp({ title: "Backend Software Engineer - Defense", commitment }),
+      ).toBe(false);
+    }
+  });
+
+  it('recognizes the suffixed forms Contractor/Contractors/Contracting, the same word-boundary class of fix as ticket 06b09cf\'s Internship miss — a bare \\bcontract\\b would NOT match any of these (no boundary immediately after "contract")', () => {
+    for (const title of [
+      "Senior Software Engineer - Contractor",
+      "Software Engineers Contracting Services",
+      "Talent Sourcer (Contractor)", // real fixture title, lever-real-response-palantir.json
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(true);
+    }
+  });
+
+  it('recognizes "C2C" and "1099" as their own distinct contract-market signals', () => {
+    expect(
+      looksLikeContractOrTemp({ title: "Full Stack Engineer (C2C)", commitment: undefined }),
+    ).toBe(true);
+    expect(
+      looksLikeContractOrTemp({ title: "Software Engineer (1099)", commitment: undefined }),
+    ).toBe(true);
+  });
+
+  it('recognizes "Temp"/"Temporary" without over-matching unrelated words that merely contain "temp" as a substring not at a word boundary', () => {
+    expect(
+      looksLikeContractOrTemp({ title: "Software Engineer, Temp", commitment: undefined }),
+    ).toBe(true);
+    expect(
+      looksLikeContractOrTemp({
+        title: "Software Engineer, Temporary Assignment",
+        commitment: undefined,
+      }),
+    ).toBe(true);
+    for (const title of [
+      "Attempt Software Engineer", // synthetic guard: "temp" is not at a word boundary in "Attempt"
+      "Contemporary Software Engineer", // synthetic guard: "Contemporary" is not "Temporary"
+      "Templar Software Engineer", // synthetic guard: "Temp" continues with word characters
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(false);
+    }
+  });
+
+  it('does NOT over-match "Contractual" — real risk since "contract" is a substring of it, but neither of the optional suffix alternatives ("ors?"/"ing") prefixes "ual"', () => {
+    expect(
+      looksLikeContractOrTemp({
+        title: "Software Engineer, Contractual Obligations Team",
+        commitment: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT over-match "Smart Contract" — real false positive (opus review, 2026-09-13): "contract" as a bare word also matches the DOMAIN term "Smart Contract" (blockchain/crypto engineering), not an employment-type indicator. Not hypothetical: `.env.example` configures coinbase and robinhood as live Greenhouse boards in this project, and "Smart Contract Engineer" is a real, full-time title category at exactly those employers -- without this guard, checking "Hide contract/temp roles" would silently hide a real full-time role. The reviewer\'s own six-title test matrix, verified directly against the exported `looksLikeContractOrTemp` (node -e, 2026-09-13, before this fix landed)', () => {
+    for (const title of [
+      "Senior Smart Contract Software Engineer",
+      "Backend Engineer - Smart Contract Platform",
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(false);
+    }
+    // Ordinary "Contract" phrasing must keep working -- the guard only
+    // excludes "contract" immediately preceded by "smart ", not "contract"
+    // generally.
+    for (const title of [
+      "Software Engineer (Contract)",
+      "Contract Software Engineer",
+      "Senior Software Engineer - Contractor",
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(true);
+    }
+    // The lookbehind must not over-trigger just because "Smart" appears
+    // SOMEWHERE in the title -- only immediately before "Contract" disqualifies
+    // it. "Smart Home" here is unrelated to "(Contract)", so this must still tag.
+    expect(
+      looksLikeContractOrTemp({
+        title: "Software Engineer (Contract) - Smart Home",
+        commitment: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it("does NOT flag an ordinary full-time title with neither a structured contract commitment nor contract/temp phrasing in the title (both directions of the audit's own real fixture titles)", () => {
+    for (const title of [
+      "Backend Software Engineer - Defense", // real: lever-real-response-palantir.json
+      "Senior Software Engineer, Machine Learning Infrastructure (Tinder LLC, West Hollywood, California)", // real: lever-real-response-matchgroup.json
+      "Software Engineer Internship, Android ", // real: ashby-real-response-ramp.json
+    ]) {
+      expect(looksLikeContractOrTemp({ title, commitment: "full-time" }), title).toBe(false);
+      expect(looksLikeContractOrTemp({ title, commitment: undefined }), title).toBe(false);
+    }
   });
 });
 

@@ -349,6 +349,19 @@ button[aria-disabled="true"] {
   margin: 0.35rem 0;
 }
 
+/* Ticket 8f5a79c: "Hide contract/temp roles" filter -- same layout as
+   `.hide-overqualified-toggle` above, kept as its own class (rather than
+   reusing that one) so each toggle's styling can diverge later without the
+   two becoming entangled. */
+.hide-contract-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0.35rem 0;
+}
+
 /* Ticket 1ea4bf3: quick-jump links to each "Already Scored Jobs" group.
    Same flex/gap convention as `.hide-overqualified-toggle` above -- without
    it the anchors render as one contiguous run of text, looking like a
