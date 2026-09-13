@@ -202,16 +202,17 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // No resume means nothing worth restoring; the empty screen IS the
     // right state, and no record should have been written to resurrect.
     expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("jobsearch.web.appState.v2")).toBeNull();
+    expect(sessionStorage.getItem("jobsearch.web.appState.v3")).toBeNull();
   });
 
   it("ignores a corrupt record and starts clean rather than crashing", async () => {
     // Ticket b9e6251 bumped this key from .v1 to .v2 (CriteriaFormState
-    // gained `anyLocationOk`) -- must set the key the app ACTUALLY reads,
-    // or this test would silently pass for the wrong reason (never even
-    // attempting to read the "corrupt" data because it's under a key
-    // nothing reads anymore).
-    sessionStorage.setItem("jobsearch.web.appState.v2", '{"resumeId": 42}');
+    // gained `anyLocationOk`); ticket ffbf9fb bumped it again to .v3
+    // (PersistedAppState gained `scoreFloor`) -- must set the key the app
+    // ACTUALLY reads, or this test would silently pass for the wrong reason
+    // (never even attempting to read the "corrupt" data because it's under a
+    // key nothing reads anymore).
+    sessionStorage.setItem("jobsearch.web.appState.v3", '{"resumeId": 42}');
     mockHappyPath();
 
     render(<App />);

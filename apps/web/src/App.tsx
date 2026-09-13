@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ScoredJobResult, SearchCriteria, UserJobStatus } from "@app/shared";
+import {
+  MATCH_SCORE_FLOOR,
+  type ScoredJobResult,
+  type SearchCriteria,
+  type UserJobStatus,
+} from "@app/shared";
 import { clearJobStatus, createResume, setJobStatus } from "./api/client";
 import {
   GroupedResultsList,
@@ -8,6 +13,7 @@ import {
 } from "./components/GroupedResultsList";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
+import { ScoreFloorControl } from "./components/ScoreFloorControl";
 import { SearchCriteriaForm } from "./components/SearchCriteriaForm";
 import { SearchFlow } from "./components/SearchFlow";
 import { SourceToggles } from "./components/SourceToggles";
@@ -55,7 +61,12 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
  *      the only place this app spends money, and only on confirm
  *      (decision #4).
  *   4. Curated results list, floor-applied with a stated hidden count, per
- *      job status controls (decision #1/#2).
+ *      job status controls (decision #1/#2). The floor itself is user-
+ *      adjustable (ticket ffbf9fb's `ScoreFloorControl`, one shared value
+ *      for both tabs) -- unlike the source toggles above, moving it
+ *      re-fetches `GET /resumes/:id/results` at the new `?minScore=`
+ *      (useResults.ts), since a lower floor can surface jobs the server
+ *      never sent to the client at the old one.
  *
  * Single-user, no accounts, no login (decision #2 on the 2026-08-29
  * comment) -- there is exactly one implicit "user" and no session/auth
@@ -104,6 +115,12 @@ function App() {
       commitmentIn: [],
     },
   );
+  // Ticket ffbf9fb: user-adjustable match-score floor, one shared value for
+  // both tabs (not two independent ones) -- "my floor" is one setting, not
+  // per-screen, and `MATCH_SCORE_FLOOR` was already a single global constant
+  // before this ticket. Defaults to that same constant so behavior is
+  // unchanged until the user actually moves the slider.
+  const [scoreFloor, setScoreFloor] = useState<number>(restored?.scoreFloor ?? MATCH_SCORE_FLOOR);
   const criteria = useMemo(
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
     [titleChips, criteriaForm],
@@ -157,7 +174,7 @@ function App() {
     locationSectionRef.current?.querySelector("input")?.focus({ preventScroll: true });
   }
 
-  const { state: resultsState, refresh } = useResults(resumeId);
+  const { state: resultsState, refresh } = useResults(resumeId, scoreFloor);
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
   // from the most recent search... cleared every time a new search is
@@ -269,8 +286,9 @@ function App() {
       selectedSourceIds: [...selectedSourceIds],
       titleChips,
       criteriaForm,
+      scoreFloor,
     });
-  }, [resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm]);
+  }, [resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm, scoreFloor]);
 
   function toggleSource(sourceId: string) {
     setSelectedSourceIds((prev) => {
@@ -447,6 +465,7 @@ function App() {
             {hasFreshSearchResults && resultsState.status === "ready" && (
               <section className="results-section">
                 <h2>Results from this search</h2>
+                <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />
                 {resultsState.data.results.length > 0 ||
                 (resultsState.data.hiddenBelowFloor ?? 0) > 0 ? (
                   <ResultsList
@@ -483,6 +502,7 @@ function App() {
               ` (${resultsState.data.results.length + (resultsState.data.hiddenBelowFloor ?? 0)})`}
           </h2>
           {!resumeId && <p>Paste a resume in "New Job Search" to see your results here.</p>}
+          {resumeId && <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />}
           {resumeId && resultsState.status === "loading" && <p>Loading results...</p>}
           {resumeId && resultsState.status === "error" && (
             <p role="alert">Could not load results: {resultsState.message}</p>

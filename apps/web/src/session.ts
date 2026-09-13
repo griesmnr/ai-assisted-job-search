@@ -48,7 +48,7 @@ import type { EstimateSearchResponse } from "@app/shared";
 
 /** Bump the `.vN` suffix on any shape change: an old record then simply
  * fails to load and the app starts clean, instead of being hand-migrated. */
-const APP_STATE_KEY = "jobsearch.web.appState.v2";
+const APP_STATE_KEY = "jobsearch.web.appState.v3";
 const ACTIVE_SEARCH_KEY = "jobsearch.web.activeSearch.v1";
 
 export type Commitment = "full-time" | "part-time" | "contract";
@@ -75,6 +75,11 @@ export type PersistedAppState = {
   selectedSourceIds: string[];
   titleChips: string[];
   criteriaForm: CriteriaFormState;
+  /** Ticket ffbf9fb: the user-adjustable match-score floor (App.tsx's
+   * `scoreFloor` state), shared by both tabs and by `useResults`'s
+   * `minScore` argument. Bumped `APP_STATE_KEY` to `.v3` for this field, per
+   * this file's own version-bump convention above. */
+  scoreFloor: number;
 };
 
 /**
@@ -152,13 +157,14 @@ function parseCriteriaForm(value: unknown): CriteriaFormState | undefined {
 export function readAppState(): PersistedAppState | undefined {
   const value = readRaw(APP_STATE_KEY);
   if (!isRecord(value)) return undefined;
-  const { resumeId, resumeText, selectedSourceIds, titleChips } = value;
+  const { resumeId, resumeText, selectedSourceIds, titleChips, scoreFloor } = value;
   if (typeof resumeId !== "string" || resumeId.length === 0) return undefined;
   if (typeof resumeText !== "string") return undefined;
   if (!isStringArray(selectedSourceIds) || !isStringArray(titleChips)) return undefined;
+  if (typeof scoreFloor !== "number" || !Number.isFinite(scoreFloor)) return undefined;
   const criteriaForm = parseCriteriaForm(value.criteriaForm);
   if (criteriaForm === undefined) return undefined;
-  return { resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm };
+  return { resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm, scoreFloor };
 }
 
 export function writeAppState(state: PersistedAppState): void {
