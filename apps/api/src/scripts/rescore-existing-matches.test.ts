@@ -1,0 +1,278 @@
+import { describe, expect, it } from "vitest";
+import type { NormalizedJob } from "../sources/types.js";
+import type { ScoredJob, UsageStats } from "../demo-match.js";
+import { estimateScoringCost } from "../demo-match.js";
+import {
+  MAX_ESTIMATED_SPEND_USD,
+  buildJobMatchUpdate,
+  checkSpendCeiling,
+  parseArgs,
+  toNormalizedJob,
+  type JobDescriptionRow,
+} from "./rescore-existing-matches.js";
+
+function makeJobRow(overrides: Partial<JobDescriptionRow> = {}): JobDescriptionRow {
+  return {
+    externalId: "ext-1",
+    dataSource: "greenhouse",
+    title: "Software Engineer",
+    description: "A real job description.",
+    company: "Acme",
+    payType: null,
+    commitment: null,
+    locationType: null,
+    location: null,
+    linkToApply: "https://example.com/jobs/1",
+    postedAt: new Date("2026-01-01"),
+    ...overrides,
+  };
+}
+
+function makeNormalizedJob(overrides: Partial<NormalizedJob> = {}): NormalizedJob {
+  return {
+    externalId: "ext-1",
+    dataSource: "greenhouse",
+    title: "Software Engineer",
+    description: "A real job description.",
+    company: "Acme",
+    linkToApply: "https://example.com/jobs/1",
+    postedAt: new Date("2026-01-01"),
+    ...overrides,
+  };
+}
+
+function makeScoredJob(overrides: Partial<ScoredJob> = {}): ScoredJob {
+  return {
+    matchScore: 72,
+    rationale: "Solid overlap on backend experience.",
+    levelFit: "well_matched",
+    levelFitNote: "",
+    strengths: ["Node.js", "Postgres"],
+    gaps: ["Kubernetes"],
+    ...overrides,
+  };
+}
+
+describe("parseArgs", () => {
+  it("parses a bare resumeId as a dry run", () => {
+    expect(parseArgs(["resume-123"])).toEqual({ resumeId: "resume-123", live: false });
+  });
+
+  it("parses resumeId + --live as a live run", () => {
+    expect(parseArgs(["resume-123", "--live"])).toEqual({ resumeId: "resume-123", live: true });
+  });
+
+  it("accepts --live before the resumeId too", () => {
+    expect(parseArgs(["--live", "resume-123"])).toEqual({ resumeId: "resume-123", live: true });
+  });
+
+  it("hard-errors when resumeId is missing entirely", () => {
+    expect(() => parseArgs([])).toThrow(/resumeId is required/i);
+  });
+
+  it("hard-errors when only --live is given, with no resumeId", () => {
+    expect(() => parseArgs(["--live"])).toThrow(/resumeId is required/i);
+  });
+
+  it("hard-errors on an unrecognized flag instead of silently proceeding", () => {
+    expect(() => parseArgs(["resume-123", "--dry-run"])).toThrow(/Unrecognized argument/i);
+  });
+
+  it("hard-errors on a typo'd flag rather than treating it as a resumeId", () => {
+    expect(() => parseArgs(["resume-123", "--liv"])).toThrow(/Unrecognized argument/i);
+  });
+
+  it("hard-errors on more than one positional argument (ambiguous resumeId)", () => {
+    expect(() => parseArgs(["resume-123", "resume-456"])).toThrow(/Expected exactly one resumeId/i);
+  });
+});
+
+describe("buildJobMatchUpdate", () => {
+  it("carries every field straight through for a full, real-shaped response", () => {
+    const scored = makeScoredJob({
+      matchScore: 88,
+      rationale: "Strong match.",
+      levelFit: "overqualified",
+      levelFitNote: "This role is likely a step down in scope for you.",
+      strengths: ["Leadership"],
+      gaps: [],
+    });
+    expect(buildJobMatchUpdate(scored)).toEqual({
+      matchScore: 88,
+      rationale: "Strong match.",
+      levelFit: "overqualified",
+      levelFitNote: "This role is likely a step down in scope for you.",
+      strengths: ["Leadership"],
+      gaps: [],
+    });
+  });
+
+  it("falls back to null for levelFit/levelFitNote when a fake scorer omits them", () => {
+    const scored = makeScoredJob();
+    // A real makeClaudeScorer response always includes these (SCHEMA
+    // requires them) -- this branch only exercises a test fake / a
+    // ScoredJob shape from before ticket b182bde.
+    delete (scored as Partial<ScoredJob>).levelFit;
+    delete (scored as Partial<ScoredJob>).levelFitNote;
+    const update = buildJobMatchUpdate(scored);
+    expect(update.levelFit).toBeNull();
+    expect(update.levelFitNote).toBeNull();
+  });
+
+  it("falls back to null for strengths/gaps when absent", () => {
+    const scored = makeScoredJob();
+    delete (scored as Partial<ScoredJob>).strengths;
+    delete (scored as Partial<ScoredJob>).gaps;
+    const update = buildJobMatchUpdate(scored);
+    expect(update.strengths).toBeNull();
+    expect(update.gaps).toBeNull();
+  });
+
+  it("never carries usage through to the update payload", () => {
+    const scored = makeScoredJob({
+      usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    });
+    const update = buildJobMatchUpdate(scored);
+    expect(update).not.toHaveProperty("usage");
+  });
+});
+
+describe("checkSpendCeiling", () => {
+  it("is within ceiling when cost is under the default ceiling", () => {
+    const result = checkSpendCeiling(1.23);
+    expect(result).toEqual({
+      withinCeiling: true,
+      ceilingUsd: MAX_ESTIMATED_SPEND_USD,
+      costUsd: 1.23,
+    });
+  });
+
+  it("is within ceiling exactly at the boundary", () => {
+    expect(checkSpendCeiling(MAX_ESTIMATED_SPEND_USD).withinCeiling).toBe(true);
+  });
+
+  it("refuses when cost exceeds the default ceiling", () => {
+    const result = checkSpendCeiling(MAX_ESTIMATED_SPEND_USD + 0.01);
+    expect(result.withinCeiling).toBe(false);
+  });
+
+  it("respects an explicit custom ceiling instead of the default", () => {
+    expect(checkSpendCeiling(2.5, 2.0).withinCeiling).toBe(false);
+    expect(checkSpendCeiling(1.5, 2.0).withinCeiling).toBe(true);
+  });
+});
+
+describe("toNormalizedJob", () => {
+  it("converts a fully-populated row straight through", () => {
+    const row = makeJobRow({
+      payType: "salary",
+      commitment: "full-time",
+      locationType: "remote",
+      location: "Remote - US",
+    });
+    expect(toNormalizedJob(row)).toEqual(
+      makeNormalizedJob({
+        payType: "salary",
+        commitment: "full-time",
+        locationType: "remote",
+        location: "Remote - US",
+      }),
+    );
+  });
+
+  it("converts every nullable DB column to undefined, not null", () => {
+    const row = makeJobRow({ payType: null, commitment: null, locationType: null, location: null });
+    const job = toNormalizedJob(row);
+    expect(job.payType).toBeUndefined();
+    expect(job.commitment).toBeUndefined();
+    expect(job.locationType).toBeUndefined();
+    expect(job.location).toBeUndefined();
+    // Explicitly not present as "null" -- NormalizedJob's optional fields
+    // must be genuinely absent, matching how a live-fetched job with no
+    // stated location type already behaves.
+    expect("payType" in job ? job.payType : undefined).toBeUndefined();
+  });
+
+  it("preserves title/company/description/externalId/linkToApply/postedAt exactly", () => {
+    const postedAt = new Date("2026-03-15T00:00:00.000Z");
+    const row = makeJobRow({
+      externalId: "gh-999",
+      title: "Staff Backend Engineer",
+      description: "Full posting text.",
+      company: "Widgets Inc",
+      linkToApply: "https://boards.example.com/999",
+      postedAt,
+    });
+    const job = toNormalizedJob(row);
+    expect(job.externalId).toBe("gh-999");
+    expect(job.title).toBe("Staff Backend Engineer");
+    expect(job.description).toBe("Full posting text.");
+    expect(job.company).toBe("Widgets Inc");
+    expect(job.linkToApply).toBe("https://boards.example.com/999");
+    expect(job.postedAt).toBe(postedAt);
+  });
+});
+
+describe("cost estimate math (via the real, shipped estimateScoringCost)", () => {
+  // This script deliberately reuses demo-match.ts's own estimateScoringCost
+  // rather than a second, parallel cost formula (see rescore-existing-
+  // matches.ts's top comment) -- these tests confirm the SCRIPT's actual
+  // call pattern (real historical per-call token averages -> a real dollar
+  // figure) produces the right number, using a fixed, known UsageStats
+  // fixture rather than a real prep/scoring-usage-stats.json file.
+  const resumeText = "A".repeat(6000); // long enough to clear the cache-prefix minimum
+  const usageStats: UsageStats = {
+    model: "claude-sonnet-5",
+    calls: 100,
+    totalInputTokens: 30_000, // 300 tokens/call average uncached input
+    totalOutputTokens: 20_000, // 200 tokens/call average output
+    totalCacheReadTokens: 500_000,
+    totalCacheCreationTokens: 2_000,
+  };
+
+  it("computes a real dollar figure for a known job count and known averages", () => {
+    const jobs: NormalizedJob[] = [makeNormalizedJob(), makeNormalizedJob({ externalId: "ext-2" })];
+    const estimate = estimateScoringCost(jobs, resumeText, usageStats);
+    expect(estimate.basis).toBe("measured");
+    expect(estimate.jobCount).toBe(2);
+    // avgInputTokens = 300/call, avgOutputTokens = 200/call, 2 jobs ->
+    // 600 uncached input tokens + 400 output tokens, at $3/$15 per MTok,
+    // plus this run's own real cache-read/cache-creation tokens computed
+    // from the real (long) resumeText -- assert it's a real positive
+    // number in the right ballpark rather than re-deriving the whole cache
+    // formula here (that's estimateScoringCost's own, already-tested
+    // arithmetic; this test is about THIS script's call pattern).
+    expect(estimate.probableCostUsd).toBeGreaterThan(0.005);
+    expect(estimate.probableCostUsd).toBeLessThan(0.05);
+    expect(estimate.maxCostUsd).toBeGreaterThanOrEqual(estimate.probableCostUsd);
+  });
+
+  it("scales the measured-basis estimate linearly with job count", () => {
+    const oneJob = estimateScoringCost([makeNormalizedJob()], resumeText, usageStats);
+    const tenJobs = estimateScoringCost(
+      Array.from({ length: 10 }, (_, i) => makeNormalizedJob({ externalId: `ext-${i}` })),
+      resumeText,
+      usageStats,
+    );
+    // Not exactly 10x (cache-creation is paid once per run, not per job --
+    // see estimateScoringCost's own doc comment, so the ratio is somewhat
+    // UNDER 10x), but growth is still dominated by the per-job terms
+    // (uncached input + output + cache reads), so it comfortably clears a
+    // much looser bound.
+    expect(tenJobs.probableCostUsd).toBeGreaterThan(oneJob.probableCostUsd * 3);
+    expect(tenJobs.probableCostUsd).toBeLessThan(oneJob.probableCostUsd * 10);
+  });
+
+  it("falls back to a real, grounded bootstrap estimate with no usage stats", () => {
+    const estimate = estimateScoringCost([makeNormalizedJob()], resumeText, undefined);
+    expect(estimate.basis).toBe("bootstrap");
+    expect(estimate.probableCostUsd).toBeGreaterThan(0);
+  });
+
+  it("returns zero cost for zero jobs", () => {
+    const estimate = estimateScoringCost([], resumeText, usageStats);
+    expect(estimate.jobCount).toBe(0);
+    expect(estimate.probableCostUsd).toBe(0);
+    expect(estimate.maxCostUsd).toBe(0);
+  });
+});
