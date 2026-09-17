@@ -575,9 +575,13 @@ async function main(): Promise<void> {
       console.log(`Found ${existing.length} existing job_matches row(s) for resume "${resumeId}".`);
     } else {
       // Ticket ccc3d6e: report the real exclusion count so the savings are
-      // visible, not just assumed -- a second, lightweight query (all
-      // matches, dismissed or not) rather than fetching the dismissed rows'
-      // full job data twice just to compute a difference.
+      // visible, not just assumed. This re-fetches every match's full job
+      // data a second time (opus review: NOT actually "lightweight" as an
+      // earlier version of this comment claimed -- for Nicole's real ~360
+      // rows it's the whole payload pulled twice) purely to compute a
+      // difference. Harmless here (no API spend, local Postgres, a
+      // short-lived CLI run), but a cheap thing to tighten later: counting
+      // the LEFT JOIN's dismissed side directly would need only one query.
       const allMatches = await fetchExistingMatches(db, resumeId, true);
       const dismissedCount = allMatches.length - existing.length;
       console.log(
