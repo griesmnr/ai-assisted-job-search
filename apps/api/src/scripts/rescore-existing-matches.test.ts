@@ -1,15 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { NormalizedJob } from "../sources/types.js";
 import type { CostEstimate, ScoredJob, UsageStats } from "../demo-match.js";
 import { estimateScoringCost } from "../demo-match.js";
+import { jobMatches, jobs, resumes, sourceDescriptors, userJobStatuses } from "../db/schema.js";
+import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { loadEnvFile } from "../load-env.js";
 import {
   MAX_ESTIMATED_SPEND_USD,
   buildJobMatchUpdate,
   checkSpendCeiling,
+  fetchExistingMatches,
   parseArgs,
   toNormalizedJob,
   type JobDescriptionRow,
 } from "./rescore-existing-matches.js";
+
+loadEnvFile();
 
 function makeJobRow(overrides: Partial<JobDescriptionRow> = {}): JobDescriptionRow {
   return {
@@ -55,15 +62,43 @@ function makeScoredJob(overrides: Partial<ScoredJob> = {}): ScoredJob {
 
 describe("parseArgs", () => {
   it("parses a bare resumeId as a dry run", () => {
-    expect(parseArgs(["resume-123"])).toEqual({ resumeId: "resume-123", live: false });
+    expect(parseArgs(["resume-123"])).toEqual({
+      resumeId: "resume-123",
+      live: false,
+      includeDismissed: false,
+    });
   });
 
   it("parses resumeId + --live as a live run", () => {
-    expect(parseArgs(["resume-123", "--live"])).toEqual({ resumeId: "resume-123", live: true });
+    expect(parseArgs(["resume-123", "--live"])).toEqual({
+      resumeId: "resume-123",
+      live: true,
+      includeDismissed: false,
+    });
   });
 
   it("accepts --live before the resumeId too", () => {
-    expect(parseArgs(["--live", "resume-123"])).toEqual({ resumeId: "resume-123", live: true });
+    expect(parseArgs(["--live", "resume-123"])).toEqual({
+      resumeId: "resume-123",
+      live: true,
+      includeDismissed: false,
+    });
+  });
+
+  it("parses --include-dismissed alongside --live", () => {
+    expect(parseArgs(["resume-123", "--live", "--include-dismissed"])).toEqual({
+      resumeId: "resume-123",
+      live: true,
+      includeDismissed: true,
+    });
+  });
+
+  it("parses --include-dismissed on its own, dry-run by default", () => {
+    expect(parseArgs(["resume-123", "--include-dismissed"])).toEqual({
+      resumeId: "resume-123",
+      live: false,
+      includeDismissed: true,
+    });
   });
 
   it("hard-errors when resumeId is missing entirely", () => {
@@ -80,6 +115,10 @@ describe("parseArgs", () => {
 
   it("hard-errors on a typo'd flag rather than treating it as a resumeId", () => {
     expect(() => parseArgs(["resume-123", "--liv"])).toThrow(/Unrecognized argument/i);
+  });
+
+  it("hard-errors on a typo of --include-dismissed rather than silently ignoring it", () => {
+    expect(() => parseArgs(["resume-123", "--include-dismisse"])).toThrow(/Unrecognized argument/i);
   });
 
   it("hard-errors on more than one positional argument (ambiguous resumeId)", () => {
@@ -360,5 +399,88 @@ describe("spend ceiling wired to the REAL estimateScoringCost output (R4, advers
 
     const check = checkSpendCeiling(estimate);
     expect(check.withinCeiling).toBe(true);
+  });
+});
+
+// Real Postgres, not a mock: the whole point of this feature is a WHERE
+// clause (a LEFT JOIN + isNull/ne/or condition), which isn't meaningfully
+// testable as a pure function -- unlike the rest of this file, which follows
+// this script family's established "pure logic only, DB/API I/O paths carry
+// their own carve-out" convention. Follows the exact same createTestDatabase
+// pattern already used for real-DB coverage elsewhere in this codebase
+// (ingestJobs.test.ts, routes/resumes.test.ts).
+describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", () => {
+  let testDb: TestDatabase;
+  const DATA_SOURCE = "rescore-test-source";
+  const RESUME_ID = "rescore-test-resume";
+
+  beforeAll(async () => {
+    testDb = await createTestDatabase("rescore_existing_matches_test");
+    const db = testDb.db;
+    await db
+      .insert(sourceDescriptors)
+      .values({ id: DATA_SOURCE, displayName: "Rescore Test Source" });
+    await db
+      .insert(resumes)
+      .values({ id: RESUME_ID, resumeText: "resume text", resumeHash: "rescore-test-resume-hash" });
+  });
+
+  afterAll(async () => {
+    await testDb?.teardown();
+  });
+
+  async function seedJobMatch(status: "dismissed" | "saved" | null): Promise<string> {
+    const db = testDb.db;
+    const jobId = randomUUID();
+    await db.insert(jobs).values({
+      id: jobId,
+      externalId: `ext-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title: "Software Engineer",
+      description: "A real job description.",
+      company: "Acme",
+      linkToApply: "https://example.com/apply",
+      postedAt: new Date("2026-01-01"),
+    });
+    await db.insert(jobMatches).values({
+      id: randomUUID(),
+      resumeId: RESUME_ID,
+      jobId,
+      matchScore: 70,
+      rationale: "Old rationale.",
+    });
+    if (status !== null) {
+      await db.insert(userJobStatuses).values({
+        id: randomUUID(),
+        jobId,
+        status,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+    return jobId;
+  }
+
+  it("excludes a dismissed job by default, but includes an untouched and a saved job", async () => {
+    const untouchedId = await seedJobMatch(null);
+    const savedId = await seedJobMatch("saved");
+    const dismissedId = await seedJobMatch("dismissed");
+
+    const result = await fetchExistingMatches(testDb.db, RESUME_ID, false);
+    const ids = new Set(result.map((r) => r.jobId));
+
+    expect(ids.has(untouchedId)).toBe(true);
+    expect(ids.has(savedId)).toBe(true);
+    expect(ids.has(dismissedId)).toBe(false);
+  });
+
+  it("--include-dismissed restores the dismissed job", async () => {
+    const dismissedId = await seedJobMatch("dismissed");
+
+    const excluded = await fetchExistingMatches(testDb.db, RESUME_ID, false);
+    expect(excluded.some((r) => r.jobId === dismissedId)).toBe(false);
+
+    const included = await fetchExistingMatches(testDb.db, RESUME_ID, true);
+    expect(included.some((r) => r.jobId === dismissedId)).toBe(true);
   });
 });

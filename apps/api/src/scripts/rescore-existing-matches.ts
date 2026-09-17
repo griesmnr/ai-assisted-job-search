@@ -58,6 +58,10 @@
  *   npx tsx apps/api/src/scripts/rescore-existing-matches.ts <resumeId>          # DRY RUN, no spend
  *   npx tsx apps/api/src/scripts/rescore-existing-matches.ts <resumeId> --live   # the real, billed run
  *
+ * Dismissed jobs are excluded by default (ticket ccc3d6e -- real spend on a
+ * job you've already rejected is pure waste); add --include-dismissed to
+ * rescore them too.
+ *
  * Find your resumeId with, e.g.: `SELECT id FROM resumes;` against your own
  * database (docker-compose's Postgres) -- there is deliberately no "most
  * recent" auto-detection here (see the safety-gate note above).
@@ -67,7 +71,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LevelFit } from "@app/shared";
 import Anthropic from "@anthropic-ai/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import {
@@ -79,7 +83,7 @@ import {
   type CostEstimate,
   type ScoredJob,
 } from "../demo-match.js";
-import { jobMatches, jobs as jobsTable, resumes } from "../db/schema.js";
+import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { loadEnvFile } from "../load-env.js";
 import type { NormalizedJob } from "../sources/types.js";
 
@@ -222,14 +226,25 @@ export async function withRetry<T>(
 export type ParsedArgs = {
   resumeId: string;
   live: boolean;
+  /** Ticket ccc3d6e, Nicole: "I think that I've dismissed all those
+   * [wrong-location] jobs. Do you think that you could make your script
+   * exclude dismissed jobs, please? To save a little more money?" Default
+   * `false` -- dismissed jobs are excluded (skip real spend on jobs she's
+   * already rejected), matching this app's own default dismissed-exclusion
+   * (routes/resumes.ts, ticket 484889d decision #2). `--include-dismissed`
+   * (naming mirrors that same route's own `includeDismissed` query param)
+   * opts back into rescoring them -- same "never a silent, permanent drop,
+   * always an explicit override" convention this app already established
+   * for the level-fit and contract/temp filters. */
+  includeDismissed: boolean;
 };
 
-const KNOWN_FLAGS = new Set(["--live"]);
+const KNOWN_FLAGS = new Set(["--live", "--include-dismissed"]);
 
 /**
- * Parses argv into `{resumeId, live}`. Throws (rather than logging and
- * exiting itself) so `main()` controls presentation and tests can assert on
- * the thrown message directly. Hard-errors on:
+ * Parses argv into `{resumeId, live, includeDismissed}`. Throws (rather than
+ * logging and exiting itself) so `main()` controls presentation and tests
+ * can assert on the thrown message directly. Hard-errors on:
  *
  *   - no positional argument at all -- `resumeId` is REQUIRED (ticket
  *     45e238e acceptance criteria: never silently guess "the most recently
@@ -253,16 +268,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
   if (unknownFlags.length > 0) {
     throw new Error(
-      `Unrecognized argument(s): ${unknownFlags.join(", ")}. Known flag is --live (spends real ` +
-        `Anthropic API credit; omit it for a dry run). Refusing to guess which was meant -- exiting ` +
-        `before any Anthropic call.`,
+      `Unrecognized argument(s): ${unknownFlags.join(", ")}. Known flags are --live (spends real ` +
+        "Anthropic API credit; omit it for a dry run) and --include-dismissed (rescore dismissed " +
+        "jobs too; omit it to skip them). Refusing to guess which was meant -- exiting before any " +
+        "Anthropic call.",
     );
   }
   if (positional.length === 0) {
     throw new Error(
-      "resumeId is required. Usage: rescore-existing-matches.ts <resumeId> [--live]. This script " +
-        'never guesses "the most recently used resume" -- find yours with `SELECT id FROM resumes;` ' +
-        "against your own database.",
+      "resumeId is required. Usage: rescore-existing-matches.ts <resumeId> [--live] " +
+        '[--include-dismissed]. This script never guesses "the most recently used resume" -- find ' +
+        "yours with `SELECT id FROM resumes;` against your own database.",
     );
   }
   if (positional.length > 1) {
@@ -271,7 +287,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
         "to guess which one was meant.",
     );
   }
-  return { resumeId: positional[0]!, live: argv.includes("--live") };
+  return {
+    resumeId: positional[0]!,
+    live: argv.includes("--live"),
+    includeDismissed: argv.includes("--include-dismissed"),
+  };
 }
 
 export type JobMatchUpdate = {
@@ -420,13 +440,25 @@ async function fetchResumeText(
 /** Every `job_matches` row for `resumeId`, joined with `jobs` for the
  * already-stored description and everything else `NormalizedJob` needs --
  * see `toNormalizedJob`. Scoped to `resumeId` alone: never reads (or later,
- * updates) another resume's rows. */
-async function fetchExistingMatches(
+ * updates) another resume's rows.
+ *
+ * By default also LEFT JOINs `user_job_statuses` (keyed on `job_id` ALONE --
+ * ticket 0c319b2, a dismissed status is a fact about the job, not about
+ * which resume viewed it) and excludes anything dismissed -- ticket ccc3d6e,
+ * Nicole: real spend on a job she's already rejected is pure waste. Uses the
+ * EXACT same `isNull(status) OR status != 'dismissed'` shape
+ * `routes/resumes.ts` already uses for its own default dismissed-exclusion,
+ * for consistency with what "dismissed" already means elsewhere in this app,
+ * rather than a second, independently-invented filter. `includeDismissed`
+ * restores the pre-ccc3d6e behavior (every match for the resume, regardless
+ * of status). */
+export async function fetchExistingMatches(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeId: string,
+  includeDismissed: boolean,
 ): Promise<ExistingMatchRow[]> {
-  return db
+  const query = db
     .select({
       jobId: jobMatches.jobId,
       oldMatchScore: jobMatches.matchScore,
@@ -449,7 +481,16 @@ async function fetchExistingMatches(
     })
     .from(jobMatches)
     .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-    .where(eq(jobMatches.resumeId, resumeId));
+    .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id));
+
+  return includeDismissed
+    ? query.where(eq(jobMatches.resumeId, resumeId))
+    : query.where(
+        and(
+          eq(jobMatches.resumeId, resumeId),
+          or(isNull(userJobStatuses.status), ne(userJobStatuses.status, "dismissed"))!,
+        ),
+      );
 }
 
 /** Updates exactly one `(resumeId, jobId)` row -- `job_matches`'s own
@@ -488,7 +529,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const { resumeId, live } = parsed;
+  const { resumeId, live, includeDismissed } = parsed;
 
   console.log(
     `rescore-existing-matches: resumeId=${resumeId} -- ${
@@ -529,8 +570,21 @@ async function main(): Promise<void> {
       return;
     }
 
-    const existing = await fetchExistingMatches(db, resumeId);
-    console.log(`Found ${existing.length} existing job_matches row(s) for resume "${resumeId}".`);
+    const existing = await fetchExistingMatches(db, resumeId, includeDismissed);
+    if (includeDismissed) {
+      console.log(`Found ${existing.length} existing job_matches row(s) for resume "${resumeId}".`);
+    } else {
+      // Ticket ccc3d6e: report the real exclusion count so the savings are
+      // visible, not just assumed -- a second, lightweight query (all
+      // matches, dismissed or not) rather than fetching the dismissed rows'
+      // full job data twice just to compute a difference.
+      const allMatches = await fetchExistingMatches(db, resumeId, true);
+      const dismissedCount = allMatches.length - existing.length;
+      console.log(
+        `Found ${existing.length} existing job_matches row(s) for resume "${resumeId}" ` +
+          `(${dismissedCount} dismissed job(s) excluded -- pass --include-dismissed to rescore them too).`,
+      );
+    }
     if (existing.length === 0) {
       console.log("Nothing to rescore. Exiting.");
       return;
