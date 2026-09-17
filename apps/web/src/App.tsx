@@ -106,6 +106,22 @@ function App() {
   // submitted this session/reload -- ResumeInput's field renders disabled
   // in that state (gated on `resumeId`, not on this being non-empty).
   const [resumeNickname, setResumeNickname] = useState(restored?.resumeNickname ?? "");
+  // Ticket 38a7598 review fix: the last value the SERVER actually
+  // confirmed (either a fresh `CreateResumeResponse.resumeNickname` or a
+  // successful `PATCH /resumes/:id` response) -- tracked separately from
+  // `resumeNickname` above, which also holds every uncommitted keystroke
+  // while the user is typing. Without this distinction there was no value
+  // to fall back to: an empty-trim commit returned early AFTER
+  // `handleNicknameChange` had already pushed the empty string into
+  // `resumeNickname` (and from there into sessionStorage), leaving the UI
+  // blank, sessionStorage blank, and the server's real nickname untouched
+  // -- three different values with no way to reconcile them. Same problem
+  // after a FAILED PATCH: the bad/attempted value stayed in `resumeNickname`
+  // instead of reverting. Seeded from `restored` on reload as the best
+  // available guess at "what the server last confirmed" (there is no
+  // PATCH round-trip on a restore, so this can't be re-verified without a
+  // network call this ticket doesn't add).
+  const [lastSavedNickname, setLastSavedNickname] = useState(restored?.resumeNickname ?? "");
   const [nicknameSaving, setNicknameSaving] = useState(false);
   const [nicknameError, setNicknameError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(
@@ -335,6 +351,10 @@ function App() {
       // resubmission of already-existing text, that resume's real
       // (possibly already-renamed) nickname -- never invented client-side.
       setResumeNickname(defaultNickname);
+      // Review fix: this IS a server-confirmed value (it came straight off
+      // this response), so it's also the new "last known-good" baseline a
+      // later empty-trim or failed commit should revert back to.
+      setLastSavedNickname(defaultNickname);
       setNicknameError(null);
       // Defensive, not just decorative: an older cached client build, a
       // test fixture written before this field existed, or any future API
@@ -357,22 +377,39 @@ function App() {
     setResumeNickname(nextNickname);
   }
 
-  // Fires on blur. A no-op (no PATCH, no error) for an unchanged or
-  // whitespace-only value -- the latter matches the server's own rejection
-  // of an empty nickname (routes/resumes.ts), so this never round-trips
-  // just to get back the same 400 it could have avoided asking for.
+  // Fires on blur (or Enter -- ResumeInput.tsx). A no-op (no PATCH, no
+  // error, no refetch) for a value that's UNCHANGED from what the server
+  // last confirmed -- checked against `lastSavedNickname`, not against
+  // whatever `resumeNickname` currently holds, since those two can differ
+  // (see `lastSavedNickname`'s own doc comment above). This is also a
+  // no-op for a whitespace-only value, matching the server's own rejection
+  // of an empty nickname (routes/resumes.ts) -- but unlike the old
+  // behavior, it REVERTS the local `resumeNickname` state back to
+  // `lastSavedNickname` first (ticket 38a7598 review fix): before this,
+  // `handleNicknameChange` had already pushed the empty string into
+  // `resumeNickname` (and from there into sessionStorage) by the time this
+  // function ran, so the field went blank locally while the server's real
+  // nickname was untouched -- with no feedback that anything had gone
+  // wrong. Same revert on a FAILED PATCH: the attempted value must not
+  // stay parked in local state as though it had taken effect.
   async function handleNicknameCommit(nextNickname: string) {
     if (resumeId === undefined) return;
     const trimmed = nextNickname.trim();
-    if (trimmed.length === 0) return;
+    if (trimmed === lastSavedNickname) return;
+    if (trimmed.length === 0) {
+      setResumeNickname(lastSavedNickname);
+      return;
+    }
     setNicknameSaving(true);
     setNicknameError(null);
     try {
       const { resumeNickname: saved } = await updateResumeNickname(resumeId, trimmed);
       setResumeNickname(saved);
+      setLastSavedNickname(saved);
       refresh();
     } catch (err) {
       setNicknameError(err instanceof Error ? err.message : String(err));
+      setResumeNickname(lastSavedNickname);
     } finally {
       setNicknameSaving(false);
     }

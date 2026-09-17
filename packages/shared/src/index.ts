@@ -204,6 +204,19 @@ export type ScoredJobResult = {
    */
   status: UserJobStatus | null;
   /**
+   * Ticket 38a7598 review fix: the nickname of the resume THIS result was
+   * scored against, carried per-result rather than only once at the top
+   * level of `GetResumeResultsResponse` (see that type's own doc comment
+   * for the "why now, not later" reasoning) -- the very next ticket
+   * (3f0883f) widens "Already Scored Jobs" to span MULTIPLE resumes at
+   * once, where the SAME posting can legitimately appear twice, once per
+   * resume, with two different nicknames. A single response-level field
+   * cannot express that; this is what `ResultCard.tsx`'s "Searched with:
+   * <nickname>" line now reads, straight off its own `result`, never a
+   * prop threaded down from a caller.
+   */
+  resumeNickname: string;
+  /**
    * `null` for a row scored before this ticket, or any row a caller
    * declines to judge — NEVER coerced to `"well_matched"` on read (that
    * would fabricate a claim the model never made). By convention, a real
@@ -253,14 +266,21 @@ export type ScoredJobResult = {
 export type GetResumeResultsResponse = {
   resumeId: string;
   /**
-   * Ticket 38a7598: carried once at the TOP LEVEL, alongside `resumeId`,
-   * rather than duplicated onto every `ScoredJobResult` — every result in
-   * one response was scored against the same resume (`?resumeId=` scopes
-   * the whole query), so there is exactly one real nickname to report, not
-   * one per job. `ResultCard.tsx`'s "Searched with: <nickname>" line reads
-   * this via its caller (App.tsx threading it down through
-   * `ResultsList`/`GroupedResultsList`, mirroring how `resumeId` itself is
-   * already threaded), never a second round-trip to fetch it separately.
+   * Ticket 38a7598: originally the ONE place a card's "Searched with"
+   * label read its nickname from, on the (true, at the time) reasoning
+   * that every result in one response was scored against the same resume
+   * (`?resumeId=` scopes the whole query). Review fix, same ticket: that
+   * doesn't hold up against the very next ticket (3f0883f), which widens
+   * "Already Scored Jobs" to span MULTIPLE resumes at once — the same
+   * posting can then legitimately appear twice, once per resume, with two
+   * different nicknames, which this single response-level field can't
+   * express. `ScoredJobResult.resumeNickname` is now the canonical,
+   * per-result source `ResultCard.tsx` actually reads. This field is kept
+   * for convenience/back-compat (it costs nothing extra — the route
+   * already looks the resume up to 404-check `resumeId`), but nothing in
+   * apps/web reads it anymore; don't add a new reader of it without first
+   * checking whether the caller actually wants the per-result field
+   * instead.
    */
   resumeNickname: string;
   results: ScoredJobResult[];

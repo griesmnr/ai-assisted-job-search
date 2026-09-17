@@ -160,7 +160,6 @@ export function ResultsList({
               key={result.jobId}
               result={result}
               resumeId={resumeId}
-              resumeNickname={data.resumeNickname}
               onSetStatus={onSetStatus}
               onClearStatus={onClearStatus}
             />

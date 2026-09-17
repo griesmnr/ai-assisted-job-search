@@ -101,6 +101,24 @@ export function ResumeInput({
             placeholder={resumeId === undefined ? "Assigned once you use this resume" : undefined}
             onChange={(e) => onNicknameChange?.(e.target.value)}
             onBlur={(e) => onNicknameCommit?.(e.target.value)}
+            // Ticket 38a7598 review fix: this input sits INSIDE the resume
+            // <form> (which has its own submit button), so without this,
+            // pressing Enter here triggered the form's implicit submit --
+            // RESUBMITTING the resume text -- instead of committing the
+            // nickname edit. Because `createResume` is content-addressed,
+            // that resubmission returned the SAME resume id carrying its
+            // OLD nickname, silently overwriting whatever was just typed
+            // with zero error or explanation. `preventDefault` stops the
+            // keypress from reaching the form's submit; committing
+            // explicitly here (rather than just letting blur handle it)
+            // means Enter behaves the same way a real "save" action would,
+            // whether or not the field happens to lose focus afterward.
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onNicknameCommit?.(e.currentTarget.value);
+              }
+            }}
           />
           {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
         </div>

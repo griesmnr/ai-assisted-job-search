@@ -40,6 +40,9 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: false,
+    // Ticket 38a7598 review fix: now carried on the result itself, not a
+    // separate prop -- see ScoredJobResult.resumeNickname's doc comment.
+    resumeNickname: "Resume 1",
     ...overrides,
   };
 }
@@ -53,7 +56,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -76,7 +78,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult({ status: "applied" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -96,7 +97,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={async () => {}}
       />,
@@ -116,7 +116,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={async () => {}}
       />,
@@ -146,7 +145,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={onSetStatus}
       />,
@@ -166,7 +164,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={async () => {}}
       />,
@@ -184,7 +181,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ status: "applied" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -198,7 +194,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ status: "applied" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -216,7 +211,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ company: "Wealthfront", dataSource: "lever" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -231,7 +225,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: "Seattle, WA", locationType: "hybrid" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -246,7 +239,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: null, locationType: null })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -268,7 +260,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -280,7 +271,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult({ status: "dismissed" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -296,7 +286,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult({ status: "dismissed" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -315,7 +304,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult({ status: "saved" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -332,7 +320,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult({ status: "saved" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -359,7 +346,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult({ status: "resume_optimized" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -387,7 +373,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       <ResultCard
         result={makeResult()}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={onSetStatus}
         onClearStatus={async () => {}}
       />,
@@ -418,7 +403,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           levelFitNote: "This posting asks for 1.5-2 years; you have far more.",
         })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -443,7 +427,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           levelFitNote: "This posting is written for a Staff-level candidate.",
         })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -458,7 +441,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       <ResultCard
         result={makeResult({ levelFit: "well_matched", levelFitNote: "" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -476,7 +458,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       <ResultCard
         result={makeResult({ levelFit: null, levelFitNote: null })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -495,7 +476,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           strengths: ["TypeScript"],
         })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -514,7 +494,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       <ResultCard
         result={makeResult({ levelFit: null, levelFitNote: null })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -533,9 +512,8 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
   it("shows the resume nickname it was scored against", () => {
     render(
       <ResultCard
-        result={makeResult()}
+        result={makeResult({ resumeNickname: "Backend-focused resume" })}
         resumeId="resume-1"
-        resumeNickname="Backend-focused resume"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -547,9 +525,8 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
   it("re-renders with a NEW nickname after a rename, without needing a different resumeId", () => {
     const { rerender } = render(
       <ResultCard
-        result={makeResult()}
+        result={makeResult({ resumeNickname: "Resume 1" })}
         resumeId="resume-1"
-        resumeNickname="Resume 1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -558,9 +535,8 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
 
     rerender(
       <ResultCard
-        result={makeResult()}
+        result={makeResult({ resumeNickname: "Renamed resume" })}
         resumeId="resume-1"
-        resumeNickname="Renamed resume"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,

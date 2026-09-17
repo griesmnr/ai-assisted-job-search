@@ -255,11 +255,16 @@ export function registerResumeRoutes(
     if (resumeRows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
     }
-    // Ticket 38a7598: read once here, alongside the existence check above,
-    // and carried at the TOP LEVEL of the response below rather than
-    // re-selected per result row -- see GetResumeResultsResponse's own doc
-    // comment for why (every result in this response was scored against
-    // the SAME resume).
+    // Ticket 38a7598, review fix: read once here, alongside the existence
+    // check above, and still carried at the TOP LEVEL of the response
+    // below for back-compat/convenience -- but this is no longer the
+    // canonical source a job card reads its "Searched with" label from.
+    // Each row in `results` now carries its OWN `resumeNickname` (joined
+    // against `resumes` in the query below), because the very next ticket
+    // (3f0883f) widens this endpoint's "Already Scored Jobs" use case to
+    // span MULTIPLE resumes at once, where a single response-level value
+    // can't express "this posting appears twice, once per resume, with two
+    // different nicknames." See GetResumeResultsResponse's own doc comment.
     const resumeNickname = resumeRows[0]!.resumeNickname;
 
     // Ticket 59fdc52 review round 2: an unknown ?source= used to silently
@@ -357,9 +362,22 @@ export function registerResumeRoutes(
         levelFit: jobMatches.levelFit,
         levelFitNote: jobMatches.levelFitNote,
         status: userJobStatuses.status,
+        // Ticket 38a7598 review fix: per-RESULT nickname, joined off
+        // `jobMatches.resumeId` rather than reused from the single
+        // `resumeNickname` looked up above. Today this route is scoped to
+        // one `resumeId` so every row's value is identical to the
+        // top-level one -- but the very next ticket (3f0883f) widens
+        // "Already Scored Jobs" to span MULTIPLE resumes at once, where the
+        // SAME posting can legitimately appear twice under two different
+        // resumes with two different nicknames. A single response-level
+        // field can't express that; this join makes each result
+        // self-describing now, before anything is built on top of the
+        // narrower shape.
+        resumeNickname: resumes.resumeNickname,
       })
       .from(jobMatches)
       .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
+      .innerJoin(resumes, eq(jobMatches.resumeId, resumes.id))
       .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
       .where(and(...conditions))
       .orderBy(desc(jobMatches.matchScore), levelFitRank, asc(jobsTable.id));

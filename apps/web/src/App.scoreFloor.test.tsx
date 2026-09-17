@@ -70,6 +70,9 @@ function makeJob(jobId: string, title: string): ScoredJobResult {
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: false,
+    // Ticket 38a7598 review fix: per-result now, not response-level -- see
+    // ScoredJobResult.resumeNickname's doc comment in @app/shared.
+    resumeNickname: "Resume 1",
   };
 }
 

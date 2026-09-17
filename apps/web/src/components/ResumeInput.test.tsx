@@ -15,16 +15,18 @@ import { ResumeInput } from "./ResumeInput";
  * the value the user actually typed rather than the stale initial prop.
  */
 function ControlledNicknameHarness({
+  onSubmit,
   onNicknameCommit,
   onNicknameChange,
 }: {
+  onSubmit?: (resumeText: string) => void;
   onNicknameCommit?: (nickname: string) => void;
   onNicknameChange?: (nickname: string) => void;
 }) {
   const [nickname, setNickname] = useState("Resume 1");
   return (
     <ResumeInput
-      onSubmit={() => {}}
+      onSubmit={onSubmit ?? (() => {})}
       submitting={false}
       resumeId="resume-1"
       nickname={nickname}
@@ -102,6 +104,35 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
 
     fireEvent.blur(nicknameField);
     expect(onNicknameCommit).toHaveBeenCalledWith("Renamed");
+  });
+
+  // Ticket 38a7598 review fix: the nickname <input> sits INSIDE the resume
+  // <form> (which has its own submit button), so without a keydown guard,
+  // pressing Enter here triggered the form's implicit submit -- silently
+  // RESUBMITTING the resume text instead of committing the rename. Because
+  // `createResume` is content-addressed, that resubmission would return the
+  // SAME resume id carrying its OLD nickname, discarding whatever was just
+  // typed with zero error or explanation.
+  it("pressing Enter in the nickname field commits the rename and does not submit the resume", () => {
+    const onSubmit = vi.fn();
+    const onNicknameCommit = vi.fn();
+    render(<ControlledNicknameHarness onSubmit={onSubmit} onNicknameCommit={onNicknameCommit} />);
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    fireEvent.change(nicknameField, { target: { value: "Renamed via Enter" } });
+    expect(onNicknameCommit).not.toHaveBeenCalled();
+
+    // dispatchEvent returns false when a cancelable event's default action
+    // (here, the form's implicit submit-on-Enter) was prevented -- the
+    // direct proof `e.preventDefault()` actually ran, not just an
+    // assumption from `onSubmit` never firing (jsdom doesn't implement
+    // browser-default submit-on-Enter at all, so that assertion alone
+    // wouldn't distinguish a real fix from no guard existing).
+    const dispatched = fireEvent.keyDown(nicknameField, { key: "Enter" });
+    expect(dispatched).toBe(false);
+
+    expect(onNicknameCommit).toHaveBeenCalledWith("Renamed via Enter");
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("disables the nickname field and shows a saving indicator while a rename is in flight", () => {

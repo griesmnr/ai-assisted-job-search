@@ -406,9 +406,10 @@ describe("GET /resumes/:id/results", () => {
     return jobId;
   }
 
-  // Ticket 38a7598: carried once at the TOP LEVEL alongside `resumeId`, not
-  // duplicated onto every result row -- see GetResumeResultsResponse's own
-  // doc comment for why.
+  // Ticket 38a7598: originally carried ONLY at the top level, alongside
+  // `resumeId`. Review fix, same ticket: kept at the top level for
+  // convenience/back-compat (this lookup already runs to 404-check
+  // `resumeId`), but no longer the canonical source -- see the next test.
   it("carries the resume's real nickname at the top level of the response", async () => {
     const app = buildTestApp();
     const resumeText = `Nickname-in-results resume ${randomUUID()}`;
@@ -421,6 +422,70 @@ describe("GET /resumes/:id/results", () => {
     const body = response.json() as { resumeNickname: string };
     expect(body.resumeNickname).toBe(resumeNickname);
     expect(body.resumeNickname).toMatch(/^Resume \d+$/);
+  });
+
+  // Ticket 38a7598 review fix: EACH result now carries its own
+  // `resumeNickname` too (joined against `resumes` in the query), not just
+  // the top-level response field -- this is what `ResultCard.tsx` actually
+  // reads now. Today this route is scoped to one `resumeId`, so every row's
+  // value is identical to the top-level one, but the join itself (not a
+  // value copied from the top-level lookup) is what the next ticket
+  // (3f0883f, spanning multiple resumes at once) will depend on being
+  // correct.
+  it("carries the resume's real nickname on EACH individual result too, not only at the top level", async () => {
+    const app = buildTestApp();
+    const resumeText = `Per-result nickname resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id: resumeId, resumeNickname } = created.json() as CreateResumeResponse;
+
+    await seedScoredJob(resumeId, 80, "Some job");
+    await seedScoredJob(resumeId, 70, "Another job");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { results: Array<{ resumeNickname: string }> };
+    expect(body.results).toHaveLength(2);
+    for (const result of body.results) {
+      expect(result.resumeNickname).toBe(resumeNickname);
+    }
+  });
+
+  // Ticket 38a7598 review fix: proves the per-result value is a real JOIN
+  // (re-read from `resumes` for the row's OWN `resumeId`), not the
+  // top-level lookup's value silently copied onto every row -- a rename
+  // made AFTER the job was scored, then queried through a DIFFERENT
+  // resume's results, must never leak across.
+  it("a rename on one resume never bleeds into a different resume's per-result nicknames", async () => {
+    const app = buildTestApp();
+    const firstCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `First resume ${randomUUID()}` },
+    });
+    const { id: firstResumeId } = firstCreated.json() as CreateResumeResponse;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Second resume ${randomUUID()}` },
+    });
+    const { id: secondResumeId, resumeNickname: secondNickname } =
+      secondCreated.json() as CreateResumeResponse;
+
+    await seedScoredJob(firstResumeId, 80, "Job scored against the first resume");
+    await seedScoredJob(secondResumeId, 75, "Job scored against the second resume");
+
+    await app.inject({
+      method: "PATCH",
+      url: `/resumes/${firstResumeId}`,
+      payload: { resumeNickname: "Renamed first resume" },
+    });
+
+    const secondResults = await app.inject({
+      method: "GET",
+      url: `/resumes/${secondResumeId}/results`,
+    });
+    const secondBody = secondResults.json() as { results: Array<{ resumeNickname: string }> };
+    expect(secondBody.results[0]?.resumeNickname).toBe(secondNickname);
+    expect(secondBody.results[0]?.resumeNickname).not.toBe("Renamed first resume");
   });
 
   it("returns scored jobs best match first, and applies a minScore floor with a hidden count", async () => {

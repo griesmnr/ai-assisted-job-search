@@ -32,6 +32,9 @@ const DATA: GetResumeResultsResponse = {
       levelFit: null,
       levelFitNote: null,
       isContractOrTemp: false,
+      // Ticket 38a7598 review fix: per-result now, not response-level --
+      // see ScoredJobResult.resumeNickname's doc comment in @app/shared.
+      resumeNickname: "Resume 1",
     },
     {
       jobId: "job-2",
@@ -50,6 +53,7 @@ const DATA: GetResumeResultsResponse = {
       levelFit: "overqualified",
       levelFitNote: "This posting is written below your level, which may hurt at screening.",
       isContractOrTemp: false,
+      resumeNickname: "Resume 1",
     },
   ],
 };
@@ -232,6 +236,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: true,
+    resumeNickname: "Resume 1",
   };
 
   const WITH_CONTRACT: GetResumeResultsResponse = {

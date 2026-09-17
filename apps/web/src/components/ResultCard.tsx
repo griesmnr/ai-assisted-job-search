@@ -43,7 +43,6 @@ const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "applied", "dismissed"];
 export function ResultCard({
   result,
   resumeId,
-  resumeNickname,
   onSetStatus,
   onClearStatus,
 }: {
@@ -54,13 +53,6 @@ export function ResultCard({
    * exists (App.tsx gates the whole results section behind `resumeId &&`)
    * — required, not optional, so that invariant is visible in the type. */
   resumeId: string;
-  /** Ticket 38a7598 (Nicole: "each of the job cards can say 'searched
-   * with' and then use the resume['s nickname]"): the nickname of the
-   * resume THIS result was actually scored against — read from
-   * `GetResumeResultsResponse.resumeNickname` (one value per response,
-   * threaded down through ResultsList/GroupedResultsList, same as
-   * `resumeId` above), never refetched separately. */
-  resumeNickname: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
   /** "Untoggle" (dogfooding, 2026-09-08 — Nicole: "you should be able to
    * untoggle the buttons, like undismiss") — clears back to no-action-taken
@@ -151,8 +143,15 @@ export function ResultCard({
           {/* Ticket 38a7598: Nicole -- "normalizing that all these searches
               are done against one resume is gonna be helpful for the
               user." A separate line from `result-meta` above (which is
-              about the JOB), since this is a fact about the SEARCH. */}
-          <p className="result-searched-with">Searched with: {resumeNickname}</p>
+              about the JOB), since this is a fact about the SEARCH.
+              Review fix, same ticket: reads straight off `result` (each
+              result now carries its OWN `resumeNickname`, joined
+              server-side) rather than a prop threaded down from the
+              caller -- see ScoredJobResult.resumeNickname's doc comment
+              in @app/shared for why: the next ticket (3f0883f) makes it
+              possible for two results in the SAME response to have been
+              scored against two DIFFERENT resumes. */}
+          <p className="result-searched-with">Searched with: {result.resumeNickname}</p>
         </div>
         {/* Ticket e367a63: the top-right Undo control is gone -- Nicole
             wants the status button itself to undo (see the toggle logic
