@@ -53,7 +53,11 @@ const SOURCES: GetSourcesResponse = {
     { id: "greenhouse", displayName: "Greenhouse", configured: true },
   ],
 };
-const RESULTS: GetResumeResultsResponse = { resumeId: "resume-1", results: [] };
+const RESULTS: GetResumeResultsResponse = {
+  resumeId: "resume-1",
+  resumeNickname: "Resume 1",
+  results: [],
+};
 const RESUME_TEXT = "ten years of backend engineering, mostly Node and Postgres";
 
 function makeEstimate(): EstimateSearchResponse {
@@ -81,7 +85,11 @@ function makeEstimate(): EstimateSearchResponse {
 
 function mockHappyPath() {
   getSources.mockResolvedValue(SOURCES);
-  createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: ["Backend Engineer"] });
+  createResume.mockResolvedValue({
+    id: "resume-1",
+    resumeNickname: "Resume 1",
+    suggestedTitles: ["Backend Engineer"],
+  });
   getResults.mockResolvedValue(RESULTS);
 }
 
@@ -122,6 +130,10 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
     expect(createResume).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
+    // Ticket 38a7598: the nickname is part of PersistedAppState too (bumped
+    // to .v4) -- a reload must not show the resume as unnamed even though
+    // the server still has a real nickname for it.
+    expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 1");
     expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
     expect(screen.getByLabelText("Also show fully remote roles")).toBeChecked();
@@ -203,17 +215,18 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // No resume means nothing worth restoring; the empty screen IS the
     // right state, and no record should have been written to resurrect.
     expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("jobsearch.web.appState.v3")).toBeNull();
+    expect(sessionStorage.getItem("jobsearch.web.appState.v4")).toBeNull();
   });
 
   it("ignores a corrupt record and starts clean rather than crashing", async () => {
     // Ticket b9e6251 bumped this key from .v1 to .v2 (CriteriaFormState
     // gained `anyLocationOk`); ticket ffbf9fb bumped it again to .v3
-    // (PersistedAppState gained `scoreFloor`) -- must set the key the app
-    // ACTUALLY reads, or this test would silently pass for the wrong reason
-    // (never even attempting to read the "corrupt" data because it's under a
-    // key nothing reads anymore).
-    sessionStorage.setItem("jobsearch.web.appState.v3", '{"resumeId": 42}');
+    // (PersistedAppState gained `scoreFloor`); ticket 38a7598 bumped it
+    // again to .v4 (PersistedAppState gained `resumeNickname`) -- must set
+    // the key the app ACTUALLY reads, or this test would silently pass for
+    // the wrong reason (never even attempting to read the "corrupt" data
+    // because it's under a key nothing reads anymore).
+    sessionStorage.setItem("jobsearch.web.appState.v4", '{"resumeId": 42}');
     mockHappyPath();
 
     render(<App />);
@@ -231,9 +244,10 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // the slider itself renders clamped at 90 (a visible mismatch between
     // what the UI shows and what's actually sent to the server).
     sessionStorage.setItem(
-      "jobsearch.web.appState.v3",
+      "jobsearch.web.appState.v4",
       JSON.stringify({
         resumeId: "resume-1",
+        resumeNickname: "Resume 1",
         resumeText: RESUME_TEXT,
         selectedSourceIds: ["usajobs"],
         titleChips: ["Backend Engineer"],

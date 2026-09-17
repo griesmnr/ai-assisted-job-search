@@ -5,7 +5,7 @@ import {
   type SearchCriteria,
   type UserJobStatus,
 } from "@app/shared";
-import { clearJobStatus, createResume, setJobStatus } from "./api/client";
+import { clearJobStatus, createResume, setJobStatus, updateResumeNickname } from "./api/client";
 import {
   GroupedResultsList,
   groupKeyForStatus,
@@ -100,6 +100,30 @@ function App() {
   const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
+  // creation time (CreateResumeResponse.resumeNickname), or restored from a
+  // prior reload. Empty string (not undefined) before any resume has been
+  // submitted this session/reload -- ResumeInput's field renders disabled
+  // in that state (gated on `resumeId`, not on this being non-empty).
+  const [resumeNickname, setResumeNickname] = useState(restored?.resumeNickname ?? "");
+  // Ticket 38a7598 review fix: the last value the SERVER actually
+  // confirmed (either a fresh `CreateResumeResponse.resumeNickname` or a
+  // successful `PATCH /resumes/:id` response) -- tracked separately from
+  // `resumeNickname` above, which also holds every uncommitted keystroke
+  // while the user is typing. Without this distinction there was no value
+  // to fall back to: an empty-trim commit returned early AFTER
+  // `handleNicknameChange` had already pushed the empty string into
+  // `resumeNickname` (and from there into sessionStorage), leaving the UI
+  // blank, sessionStorage blank, and the server's real nickname untouched
+  // -- three different values with no way to reconcile them. Same problem
+  // after a FAILED PATCH: the bad/attempted value stayed in `resumeNickname`
+  // instead of reverting. Seeded from `restored` on reload as the best
+  // available guess at "what the server last confirmed" (there is no
+  // PATCH round-trip on a restore, so this can't be re-verified without a
+  // network call this ticket doesn't add).
+  const [lastSavedNickname, setLastSavedNickname] = useState(restored?.resumeNickname ?? "");
+  const [nicknameSaving, setNicknameSaving] = useState(false);
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(
     () => new Set(restored?.selectedSourceIds ?? []),
   );
@@ -283,12 +307,30 @@ function App() {
     writeAppState({
       resumeId,
       resumeText,
+      // Ticket 38a7598 review fix (round 2): persist `lastSavedNickname`
+      // (the last value the SERVER confirmed), not `resumeNickname` (which
+      // can hold uncommitted keystrokes mid-edit). Persisting the live
+      // input value meant typing without blurring, then reloading, seeded
+      // `lastSavedNickname` itself from that never-sent text on restore --
+      // after which the unchanged-value no-op check (ticket 38a7598 fix 4)
+      // would treat the real, server-side value as already saved and skip
+      // every future PATCH for it, silently freezing the divergence rather
+      // than self-healing on the next blur.
+      resumeNickname: lastSavedNickname,
       selectedSourceIds: [...selectedSourceIds],
       titleChips,
       criteriaForm,
       scoreFloor,
     });
-  }, [resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm, scoreFloor]);
+  }, [
+    resumeId,
+    resumeText,
+    lastSavedNickname,
+    selectedSourceIds,
+    titleChips,
+    criteriaForm,
+    scoreFloor,
+  ]);
 
   function toggleSource(sourceId: string) {
     setSelectedSourceIds((prev) => {
@@ -303,13 +345,26 @@ function App() {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
-      const { id, suggestedTitles } = await createResume(resumeText);
+      const {
+        id,
+        suggestedTitles,
+        resumeNickname: defaultNickname,
+      } = await createResume(resumeText);
       setResumeId(id);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
       // resumeId, and persisting a half-typed draft on each character
       // would be a write per keystroke for no benefit.
       setResumeText(resumeText);
+      // Ticket 38a7598: the server's real default ("Resume N") or, for a
+      // resubmission of already-existing text, that resume's real
+      // (possibly already-renamed) nickname -- never invented client-side.
+      setResumeNickname(defaultNickname);
+      // Review fix: this IS a server-confirmed value (it came straight off
+      // this response), so it's also the new "last known-good" baseline a
+      // later empty-trim or failed commit should revert back to.
+      setLastSavedNickname(defaultNickname);
+      setNicknameError(null);
       // Defensive, not just decorative: an older cached client build, a
       // test fixture written before this field existed, or any future API
       // response shape drift should degrade to "no suggestions" rather
@@ -319,6 +374,53 @@ function App() {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
       setResumeSubmitting(false);
+    }
+  }
+
+  // Ticket 38a7598: fires on every keystroke in ResumeInput's nickname
+  // field -- purely local/session state, no network call (mirrors
+  // `session.ts`'s own "don't write per keystroke" reasoning, applied here
+  // to "don't PATCH per keystroke" instead). `handleNicknameCommit` below
+  // is what actually persists it.
+  function handleNicknameChange(nextNickname: string) {
+    setResumeNickname(nextNickname);
+  }
+
+  // Fires on blur (or Enter -- ResumeInput.tsx). A no-op (no PATCH, no
+  // error, no refetch) for a value that's UNCHANGED from what the server
+  // last confirmed -- checked against `lastSavedNickname`, not against
+  // whatever `resumeNickname` currently holds, since those two can differ
+  // (see `lastSavedNickname`'s own doc comment above). This is also a
+  // no-op for a whitespace-only value, matching the server's own rejection
+  // of an empty nickname (routes/resumes.ts) -- but unlike the old
+  // behavior, it REVERTS the local `resumeNickname` state back to
+  // `lastSavedNickname` first (ticket 38a7598 review fix): before this,
+  // `handleNicknameChange` had already pushed the empty string into
+  // `resumeNickname` (and from there into sessionStorage) by the time this
+  // function ran, so the field went blank locally while the server's real
+  // nickname was untouched -- with no feedback that anything had gone
+  // wrong. Same revert on a FAILED PATCH: the attempted value must not
+  // stay parked in local state as though it had taken effect.
+  async function handleNicknameCommit(nextNickname: string) {
+    if (resumeId === undefined) return;
+    const trimmed = nextNickname.trim();
+    if (trimmed === lastSavedNickname) return;
+    if (trimmed.length === 0) {
+      setResumeNickname(lastSavedNickname);
+      return;
+    }
+    setNicknameSaving(true);
+    setNicknameError(null);
+    try {
+      const { resumeNickname: saved } = await updateResumeNickname(resumeId, trimmed);
+      setResumeNickname(saved);
+      setLastSavedNickname(saved);
+      refresh();
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : String(err));
+      setResumeNickname(lastSavedNickname);
+    } finally {
+      setNicknameSaving(false);
     }
   }
 
@@ -380,6 +482,12 @@ function App() {
             onSubmit={(text) => void handleResumeSubmit(text)}
             submitting={resumeSubmitting}
             initialText={resumeText}
+            resumeId={resumeId}
+            nickname={resumeNickname}
+            onNicknameChange={handleNicknameChange}
+            onNicknameCommit={(next) => void handleNicknameCommit(next)}
+            nicknameSaving={nicknameSaving}
+            nicknameError={nicknameError}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}

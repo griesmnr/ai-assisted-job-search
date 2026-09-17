@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 import type { Job, LevelFit } from "@app/shared";
 import { MATCH_SCORE_FLOOR } from "@app/shared";
 import Anthropic from "@anthropic-ai/sdk";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { seedSourceDescriptors } from "./db/seed.js";
@@ -1817,6 +1817,20 @@ function hashResumeText(resumeText: string): string {
  * runDemoMatch's persistence, don't reimplement it" instruction: a resume
  * paste alone doesn't need a full `runDemoMatch` run (which also fetches
  * and would ingest jobs) — it only needs this one step.
+ *
+ * Ticket 38a7598: a genuinely NEW resume also gets a real, distinct default
+ * nickname ("Resume N") assigned right here, at insert time — never left
+ * blank for a later pass to fix. `N` is one more than the current row
+ * count, read just before the insert. This is deliberately a BEST-EFFORT
+ * scheme, not a strictly-monotonic guarantee: two concurrent calls for two
+ * DIFFERENT new resumes could both read the same count and mint the same
+ * "Resume N" (the same race `getOrCreateResumeId`'s hash-based upsert below
+ * is explicitly safe against — for the HASH, not for this count). Accepted
+ * for this ticket's scope (a single-user app with no concurrent resume
+ * submissions in practice — see the ticket's own "implementer's call on
+ * exact numbering scheme"); a strictly-unique numbering would need a DB
+ * sequence or a serializable transaction around both statements, which is
+ * more machinery than this feature's actual usage pattern justifies.
  */
 export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1825,9 +1839,17 @@ export async function getOrCreateResumeId(
 ): Promise<string> {
   const resumeHash = hashResumeText(resumeText);
 
+  const countRows = await db.select({ count: sql<number>`count(*)::int` }).from(resumes);
+  const nextResumeNumber = (countRows[0]?.count ?? 0) + 1;
+
   await db
     .insert(resumes)
-    .values({ id: randomUUID(), resumeText, resumeHash })
+    .values({
+      id: randomUUID(),
+      resumeText,
+      resumeHash,
+      resumeNickname: `Resume ${nextResumeNumber}`,
+    })
     .onConflictDoNothing({ target: resumes.resumeHash });
 
   const rows = await db

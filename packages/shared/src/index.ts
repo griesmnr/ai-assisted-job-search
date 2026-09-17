@@ -47,6 +47,8 @@ export type Job = {
 export type Resume = {
   id: string;
   resumeText: string;
+  /** See `CreateResumeResponse.resumeNickname`'s doc comment (ticket 38a7598). */
+  resumeNickname: string;
 };
 
 export type JobMatch = {
@@ -106,11 +108,43 @@ export type CreateResumeResponse = {
    * treat as "no suggestions to show", not an error.
    */
   suggestedTitles: string[];
+  /**
+   * A real, distinct default ("Resume 1", "Resume 2", ...) assigned by
+   * `getOrCreateResumeId` (apps/api/src/demo-match.ts) at insert time for a
+   * genuinely new resume, or the resume's EXISTING nickname when this
+   * submission matched a resume that already existed (content-addressed
+   * find-or-create, ticket 620ca30) — including one the user already
+   * renamed via `PATCH /resumes/:id`. Ticket 38a7598: this is what
+   * `ResumeInput.tsx` shows/pre-fills right in the submission flow, per
+   * Nicole's explicit "at that moment... choosing the resume nickname" —
+   * never a value the frontend invents itself, so a resubmission of
+   * identical text is guaranteed to show the SAME real nickname the
+   * resume already carries, never a fresh guess that could drift from it.
+   */
+  resumeNickname: string;
 };
 
 export type GetResumeResponse = {
   id: string;
   resumeText: string;
+  /** See `CreateResumeResponse.resumeNickname`'s doc comment. */
+  resumeNickname: string;
+};
+
+/**
+ * `PATCH /resumes/:id` (ticket 38a7598) — renames a resume's nickname.
+ * Deliberately minimal: this is NOT a general resume-editing endpoint (the
+ * ticket's own Scope excludes that) — the only field it can change is
+ * `resumeNickname`, never `resumeText` (that would break content-addressing:
+ * `resumeHash` is derived from the text and never recomputed after insert).
+ */
+export type UpdateResumeNicknameRequest = {
+  resumeNickname: string;
+};
+
+export type UpdateResumeNicknameResponse = {
+  id: string;
+  resumeNickname: string;
 };
 
 /**
@@ -170,6 +204,19 @@ export type ScoredJobResult = {
    */
   status: UserJobStatus | null;
   /**
+   * Ticket 38a7598 review fix: the nickname of the resume THIS result was
+   * scored against, carried per-result rather than only once at the top
+   * level of `GetResumeResultsResponse` (see that type's own doc comment
+   * for the "why now, not later" reasoning) -- the very next ticket
+   * (3f0883f) widens "Already Scored Jobs" to span MULTIPLE resumes at
+   * once, where the SAME posting can legitimately appear twice, once per
+   * resume, with two different nicknames. A single response-level field
+   * cannot express that; this is what `ResultCard.tsx`'s "Searched with:
+   * <nickname>" line now reads, straight off its own `result`, never a
+   * prop threaded down from a caller.
+   */
+  resumeNickname: string;
+  /**
    * `null` for a row scored before this ticket, or any row a caller
    * declines to judge — NEVER coerced to `"well_matched"` on read (that
    * would fabricate a claim the model never made). By convention, a real
@@ -218,6 +265,24 @@ export type ScoredJobResult = {
 
 export type GetResumeResultsResponse = {
   resumeId: string;
+  /**
+   * Ticket 38a7598: originally the ONE place a card's "Searched with"
+   * label read its nickname from, on the (true, at the time) reasoning
+   * that every result in one response was scored against the same resume
+   * (`?resumeId=` scopes the whole query). Review fix, same ticket: that
+   * doesn't hold up against the very next ticket (3f0883f), which widens
+   * "Already Scored Jobs" to span MULTIPLE resumes at once — the same
+   * posting can then legitimately appear twice, once per resume, with two
+   * different nicknames, which this single response-level field can't
+   * express. `ScoredJobResult.resumeNickname` is now the canonical,
+   * per-result source `ResultCard.tsx` actually reads. This field is kept
+   * for convenience/back-compat (it costs nothing extra — the route
+   * already looks the resume up to 404-check `resumeId`), but nothing in
+   * apps/web reads it anymore; don't add a new reader of it without first
+   * checking whether the caller actually wants the per-result field
+   * instead.
+   */
+  resumeNickname: string;
   results: ScoredJobResult[];
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */

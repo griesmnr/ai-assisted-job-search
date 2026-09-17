@@ -140,6 +140,18 @@ export function ResultCard({
             {result.location && <> · Location: {result.location}</>}
             {result.locationType && <> · Work arrangement: {result.locationType}</>}
           </p>
+          {/* Ticket 38a7598: Nicole -- "normalizing that all these searches
+              are done against one resume is gonna be helpful for the
+              user." A separate line from `result-meta` above (which is
+              about the JOB), since this is a fact about the SEARCH.
+              Review fix, same ticket: reads straight off `result` (each
+              result now carries its OWN `resumeNickname`, joined
+              server-side) rather than a prop threaded down from the
+              caller -- see ScoredJobResult.resumeNickname's doc comment
+              in @app/shared for why: the next ticket (3f0883f) makes it
+              possible for two results in the SAME response to have been
+              scored against two DIFFERENT resumes. */}
+          <p className="result-searched-with">Searched with: {result.resumeNickname}</p>
         </div>
         {/* Ticket e367a63: the top-right Undo control is gone -- Nicole
             wants the status button itself to undo (see the toggle logic

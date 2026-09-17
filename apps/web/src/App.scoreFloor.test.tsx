@@ -70,6 +70,9 @@ function makeJob(jobId: string, title: string): ScoredJobResult {
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: false,
+    // Ticket 38a7598 review fix: per-result now, not response-level -- see
+    // ScoredJobResult.resumeNickname's doc comment in @app/shared.
+    resumeNickname: "Resume 1",
   };
 }
 
@@ -143,8 +146,12 @@ async function submitResumeAndCompleteASearch() {
 describe("Score floor slider (ticket ffbf9fb)", () => {
   it("defaults to MATCH_SCORE_FLOOR when nothing has been persisted", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
 
     await submitResumeAndOpenScoredTab();
 
@@ -159,8 +166,12 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
 
   it("moving the slider re-fetches results with the new minScore value", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
 
     await submitResumeAndOpenScoredTab();
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
@@ -177,7 +188,11 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
 
   it("updates the visible results list to reflect the new floor", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     // A smaller result set at the default floor, a larger one once the
     // floor is lowered -- mirrors what the real server-side `gte(matchScore,
     // minScore)` filter does: a lower floor can surface a job that was
@@ -187,7 +202,11 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
         (params.minScore ?? 0) >= MATCH_SCORE_FLOOR
           ? [makeJob("job-1", "Backend Engineer")]
           : [makeJob("job-1", "Backend Engineer"), makeJob("job-2", "Support Engineer")];
-      return Promise.resolve({ resumeId: "resume-1", results } satisfies GetResumeResultsResponse);
+      return Promise.resolve({
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        results,
+      } satisfies GetResumeResultsResponse);
     });
 
     await submitResumeAndOpenScoredTab();
@@ -204,8 +223,12 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
 
   it("survives a reload", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
 
     await submitResumeAndOpenScoredTab();
     fireEvent.change(screen.getByLabelText("Minimum match score to show"), {
@@ -220,7 +243,7 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
 
     cleanup();
     getResults.mockClear();
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
 
     render(<App />);
 
@@ -254,8 +277,16 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
      */
     it("gives each mounted slider a distinct id whose label truly resolves to it", async () => {
       getSources.mockResolvedValue(SOURCES);
-      createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-      getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+      createResume.mockResolvedValue({
+        id: "resume-1",
+        resumeNickname: "Resume 1",
+        suggestedTitles: [],
+      });
+      getResults.mockResolvedValue({
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        results: [],
+      });
       estimateSearch.mockResolvedValue(makeEstimate());
       startSearch.mockResolvedValue({
         searchId: "search-1",

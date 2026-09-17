@@ -29,12 +29,16 @@ function job(
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: false,
+    // Ticket 38a7598 review fix: per-result now, not response-level -- see
+    // ScoredJobResult.resumeNickname's doc comment in @app/shared.
+    resumeNickname: "Resume 1",
     ...overrides,
   };
 }
 
 const DATA: GetResumeResultsResponse = {
   resumeId: "resume-1",
+  resumeNickname: "Resume 1",
   results: [
     job({ jobId: "job-1", title: "Senior Backend Engineer" }),
     job({
@@ -135,6 +139,7 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
 describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', () => {
   const WITH_CONTRACT: GetResumeResultsResponse = {
     resumeId: "resume-1",
+    resumeNickname: "Resume 1",
     results: [
       job({ jobId: "job-1", title: "Senior Backend Engineer" }),
       job({
@@ -191,6 +196,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
   it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
     const ALL_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         job({ jobId: "job-a", title: "Contract Software Engineer", isContractOrTemp: true }),
         job({ jobId: "job-b", title: "Software Engineer, Temp", isContractOrTemp: true }),
@@ -249,6 +255,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
   it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the source-selection message) when the only two source-visible jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
     const ONLY_OVERQUALIFIED_AND_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         job({
           jobId: "job-2",
@@ -294,6 +301,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
   it("a job that is BOTH overqualified AND contract/temp is claimed by the level filter (which runs first) and is not double-counted in the contract-filter's own clause", () => {
     const DATA_BOTH: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         job({ jobId: "job-1", title: "Senior Backend Engineer" }),
         job({
@@ -338,6 +346,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
 describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
   const GROUPED: GetResumeResultsResponse = {
     resumeId: "resume-1",
+    resumeNickname: "Resume 1",
     results: [
       job({ jobId: "job-saved", title: "Saved Job", status: "saved" }),
       job({ jobId: "job-dismissed", title: "Dismissed Job", status: "dismissed" }),
@@ -444,6 +453,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     // "dismissed") should have a quick-link yet.
     const ONLY_SAVED: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [job({ jobId: "job-saved", title: "Saved Job", status: "saved" })],
     };
 
@@ -468,6 +478,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     // never changing.
     const NOW_DISMISSED: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [job({ jobId: "job-saved", title: "A Job Title", status: "dismissed" })],
     };
 
@@ -489,6 +500,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
   it("live quick-link counts respect source toggles -- a job hidden by a deselected source is not counted", () => {
     const TWO_SOURCES: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         job({ jobId: "job-a", title: "Job A", status: "saved", dataSource: "usajobs" }),
         job({ jobId: "job-b", title: "Job B", status: "saved", dataSource: "greenhouse" }),

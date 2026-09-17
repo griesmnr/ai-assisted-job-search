@@ -12,6 +12,7 @@ afterEach(cleanup);
 
 const DATA: GetResumeResultsResponse = {
   resumeId: "resume-1",
+  resumeNickname: "Resume 1",
   hiddenBelowFloor: 4,
   results: [
     {
@@ -31,6 +32,9 @@ const DATA: GetResumeResultsResponse = {
       levelFit: null,
       levelFitNote: null,
       isContractOrTemp: false,
+      // Ticket 38a7598 review fix: per-result now, not response-level --
+      // see ScoredJobResult.resumeNickname's doc comment in @app/shared.
+      resumeNickname: "Resume 1",
     },
     {
       jobId: "job-2",
@@ -49,6 +53,7 @@ const DATA: GetResumeResultsResponse = {
       levelFit: "overqualified",
       levelFitNote: "This posting is written below your level, which may hurt at screening.",
       isContractOrTemp: false,
+      resumeNickname: "Resume 1",
     },
   ],
 };
@@ -231,6 +236,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: true,
+    resumeNickname: "Resume 1",
   };
 
   const WITH_CONTRACT: GetResumeResultsResponse = {
@@ -285,6 +291,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
   it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
     const ALL_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [CONTRACT_JOB, { ...CONTRACT_JOB, jobId: "job-4", externalId: "ext-4" }],
     };
 
@@ -342,6 +349,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
   it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the source-selection message) when the only two source-visible jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
     const ONLY_OVERQUALIFIED_AND_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [DATA.results[1]!, CONTRACT_JOB],
     };
 
@@ -383,6 +391,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
     };
     const DATA_BOTH: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [DATA.results[0]!, OVERQUALIFIED_AND_CONTRACT],
     };
 

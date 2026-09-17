@@ -40,6 +40,9 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
     levelFit: null,
     levelFitNote: null,
     isContractOrTemp: false,
+    // Ticket 38a7598 review fix: now carried on the result itself, not a
+    // separate prop -- see ScoredJobResult.resumeNickname's doc comment.
+    resumeNickname: "Resume 1",
     ...overrides,
   };
 }
@@ -499,5 +502,46 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Why this match?" }));
 
     expect(screen.queryByText("Level fit")).not.toBeInTheDocument();
+  });
+});
+
+// Ticket 38a7598: "each of the job cards can say 'searched with'... use the
+// resume['s nickname]" -- Nicole's own words in the ticket, so the exact
+// label text is load-bearing, not just any indication of which resume.
+describe("ResultCard — Searched with (ticket 38a7598)", () => {
+  it("shows the resume nickname it was scored against", () => {
+    render(
+      <ResultCard
+        result={makeResult({ resumeNickname: "Backend-focused resume" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.getByText("Searched with: Backend-focused resume")).toBeInTheDocument();
+  });
+
+  it("re-renders with a NEW nickname after a rename, without needing a different resumeId", () => {
+    const { rerender } = render(
+      <ResultCard
+        result={makeResult({ resumeNickname: "Resume 1" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+    expect(screen.getByText("Searched with: Resume 1")).toBeInTheDocument();
+
+    rerender(
+      <ResultCard
+        result={makeResult({ resumeNickname: "Renamed resume" })}
+        resumeId="resume-1"
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+    expect(screen.getByText("Searched with: Renamed resume")).toBeInTheDocument();
+    expect(screen.queryByText("Searched with: Resume 1")).not.toBeInTheDocument();
   });
 });

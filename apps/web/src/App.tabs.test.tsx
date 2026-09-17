@@ -56,7 +56,11 @@ const SOURCES: GetSourcesResponse = {
   sources: [{ id: "usajobs", displayName: "USAJOBS", configured: true }],
 };
 
-const EMPTY_RESULTS: GetResumeResultsResponse = { resumeId: "resume-1", results: [] };
+const EMPTY_RESULTS: GetResumeResultsResponse = {
+  resumeId: "resume-1",
+  resumeNickname: "Resume 1",
+  results: [],
+};
 
 function makeEstimate(): EstimateSearchResponse {
   return {
@@ -98,7 +102,11 @@ async function submitResume() {
 describe("App tabs (ticket f4a7f07)", () => {
   it("defaults to the New Job Search tab", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(EMPTY_RESULTS);
 
     await submitResume();
@@ -115,7 +123,11 @@ describe("App tabs (ticket f4a7f07)", () => {
 
   it("switching to Already Scored Jobs and back does not unmount SearchFlow -- an in-progress estimate survives the round trip", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(EMPTY_RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -141,7 +153,11 @@ describe("App tabs (ticket f4a7f07)", () => {
 
   it("'Results from this search' does not appear until a search actually completes", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(EMPTY_RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -163,9 +179,14 @@ describe("App tabs (ticket f4a7f07)", () => {
 
   it("shows 'Results from this search' once a search completes, and hides it again the instant a new estimate starts", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue({
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         {
           jobId: "job-1",

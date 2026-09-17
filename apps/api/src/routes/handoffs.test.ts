@@ -61,6 +61,7 @@ async function seedResume(resumeText = "A real resume.") {
     id: resumeId,
     resumeText,
     resumeHash: randomUUID(),
+    resumeNickname: "Resume 1",
   });
   return resumeId;
 }
