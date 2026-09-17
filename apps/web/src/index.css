@@ -82,6 +82,10 @@ section {
 .resume-nickname-field input {
   font: inherit;
   padding: 0.3rem 0.5rem;
+  /* Ticket 5a79aa4: with no explicit width this rendered at the browser's
+     tiny default (~20 characters) -- too narrow to see a real nickname
+     while typing/editing it. */
+  width: 16rem;
 }
 
 .resume-nickname-status {

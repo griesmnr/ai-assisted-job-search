@@ -51,12 +51,14 @@ afterEach(cleanup);
 // explicit "right next to the button... at that moment" instruction), not
 // a separate screen.
 describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
-  it("renders the nickname field disabled with no resumeId yet -- nothing to attach a rename to before a resume exists", () => {
+  // Ticket 5a79aa4 (review of 38a7598's shipped UI, live dogfooding): the
+  // field used to render disabled-with-a-placeholder before a resumeId
+  // existed; Nicole asked for it to be ABSENT instead, matching "Use this
+  // resume"'s own not-yet-actionable treatment.
+  it("does not render the nickname field at all with no resumeId yet -- nothing to attach a rename to before a resume exists", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
 
-    const nicknameField = screen.getByLabelText("Resume Nickname");
-    expect(nicknameField).toBeDisabled();
-    expect(nicknameField).toHaveValue("");
+    expect(screen.queryByLabelText("Resume Nickname")).not.toBeInTheDocument();
   });
 
   it("is enabled and pre-filled with the real default once a resumeId + nickname are supplied", () => {
@@ -174,5 +176,37 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
 
     expect(onSubmit).toHaveBeenCalledWith("some resume text");
+  });
+});
+
+// Ticket 5a79aa4: "Use this resume" itself follows the same not-yet-
+// actionable-means-absent treatment as the nickname field, not merely
+// disabled-with-nothing-to-explain-why.
+describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => {
+  it("does not render 'Use this resume' with an empty textarea", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+  });
+
+  it("does not render 'Use this resume' for whitespace-only text", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "   " },
+    });
+
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+  });
+
+  it("renders 'Use this resume' once real text is typed, and it disappears again if the text is cleared", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+    const textarea = screen.getByLabelText("Paste your resume");
+
+    fireEvent.change(textarea, { target: { value: "real resume text" } });
+    expect(screen.getByRole("button", { name: "Use this resume" })).toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: "" } });
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
   });
 });
