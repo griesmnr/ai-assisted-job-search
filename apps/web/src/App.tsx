@@ -307,7 +307,16 @@ function App() {
     writeAppState({
       resumeId,
       resumeText,
-      resumeNickname,
+      // Ticket 38a7598 review fix (round 2): persist `lastSavedNickname`
+      // (the last value the SERVER confirmed), not `resumeNickname` (which
+      // can hold uncommitted keystrokes mid-edit). Persisting the live
+      // input value meant typing without blurring, then reloading, seeded
+      // `lastSavedNickname` itself from that never-sent text on restore --
+      // after which the unchanged-value no-op check (ticket 38a7598 fix 4)
+      // would treat the real, server-side value as already saved and skip
+      // every future PATCH for it, silently freezing the divergence rather
+      // than self-healing on the next blur.
+      resumeNickname: lastSavedNickname,
       selectedSourceIds: [...selectedSourceIds],
       titleChips,
       criteriaForm,
@@ -316,7 +325,7 @@ function App() {
   }, [
     resumeId,
     resumeText,
-    resumeNickname,
+    lastSavedNickname,
     selectedSourceIds,
     titleChips,
     criteriaForm,

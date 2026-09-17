@@ -449,11 +449,12 @@ describe("GET /resumes/:id/results", () => {
     }
   });
 
-  // Ticket 38a7598 review fix: proves the per-result value is a real JOIN
-  // (re-read from `resumes` for the row's OWN `resumeId`), not the
-  // top-level lookup's value silently copied onto every row -- a rename
-  // made AFTER the job was scored, then queried through a DIFFERENT
-  // resume's results, must never leak across.
+  // Ticket 38a7598 review fix: proves a rename on one resume never leaks
+  // into a DIFFERENT resume's own results. NOTE (opus re-review, round 2):
+  // this does NOT distinguish a real per-row JOIN from the top-level
+  // lookup's value copied onto every row -- both queries here are scoped
+  // to a single resumeId, so that distinction only becomes observable
+  // once results can span multiple resumes at once (ticket 3f0883f).
   it("a rename on one resume never bleeds into a different resume's per-result nicknames", async () => {
     const app = buildTestApp();
     const firstCreated = await app.inject({
