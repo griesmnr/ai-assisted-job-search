@@ -103,8 +103,9 @@ function App() {
   // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
   // creation time (CreateResumeResponse.resumeNickname), or restored from a
   // prior reload. Empty string (not undefined) before any resume has been
-  // submitted this session/reload -- ResumeInput's field renders disabled
-  // in that state (gated on `resumeId`, not on this being non-empty).
+  // submitted this session/reload -- ResumeInput's field isn't rendered at
+  // all in that state (ticket 5a79aa4; gated on `resumeId`, not on this
+  // being non-empty).
   const [resumeNickname, setResumeNickname] = useState(restored?.resumeNickname ?? "");
   // Ticket 38a7598 review fix: the last value the SERVER actually
   // confirmed (either a fresh `CreateResumeResponse.resumeNickname` or a

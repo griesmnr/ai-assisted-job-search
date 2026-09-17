@@ -11,12 +11,17 @@ import { useState } from "react";
  * Ticket 38a7598 (Nicole: "right next to the 'use this resume' button...
  * when they use this resume, they should be at that moment... choosing the
  * resume nickname"): the nickname field lives in THIS form, next to the
- * submit button, not a separate settings screen. It renders from the very
- * first paint (so it's visibly part of "using this resume", not a
- * follow-up step reached some other way), but only becomes editable once a
- * real resume id — and with it, the server's real default nickname — exists.
- * Before that, it shows a placeholder explaining the ordering rather than
- * accepting free text no `resumeId` exists yet to attach it to.
+ * submit button, not a separate settings screen.
+ *
+ * Ticket 5a79aa4 (Nicole, live dogfooding right after 38a7598 shipped:
+ * "let's hide the resume nickname and the attempted helper text until
+ * they use the resume... let's hide even the use this resume [button]
+ * also"): both controls are ABSENT, not disabled-with-explanation, until
+ * they're actually actionable -- "Use this resume" only once there's real
+ * text to submit, the nickname field only once a real resumeId (and with
+ * it, the server's real default nickname) exists to attach a rename to.
+ * No placeholder text explaining an ordering the user can't act on yet;
+ * the controls simply aren't there before their moment arrives.
  */
 export function ResumeInput({
   onSubmit,
@@ -42,9 +47,10 @@ export function ResumeInput({
    */
   initialText?: string;
   /** Ticket 38a7598: undefined until a resume has actually been created
-   * (POST /resumes resolved) this session/reload — gates whether the
-   * nickname field is editable at all, since there's nothing to attach a
-   * rename to before then. */
+   * (POST /resumes resolved) this session/reload. Ticket 5a79aa4: gates
+   * whether the nickname field RENDERS AT ALL, not just whether it's
+   * editable — there's nothing to attach a rename to before a real
+   * resumeId exists, so the field simply isn't shown yet. */
   resumeId?: string;
   /**
    * The resume's current nickname — genuinely CONTROLLED, unlike `text`
@@ -88,40 +94,43 @@ export function ResumeInput({
         placeholder="Paste resume text here..."
       />
       <div className="resume-input-actions">
-        <button type="submit" disabled={submitting || text.trim().length === 0}>
-          {submitting ? "Saving..." : "Use this resume"}
-        </button>
-        <div className="resume-nickname-field">
-          <label htmlFor="resume-nickname">Resume Nickname</label>
-          <input
-            id="resume-nickname"
-            type="text"
-            value={nickname ?? ""}
-            disabled={resumeId === undefined || nicknameSaving}
-            placeholder={resumeId === undefined ? "Assigned once you use this resume" : undefined}
-            onChange={(e) => onNicknameChange?.(e.target.value)}
-            onBlur={(e) => onNicknameCommit?.(e.target.value)}
-            // Ticket 38a7598 review fix: this input sits INSIDE the resume
-            // <form> (which has its own submit button), so without this,
-            // pressing Enter here triggered the form's implicit submit --
-            // RESUBMITTING the resume text -- instead of committing the
-            // nickname edit. Because `createResume` is content-addressed,
-            // that resubmission returned the SAME resume id carrying its
-            // OLD nickname, silently overwriting whatever was just typed
-            // with zero error or explanation. `preventDefault` stops the
-            // keypress from reaching the form's submit; committing
-            // explicitly here (rather than just letting blur handle it)
-            // means Enter behaves the same way a real "save" action would,
-            // whether or not the field happens to lose focus afterward.
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onNicknameCommit?.(e.currentTarget.value);
-              }
-            }}
-          />
-          {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
-        </div>
+        {text.trim().length > 0 && (
+          <button type="submit" disabled={submitting}>
+            {submitting ? "Saving..." : "Use this resume"}
+          </button>
+        )}
+        {resumeId !== undefined && (
+          <div className="resume-nickname-field">
+            <label htmlFor="resume-nickname">Resume Nickname</label>
+            <input
+              id="resume-nickname"
+              type="text"
+              value={nickname ?? ""}
+              disabled={nicknameSaving}
+              onChange={(e) => onNicknameChange?.(e.target.value)}
+              onBlur={(e) => onNicknameCommit?.(e.target.value)}
+              // Ticket 38a7598 review fix: this input sits INSIDE the resume
+              // <form> (which has its own submit button), so without this,
+              // pressing Enter here triggered the form's implicit submit --
+              // RESUBMITTING the resume text -- instead of committing the
+              // nickname edit. Because `createResume` is content-addressed,
+              // that resubmission returned the SAME resume id carrying its
+              // OLD nickname, silently overwriting whatever was just typed
+              // with zero error or explanation. `preventDefault` stops the
+              // keypress from reaching the form's submit; committing
+              // explicitly here (rather than just letting blur handle it)
+              // means Enter behaves the same way a real "save" action would,
+              // whether or not the field happens to lose focus afterward.
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onNicknameCommit?.(e.currentTarget.value);
+                }
+              }}
+            />
+            {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
+          </div>
+        )}
       </div>
       {nicknameError && (
         <p role="alert" className="resume-nickname-error">
