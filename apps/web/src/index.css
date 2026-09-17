@@ -64,6 +64,36 @@ section {
   font-size: 0.9rem;
 }
 
+/* Ticket 38a7598: the nickname field sits directly beside "Use this
+   resume", per Nicole's explicit "right next to the button" placement. */
+.resume-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.resume-nickname-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.resume-nickname-field input {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+}
+
+.resume-nickname-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.resume-nickname-error {
+  color: #c0392b;
+  font-size: 0.9rem;
+}
+
 .search-pitch {
   font-size: 0.9rem;
   max-width: 40rem;
@@ -428,6 +458,15 @@ button[aria-disabled="true"] {
   margin: 0.15rem 0 0;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* Ticket 38a7598: "Searched with: <nickname>" -- a fact about the SEARCH,
+   kept visually distinct from `.result-meta`'s job-level facts above. */
+.result-searched-with {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-style: italic;
 }
 
 .result-current-status {

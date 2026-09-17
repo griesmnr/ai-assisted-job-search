@@ -47,6 +47,8 @@ export type Job = {
 export type Resume = {
   id: string;
   resumeText: string;
+  /** See `CreateResumeResponse.resumeNickname`'s doc comment (ticket 38a7598). */
+  resumeNickname: string;
 };
 
 export type JobMatch = {
@@ -106,11 +108,43 @@ export type CreateResumeResponse = {
    * treat as "no suggestions to show", not an error.
    */
   suggestedTitles: string[];
+  /**
+   * A real, distinct default ("Resume 1", "Resume 2", ...) assigned by
+   * `getOrCreateResumeId` (apps/api/src/demo-match.ts) at insert time for a
+   * genuinely new resume, or the resume's EXISTING nickname when this
+   * submission matched a resume that already existed (content-addressed
+   * find-or-create, ticket 620ca30) — including one the user already
+   * renamed via `PATCH /resumes/:id`. Ticket 38a7598: this is what
+   * `ResumeInput.tsx` shows/pre-fills right in the submission flow, per
+   * Nicole's explicit "at that moment... choosing the resume nickname" —
+   * never a value the frontend invents itself, so a resubmission of
+   * identical text is guaranteed to show the SAME real nickname the
+   * resume already carries, never a fresh guess that could drift from it.
+   */
+  resumeNickname: string;
 };
 
 export type GetResumeResponse = {
   id: string;
   resumeText: string;
+  /** See `CreateResumeResponse.resumeNickname`'s doc comment. */
+  resumeNickname: string;
+};
+
+/**
+ * `PATCH /resumes/:id` (ticket 38a7598) — renames a resume's nickname.
+ * Deliberately minimal: this is NOT a general resume-editing endpoint (the
+ * ticket's own Scope excludes that) — the only field it can change is
+ * `resumeNickname`, never `resumeText` (that would break content-addressing:
+ * `resumeHash` is derived from the text and never recomputed after insert).
+ */
+export type UpdateResumeNicknameRequest = {
+  resumeNickname: string;
+};
+
+export type UpdateResumeNicknameResponse = {
+  id: string;
+  resumeNickname: string;
 };
 
 /**
@@ -218,6 +252,17 @@ export type ScoredJobResult = {
 
 export type GetResumeResultsResponse = {
   resumeId: string;
+  /**
+   * Ticket 38a7598: carried once at the TOP LEVEL, alongside `resumeId`,
+   * rather than duplicated onto every `ScoredJobResult` — every result in
+   * one response was scored against the same resume (`?resumeId=` scopes
+   * the whole query), so there is exactly one real nickname to report, not
+   * one per job. `ResultCard.tsx`'s "Searched with: <nickname>" line reads
+   * this via its caller (App.tsx threading it down through
+   * `ResultsList`/`GroupedResultsList`, mirroring how `resumeId` itself is
+   * already threaded), never a second round-trip to fetch it separately.
+   */
+  resumeNickname: string;
   results: ScoredJobResult[];
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */

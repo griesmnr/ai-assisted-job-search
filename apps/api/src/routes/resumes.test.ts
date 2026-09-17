@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CreateResumeResponse } from "@app/shared";
+import type { CreateResumeResponse, UpdateResumeNicknameResponse } from "@app/shared";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -73,6 +73,59 @@ describe("POST /resumes", () => {
     const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.resumeText).toBe(resumeText);
+  });
+
+  // Ticket 38a7598: a genuinely NEW resume gets a real, distinct default
+  // nickname at creation time (getOrCreateResumeId in demo-match.ts) --
+  // never blank, never a repeated static string.
+  describe("resume nickname (ticket 38a7598)", () => {
+    it("assigns a real default nickname ('Resume N') to a new resume, persisted on the row", async () => {
+      const app = buildTestApp();
+      const resumeText = `Nicknamed resume ${randomUUID()}`;
+      const response = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+
+      const body = response.json() as CreateResumeResponse;
+      expect(body.resumeNickname).toMatch(/^Resume \d+$/);
+
+      const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
+      expect(rows[0]?.resumeNickname).toBe(body.resumeNickname);
+    });
+
+    it("assigns DISTINCT nicknames to two different new resumes, not a repeated static string", async () => {
+      const app = buildTestApp();
+      const firstResponse = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `First distinct resume ${randomUUID()}` },
+      });
+      const secondResponse = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Second distinct resume ${randomUUID()}` },
+      });
+
+      const firstNickname = (firstResponse.json() as CreateResumeResponse).resumeNickname;
+      const secondNickname = (secondResponse.json() as CreateResumeResponse).resumeNickname;
+      expect(firstNickname).toMatch(/^Resume \d+$/);
+      expect(secondNickname).toMatch(/^Resume \d+$/);
+      expect(secondNickname).not.toBe(firstNickname);
+    });
+
+    it("a resubmission of identical text returns the SAME existing nickname, not a fresh one", async () => {
+      const app = buildTestApp();
+      const resumeText = `Idempotent nickname resume ${randomUUID()}`;
+
+      const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+      const firstNickname = (first.json() as CreateResumeResponse).resumeNickname;
+      const secondNickname = (second.json() as CreateResumeResponse).resumeNickname;
+      expect(secondNickname).toBe(firstNickname);
+    });
   });
 
   it("is content-addressed: posting identical text twice returns the same id", async () => {
@@ -202,20 +255,116 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
 });
 
 describe("GET /resumes/:id", () => {
-  it("returns a previously created resume", async () => {
+  it("returns a previously created resume, including its nickname", async () => {
     const app = buildTestApp();
     const resumeText = `Fetch-me resume ${randomUUID()}`;
     const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    const id = (created.json() as { id: string }).id;
+    const { id, resumeNickname } = created.json() as CreateResumeResponse;
 
     const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ id, resumeText });
+    expect(response.json()).toEqual({ id, resumeText, resumeNickname });
   });
 
   it("404s for an unknown id", async () => {
     const app = buildTestApp();
     const response = await app.inject({ method: "GET", url: "/resumes/does-not-exist" });
+    expect(response.statusCode).toBe(404);
+  });
+});
+
+// Ticket 38a7598: "user can rename the nickname... an editable field, not
+// read-only." Deliberately minimal endpoint -- only `resumeNickname` is
+// writable (see UpdateResumeNicknameRequest's doc comment in @app/shared).
+describe("PATCH /resumes/:id (ticket 38a7598)", () => {
+  it("renames the nickname and returns the new value", async () => {
+    const app = buildTestApp();
+    const resumeText = `Rename-me resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = created.json() as CreateResumeResponse;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "Backend-focused resume" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as UpdateResumeNicknameResponse;
+    expect(body).toEqual({ id, resumeNickname: "Backend-focused resume" });
+  });
+
+  it("persists the rename -- reflected in a SUBSEQUENT GET /resumes/:id, not just the PATCH response", async () => {
+    const app = buildTestApp();
+    const resumeText = `Persisted-rename resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = created.json() as CreateResumeResponse;
+
+    await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "Renamed for the second search" },
+    });
+
+    const refetched = await app.inject({ method: "GET", url: `/resumes/${id}` });
+    expect((refetched.json() as { resumeNickname: string }).resumeNickname).toBe(
+      "Renamed for the second search",
+    );
+  });
+
+  it("persists the rename into GET /resumes/:id/results' top-level resumeNickname too", async () => {
+    const app = buildTestApp();
+    const resumeText = `Renamed-for-results resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = created.json() as CreateResumeResponse;
+
+    await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "Renamed before searching" },
+    });
+
+    const results = await app.inject({ method: "GET", url: `/resumes/${id}/results` });
+    expect((results.json() as { resumeNickname: string }).resumeNickname).toBe(
+      "Renamed before searching",
+    );
+  });
+
+  it("rejects an empty nickname with 400, not 500", async () => {
+    const app = buildTestApp();
+    const resumeText = `Empty-rename resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = created.json() as CreateResumeResponse;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "   " },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects a nickname over the length ceiling with 400, not 500", async () => {
+    const app = buildTestApp();
+    const resumeText = `Long-rename resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = created.json() as CreateResumeResponse;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "x".repeat(201) },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("404s for an unknown resume id, rather than silently creating one", async () => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/resumes/does-not-exist",
+      payload: { resumeNickname: "New name" },
+    });
     expect(response.statusCode).toBe(404);
   });
 });
@@ -256,6 +405,23 @@ describe("GET /resumes/:id/results", () => {
     });
     return jobId;
   }
+
+  // Ticket 38a7598: carried once at the TOP LEVEL alongside `resumeId`, not
+  // duplicated onto every result row -- see GetResumeResultsResponse's own
+  // doc comment for why.
+  it("carries the resume's real nickname at the top level of the response", async () => {
+    const app = buildTestApp();
+    const resumeText = `Nickname-in-results resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id: resumeId, resumeNickname } = created.json() as CreateResumeResponse;
+
+    await seedScoredJob(resumeId, 80, "Some job");
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    const body = response.json() as { resumeNickname: string };
+    expect(body.resumeNickname).toBe(resumeNickname);
+    expect(body.resumeNickname).toMatch(/^Resume \d+$/);
+  });
 
   it("returns scored jobs best match first, and applies a minScore floor with a hidden count", async () => {
     const app = buildTestApp();

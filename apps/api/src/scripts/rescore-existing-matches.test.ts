@@ -420,9 +420,12 @@ describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", ()
     await db
       .insert(sourceDescriptors)
       .values({ id: DATA_SOURCE, displayName: "Rescore Test Source" });
-    await db
-      .insert(resumes)
-      .values({ id: RESUME_ID, resumeText: "resume text", resumeHash: "rescore-test-resume-hash" });
+    await db.insert(resumes).values({
+      id: RESUME_ID,
+      resumeText: "resume text",
+      resumeHash: "rescore-test-resume-hash",
+      resumeNickname: "Resume 1",
+    });
   });
 
   afterAll(async () => {

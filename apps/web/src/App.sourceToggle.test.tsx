@@ -73,13 +73,18 @@ const SOURCES: GetSourcesResponse = {
 
 const RESULTS: GetResumeResultsResponse = {
   resumeId: "resume-1",
+  resumeNickname: "Resume 1",
   results: [],
 };
 
 describe("App — toggling a source never re-fetches results (F6, review round)", () => {
   it("calls getResults exactly once for a resume load, and not again after a source toggle", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     render(<App />);
@@ -150,8 +155,12 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
   it("shows a 'no jobs scored yet' message when zero results and nothing hidden below the floor", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
 
     await submitResumeAndOpenScoredTab();
 
@@ -163,8 +172,17 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
   it("shows real results once a hiddenBelowFloor count exists, even with zero visible results", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
-    getResults.mockResolvedValue({ resumeId: "resume-1", results: [], hiddenBelowFloor: 3 });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({
+      resumeId: "resume-1",
+      resumeNickname: "Resume 1",
+      results: [],
+      hiddenBelowFloor: 3,
+    });
 
     await submitResumeAndOpenScoredTab();
 
@@ -176,9 +194,14 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
   it("shows real results once they exist", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue({
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         {
           jobId: "job-1",
@@ -205,7 +228,11 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
   it("still surfaces a real fetch error", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockRejectedValue(new Error("network down"));
 
     await submitResumeAndOpenScoredTab();

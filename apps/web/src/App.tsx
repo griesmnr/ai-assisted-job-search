@@ -5,7 +5,7 @@ import {
   type SearchCriteria,
   type UserJobStatus,
 } from "@app/shared";
-import { clearJobStatus, createResume, setJobStatus } from "./api/client";
+import { clearJobStatus, createResume, setJobStatus, updateResumeNickname } from "./api/client";
 import {
   GroupedResultsList,
   groupKeyForStatus,
@@ -100,6 +100,14 @@ function App() {
   const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
+  // creation time (CreateResumeResponse.resumeNickname), or restored from a
+  // prior reload. Empty string (not undefined) before any resume has been
+  // submitted this session/reload -- ResumeInput's field renders disabled
+  // in that state (gated on `resumeId`, not on this being non-empty).
+  const [resumeNickname, setResumeNickname] = useState(restored?.resumeNickname ?? "");
+  const [nicknameSaving, setNicknameSaving] = useState(false);
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(
     () => new Set(restored?.selectedSourceIds ?? []),
   );
@@ -283,12 +291,21 @@ function App() {
     writeAppState({
       resumeId,
       resumeText,
+      resumeNickname,
       selectedSourceIds: [...selectedSourceIds],
       titleChips,
       criteriaForm,
       scoreFloor,
     });
-  }, [resumeId, resumeText, selectedSourceIds, titleChips, criteriaForm, scoreFloor]);
+  }, [
+    resumeId,
+    resumeText,
+    resumeNickname,
+    selectedSourceIds,
+    titleChips,
+    criteriaForm,
+    scoreFloor,
+  ]);
 
   function toggleSource(sourceId: string) {
     setSelectedSourceIds((prev) => {
@@ -303,13 +320,22 @@ function App() {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
-      const { id, suggestedTitles } = await createResume(resumeText);
+      const {
+        id,
+        suggestedTitles,
+        resumeNickname: defaultNickname,
+      } = await createResume(resumeText);
       setResumeId(id);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
       // resumeId, and persisting a half-typed draft on each character
       // would be a write per keystroke for no benefit.
       setResumeText(resumeText);
+      // Ticket 38a7598: the server's real default ("Resume N") or, for a
+      // resubmission of already-existing text, that resume's real
+      // (possibly already-renamed) nickname -- never invented client-side.
+      setResumeNickname(defaultNickname);
+      setNicknameError(null);
       // Defensive, not just decorative: an older cached client build, a
       // test fixture written before this field existed, or any future API
       // response shape drift should degrade to "no suggestions" rather
@@ -319,6 +345,36 @@ function App() {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
       setResumeSubmitting(false);
+    }
+  }
+
+  // Ticket 38a7598: fires on every keystroke in ResumeInput's nickname
+  // field -- purely local/session state, no network call (mirrors
+  // `session.ts`'s own "don't write per keystroke" reasoning, applied here
+  // to "don't PATCH per keystroke" instead). `handleNicknameCommit` below
+  // is what actually persists it.
+  function handleNicknameChange(nextNickname: string) {
+    setResumeNickname(nextNickname);
+  }
+
+  // Fires on blur. A no-op (no PATCH, no error) for an unchanged or
+  // whitespace-only value -- the latter matches the server's own rejection
+  // of an empty nickname (routes/resumes.ts), so this never round-trips
+  // just to get back the same 400 it could have avoided asking for.
+  async function handleNicknameCommit(nextNickname: string) {
+    if (resumeId === undefined) return;
+    const trimmed = nextNickname.trim();
+    if (trimmed.length === 0) return;
+    setNicknameSaving(true);
+    setNicknameError(null);
+    try {
+      const { resumeNickname: saved } = await updateResumeNickname(resumeId, trimmed);
+      setResumeNickname(saved);
+      refresh();
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNicknameSaving(false);
     }
   }
 
@@ -380,6 +436,12 @@ function App() {
             onSubmit={(text) => void handleResumeSubmit(text)}
             submitting={resumeSubmitting}
             initialText={resumeText}
+            resumeId={resumeId}
+            nickname={resumeNickname}
+            onNicknameChange={handleNicknameChange}
+            onNicknameCommit={(next) => void handleNicknameCommit(next)}
+            nicknameSaving={nicknameSaving}
+            nicknameError={nicknameError}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}

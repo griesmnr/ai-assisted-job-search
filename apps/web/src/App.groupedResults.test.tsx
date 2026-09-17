@@ -90,9 +90,14 @@ async function submitResume() {
 describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2f98)", () => {
   it("a dismissed job appears with a visible 'Dismissed' indicator once a search completes", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue({
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: [
         job({ jobId: "job-1", title: "Backend Engineer", status: "dismissed" }),
         job({ jobId: "job-2", title: "Frontend Engineer", status: null }),
@@ -173,6 +178,7 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
 describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
   const GROUPED_RESULTS: GetResumeResultsResponse = {
     resumeId: "resume-1",
+    resumeNickname: "Resume 1",
     results: [
       job({ jobId: "job-saved", title: "Saved Job", status: "saved" }),
       job({ jobId: "job-none", title: "Untouched Job", status: null }),
@@ -184,7 +190,11 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
 
   it("renders labeled groups in order: Saved, No action taken, then the rest", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(GROUPED_RESULTS);
 
     await submitResume();
@@ -220,7 +230,11 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // log a "not implemented" error.
     vi.spyOn(window, "open").mockImplementation(() => null);
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValueOnce(GROUPED_RESULTS);
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
@@ -236,6 +250,7 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // flipped to resume_optimized.
     const afterStatusChange: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: GROUPED_RESULTS.results.map((r) =>
         r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
       ),
@@ -270,6 +285,7 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
 describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
   const GROUPED_RESULTS: GetResumeResultsResponse = {
     resumeId: "resume-1",
+    resumeNickname: "Resume 1",
     results: [
       job({ jobId: "job-saved", title: "Saved Job", status: "saved" }),
       job({ jobId: "job-dismissed", title: "Dismissed Job", status: "dismissed" }),
@@ -288,7 +304,11 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
   it("quick-link counts update live off a status change while the card's SECTION PLACEMENT stays frozen at tab-open (bec2f98)", async () => {
     vi.spyOn(window, "open").mockImplementation(() => null);
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValueOnce(GROUPED_RESULTS);
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
@@ -310,6 +330,7 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     // flipped to resume_optimized -- same as bec2f98's own test above.
     const afterStatusChange: GetResumeResultsResponse = {
       resumeId: "resume-1",
+      resumeNickname: "Resume 1",
       results: GROUPED_RESULTS.results.map((r) =>
         r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
       ),

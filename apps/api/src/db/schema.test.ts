@@ -53,6 +53,7 @@ describe("job_matches table", () => {
         id: RESUME_ID,
         resumeText: "some resume text",
         resumeHash: "schema-test-resume-hash",
+        resumeNickname: "Resume 1",
       })
       .onConflictDoNothing({ target: resumes.id });
     await db

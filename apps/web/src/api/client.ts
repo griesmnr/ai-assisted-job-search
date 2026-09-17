@@ -22,6 +22,8 @@ import type {
   SetJobStatusResponse,
   StartSearchRequest,
   StartSearchResponse,
+  UpdateResumeNicknameRequest,
+  UpdateResumeNicknameResponse,
   UserJobStatus,
 } from "@app/shared";
 
@@ -103,6 +105,25 @@ export function createResume(resumeText: string): Promise<CreateResumeResponse> 
   return request<CreateResumeResponse>("/resumes", {
     method: "POST",
     body: JSON.stringify({ resumeText }),
+  });
+}
+
+/**
+ * Renames a resume's nickname (ticket 38a7598) — the ONE field
+ * `PATCH /resumes/:id` can change (see `UpdateResumeNicknameRequest`'s doc
+ * comment in @app/shared for why this is deliberately not a general
+ * resume-editing endpoint). Used both for an explicit later rename and for
+ * confirming an edited default right in `ResumeInput.tsx`'s own submission
+ * flow, before the user ever leaves that form.
+ */
+export function updateResumeNickname(
+  resumeId: string,
+  resumeNickname: string,
+): Promise<UpdateResumeNicknameResponse> {
+  const body: UpdateResumeNicknameRequest = { resumeNickname };
+  return request<UpdateResumeNicknameResponse>(`/resumes/${encodeURIComponent(resumeId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
   });
 }
 

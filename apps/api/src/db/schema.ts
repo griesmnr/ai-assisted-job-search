@@ -66,6 +66,31 @@ export const resumes = pgTable("resumes", {
   // failed", [] means "ran, found nothing to suggest" -- the route
   // distinguishes these to decide whether to retry. See routes/resumes.ts.
   suggestedTitles: jsonb("suggested_titles").$type<string[]>(),
+  // Ticket 38a7598: when this row was created. Added alongside
+  // `resumeNickname` below purely so a deterministic backfill order
+  // ("Resume 1", "Resume 2", ... in creation order) exists at all --
+  // `id` is a `randomUUID()` (demo-match.ts's `getOrCreateResumeId`),
+  // not time-ordered, so there was previously no column that could answer
+  // "which of these rows came first." NOT NULL with `defaultNow()`: every
+  // row from this migration forward gets a real creation time for free;
+  // migration 0010 backfills existing rows to the single instant the
+  // migration ran (Postgres evaluates a volatile ALTER ... DEFAULT once for
+  // pre-existing rows), which is honest -- their real creation time was
+  // never recorded -- and still gives a stable, deterministic tiebreak
+  // (`created_at, id`) for that migration's own nickname backfill.
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Ticket 38a7598 (Nicole: "when they use this resume, they should be at
+  // that moment... choosing the resume nickname"): a real, distinct label
+  // per resume ("Resume 1", "Resume 2", ...), chosen/confirmed in the
+  // resume-submission flow (ResumeInput.tsx) rather than a separate
+  // settings screen, and shown on every job card ("Searched with: ...") so
+  // results from different resumes are never mixed up on sight. NOT NULL:
+  // `getOrCreateResumeId` always assigns a real default at insert time (see
+  // that function's own comment), and migration 0010 backfills every
+  // pre-existing row before adding this constraint -- there is never a
+  // window where a real row has a blank nickname. Editable after creation
+  // via `PATCH /resumes/:id` (routes/resumes.ts).
+  resumeNickname: text("resume_nickname").notNull(),
 });
 
 export const jobMatches = pgTable(

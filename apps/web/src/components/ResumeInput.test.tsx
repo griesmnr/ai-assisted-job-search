@@ -1,0 +1,147 @@
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
+import { useState } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ResumeInput } from "./ResumeInput";
+
+/**
+ * `nickname` is genuinely controlled (see ResumeInput's own doc comment on
+ * that prop) -- a caller that doesn't feed keystrokes back in as the next
+ * render's `nickname` would see the DOM input snap back to the old value
+ * the instant React re-renders, exactly like any other controlled input
+ * with no owning state. This wrapper mirrors what the REAL caller
+ * (App.tsx's `handleNicknameChange`) does, so `fireEvent.blur` below reads
+ * the value the user actually typed rather than the stale initial prop.
+ */
+function ControlledNicknameHarness({
+  onNicknameCommit,
+  onNicknameChange,
+}: {
+  onNicknameCommit?: (nickname: string) => void;
+  onNicknameChange?: (nickname: string) => void;
+}) {
+  const [nickname, setNickname] = useState("Resume 1");
+  return (
+    <ResumeInput
+      onSubmit={() => {}}
+      submitting={false}
+      resumeId="resume-1"
+      nickname={nickname}
+      onNicknameChange={(next) => {
+        setNickname(next);
+        onNicknameChange?.(next);
+      }}
+      onNicknameCommit={onNicknameCommit}
+    />
+  );
+}
+
+// See SourceToggles.test.tsx's comment on this same line: this repo's root
+// vitest.config.ts doesn't enable `test.globals`, so RTL's auto-cleanup
+// never runs on its own.
+afterEach(cleanup);
+
+// Ticket 38a7598 acceptance criteria: "a nickname field appears next to
+// the resume-selection control, pre-filled with a real, distinct default
+// per resume" and "the nickname is editable." These tests cover the field
+// living in ResumeInput itself (the resume-submission flow, per Nicole's
+// explicit "right next to the button... at that moment" instruction), not
+// a separate screen.
+describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
+  it("renders the nickname field disabled with no resumeId yet -- nothing to attach a rename to before a resume exists", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    expect(nicknameField).toBeDisabled();
+    expect(nicknameField).toHaveValue("");
+  });
+
+  it("is enabled and pre-filled with the real default once a resumeId + nickname are supplied", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+      />,
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    expect(nicknameField).not.toBeDisabled();
+    expect(nicknameField).toHaveValue("Resume 1");
+  });
+
+  it("calls onNicknameChange on every keystroke, without waiting for blur", () => {
+    const onNicknameChange = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        onNicknameChange={onNicknameChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Resume Nickname"), {
+      target: { value: "Backend-focused resume" },
+    });
+
+    expect(onNicknameChange).toHaveBeenCalledWith("Backend-focused resume");
+  });
+
+  it("calls onNicknameCommit only on blur -- the actual PATCH round-trip happens once, not per keystroke", () => {
+    const onNicknameCommit = vi.fn();
+    render(<ControlledNicknameHarness onNicknameCommit={onNicknameCommit} />);
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    fireEvent.change(nicknameField, { target: { value: "Renamed" } });
+    expect(onNicknameCommit).not.toHaveBeenCalled();
+    expect(nicknameField).toHaveValue("Renamed");
+
+    fireEvent.blur(nicknameField);
+    expect(onNicknameCommit).toHaveBeenCalledWith("Renamed");
+  });
+
+  it("disables the nickname field and shows a saving indicator while a rename is in flight", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        nicknameSaving={true}
+      />,
+    );
+
+    expect(screen.getByLabelText("Resume Nickname")).toBeDisabled();
+    expect(screen.getByText("Saving...")).toBeInTheDocument();
+  });
+
+  it("shows a nickname-specific error message distinct from the resume-submission error", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        nicknameError="Network error"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save nickname: Network error");
+  });
+
+  it("still submits the pasted resume text via onSubmit, unaffected by the nickname field's presence", () => {
+    const onSubmit = vi.fn();
+    render(<ResumeInput onSubmit={onSubmit} submitting={false} />);
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("some resume text");
+  });
+});

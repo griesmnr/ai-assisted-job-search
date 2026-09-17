@@ -230,9 +230,12 @@ beforeAll(async () => {
   testDb = await createTestDatabase("fetch_source_worker_test");
   db = testDb.db;
   await db.insert(sourceDescriptors).values({ id: SOURCE_ID, displayName: "Worker Test Source" });
-  await db
-    .insert(resumes)
-    .values({ id: RESUME_ID, resumeText: "resume text", resumeHash: "worker-test-resume-hash" });
+  await db.insert(resumes).values({
+    id: RESUME_ID,
+    resumeText: "resume text",
+    resumeHash: "worker-test-resume-hash",
+    resumeNickname: "Resume 1",
+  });
 
   const topology = await setupTopology();
   connection = topology.connection;

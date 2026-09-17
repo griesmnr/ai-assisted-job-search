@@ -33,6 +33,7 @@ import {
   type CreateResumeResponse,
   type GetResumeResponse,
   type GetResumeResultsResponse,
+  type UpdateResumeNicknameResponse,
   type UserJobStatus,
   USER_JOB_STATUSES,
 } from "@app/shared";
@@ -56,11 +57,30 @@ import { looksLikeContractOrTemp } from "../sources/swe-filter.js";
  */
 const MAX_RESUME_TEXT_LENGTH = 200_000;
 
+/**
+ * Ticket 38a7598: generous ceiling for a resume nickname, same reasoning as
+ * `MAX_RESUME_TEXT_LENGTH` above but far smaller — this is a short label
+ * ("Resume 1", "Senior SWE draft", ...), never a document, so a limit this
+ * far above any real nickname still catches an obviously-wrong paste (e.g.
+ * pasting the whole resume text into the nickname field by mistake) with a
+ * clear error instead of silently accepting it.
+ */
+const MAX_RESUME_NICKNAME_LENGTH = 200;
+
 const createResumeBodySchema = {
   type: "object",
   required: ["resumeText"],
   properties: {
     resumeText: { type: "string" },
+  },
+  additionalProperties: false,
+} as const;
+
+const updateResumeNicknameBodySchema = {
+  type: "object",
+  required: ["resumeNickname"],
+  properties: {
+    resumeNickname: { type: "string" },
   },
   additionalProperties: false,
 } as const;
@@ -111,10 +131,25 @@ export function registerResumeRoutes(
       // contract (this is an injected dependency; a test double or a
       // future implementation could throw).
       const existingRow = await db
-        .select({ suggestedTitles: resumes.suggestedTitles })
+        .select({
+          suggestedTitles: resumes.suggestedTitles,
+          resumeNickname: resumes.resumeNickname,
+        })
         .from(resumes)
         .where(eq(resumes.id, id))
         .limit(1);
+      // Ticket 38a7598: whatever nickname the row already carries -- the
+      // real default `getOrCreateResumeId` assigned at insert time for a
+      // genuinely new resume, or a rename the user already made via
+      // `PATCH /resumes/:id` for one that already existed. Never
+      // recomputed or overwritten here; this route only READS it back.
+      const resumeNickname = existingRow[0]?.resumeNickname;
+      if (resumeNickname === undefined) {
+        // Should be impossible: `getOrCreateResumeId` above just
+        // guaranteed this row exists, and every row has had a NOT NULL
+        // `resume_nickname` since migration 0010.
+        throw new Error(`resume ${id} has no resume_nickname after getOrCreateResumeId`);
+      }
       let suggestedTitles = existingRow[0]?.suggestedTitles ?? null;
       if (suggestedTitles === null) {
         try {
@@ -134,14 +169,18 @@ export function registerResumeRoutes(
         }
       }
 
-      const response: CreateResumeResponse = { id, suggestedTitles };
+      const response: CreateResumeResponse = { id, suggestedTitles, resumeNickname };
       return reply.code(200).send(response);
     },
   );
 
   app.get<{ Params: { id: string } }>("/resumes/:id", async (request, reply) => {
     const rows = await db
-      .select({ id: resumes.id, resumeText: resumes.resumeText })
+      .select({
+        id: resumes.id,
+        resumeText: resumes.resumeText,
+        resumeNickname: resumes.resumeNickname,
+      })
       .from(resumes)
       .where(eq(resumes.id, request.params.id))
       .limit(1);
@@ -152,6 +191,42 @@ export function registerResumeRoutes(
     const response: GetResumeResponse = rows[0]!;
     return reply.send(response);
   });
+
+  // Ticket 38a7598: renames a resume's nickname. Deliberately minimal --
+  // the only writable field is `resumeNickname` (never `resumeText`, which
+  // would break content-addressing -- see UpdateResumeNicknameRequest's
+  // doc comment in @app/shared). This is the one endpoint a rename made
+  // AFTER the initial submission (per the ticket's own acceptance
+  // criteria: "editable, not just at creation") goes through -- the
+  // submission-time default/edit in ResumeInput.tsx also lands here, via
+  // the same PATCH, once the resume already has an id.
+  app.patch<{ Params: { id: string }; Body: { resumeNickname: string } }>(
+    "/resumes/:id",
+    { schema: { body: updateResumeNicknameBodySchema } },
+    async (request, reply) => {
+      const trimmed = request.body.resumeNickname.trim();
+      if (trimmed.length === 0) {
+        return reply.code(400).send({ error: "resumeNickname must not be empty." });
+      }
+      if (trimmed.length > MAX_RESUME_NICKNAME_LENGTH) {
+        return reply.code(400).send({
+          error: `resumeNickname exceeds the ${MAX_RESUME_NICKNAME_LENGTH}-character limit (got ${trimmed.length}).`,
+        });
+      }
+
+      const rows = await db
+        .update(resumes)
+        .set({ resumeNickname: trimmed })
+        .where(eq(resumes.id, request.params.id))
+        .returning({ id: resumes.id, resumeNickname: resumes.resumeNickname });
+
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: `No resume with id "${request.params.id}".` });
+      }
+      const response: UpdateResumeNicknameResponse = rows[0]!;
+      return reply.send(response);
+    },
+  );
 
   app.get<{
     Params: { id: string };
@@ -173,13 +248,19 @@ export function registerResumeRoutes(
     const statusFilter = status as UserJobStatus | undefined;
 
     const resumeRows = await db
-      .select({ id: resumes.id })
+      .select({ id: resumes.id, resumeNickname: resumes.resumeNickname })
       .from(resumes)
       .where(eq(resumes.id, resumeId))
       .limit(1);
     if (resumeRows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
     }
+    // Ticket 38a7598: read once here, alongside the existence check above,
+    // and carried at the TOP LEVEL of the response below rather than
+    // re-selected per result row -- see GetResumeResultsResponse's own doc
+    // comment for why (every result in this response was scored against
+    // the SAME resume).
+    const resumeNickname = resumeRows[0]!.resumeNickname;
 
     // Ticket 59fdc52 review round 2: an unknown ?source= used to silently
     // return an empty result set — indistinguishable from "this resume
@@ -309,6 +390,7 @@ export function registerResumeRoutes(
 
     const response: GetResumeResultsResponse = {
       resumeId,
+      resumeNickname,
       results: rows.map((r) => {
         // `commitment` is destructured OUT here rather than spread into the
         // response (ticket 8f5a79c): it's read from the query purely to

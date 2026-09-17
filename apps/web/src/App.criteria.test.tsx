@@ -66,7 +66,11 @@ const SOURCES: GetSourcesResponse = {
   sources: [{ id: "usajobs", displayName: "USAJOBS", configured: true }],
 };
 
-const RESULTS: GetResumeResultsResponse = { resumeId: "resume-1", results: [] };
+const RESULTS: GetResumeResultsResponse = {
+  resumeId: "resume-1",
+  resumeNickname: "Resume 1",
+  results: [],
+};
 
 function makeEstimate(): EstimateSearchResponse {
   return {
@@ -111,7 +115,11 @@ async function submitResume() {
 describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
   it("sends a REAL empty criteria object (never undefined) when the resume has no suggested titles", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -140,6 +148,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
+      resumeNickname: "Resume 1",
       suggestedTitles: ["Backend Engineer", "Platform Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
@@ -163,6 +172,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
+      resumeNickname: "Resume 1",
       suggestedTitles: ["Backend Engineer", "Platform Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
@@ -182,7 +192,11 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 
   it("adding a custom chip includes it alongside the suggestions", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: ["Backend Engineer"] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: ["Backend Engineer"],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -205,7 +219,11 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 
   it("commitment checkboxes (ticket 18c9f18) are omitted from criteria when unchecked and sent as commitmentIn when checked", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -235,7 +253,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     // scrolls back to the location section" behavior). The functional
     // gate must still hold: clicking it must not call the real estimate.
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -250,7 +272,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
   it("checking 'Any location' allows the button to actually estimate, and clears the warning", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -270,7 +296,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
   it("typing a commute location enables the button without needing 'Any location' checked", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -290,7 +320,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     // enabling the exact unrestricted search this ticket exists to
     // prevent. `splitPhrases(",")` correctly yields zero real phrases.
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -306,7 +340,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
   it("checking 'Also show fully remote roles' enables the button without needing 'Any location' checked", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -320,7 +358,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
   it("unchecking 'Any location' again re-blocks the button (not a one-way opt-in)", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -346,7 +388,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     // search the warning simultaneously said was disabled, and clicking
     // through actually spent money on it.
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -377,7 +423,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     // anywhere on screen -- a dead end after doing exactly what the only
     // visible instruction said to do.
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -391,7 +441,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
   it("'Any location' does not appear in the criteria payload sent to the API -- it's a frontend-only gate", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -420,6 +474,7 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
+      resumeNickname: "Resume 1",
       suggestedTitles: ["Backend Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
@@ -444,7 +499,11 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
 
   it("hides the federal suggestions once USAJOBS is deselected", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -459,7 +518,11 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
 
   it("clicking a suggestion adds it as a real title chip, sent to the API like any other", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -482,7 +545,11 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
 
   it("clicking an already-added suggestion again does not duplicate the chip (the button disables instead)", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: ["Program Analyst"] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: ["Program Analyst"],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -522,7 +589,11 @@ describe("App — attempting to estimate without a location scrolls back to it (
 
   it("clicking 'Estimate search cost' with no location signal scrolls the location section (not some unrelated element) into view, moves focus to the location input, and does NOT call the real estimate", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
 
     await submitResume();
@@ -549,7 +620,11 @@ describe("App — attempting to estimate without a location scrolls back to it (
 
   it("a valid location (typed, not the checkbox) does not trigger the scroll and lets the estimate proceed normally", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
@@ -566,7 +641,11 @@ describe("App — attempting to estimate without a location scrolls back to it (
 
   it("'Any location' checked also lets the estimate proceed without triggering the scroll", async () => {
     getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({ id: "resume-1", suggestedTitles: [] });
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
     getResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
