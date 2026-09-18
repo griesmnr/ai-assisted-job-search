@@ -257,12 +257,14 @@ describe("ResumeInput — nickname-first ordering and locked textarea (ticket cd
   });
 });
 
-// Adversarial review of cdc2c39 (opus): the read-only lock above was a
-// ONE-WAY DOOR with `resumeId` never cleared anywhere else -- no way to
-// ever submit a different resume for the rest of the session/reload, and
-// "Use this resume" could only ever re-POST identical text. "Edit resume"
-// is the fix: the UI entry point to clearing `resumeId` (App.tsx), which
-// re-opens the pre-submission flow.
+// Adversarial review of cdc2c39 (opus), round 1: the read-only lock above
+// was a ONE-WAY DOOR with `resumeId` never cleared anywhere else -- no way
+// to ever submit a different resume for the rest of the session/reload.
+// Round 2: the first fix attempt (clearing `resumeId` on click) collapsed
+// the whole app and wiped sessionStorage mid-edit (ticket 3f05144 again) --
+// see App.persistence.test.tsx's "Edit resume" test for that half. This
+// file covers the ResumeInput-local behavior of the actual fix: a separate
+// `editingResume` flag App.tsx owns, never `resumeId` itself.
 describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (review fix, ticket cdc2c39)", () => {
   it("does not render 'Edit resume' with no resumeId yet -- nothing locked to escape from", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
@@ -270,14 +272,16 @@ describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (re
     expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
   });
 
-  it("renders 'Edit resume' once locked, and calls onEditResume when clicked", () => {
+  it("renders 'Edit resume' once locked, calls onEditResume (not onSubmit) when clicked", () => {
     const onEditResume = vi.fn();
+    const onSubmit = vi.fn();
     render(
       <ResumeInput
-        onSubmit={() => {}}
+        onSubmit={onSubmit}
         submitting={false}
         resumeId="resume-1"
         nickname="Resume 1"
+        initialText="some resume text"
         onEditResume={onEditResume}
       />,
     );
@@ -286,9 +290,14 @@ describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (re
     fireEvent.click(editButton);
 
     expect(onEditResume).toHaveBeenCalledTimes(1);
+    // Review round 2, F7: `type="button"` is what stops this from being
+    // the form's implicit submit button -- without it, this same click
+    // would ALSO re-POST the resume via onSubmit. Regressing that one
+    // attribute silently turns "edit" into "edit and resubmit."
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("clearing resumeId (as App.tsx's onEditResume handler does) un-readonlys the textarea again", () => {
+  it("editingResume (as App.tsx sets via onEditResume) un-readonlys the textarea without touching resumeId-gated content", () => {
     const { rerender } = render(
       <ResumeInput
         onSubmit={() => {}}
@@ -300,9 +309,38 @@ describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (re
     );
     expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
 
-    rerender(<ResumeInput onSubmit={() => {}} submitting={false} initialText="some resume text" />);
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
 
     expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+    // Deliberately still visible: the resume being edited still has a
+    // nickname, and `resumeId` -- what gates this field -- never changed.
+    // This is exactly what round 1's fix got wrong (it cleared resumeId,
+    // which hid this).
+    expect(screen.getByLabelText("Resume Nickname")).toBeInTheDocument();
+  });
+
+  it("hides 'Edit resume' itself once already editing -- a second click would be a no-op", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
   });
 
   it("sits between the nickname field and 'Use this resume', so 'Use this resume' stays last horizontally", () => {

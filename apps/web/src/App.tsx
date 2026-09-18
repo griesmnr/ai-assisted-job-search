@@ -100,6 +100,14 @@ function App() {
   const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  // Review fix round 2 (ticket cdc2c39): deliberately NOT derived from
+  // `resumeId` -- see ResumeInput.tsx's top-of-file doc comment for why
+  // clearing `resumeId` on "Edit resume" (round-1 fix) reproduced ticket
+  // 3f05144. Not persisted: a mid-edit reload should land back in the
+  // locked, last-submitted-state view, not stay unlocked with stale
+  // text sessionStorage never captured anyway (ResumeInput's `text` is
+  // its own uncommitted local state, never written out).
+  const [resumeEditing, setResumeEditing] = useState(false);
   // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
   // creation time (CreateResumeResponse.resumeNickname), or restored from a
   // prior reload. Empty string (not undefined) before any resume has been
@@ -371,6 +379,11 @@ function App() {
       // response shape drift should degrade to "no suggestions" rather
       // than crash buildSearchCriteria's `.length` check below.
       setTitleChips(suggestedTitles ?? []);
+      // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
+      // a submission actually lands -- not on the Edit click itself (see
+      // `resumeEditing`'s own doc comment above). A no-op on the
+      // first-ever submission, where this was already false.
+      setResumeEditing(false);
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -425,18 +438,18 @@ function App() {
     }
   }
 
-  // Review fix (ticket cdc2c39): the textarea's new read-only-once-locked
-  // behavior would otherwise be a one-way door -- `resumeId` was never
-  // cleared anywhere else, so this is the only path back to an editable
-  // box. Re-opens the pre-submission flow session.ts and SearchFlow.tsx
-  // already anticipate ("the user pasted a new resume mid-session"); this
-  // is that path's UI entry point, not new state shape. Clearing
-  // `resumeId` also clears sessionStorage via the persist effect above
-  // (gated on `resumeId === undefined`), so there's nothing else to reset
-  // by hand here beyond the nickname-PATCH error, which would otherwise
-  // linger for a nickname field that's no longer even visible.
+  // Review fix round 2 (ticket cdc2c39): the textarea's read-only lock
+  // needs a way back to editable, but round 1 of this fix cleared
+  // `resumeId` here and that collapsed the whole app (sources, criteria,
+  // results -- everything gated on `resumeId !== undefined`) and wiped
+  // sessionStorage before any new resume existed to replace it,
+  // reproducing ticket 3f05144. `resumeEditing` unlocks the textarea
+  // without touching `resumeId` or anything downstream of it -- nothing
+  // unmounts, an in-flight search keeps polling, sessionStorage is
+  // untouched. Clears any stale nickname-PATCH error since the user is
+  // about to change what's in the box.
   function handleEditResume() {
-    setResumeId(undefined);
+    setResumeEditing(true);
     setNicknameError(null);
   }
 
@@ -504,6 +517,7 @@ function App() {
             onNicknameCommit={(next) => void handleNicknameCommit(next)}
             nicknameSaving={nicknameSaving}
             nicknameError={nicknameError}
+            editingResume={resumeEditing}
             onEditResume={handleEditResume}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
