@@ -210,3 +210,159 @@ describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => 
     expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
   });
 });
+
+// Ticket cdc2c39 (Nicole, live dogfooding: "I don't need anything below
+// anything... they can all show up together, but they're just showing up
+// in a different order, and use this resume should be last, horizontally"
+// -- plus the still-standing "when I hit use this resume... I want the
+// text field to become not editable anymore").
+describe("ResumeInput — nickname-first ordering and locked textarea (ticket cdc2c39)", () => {
+  it("textarea is editable with no resumeId yet, and becomes read-only once a resumeId exists", () => {
+    const { rerender } = render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+      />,
+    );
+
+    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
+  });
+
+  it("places the nickname field before the 'Use this resume' button, horizontally, once both are showing", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    const button = screen.getByRole("button", { name: "Use this resume" });
+
+    // DOCUMENT_POSITION_FOLLOWING means `button` comes AFTER `nicknameField`
+    // in document order -- the direct proof of "nickname first, button last
+    // horizontally" rather than an assumption from separate presence checks.
+    expect(
+      nicknameField.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
+// Adversarial review of cdc2c39 (opus), round 1: the read-only lock above
+// was a ONE-WAY DOOR with `resumeId` never cleared anywhere else -- no way
+// to ever submit a different resume for the rest of the session/reload.
+// Round 2: the first fix attempt (clearing `resumeId` on click) collapsed
+// the whole app and wiped sessionStorage mid-edit (ticket 3f05144 again) --
+// see App.persistence.test.tsx's "Edit resume" test for that half. This
+// file covers the ResumeInput-local behavior of the actual fix: a separate
+// `editingResume` flag App.tsx owns, never `resumeId` itself.
+describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (review fix, ticket cdc2c39)", () => {
+  it("does not render 'Edit resume' with no resumeId yet -- nothing locked to escape from", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
+  });
+
+  it("renders 'Edit resume' once locked, calls onEditResume (not onSubmit) when clicked", () => {
+    const onEditResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        onEditResume={onEditResume}
+      />,
+    );
+
+    const editButton = screen.getByRole("button", { name: "Edit resume" });
+    fireEvent.click(editButton);
+
+    expect(onEditResume).toHaveBeenCalledTimes(1);
+    // Review round 2, F7: `type="button"` is what stops this from being
+    // the form's implicit submit button -- without it, this same click
+    // would ALSO re-POST the resume via onSubmit. Regressing that one
+    // attribute silently turns "edit" into "edit and resubmit."
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("editingResume (as App.tsx sets via onEditResume) un-readonlys the textarea without touching resumeId-gated content", () => {
+    const { rerender } = render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+
+    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+    // Deliberately still visible: the resume being edited still has a
+    // nickname, and `resumeId` -- what gates this field -- never changed.
+    // This is exactly what round 1's fix got wrong (it cleared resumeId,
+    // which hid this).
+    expect(screen.getByLabelText("Resume Nickname")).toBeInTheDocument();
+  });
+
+  it("hides 'Edit resume' itself once already editing -- a second click would be a no-op", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
+  });
+
+  it("sits between the nickname field and 'Use this resume', so 'Use this resume' stays last horizontally", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    const editButton = screen.getByRole("button", { name: "Edit resume" });
+    const submitButton = screen.getByRole("button", { name: "Use this resume" });
+
+    expect(
+      nicknameField.compareDocumentPosition(editButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      editButton.compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});

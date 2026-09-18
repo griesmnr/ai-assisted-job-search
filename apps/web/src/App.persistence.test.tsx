@@ -142,6 +142,40 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
   });
 
+  // Review round 2 of ticket cdc2c39 (opus), F5: the first fix for the
+  // textarea's read-only lock cleared `resumeId` on an "Edit resume"
+  // click, which collapsed the whole app (everything gated on
+  // `resumeId !== undefined`) and wiped this exact sessionStorage record
+  // -- reproducing THIS ticket's own header on every Edit click. The
+  // actual fix (App.tsx's separate `resumeEditing` flag) must not
+  // regress back to that.
+  it("clicking 'Edit resume' does not collapse the app or wipe state, and a reload mid-edit restores the last submitted state (review fix round 2, ticket cdc2c39)", async () => {
+    mockHappyPath();
+    await setUpRealState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+
+    // Nothing unmounted: the textarea unlocked, but sources/criteria are
+    // still right there, not collapsed back to the empty pre-resume view.
+    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+    expect(screen.getByLabelText("USAJOBS")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
+
+    cleanup();
+    createResume.mockClear();
+    render(<App />);
+
+    // A reload mid-edit must not read as "start over" either -- the last
+    // SUBMITTED state comes back (ResumeInput's in-box edit was never
+    // persisted in the first place; only a successful submit writes it).
+    expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
+    expect(createResume).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
+    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
+    await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+    expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
+  });
+
   it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {
     mockHappyPath();
     render(<App />);
