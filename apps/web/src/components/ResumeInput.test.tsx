@@ -210,3 +210,49 @@ describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => 
     expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
   });
 });
+
+// Ticket cdc2c39 (Nicole, live dogfooding: "I don't need anything below
+// anything... they can all show up together, but they're just showing up
+// in a different order, and use this resume should be last, horizontally"
+// -- plus the still-standing "when I hit use this resume... I want the
+// text field to become not editable anymore").
+describe("ResumeInput — nickname-first ordering and locked textarea (ticket cdc2c39)", () => {
+  it("textarea is editable with no resumeId yet, and becomes read-only once a resumeId exists", () => {
+    const { rerender } = render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+      />,
+    );
+
+    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
+  });
+
+  it("places the nickname field before the 'Use this resume' button, horizontally, once both are showing", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    const button = screen.getByRole("button", { name: "Use this resume" });
+
+    // DOCUMENT_POSITION_FOLLOWING means `button` comes AFTER `nicknameField`
+    // in document order -- the direct proof of "nickname first, button last
+    // horizontally" rather than an assumption from separate presence checks.
+    expect(
+      nicknameField.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});

@@ -22,6 +22,20 @@ import { useState } from "react";
  * it, the server's real default nickname) exists to attach a rename to.
  * No placeholder text explaining an ordering the user can't act on yet;
  * the controls simply aren't there before their moment arrives.
+ *
+ * Ticket cdc2c39 (Nicole, live dogfooding again, after actually using
+ * 5a79aa4's shipped ordering -- "I don't need anything below anything...
+ * they can all show up together, but they're just showing up in a
+ * different order, and use this resume should be last, horizontally"):
+ * pure horizontal reorder, same gating as 5a79aa4 above, unchanged --
+ * the nickname field renders BEFORE the button (once both are showing,
+ * which only ever happens after a first successful submission, since
+ * that's what makes `resumeId` exist). Also: the textarea becomes
+ * read-only once `resumeId` exists, so the submitted text stays visible
+ * as a reference but can't be edited into a silent identity change
+ * (this app's resumes are content-addressed by resumeText -- editing
+ * the box post-submission would, on the next submit, look like an
+ * entirely different resume, not an update to this one).
  */
 export function ResumeInput({
   onSubmit,
@@ -90,15 +104,13 @@ export function ResumeInput({
         id="resume-text"
         value={text}
         onChange={(e) => setText(e.target.value)}
+        // Ticket cdc2c39: locked once a real resume exists -- see this
+        // file's top-of-file doc comment for why (content-addressing).
+        readOnly={resumeId !== undefined}
         rows={10}
         placeholder="Paste resume text here..."
       />
       <div className="resume-input-actions">
-        {text.trim().length > 0 && (
-          <button type="submit" disabled={submitting}>
-            {submitting ? "Saving..." : "Use this resume"}
-          </button>
-        )}
         {resumeId !== undefined && (
           <div className="resume-nickname-field">
             <label htmlFor="resume-nickname">Resume Nickname</label>
@@ -130,6 +142,11 @@ export function ResumeInput({
             />
             {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
           </div>
+        )}
+        {text.trim().length > 0 && (
+          <button type="submit" disabled={submitting}>
+            {submitting ? "Saving..." : "Use this resume"}
+          </button>
         )}
       </div>
       {nicknameError && (
