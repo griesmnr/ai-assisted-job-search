@@ -256,3 +256,75 @@ describe("ResumeInput — nickname-first ordering and locked textarea (ticket cd
     ).toBeTruthy();
   });
 });
+
+// Adversarial review of cdc2c39 (opus): the read-only lock above was a
+// ONE-WAY DOOR with `resumeId` never cleared anywhere else -- no way to
+// ever submit a different resume for the rest of the session/reload, and
+// "Use this resume" could only ever re-POST identical text. "Edit resume"
+// is the fix: the UI entry point to clearing `resumeId` (App.tsx), which
+// re-opens the pre-submission flow.
+describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (review fix, ticket cdc2c39)", () => {
+  it("does not render 'Edit resume' with no resumeId yet -- nothing locked to escape from", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
+  });
+
+  it("renders 'Edit resume' once locked, and calls onEditResume when clicked", () => {
+    const onEditResume = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        onEditResume={onEditResume}
+      />,
+    );
+
+    const editButton = screen.getByRole("button", { name: "Edit resume" });
+    fireEvent.click(editButton);
+
+    expect(onEditResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearing resumeId (as App.tsx's onEditResume handler does) un-readonlys the textarea again", () => {
+    const { rerender } = render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
+
+    rerender(<ResumeInput onSubmit={() => {}} submitting={false} initialText="some resume text" />);
+
+    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
+  });
+
+  it("sits between the nickname field and 'Use this resume', so 'Use this resume' stays last horizontally", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+      />,
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    const editButton = screen.getByRole("button", { name: "Edit resume" });
+    const submitButton = screen.getByRole("button", { name: "Use this resume" });
+
+    expect(
+      nicknameField.compareDocumentPosition(editButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      editButton.compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});

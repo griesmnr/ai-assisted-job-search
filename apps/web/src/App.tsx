@@ -425,6 +425,21 @@ function App() {
     }
   }
 
+  // Review fix (ticket cdc2c39): the textarea's new read-only-once-locked
+  // behavior would otherwise be a one-way door -- `resumeId` was never
+  // cleared anywhere else, so this is the only path back to an editable
+  // box. Re-opens the pre-submission flow session.ts and SearchFlow.tsx
+  // already anticipate ("the user pasted a new resume mid-session"); this
+  // is that path's UI entry point, not new state shape. Clearing
+  // `resumeId` also clears sessionStorage via the persist effect above
+  // (gated on `resumeId === undefined`), so there's nothing else to reset
+  // by hand here beyond the nickname-PATCH error, which would otherwise
+  // linger for a nickname field that's no longer even visible.
+  function handleEditResume() {
+    setResumeId(undefined);
+    setNicknameError(null);
+  }
+
   async function handleSetStatus(jobId: string, status: UserJobStatus) {
     await setJobStatus(jobId, status, resumeId);
     refresh();
@@ -489,6 +504,7 @@ function App() {
             onNicknameCommit={(next) => void handleNicknameCommit(next)}
             nicknameSaving={nicknameSaving}
             nicknameError={nicknameError}
+            onEditResume={handleEditResume}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}

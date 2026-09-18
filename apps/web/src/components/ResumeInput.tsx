@@ -36,6 +36,20 @@ import { useState } from "react";
  * (this app's resumes are content-addressed by resumeText -- editing
  * the box post-submission would, on the next submit, look like an
  * entirely different resume, not an update to this one).
+ *
+ * Adversarial review of cdc2c39 (opus) caught a real gap in the
+ * read-only lock above: `resumeId` is never cleared anywhere in App.tsx,
+ * so with no way back, the lock was a ONE-WAY DOOR -- the box would stay
+ * uneditable for the rest of the session/reload, "Use this resume" could
+ * only ever re-POST byte-identical text, and two other files
+ * (session.ts, SearchFlow.tsx) already carry defensive logic written
+ * specifically to support a user switching to a different resume
+ * mid-session, which this would have silently made unreachable. The
+ * "Edit resume" button below is the fix: it's the UI entry point to that
+ * already-anticipated switch-resume path, not new state shape --
+ * clicking it clears `resumeId` in App.tsx, which re-opens the
+ * pre-submission flow (textarea editable again, nickname field gone
+ * until the next real resumeId exists).
  */
 export function ResumeInput({
   onSubmit,
@@ -47,6 +61,7 @@ export function ResumeInput({
   onNicknameCommit,
   nicknameSaving,
   nicknameError,
+  onEditResume,
 }: {
   onSubmit: (resumeText: string) => void;
   submitting: boolean;
@@ -88,6 +103,13 @@ export function ResumeInput({
    * rather than letting a second edit race the first. */
   nicknameSaving?: boolean;
   nicknameError?: string | null;
+  /** Review fix (ticket cdc2c39): the escape hatch for the textarea's
+   * read-only lock below. Fires when the user wants to submit a
+   * DIFFERENT resume than the one currently locked in -- App.tsx clears
+   * `resumeId`, which un-readonlys the textarea (same text stays, now
+   * editable in place) and hides the nickname field until the next real
+   * resumeId exists. */
+  onEditResume?: () => void;
 }) {
   const [text, setText] = useState(initialText);
 
@@ -142,6 +164,11 @@ export function ResumeInput({
             />
             {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
           </div>
+        )}
+        {resumeId !== undefined && (
+          <button type="button" className="resume-edit-button" onClick={() => onEditResume?.()}>
+            Edit resume
+          </button>
         )}
         {text.trim().length > 0 && (
           <button type="submit" disabled={submitting}>
