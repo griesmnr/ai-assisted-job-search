@@ -38,29 +38,46 @@ import { useState } from "react";
  * entirely different resume, not an update to this one).
  *
  * Adversarial review of cdc2c39 (opus), round 1: caught a real gap in
- * the read-only lock above -- `resumeId` was never cleared anywhere in
- * App.tsx, so with no way back, the lock was a ONE-WAY DOOR. First fix
- * attempt cleared `resumeId` on an "Edit resume" click; round 2 of
- * review caught that THAT collapses the whole app (sources, criteria,
- * results -- everything gated on `resumeId !== undefined`) and wipes
- * sessionStorage mid-edit, before any new resume exists to replace it --
- * reproducing ticket 3f05144 (Nicole: "it was all clear again") on every
- * Edit click plus a reload.
+ * a read-only lock (textarea stayed visible but uneditable once
+ * `resumeId` existed) -- `resumeId` was never cleared anywhere in
+ * App.tsx, so with no way back, the lock was a ONE-WAY DOOR. Round 2:
+ * the fix attempt of clearing `resumeId` on an "Edit resume" click
+ * collapsed the whole app (sources, criteria, results -- everything
+ * gated on `resumeId !== undefined`) and wiped sessionStorage mid-edit,
+ * reproducing ticket 3f05144 ("it was all clear again"). That shipped
+ * as a lock-in-place-plus-always-visible-Edit-button design.
  *
- * The actual fix: `editingResume` is a SEPARATE flag from `resumeId`.
- * "I want to change what's in the box" and "I have switched resumes"
- * are different moments -- only the second should un-mount anything.
- * `resumeId` stays set the whole time the user is editing, so nothing
- * unmounts, sessionStorage keeps the last-submitted state, and an
- * in-flight search (SearchFlow.tsx) keeps polling underneath. The
- * textarea unlocks (`readOnly` below), the resume stays associated with
- * its current nickname, and `resumeId` only actually changes on the
- * NEXT successful submit -- the same content-addressed `createResume`
- * call this component always made, which returns the same id back for
- * unchanged text or a new one for changed text. That's also why
- * `handleResumeSubmit` (App.tsx) is what clears `editingResume` again,
- * not this click handler: the edit isn't "done" until a submission
- * actually lands.
+ * Ticket ac141d0 (Nicole, immediately after using cdc2c39's shipped
+ * lock-in-place: "instead of making everything not editable and
+ * offering an Edit Resume button, which was a little bit of a
+ * misunderstanding between the two of us... I think we should hide
+ * that whole section, and a little thing should pop up that says
+ * Using Resume 8... if they say Edit, it's gonna open again this
+ * resume"): replaces the lock-in-place design with COLLAPSE/EXPAND.
+ * Once a resume is confirmed (`resumeId` exists) and the user isn't
+ * mid-edit, this component renders a compact summary bar instead of
+ * the form at all -- not a disabled/readOnly form, a completely
+ * different, smaller render. "Edit" swaps back to the full form.
+ *
+ * `editingResume` is what picks which branch renders, and -- same
+ * lesson as cdc2c39's round 2 -- it is deliberately NOT `resumeId`
+ * itself. `resumeId` stays set the whole time the user is editing, so
+ * anything in App.tsx gated on `resumeId` (sessionStorage, the
+ * nickname, an in-flight search's identity) stays intact; only
+ * `editingResume` and whatever App.tsx separately chooses to gate on
+ * it (the sources/criteria/search sections, per this ticket) react to
+ * the expand/collapse. `resumeId` only actually changes on the NEXT
+ * successful submit, via the same content-addressed `createResume`
+ * call this component always made. `handleResumeSubmit` (App.tsx) is
+ * what clears `editingResume` again on success, not this component's
+ * click handler -- the edit isn't "done" until a submission lands.
+ *
+ * The collapsed summary bar's nickname is display-only (Nicole,
+ * correcting an early draft of this ticket: "I don't want it
+ * renameable right there in line... the only way they can get back to
+ * an editable name should be in the collapse-expand") -- renaming only
+ * happens through the expanded form's nickname field, same as it
+ * always has.
  */
 export function ResumeInput({
   onSubmit,
@@ -115,13 +132,14 @@ export function ResumeInput({
    * rather than letting a second edit race the first. */
   nicknameSaving?: boolean;
   nicknameError?: string | null;
-  /** Review fix round 2 (ticket cdc2c39): true between an "Edit resume"
-   * click and the next successful submit. Deliberately separate from
-   * `resumeId` -- see this file's top-of-file doc comment for why
-   * conflating the two reproduced ticket 3f05144. Un-readonlys the
-   * textarea without touching anything gated on `resumeId` itself (the
-   * nickname field included -- it stays visible while editing, since
-   * the resume being edited still has one). */
+  /** Ticket ac141d0: true between an "Edit" click on the collapsed
+   * summary bar and the next successful submit. Deliberately separate
+   * from `resumeId` -- see this file's top-of-file doc comment for why
+   * conflating the two reproduced ticket 3f05144. This is what picks
+   * which of the two branches below renders: the collapsed summary bar
+   * (`resumeId !== undefined && !editingResume`) or the full form
+   * (everything else, including the ordinary pre-first-submission
+   * case). */
   editingResume?: boolean;
   /** Fires on an "Edit resume" click -- App.tsx sets `editingResume`
    * true. See that prop's doc comment for what this does and doesn't
@@ -129,6 +147,20 @@ export function ResumeInput({
   onEditResume?: () => void;
 }) {
   const [text, setText] = useState(initialText);
+
+  // Ticket ac141d0: the whole reason this is a branch, not a readOnly
+  // toggle -- the collapsed bar is a DIFFERENT, smaller render, not the
+  // same form disabled. See this file's top-of-file doc comment.
+  if (resumeId !== undefined && !editingResume) {
+    return (
+      <div className="resume-input resume-input-collapsed">
+        <span className="resume-summary">Using {nickname}</span>
+        <button type="button" className="resume-edit-button" onClick={() => onEditResume?.()}>
+          Edit
+        </button>
+      </div>
+    );
+  }
 
   return (
     <form
@@ -143,11 +175,6 @@ export function ResumeInput({
         id="resume-text"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        // Ticket cdc2c39: locked once a real resume exists, UNLESS the
-        // user is actively editing it via "Edit resume" below -- see
-        // this file's top-of-file doc comment for why `editingResume`
-        // is a separate flag from `resumeId` rather than clearing it.
-        readOnly={resumeId !== undefined && !editingResume}
         rows={10}
         placeholder="Paste resume text here..."
       />
@@ -183,11 +210,6 @@ export function ResumeInput({
             />
             {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
           </div>
-        )}
-        {resumeId !== undefined && !editingResume && (
-          <button type="button" className="resume-edit-button" onClick={() => onEditResume?.()}>
-            Edit resume
-          </button>
         )}
         {text.trim().length > 0 && (
           <button type="submit" disabled={submitting}>

@@ -64,6 +64,19 @@ section {
   font-size: 0.9rem;
 }
 
+/* Ticket ac141d0: overrides the column layout above -- this is the
+   collapsed summary bar (nickname + Edit), a horizontal row, not the
+   paste form. */
+.resume-input-collapsed {
+  flex-direction: row;
+  align-items: center;
+  gap: 1rem;
+}
+
+.resume-summary {
+  font-weight: 600;
+}
+
 /* Ticket 38a7598: the nickname field sits directly beside "Use this
    resume", per Nicole's explicit "right next to the button" placement. */
 .resume-input-actions {

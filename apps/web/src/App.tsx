@@ -100,11 +100,14 @@ function App() {
   const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  // Review fix round 2 (ticket cdc2c39): deliberately NOT derived from
-  // `resumeId` -- see ResumeInput.tsx's top-of-file doc comment for why
-  // clearing `resumeId` on "Edit resume" (round-1 fix) reproduced ticket
-  // 3f05144. Not persisted: a mid-edit reload should land back in the
-  // locked, last-submitted-state view, not stay unlocked with stale
+  // Ticket ac141d0: true while ResumeInput shows its full expanded form
+  // for a resume that already exists (i.e. the user clicked "Edit" on
+  // the collapsed summary bar). Deliberately NOT derived from `resumeId`
+  // -- see ResumeInput.tsx's top-of-file doc comment for why conflating
+  // the two reproduced ticket 3f05144 back in cdc2c39. Also gates the
+  // sources/criteria/search section below (ac141d0: hide those while
+  // editing). Not persisted: a mid-edit reload should land back in the
+  // collapsed, last-submitted-state view, not stay expanded with stale
   // text sessionStorage never captured anyway (ResumeInput's `text` is
   // its own uncommitted local state, never written out).
   const [resumeEditing, setResumeEditing] = useState(false);
@@ -438,16 +441,15 @@ function App() {
     }
   }
 
-  // Review fix round 2 (ticket cdc2c39): the textarea's read-only lock
-  // needs a way back to editable, but round 1 of this fix cleared
-  // `resumeId` here and that collapsed the whole app (sources, criteria,
-  // results -- everything gated on `resumeId !== undefined`) and wiped
-  // sessionStorage before any new resume existed to replace it,
-  // reproducing ticket 3f05144. `resumeEditing` unlocks the textarea
-  // without touching `resumeId` or anything downstream of it -- nothing
-  // unmounts, an in-flight search keeps polling, sessionStorage is
-  // untouched. Clears any stale nickname-PATCH error since the user is
-  // about to change what's in the box.
+  // Ticket ac141d0: fires from the collapsed summary bar's "Edit". Sets
+  // `resumeEditing`, not `resumeId` -- see that state's own doc comment
+  // above for why (cdc2c39's round-2 lesson: conflating the two wiped
+  // sessionStorage on every edit). `resumeId` itself is untouched, so an
+  // in-flight search keeps polling underneath while the resume section
+  // is expanded (sources/criteria/search just stop RENDERING, per the
+  // gate below -- nothing about the resume identity changes until a new
+  // submission actually lands). Clears any stale nickname-PATCH error
+  // since the user is about to change what's in the box.
   function handleEditResume() {
     setResumeEditing(true);
     setNicknameError(null);
@@ -524,7 +526,18 @@ function App() {
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}
         </section>
 
-        {resumeId && (
+        {/* Ticket ac141d0: also gated on `!resumeEditing`, not just
+            `resumeId` -- while the resume section is expanded for a
+            re-edit, sources/criteria/search hide along with it (Nicole:
+            "I want the sources to all go away again... figuring out what
+            resume we're using is before what sources we want to
+            search"). This also closes a real hazard cdc2c39's review
+            flagged (F10): before this ticket, these stayed mounted
+            against the OLD resumeId while editing, so a user could run a
+            real, paid search against a resume that was no longer even on
+            screen. Selections underneath (selectedSourceIds, criteriaForm,
+            titleChips) are untouched by this -- only rendering hides. */}
+        {resumeId && !resumeEditing && (
           <>
             <section className="sources-section">
               <h2>Which sources do you want to search?</h2>
