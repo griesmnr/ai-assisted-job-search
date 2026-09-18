@@ -444,15 +444,28 @@ function App() {
   // Ticket ac141d0: fires from the collapsed summary bar's "Edit". Sets
   // `resumeEditing`, not `resumeId` -- see that state's own doc comment
   // above for why (cdc2c39's round-2 lesson: conflating the two wiped
-  // sessionStorage on every edit). `resumeId` itself is untouched, so an
-  // in-flight search keeps polling underneath while the resume section
-  // is expanded (sources/criteria/search just stop RENDERING, per the
-  // gate below -- nothing about the resume identity changes until a new
-  // submission actually lands). Clears any stale nickname-PATCH error
-  // since the user is about to change what's in the box.
+  // sessionStorage on every edit). `resumeId` itself is untouched, so
+  // SearchFlow stays MOUNTED and an in-flight search keeps polling --
+  // sources/criteria/search only go `hidden` (review fix: an earlier
+  // version of this diff unmounted that whole block instead, which
+  // silently killed the poll with no way back; see the `hidden`
+  // wrapper's own comment below for the full story). Clears any stale
+  // nickname-PATCH error since the user is about to change what's in
+  // the box.
   function handleEditResume() {
     setResumeEditing(true);
     setNicknameError(null);
+  }
+
+  // Review fix (ticket ac141d0): the escape hatch ResumeInput's "Cancel"
+  // needs -- see its own doc comment for why it exists (clearing the
+  // textarea mid-edit was otherwise a genuine dead end, with no Edit
+  // button in that branch and, now, sources/criteria/search hidden
+  // too). Only sets `resumeEditing` back to false; `resumeId`,
+  // `resumeNickname`, `resumeText` are all untouched -- this is a
+  // discard, not a submit, so nothing about the resume actually changes.
+  function handleCancelEdit() {
+    setResumeEditing(false);
   }
 
   async function handleSetStatus(jobId: string, status: UserJobStatus) {
@@ -521,24 +534,38 @@ function App() {
             nicknameError={nicknameError}
             editingResume={resumeEditing}
             onEditResume={handleEditResume}
+            onCancelEdit={handleCancelEdit}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}
         </section>
 
-        {/* Ticket ac141d0: also gated on `!resumeEditing`, not just
-            `resumeId` -- while the resume section is expanded for a
-            re-edit, sources/criteria/search hide along with it (Nicole:
-            "I want the sources to all go away again... figuring out what
-            resume we're using is before what sources we want to
-            search"). This also closes a real hazard cdc2c39's review
-            flagged (F10): before this ticket, these stayed mounted
-            against the OLD resumeId while editing, so a user could run a
-            real, paid search against a resume that was no longer even on
-            screen. Selections underneath (selectedSourceIds, criteriaForm,
-            titleChips) are untouched by this -- only rendering hides. */}
-        {resumeId && !resumeEditing && (
-          <>
+        {/* Ticket ac141d0: `hidden`, not conditional rendering -- an
+            earlier version of this fix used `{resumeId && !resumeEditing
+            && (...)}`, which UNMOUNTS this whole block (SearchFlow
+            included) while editing. Review caught that this silently
+            kills an in-flight search's poll with no way back (the exact
+            hazard the tab-switch comment above this one already
+            documents and defends against for the SAME component, via the
+            SAME `hidden` pattern) -- worse, clicking Edit during
+            SearchFlow's brief "starting" phase (between POST /searches
+            and its first successful response) orphans the run entirely:
+            SearchFlow's own persist effect deliberately doesn't write a
+            sessionStorage record for that phase (see its own comment),
+            so there's nothing to re-adopt on remount, AND the polling
+            interval `enterRunning` schedules fires anyway on the by-then
+            -unmounted component, with nothing left able to ever clear
+            it. `hidden` keeps SearchFlow mounted the whole time (its
+            poll keeps running, exactly like an active tab-switch), while
+            still visually and from-the-a11y-tree removing it -- which is
+            what actually closes cdc2c39 review's F10 (a real, paid
+            search running against a resume that's no longer on screen):
+            the user can't SEE or touch it while editing, but it isn't
+            silently destroyed either. Selections underneath
+            (selectedSourceIds, criteriaForm, titleChips) were always
+            untouched by this either way. */}
+        {resumeId && (
+          <div hidden={resumeEditing}>
             <section className="sources-section">
               <h2>Which sources do you want to search?</h2>
               {sourcesState.status === "loading" && <p>Loading sources...</p>}
@@ -632,7 +659,7 @@ function App() {
                 )}
               </section>
             )}
-          </>
+          </div>
         )}
       </div>
 

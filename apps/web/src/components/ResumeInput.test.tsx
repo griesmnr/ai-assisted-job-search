@@ -271,7 +271,7 @@ describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
 
     expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
   });
 
   it("collapses to 'Using {nickname}' once a resume is confirmed and not being edited", () => {
@@ -327,7 +327,7 @@ describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
 
     expect(onEditResume).toHaveBeenCalledTimes(1);
     expect(onSubmit).not.toHaveBeenCalled();
@@ -363,8 +363,54 @@ describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
     // mount, regardless of which branch renders on any given render.
     expect(screen.getByLabelText("Paste your resume")).toHaveValue("some resume text");
     expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 8");
-    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
     expect(screen.queryByText("Using Resume 8")).not.toBeInTheDocument();
+  });
+
+  // Review fix (F4): the test above passes `initialText` UNCHANGED across
+  // the rerender, so it can't actually distinguish "state persisted" from
+  // "a remount re-seeded useState(initialText) with the same value" -- a
+  // remount would pass it too. This one diverges `text` from `initialText`
+  // BEFORE collapsing, which only a genuine no-remount can survive.
+  it("really does preserve un-submitted, un-collapsed text edits across a collapse/expand cycle (not just the same initialText being re-seeded)", () => {
+    const { rerender } = render(
+      <ResumeInput onSubmit={() => {}} submitting={false} initialText="original text" />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "diverged text nobody submitted" },
+    });
+
+    // Simulates a resume existing now (e.g. from an unrelated App render)
+    // while this component's own `text` still holds the divergent value
+    // above -- collapses, per the usual gate.
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="original text"
+      />,
+    );
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="original text"
+        editingResume={true}
+      />,
+    );
+
+    // If this were a remount, `useState(initialText)` would have re-seeded
+    // to "original text" -- seeing the diverged value is the actual proof.
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue(
+      "diverged text nobody submitted",
+    );
   });
 
   it("re-submitting from the expanded state re-collapses back to the summary bar", () => {
@@ -397,5 +443,81 @@ describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
 
     expect(screen.getByText("Using Resume 8")).toBeInTheDocument();
     expect(screen.queryByLabelText("Paste your resume")).not.toBeInTheDocument();
+  });
+});
+
+// Review fix (F3): without "Cancel", clearing the textarea during a
+// re-edit was a genuine dead end -- no submit button (empty text), no
+// Edit button (only the collapsed branch has one), and since this ticket
+// also hides sources/criteria/search while editing, no way off the
+// screen short of a reload.
+describe("ResumeInput — 'Cancel' escape hatch during a re-edit (review fix, ticket ac141d0)", () => {
+  it("does not render Cancel before any resume exists -- nothing to cancel back to yet", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
+  it("renders Cancel during a re-edit, and clicking it calls onCancelEdit (not onSubmit)", () => {
+    const onCancelEdit = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+        onCancelEdit={onCancelEdit}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("discards an uncommitted edit -- Cancel reverts the textarea to the last actually-submitted text", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="the real submitted resume"
+        editingResume={true}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "a half-finished edit nobody asked to keep" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue("the real submitted resume");
+  });
+
+  // The actual dead-end scenario the review caught: clearing the box
+  // removes "Use this resume" (empty text), and this branch has no Edit
+  // button at all (that only exists in the collapsed branch) -- Cancel
+  // must survive regardless of what's in the box, or there is no way out.
+  it("stays available even when the textarea is cleared to empty -- the actual dead end this fix closes", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), { target: { value: "" } });
+
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 });

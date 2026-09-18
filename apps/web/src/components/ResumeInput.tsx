@@ -91,6 +91,7 @@ export function ResumeInput({
   nicknameError,
   editingResume,
   onEditResume,
+  onCancelEdit,
 }: {
   onSubmit: (resumeText: string) => void;
   submitting: boolean;
@@ -145,6 +146,16 @@ export function ResumeInput({
    * true. See that prop's doc comment for what this does and doesn't
    * touch. */
   onEditResume?: () => void;
+  /** Review fix (ticket ac141d0): fires on "Cancel" in the expanded
+   * form during a re-edit -- App.tsx sets `editingResume` back to
+   * false WITHOUT submitting. Only rendered when `resumeId` already
+   * exists (there's nothing to cancel back to before a first
+   * submission). Exists because without it, clearing the textarea
+   * while editing was a genuine dead end: no submit button (empty
+   * text), no Edit button (only the collapsed branch has one), and --
+   * since this ticket also hides sources/criteria/search while
+   * editing -- no way out of the screen at all short of a reload. */
+  onCancelEdit?: () => void;
 }) {
   const [text, setText] = useState(initialText);
 
@@ -155,7 +166,19 @@ export function ResumeInput({
     return (
       <div className="resume-input resume-input-collapsed">
         <span className="resume-summary">Using {nickname}</span>
-        <button type="button" className="resume-edit-button" onClick={() => onEditResume?.()}>
+        {/* type="button": this sits outside the <form> entirely in this
+            branch, but stays explicit anyway -- a future refactor that
+            moved it back inside one (as cdc2c39's earlier "Edit resume"
+            button briefly was) should not silently regain the implicit
+            submit-on-click hazard that ticket's own review had to catch.
+            aria-label keeps the visible text short ("Edit") while still
+            telling a screen reader what it edits. */}
+        <button
+          type="button"
+          className="resume-edit-button"
+          aria-label="Edit resume"
+          onClick={() => onEditResume?.()}
+        >
           Edit
         </button>
       </div>
@@ -210,6 +233,32 @@ export function ResumeInput({
             />
             {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
           </div>
+        )}
+        {/* Review fix (ticket ac141d0): only during a RE-edit -- before a
+            first submission there's no collapsed state to cancel back
+            to, and the plain "clear the box" behavior that already
+            existed is fine. Without this, clearing the textarea while
+            editing was a dead end: no submit button (empty text), no
+            Edit button (that only exists in the collapsed branch), and
+            -- since this ticket also hides sources/criteria/search while
+            editing -- no way off the screen at all short of a reload. */}
+        {resumeId !== undefined && (
+          <button
+            type="button"
+            className="resume-cancel-edit-button"
+            onClick={() => {
+              // Discards the in-progress edit, not just the empty-text
+              // case -- resets the box back to what was actually last
+              // submitted (`initialText`, which only ever changes on a
+              // real successful submit, never on a keystroke) rather
+              // than leaving a half-typed draft sitting there for the
+              // next time this resume is opened for editing.
+              setText(initialText);
+              onCancelEdit?.();
+            }}
+          >
+            Cancel
+          </button>
         )}
         {text.trim().length > 0 && (
           <button type="submit" disabled={submitting}>

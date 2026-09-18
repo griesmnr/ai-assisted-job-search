@@ -146,7 +146,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // the server still has a real nickname for it. Verified through Edit,
     // since ticket ac141d0's collapsed bar doesn't expose the form's own
     // nickname field directly.
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
     expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
     expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 1");
   });
@@ -160,16 +160,27 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
   // editing (a real behavior change from cdc2c39, approved directly:
   // "Yes to the Sources criteria hide") -- but the underlying selections,
   // and the ability to recover them, must not be casualties of that.
-  it("clicking Edit hides sources/criteria without wiping their selections, and a reload mid-edit restores everything (ticket ac141d0)", async () => {
+  //
+  // Review fix (F1/F2): an earlier version of this diff UNMOUNTED this
+  // block (`{resumeId && !resumeEditing && (...)}`) instead of hiding it,
+  // which silently killed SearchFlow's poll on Edit with no way back --
+  // worst case, orphaning an already-started, already-paid-for search with
+  // a leaked polling interval nothing could ever clear (see App.tabs
+  // .test.tsx for the same-shaped hazard this project already knew about
+  // for tab-switching, and the `hidden` fix below for the real one).
+  // `not.toBeVisible()`, not `not.toBeInTheDocument()`, is what actually
+  // proves the fix: these elements must still be MOUNTED, just hidden.
+  it("clicking Edit hides sources/criteria (via `hidden`, not unmounting) without wiping their selections, and a reload mid-edit restores everything (ticket ac141d0)", async () => {
     mockHappyPath();
     await setUpRealState();
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
 
     // Sources/criteria hide while the resume section is expanded for a
-    // re-edit -- the new, deliberate behavior this ticket asked for.
-    expect(screen.queryByLabelText("USAJOBS")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Locations you'd commute to/)).not.toBeInTheDocument();
+    // re-edit -- the new, deliberate behavior this ticket asked for --
+    // but they're still in the document, not torn down.
+    expect(screen.getByLabelText("USAJOBS")).not.toBeVisible();
+    expect(screen.getByLabelText(/Locations you'd commute to/)).not.toBeVisible();
 
     // But nothing underneath was reset: resubmitting (identical text,
     // same resumeId) re-collapses, and the same selections are right
@@ -183,7 +194,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // submitted state either -- same "a reload must not read as start
     // over" reasoning ticket 3f05144 established, now exercised through
     // the edit flow specifically.
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
     cleanup();
     createResume.mockClear();
     render(<App />);
@@ -194,6 +205,35 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
+  });
+
+  // Review fix (F1/F2), the direct proof: clicking Edit must not reset an
+  // in-progress SearchFlow estimate, the same way switching tabs doesn't
+  // (App.tabs.test.tsx) -- and clicking "Cancel" (review fix F3) must get
+  // back to it without submitting anything.
+  it("an in-progress cost estimate survives clicking Edit and Cancel -- SearchFlow stays mounted, not reset (review fix, ticket ac141d0)", async () => {
+    mockHappyPath();
+    estimateSearch.mockResolvedValue(makeEstimate());
+    await setUpRealState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByLabelText("Cost estimate");
+    createResume.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    // Hidden, not gone -- if this had unmounted SearchFlow, the estimate
+    // would be gone entirely rather than merely invisible.
+    expect(screen.getByLabelText("Cost estimate")).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // Back to collapsed, estimate exactly where it was left -- no
+    // redundant re-estimate, and Cancel did not resubmit the resume.
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Cost estimate")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run search" })).toBeInTheDocument();
+    expect(estimateSearch).toHaveBeenCalledTimes(1);
+    expect(createResume).not.toHaveBeenCalled();
   });
 
   it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {
