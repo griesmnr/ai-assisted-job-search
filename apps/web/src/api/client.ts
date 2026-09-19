@@ -15,6 +15,7 @@ import type {
   CreateResumeResponse,
   EstimateSearchRequest,
   EstimateSearchResponse,
+  GetAllResultsResponse,
   GetResumeResultsResponse,
   GetSourcesResponse,
   SearchCriteria,
@@ -150,6 +151,22 @@ export function getResults(
   return request<GetResumeResultsResponse>(
     `/resumes/${encodeURIComponent(resumeId)}/results${qs ? `?${qs}` : ""}`,
   );
+}
+
+/**
+ * Ticket 3f0883f: the cross-resume counterpart to `getResults` above --
+ * `GET /results`, no `resumeId` at all. Same `GetResultsParams` shape
+ * (there's nothing resume-specific about `source`/`minScore`/`status`/
+ * `includeDismissed`), reused rather than a near-duplicate type.
+ */
+export function getAllResults(params: GetResultsParams = {}): Promise<GetAllResultsResponse> {
+  const query = new URLSearchParams();
+  if (params.source !== undefined) query.set("source", params.source);
+  if (params.minScore !== undefined) query.set("minScore", String(params.minScore));
+  if (params.status !== undefined) query.set("status", params.status);
+  if (params.includeDismissed) query.set("includeDismissed", "true");
+  const qs = query.toString();
+  return request<GetAllResultsResponse>(`/results${qs ? `?${qs}` : ""}`);
 }
 
 export function estimateSearch(

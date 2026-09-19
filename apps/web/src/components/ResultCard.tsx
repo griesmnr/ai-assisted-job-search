@@ -42,17 +42,10 @@ const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "applied", "dismissed"];
  */
 export function ResultCard({
   result,
-  resumeId,
   onSetStatus,
   onClearStatus,
 }: {
   result: ScoredJobResult;
-  /** Needed for "Optimize Resume" (ticket dbfd594): `POST /handoffs`
-   * snapshots THIS resume's text alongside the job description. Always
-   * defined in practice — a ResultCard only ever renders once a resume
-   * exists (App.tsx gates the whole results section behind `resumeId &&`)
-   * — required, not optional, so that invariant is visible in the type. */
-  resumeId: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
   /** "Untoggle" (dogfooding, 2026-09-08 — Nicole: "you should be able to
    * untoggle the buttons, like undismiss") — clears back to no-action-taken
@@ -109,7 +102,15 @@ export function ResultCard({
     setPending("resume_optimized");
     setError(null);
     try {
-      const handoff = await createHandoff(result.jobId, resumeId);
+      // Ticket 3f0883f review fix: `result.resumeId`, not a caller-supplied
+      // prop -- "Already Scored Jobs" can now show a job scored under a
+      // DIFFERENT resume than whichever one is active this session (or
+      // none at all). A single `resumeId` prop used to be silently correct
+      // only because a ResultCard, at the time, could never render for
+      // anything but the one active resume; that invariant no longer
+      // holds, and using the wrong one here would tailor against the
+      // wrong resume's text with no indication anything went wrong.
+      const handoff = await createHandoff(result.jobId, result.resumeId);
       const importUrl = `${RESUME_OPTIMIZER_APP_URL}?import=${encodeURIComponent(
         handoffFetchUrl(handoff.id),
       )}`;

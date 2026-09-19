@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import type { GetResumeResultsResponse, ScoredJobResult } from "@app/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GetAllResultsResponse, GetResumeResultsResponse, ScoredJobResult } from "@app/shared";
 import { GroupedResultsList, groupKeyForStatus } from "./GroupedResultsList";
 
 // See SourceToggles.test.tsx's comment on this same line: this repo's root
@@ -14,6 +14,11 @@ function job(
   overrides: Partial<ScoredJobResult> & Pick<ScoredJobResult, "jobId">,
 ): ScoredJobResult {
   return {
+    // Ticket 3f0883f: default resume identity for every fixture job --
+    // see ScoredJobResult.resumeId's own doc comment. Tests that actually
+    // need two different resumes (the cross-resume describe block below)
+    // override this explicitly per job.
+    resumeId: "resume-1",
     externalId: overrides.jobId,
     title: "A Job",
     company: "Acme",
@@ -60,7 +65,6 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       <GroupedResultsList
         data={DATA}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -79,7 +83,6 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       <GroupedResultsList
         data={DATA}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -111,7 +114,6 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       <GroupedResultsList
         data={ALL_OVERQUALIFIED}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -157,7 +159,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -175,7 +176,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -207,7 +207,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={ALL_CONTRACT}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -232,7 +231,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -271,7 +269,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={ONLY_OVERQUALIFIED_AND_CONTRACT}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -318,7 +315,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       <GroupedResultsList
         data={DATA_BOTH}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -358,7 +354,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={GROUPED}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -388,7 +383,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={GROUPED}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -417,7 +411,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={afterStatusChange}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -461,7 +454,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={ONLY_SAVED}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -486,7 +478,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={NOW_DISMISSED}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -511,7 +502,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       <GroupedResultsList
         data={TWO_SOURCES}
         selectedSourceIds={new Set(["usajobs"])}
-        resumeId="resume-1"
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -524,5 +514,82 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     // `visible` array, this would incorrectly show "Saved (2)".
     expect(screen.getByText("Saved (1)")).toBeInTheDocument();
     expect(screen.queryByText("Saved (2)")).not.toBeInTheDocument();
+  });
+});
+
+// Ticket 3f0883f: "Already Scored Jobs" spans every resume now, not just
+// the active one -- the SAME jobId can legitimately appear twice, once
+// per resume that scored it, with two different match scores and two
+// different nicknames. This is the direct proof that GroupedResultsList
+// renders both as separate cards rather than one clobbering the other.
+describe("GroupedResultsList — the same job scored under two different resumes (ticket 3f0883f)", () => {
+  it("renders BOTH cards, correctly labeled by their own resume, when the same jobId appears under two resumeIds", () => {
+    const CROSS_RESUME: GetAllResultsResponse = {
+      results: [
+        job({
+          jobId: "shared-job",
+          resumeId: "resume-1",
+          resumeNickname: "Resume 1",
+          title: "Full-Stack Engineer",
+          matchScore: 85,
+        }),
+        job({
+          jobId: "shared-job",
+          resumeId: "resume-2",
+          resumeNickname: "Resume 2",
+          title: "Full-Stack Engineer",
+          matchScore: 55,
+        }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={CROSS_RESUME}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    // Both scores render, each attributed to the resume that actually
+    // produced it -- content correctness, independent of the list-key
+    // mechanism itself (verified with a mutation: a colliding bare-`jobId`
+    // key does NOT drop a card on first render here, React only warns --
+    // the test below is what actually catches that regression).
+    expect(screen.getByText("85%")).toBeInTheDocument();
+    expect(screen.getByText("55%")).toBeInTheDocument();
+    // Both nicknames render -- each card correctly labeled by the
+    // resume that actually produced ITS judgment, not both showing the
+    // same one.
+    expect(screen.getByText(/Resume 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Resume 2/)).toBeInTheDocument();
+  });
+
+  it("does not throw a React duplicate-key warning for the same jobId under two different resumes", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const CROSS_RESUME: GetAllResultsResponse = {
+      results: [
+        job({ jobId: "shared-job", resumeId: "resume-1", resumeNickname: "Resume 1" }),
+        job({ jobId: "shared-job", resumeId: "resume-2", resumeNickname: "Resume 2" }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={CROSS_RESUME}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const duplicateKeyWarning = consoleError.mock.calls.some((args) =>
+      String(args[0]).includes("same key"),
+    );
+    expect(duplicateKeyWarning).toBe(false);
+    consoleError.mockRestore();
   });
 });

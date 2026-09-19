@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MATCH_SCORE_FLOOR,
   type EstimateSearchResponse,
-  type GetResumeResultsResponse,
+  type GetAllResultsResponse,
   type GetSourcesResponse,
   type ScoredJobResult,
 } from "@app/shared";
@@ -27,6 +27,13 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" reads GET /results (getAllResults)
+// now, not GET /resumes/:id/results (getResults) -- this file's whole
+// subject is that tab's ScoreFloorControl, so its real assertions move
+// from getResults to getAllResults below. getResults stays mocked too
+// (useResults still fires for "Results from this search"), but its
+// return value is unchecked in most of this file's tests now.
+const getAllResults = vi.fn();
 const setJobStatus = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
@@ -36,6 +43,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -55,6 +63,8 @@ const SOURCES: GetSourcesResponse = {
 function makeJob(jobId: string, title: string): ScoredJobResult {
   return {
     jobId,
+    // Ticket 3f0883f: see ScoredJobResult.resumeId's own doc comment.
+    resumeId: "resume-1",
     externalId: jobId,
     title,
     company: "Acme",
@@ -152,10 +162,12 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
 
-    expect(getResults).toHaveBeenCalledWith("resume-1", {
+    // Ticket 3f0883f: "Already Scored Jobs" fetches via getAllResults now.
+    expect(getAllResults).toHaveBeenCalledWith({
       minScore: MATCH_SCORE_FLOOR,
       includeDismissed: true,
     });
@@ -172,15 +184,18 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
-    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+    // getAllResults fires on mount (not gated on resumeId), so it's
+    // already been called once by the time the resume is even submitted.
+    await waitFor(() => expect(getAllResults).toHaveBeenCalledTimes(1));
 
     const slider = screen.getByLabelText("Minimum match score to show");
     fireEvent.change(slider, { target: { value: "40" } });
 
-    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(2));
-    expect(getResults).toHaveBeenLastCalledWith("resume-1", {
+    await waitFor(() => expect(getAllResults).toHaveBeenCalledTimes(2));
+    expect(getAllResults).toHaveBeenLastCalledWith({
       minScore: 40,
       includeDismissed: true,
     });
@@ -193,20 +208,19 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
     // A smaller result set at the default floor, a larger one once the
     // floor is lowered -- mirrors what the real server-side `gte(matchScore,
     // minScore)` filter does: a lower floor can surface a job that was
-    // never sent to the client at the old floor at all.
-    getResults.mockImplementation((_resumeId: string, params: { minScore?: number }) => {
+    // never sent to the client at the old floor at all. Ticket 3f0883f:
+    // "Already Scored Jobs" reads getAllResults now, single-argument
+    // (no resumeId), unlike getResults.
+    getAllResults.mockImplementation((params: { minScore?: number }) => {
       const results =
         (params.minScore ?? 0) >= MATCH_SCORE_FLOOR
           ? [makeJob("job-1", "Backend Engineer")]
           : [makeJob("job-1", "Backend Engineer"), makeJob("job-2", "Support Engineer")];
-      return Promise.resolve({
-        resumeId: "resume-1",
-        resumeNickname: "Resume 1",
-        results,
-      } satisfies GetResumeResultsResponse);
+      return Promise.resolve({ results } satisfies GetAllResultsResponse);
     });
 
     await submitResumeAndOpenScoredTab();
@@ -229,13 +243,15 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
     fireEvent.change(screen.getByLabelText("Minimum match score to show"), {
       target: { value: "25" },
     });
+    // Ticket 3f0883f: "Already Scored Jobs" fetches via getAllResults now.
     await waitFor(() =>
-      expect(getResults).toHaveBeenLastCalledWith("resume-1", {
+      expect(getAllResults).toHaveBeenLastCalledWith({
         minScore: 25,
         includeDismissed: true,
       }),
@@ -244,14 +260,17 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
     cleanup();
     getResults.mockClear();
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockClear();
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     render(<App />);
 
-    // The restored resumeId fires useResults's fetch immediately on mount,
-    // before any tab is clicked -- the slider itself only renders once the
-    // "Already Scored Jobs" tab is opened.
+    // The restored scoreFloor (persisted alongside resumeId) fires
+    // useAllResults's fetch immediately on mount, before any tab is
+    // clicked -- the slider itself only renders once the "Already Scored
+    // Jobs" tab is opened.
     await waitFor(() =>
-      expect(getResults).toHaveBeenCalledWith("resume-1", {
+      expect(getAllResults).toHaveBeenCalledWith({
         minScore: 25,
         includeDismissed: true,
       }),
@@ -287,6 +306,7 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
         resumeNickname: "Resume 1",
         results: [],
       });
+      getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
       estimateSearch.mockResolvedValue(makeEstimate());
       startSearch.mockResolvedValue({
         searchId: "search-1",

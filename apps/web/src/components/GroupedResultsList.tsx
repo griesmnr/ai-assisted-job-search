@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { GetResumeResultsResponse, ScoredJobResult, UserJobStatus } from "@app/shared";
+import type { GetAllResultsResponse, ScoredJobResult, UserJobStatus } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
 /**
@@ -56,14 +56,20 @@ export function groupKeyForStatus(status: UserJobStatus | null): ScoredGroupKey 
 export function GroupedResultsList({
   data,
   selectedSourceIds,
-  resumeId,
   groupFor,
   onSetStatus,
   onClearStatus,
 }: {
-  data: GetResumeResultsResponse;
+  // Ticket 3f0883f: widened from `GetResumeResultsResponse` (which this
+  // component never actually read the `resumeId`/`resumeNickname` half of
+  // anyway) to `GetAllResultsResponse` -- "Already Scored Jobs" spans every
+  // resume now, and a `GetResumeResultsResponse` is structurally still
+  // assignable here, so nothing about the single-resume caller
+  // (App.tsx isn't one anymore -- see that file -- but ResultsList.tsx
+  // stayed on the narrower type for its own single-resume case) had to
+  // change.
+  data: GetAllResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
-  resumeId: string;
   groupFor: (result: ScoredJobResult) => ScoredGroupKey;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
@@ -202,10 +208,14 @@ export function GroupedResultsList({
             <h3>{GROUP_LABELS[key]}</h3>
             <ul className="result-cards">
               {results.map((result) => (
+                // Ticket 3f0883f: composite key, not just `result.jobId` --
+                // the same posting can legitimately appear twice here now,
+                // once per resume that scored it, and a bare `jobId` key
+                // would collide (React would treat the second occurrence
+                // as an update to the first, not a distinct list item).
                 <ResultCard
-                  key={result.jobId}
+                  key={`${result.jobId}-${result.resumeId}`}
                   result={result}
-                  resumeId={resumeId}
                   onSetStatus={onSetStatus}
                   onClearStatus={onClearStatus}
                 />

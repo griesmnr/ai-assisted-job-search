@@ -27,6 +27,9 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" reads GET /results now -- see
+// App.criteria.test.tsx's identical comment for the full reasoning.
+const getAllResults = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
@@ -36,6 +39,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -108,6 +112,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(EMPTY_RESULTS);
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
 
     await submitResume();
 
@@ -129,6 +134,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(EMPTY_RESULTS);
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -159,6 +165,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(EMPTY_RESULTS);
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -205,6 +212,8 @@ describe("App tabs (ticket f4a7f07)", () => {
         },
       ],
     });
+    // "Already Scored Jobs" content isn't what this test checks.
+    getAllResults.mockResolvedValue({ results: [] });
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
     getSearchStatus.mockResolvedValue({

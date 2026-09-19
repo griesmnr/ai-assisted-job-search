@@ -17,13 +17,11 @@ import { ResultCard } from "./ResultCard";
 export function ResultsList({
   data,
   selectedSourceIds,
-  resumeId,
   onSetStatus,
   onClearStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
-  resumeId: string;
   onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
 }) {
@@ -159,7 +157,6 @@ export function ResultsList({
             <ResultCard
               key={result.jobId}
               result={result}
-              resumeId={resumeId}
               onSetStatus={onSetStatus}
               onClearStatus={onClearStatus}
             />

@@ -25,6 +25,10 @@ afterEach(() => {
 function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
   return {
     jobId: "job-1",
+    // Ticket 3f0883f: per-row resume identity -- see ScoredJobResult
+    // .resumeId's own doc comment. "Optimize Resume" now reads this
+    // (not a caller-supplied prop) for its handoff call.
+    resumeId: "resume-1",
     externalId: "ext-1",
     title: "Backend Engineer",
     company: "Acme",
@@ -55,7 +59,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     render(
       <ResultCard
         result={makeResult()}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -77,7 +80,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     render(
       <ResultCard
         result={makeResult({ status: "applied" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -94,12 +96,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
   it("calls onSetStatus with the right status when a present-tense action button is clicked", async () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
-      <ResultCard
-        result={makeResult()}
-        resumeId="resume-1"
-        onSetStatus={onSetStatus}
-        onClearStatus={async () => {}}
-      />,
+      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -113,12 +110,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
     render(
-      <ResultCard
-        result={makeResult()}
-        resumeId="resume-1"
-        onSetStatus={onSetStatus}
-        onClearStatus={async () => {}}
-      />,
+      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
@@ -144,7 +136,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     render(
       <ResultCard
         result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={onSetStatus}
       />,
@@ -161,12 +152,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
   it("Apply is a plain button that records status=applied and does not navigate", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
-      <ResultCard
-        result={makeResult()}
-        resumeId="resume-1"
-        onSetStatus={onSetStatus}
-        onClearStatus={async () => {}}
-      />,
+      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
     );
 
     const applyButton = screen.getByRole("button", { name: "Apply" });
@@ -180,7 +166,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     render(
       <ResultCard
         result={makeResult({ status: "applied" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -193,7 +178,6 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     render(
       <ResultCard
         result={makeResult({ status: "applied" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -210,7 +194,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ company: "Wealthfront", dataSource: "lever" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -224,7 +207,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ location: "Seattle, WA", locationType: "hybrid" })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -238,7 +220,6 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
     render(
       <ResultCard
         result={makeResult({ location: null, locationType: null })}
-        resumeId="resume-1"
         onClearStatus={async () => {}}
         onSetStatus={async () => {}}
       />,
@@ -259,7 +240,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     const { rerender } = render(
       <ResultCard
         result={makeResult()}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -270,7 +250,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     rerender(
       <ResultCard
         result={makeResult({ status: "dismissed" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -285,7 +264,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     render(
       <ResultCard
         result={makeResult({ status: "dismissed" })}
-        resumeId="resume-1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -303,7 +281,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     render(
       <ResultCard
         result={makeResult({ status: "saved" })}
-        resumeId="resume-1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -319,7 +296,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     render(
       <ResultCard
         result={makeResult({ status: "saved" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -345,7 +321,6 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     render(
       <ResultCard
         result={makeResult({ status: "resume_optimized" })}
-        resumeId="resume-1"
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
       />,
@@ -370,12 +345,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
     render(
-      <ResultCard
-        result={makeResult()}
-        resumeId="resume-1"
-        onSetStatus={onSetStatus}
-        onClearStatus={async () => {}}
-      />,
+      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
@@ -402,7 +372,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           levelFit: "overqualified",
           levelFitNote: "This posting asks for 1.5-2 years; you have far more.",
         })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -426,7 +395,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           levelFit: "underqualified",
           levelFitNote: "This posting is written for a Staff-level candidate.",
         })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -440,7 +408,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
     render(
       <ResultCard
         result={makeResult({ levelFit: "well_matched", levelFitNote: "" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -457,7 +424,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
     render(
       <ResultCard
         result={makeResult({ levelFit: null, levelFitNote: null })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -475,7 +441,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
           levelFitNote: "This may hurt at screening for a role this junior.",
           strengths: ["TypeScript"],
         })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -493,7 +458,6 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
     render(
       <ResultCard
         result={makeResult({ levelFit: null, levelFitNote: null })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -513,7 +477,6 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
     render(
       <ResultCard
         result={makeResult({ resumeNickname: "Backend-focused resume" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -526,7 +489,6 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
     const { rerender } = render(
       <ResultCard
         result={makeResult({ resumeNickname: "Resume 1" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -536,7 +498,6 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
     rerender(
       <ResultCard
         result={makeResult({ resumeNickname: "Renamed resume" })}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,

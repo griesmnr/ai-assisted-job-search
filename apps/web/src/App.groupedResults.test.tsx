@@ -2,7 +2,12 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GetResumeResultsResponse, GetSourcesResponse, ScoredJobResult } from "@app/shared";
+import type {
+  GetAllResultsResponse,
+  GetResumeResultsResponse,
+  GetSourcesResponse,
+  ScoredJobResult,
+} from "@app/shared";
 import App from "./App";
 
 /**
@@ -16,6 +21,12 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" now reads GET /results (every
+// resume), not GET /resumes/:id/results -- `useAllResults` calls this
+// unconditionally on every mount, same as `getResults`, so every test that
+// renders <App /> needs it mocked to resolve or the hook's `.then()` throws
+// against an unmocked `undefined` return.
+const getAllResults = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
@@ -29,6 +40,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -56,6 +68,8 @@ function job(
   overrides: Partial<ScoredJobResult> & Pick<ScoredJobResult, "jobId">,
 ): ScoredJobResult {
   return {
+    // Ticket 3f0883f: see ScoredJobResult.resumeId's own doc comment.
+    resumeId: "resume-1",
     externalId: overrides.jobId,
     title: "A Job",
     company: "Acme",
@@ -106,6 +120,10 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
         job({ jobId: "job-2", title: "Frontend Engineer", status: null }),
       ],
     } satisfies GetResumeResultsResponse);
+    // This test only checks "Results from this search" -- "Already Scored
+    // Jobs" content doesn't matter here, but useAllResults still fires on
+    // mount and needs something to resolve to.
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
     estimateSearch.mockResolvedValue({
       resumeId: "resume-1",
       costEstimate: {
@@ -198,7 +216,11 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValue(GROUPED_RESULTS);
+    // Ticket 3f0883f: "Already Scored Jobs" reads getAllResults now, not
+    // getResults -- getResults is given an unrelated, unchecked value
+    // purely so useResults's own fetch has something to resolve to.
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue(GROUPED_RESULTS);
 
     await submitResume();
     fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
@@ -238,7 +260,11 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValueOnce(GROUPED_RESULTS);
+    // Ticket 3f0883f: "Already Scored Jobs" reads getAllResults now --
+    // getResults gets an unrelated, unchecked stable value purely so
+    // useResults's own fetch has something to resolve to.
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValueOnce(GROUPED_RESULTS);
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
       status: "resume_optimized",
@@ -251,14 +277,12 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
 
     // Refetch after the status write returns job-saved with its status
     // flipped to resume_optimized.
-    const afterStatusChange: GetResumeResultsResponse = {
-      resumeId: "resume-1",
-      resumeNickname: "Resume 1",
+    const afterStatusChange: GetAllResultsResponse = {
       results: GROUPED_RESULTS.results.map((r) =>
         r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
       ),
     };
-    getResults.mockResolvedValueOnce(afterStatusChange);
+    getAllResults.mockResolvedValueOnce(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
     fireEvent.click(within(savedSection).getByRole("button", { name: "Optimize Resume" }));
@@ -312,7 +336,11 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValueOnce(GROUPED_RESULTS);
+    // Ticket 3f0883f: "Already Scored Jobs" reads getAllResults now --
+    // getResults gets an unrelated, unchecked stable value purely so
+    // useResults's own fetch has something to resolve to.
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValueOnce(GROUPED_RESULTS);
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
       status: "resume_optimized",
@@ -331,14 +359,12 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
 
     // Refetch after the status write returns job-saved with its status
     // flipped to resume_optimized -- same as bec2f98's own test above.
-    const afterStatusChange: GetResumeResultsResponse = {
-      resumeId: "resume-1",
-      resumeNickname: "Resume 1",
+    const afterStatusChange: GetAllResultsResponse = {
       results: GROUPED_RESULTS.results.map((r) =>
         r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
       ),
     };
-    getResults.mockResolvedValueOnce(afterStatusChange);
+    getAllResults.mockResolvedValueOnce(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
     fireEvent.click(within(savedSection).getByRole("button", { name: "Optimize Resume" }));

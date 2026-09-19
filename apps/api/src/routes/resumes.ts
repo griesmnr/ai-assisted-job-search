@@ -28,9 +28,18 @@
  * `resume_optimized` / `applied` / no-status-row-yet (`NULL`) all still
  * show by default; only an explicit `?status=dismissed` surfaces dismissed
  * jobs again (e.g. a future "dismissed" tab).
+ *
+ * `GET /results` (ticket 3f0883f) is `GET /resumes/:id/results` widened to
+ * every resume at once -- what "Already Scored Jobs" actually needs to be
+ * a real browsable history rather than silently narrowed to whichever
+ * resume happens to be active this session. Shares its query-building and
+ * row-mapping with the single-resume route via `fetchScoredResults`/
+ * `parseResultsQuery` below, rather than duplicating ~150 lines of nearly
+ * identical Drizzle query for one conditional clause's difference.
  */
 import {
   type CreateResumeResponse,
+  type GetAllResultsResponse,
   type GetResumeResponse,
   type GetResumeResultsResponse,
   type UpdateResumeNicknameResponse,
@@ -228,12 +237,29 @@ export function registerResumeRoutes(
     },
   );
 
-  app.get<{
-    Params: { id: string };
-    Querystring: { source?: string; minScore?: string; status?: string; includeDismissed?: string };
-  }>("/resumes/:id/results", async (request, reply) => {
-    const resumeId = request.params.id;
-    const { source, minScore, status, includeDismissed } = request.query;
+  type ResultsQuerystring = {
+    source?: string;
+    minScore?: string;
+    status?: string;
+    includeDismissed?: string;
+  };
+
+  type ParsedResultsQuery =
+    | {
+        ok: true;
+        source?: string;
+        minScoreNum?: number;
+        statusFilter?: UserJobStatus;
+        includeDismissedFlag: boolean;
+      }
+    | { ok: false; error: string };
+
+  // Ticket 3f0883f: pulled out of the single-resume route below so the new
+  // cross-resume `GET /results` doesn't hand-duplicate the exact same three
+  // validations. Behavior is byte-for-byte what the single-resume route
+  // always did.
+  function parseResultsQuery(query: ResultsQuerystring): ParsedResultsQuery {
+    const { source, minScore, status, includeDismissed } = query;
 
     // Ticket 484889d: validated the same way ?source= is below — an
     // unrecognized status string must 400, not silently match nothing.
@@ -241,31 +267,11 @@ export function registerResumeRoutes(
     // list backing `UserJobStatus`, shared with job-status.ts's own
     // validation instead of each route hand-duplicating it.
     if (status !== undefined && !USER_JOB_STATUSES.includes(status as UserJobStatus)) {
-      return reply.code(400).send({
+      return {
+        ok: false,
         error: `Unknown status "${status}" (known values: ${USER_JOB_STATUSES.join(", ")}).`,
-      });
+      };
     }
-    const statusFilter = status as UserJobStatus | undefined;
-
-    const resumeRows = await db
-      .select({ id: resumes.id, resumeNickname: resumes.resumeNickname })
-      .from(resumes)
-      .where(eq(resumes.id, resumeId))
-      .limit(1);
-    if (resumeRows.length === 0) {
-      return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
-    }
-    // Ticket 38a7598, review fix: read once here, alongside the existence
-    // check above, and still carried at the TOP LEVEL of the response
-    // below for back-compat/convenience -- but this is no longer the
-    // canonical source a job card reads its "Searched with" label from.
-    // Each row in `results` now carries its OWN `resumeNickname` (joined
-    // against `resumes` in the query below), because the very next ticket
-    // (3f0883f) widens this endpoint's "Already Scored Jobs" use case to
-    // span MULTIPLE resumes at once, where a single response-level value
-    // can't express "this posting appears twice, once per resume, with two
-    // different nicknames." See GetResumeResultsResponse's own doc comment.
-    const resumeNickname = resumeRows[0]!.resumeNickname;
 
     // Ticket 59fdc52 review round 2: an unknown ?source= used to silently
     // return an empty result set — indistinguishable from "this resume
@@ -276,19 +282,68 @@ export function registerResumeRoutes(
     // FK both use, not redeclared.
     const knownSourceIds = new Set(SOURCE_DESCRIPTORS.map((d) => d.id as string));
     if (source !== undefined && !knownSourceIds.has(source)) {
-      return reply.code(400).send({
+      return {
+        ok: false,
         error: `Unknown source "${source}" (known ids: ${[...knownSourceIds].join(", ")}).`,
-      });
+      };
     }
 
     let minScoreNum: number | undefined;
     if (minScore !== undefined) {
       minScoreNum = Number(minScore);
       if (!Number.isFinite(minScoreNum)) {
-        return reply.code(400).send({ error: `minScore must be a number, got "${minScore}".` });
+        return { ok: false, error: `minScore must be a number, got "${minScore}".` };
       }
     }
 
+    return {
+      ok: true,
+      source,
+      minScoreNum,
+      statusFilter: status as UserJobStatus | undefined,
+      includeDismissedFlag: includeDismissed === "true",
+    };
+  }
+
+  // Ticket b182bde: `matchScore DESC` stays the whole ranking; this is a
+  // TIEBREAK ONLY, used exclusively when two rows share the exact same
+  // matchScore -- it can never move a row ahead of one with a strictly
+  // higher score, because it's a second ORDER BY key, evaluated only
+  // where the first key is equal. `well_matched` sorts first among ties,
+  // `null` (never judged -- a legacy row, or one this ticket's own
+  // migration just added a nullable column for) sits between a
+  // known-good and a known-mismatch rather than being lumped in with
+  // either, `underqualified` next, `overqualified` last. Mirrors
+  // `levelFitTiebreakRank` in demo-match.ts's own (separate, JS-side)
+  // sort for `fetchRankedResults` -- see that function's doc comment for
+  // why the two aren't shared code.
+  const levelFitRank = sql<number>`CASE ${jobMatches.levelFit}
+    WHEN 'well_matched' THEN 0
+    WHEN 'underqualified' THEN 2
+    WHEN 'overqualified' THEN 3
+    ELSE 1
+  END`;
+
+  type ResultsFilters = {
+    /** Ticket 3f0883f: `undefined` means "every resume" (GET /results) --
+     * every condition below that depends on this is built conditionally,
+     * same pattern as `source`/`minScoreNum` already used. */
+    resumeId?: string;
+    source?: string;
+    minScoreNum?: number;
+    statusFilter?: UserJobStatus;
+    includeDismissedFlag: boolean;
+  };
+
+  // Ticket 3f0883f: the query + row-mapping logic both `GET
+  // /resumes/:id/results` and the new `GET /results` need, extracted so the
+  // only actual difference between the two routes -- whether
+  // `jobMatches.resumeId` is constrained at all -- is a single conditional
+  // push, not ~150 lines of copy-pasted query building that could silently
+  // drift apart.
+  async function fetchScoredResults(
+    filters: ResultsFilters,
+  ): Promise<{ results: GetResumeResultsResponse["results"]; hiddenBelowFloor?: number }> {
     // The default-dismissed-exclusion (ticket 484889d decision #2: "a
     // dismissed job should leave the visible list") applies whenever the
     // caller didn't ask for a specific status AND didn't opt into
@@ -305,10 +360,10 @@ export function registerResumeRoutes(
     // includeDismissed case, rather than reconstructing "any status" as an
     // always-true SQL fragment — the caller below only pushes a defined
     // condition into the WHERE clause.
-    const includeDismissedFlag = includeDismissed === "true";
     function statusCondition(): SQL | undefined {
-      if (statusFilter !== undefined) return eq(userJobStatuses.status, statusFilter);
-      if (includeDismissedFlag) return undefined;
+      if (filters.statusFilter !== undefined)
+        return eq(userJobStatuses.status, filters.statusFilter);
+      if (filters.includeDismissedFlag) return undefined;
       return or(isNull(userJobStatuses.status), ne(userJobStatuses.status, "dismissed"))!;
     }
 
@@ -316,32 +371,20 @@ export function registerResumeRoutes(
     // `statusCondition()`'s "no restriction" case (includeDismissed, no
     // explicit ?status=) can be spliced in directly here without a separate
     // push-if-defined step.
-    const conditions = [eq(jobMatches.resumeId, resumeId), statusCondition()];
-    if (source !== undefined) conditions.push(eq(jobsTable.dataSource, source));
-    if (minScoreNum !== undefined) conditions.push(gte(jobMatches.matchScore, minScoreNum));
-
-    // Ticket b182bde: `matchScore DESC` stays the whole ranking; this is a
-    // TIEBREAK ONLY, used exclusively when two rows share the exact same
-    // matchScore -- it can never move a row ahead of one with a strictly
-    // higher score, because it's a second ORDER BY key, evaluated only
-    // where the first key is equal. `well_matched` sorts first among ties,
-    // `null` (never judged -- a legacy row, or one this ticket's own
-    // migration just added a nullable column for) sits between a
-    // known-good and a known-mismatch rather than being lumped in with
-    // either, `underqualified` next, `overqualified` last. Mirrors
-    // `levelFitTiebreakRank` in demo-match.ts's own (separate, JS-side)
-    // sort for `fetchRankedResults` -- see that function's doc comment for
-    // why the two aren't shared code.
-    const levelFitRank = sql<number>`CASE ${jobMatches.levelFit}
-      WHEN 'well_matched' THEN 0
-      WHEN 'underqualified' THEN 2
-      WHEN 'overqualified' THEN 3
-      ELSE 1
-    END`;
+    const conditions: (SQL | undefined)[] = [statusCondition()];
+    if (filters.resumeId !== undefined) conditions.push(eq(jobMatches.resumeId, filters.resumeId));
+    if (filters.source !== undefined) conditions.push(eq(jobsTable.dataSource, filters.source));
+    if (filters.minScoreNum !== undefined)
+      conditions.push(gte(jobMatches.matchScore, filters.minScoreNum));
 
     const rows = await db
       .select({
         jobId: jobsTable.id,
+        // Ticket 3f0883f: per-row resume identity -- see
+        // ScoredJobResult.resumeId's own doc comment (packages/shared) for
+        // why this can no longer be a single response-level field once a
+        // posting can appear under more than one resume.
+        resumeId: jobMatches.resumeId,
         externalId: jobsTable.externalId,
         title: jobsTable.title,
         company: jobsTable.company,
@@ -362,17 +405,11 @@ export function registerResumeRoutes(
         levelFit: jobMatches.levelFit,
         levelFitNote: jobMatches.levelFitNote,
         status: userJobStatuses.status,
-        // Ticket 38a7598 review fix: per-RESULT nickname, joined off
-        // `jobMatches.resumeId` rather than reused from the single
-        // `resumeNickname` looked up above. Today this route is scoped to
-        // one `resumeId` so every row's value is identical to the
-        // top-level one -- but the very next ticket (3f0883f) widens
-        // "Already Scored Jobs" to span MULTIPLE resumes at once, where the
-        // SAME posting can legitimately appear twice under two different
-        // resumes with two different nicknames. A single response-level
-        // field can't express that; this join makes each result
-        // self-describing now, before anything is built on top of the
-        // narrower shape.
+        // Ticket 38a7598 review fix, widened by 3f0883f: per-RESULT
+        // nickname, joined off `jobMatches.resumeId` rather than any single
+        // response-level value -- the same posting can legitimately appear
+        // twice, once per resume, with two different nicknames, once
+        // results span more than one resume (GET /results below).
         resumeNickname: resumes.resumeNickname,
       })
       .from(jobMatches)
@@ -390,13 +427,16 @@ export function registerResumeRoutes(
     // scoped to the same status view (a dismissed job below the floor is
     // hidden for its own reason, not double-counted here as floor-hidden).
     let hiddenBelowFloor: number | undefined;
-    if (minScoreNum !== undefined) {
-      const hiddenConditions = [
-        eq(jobMatches.resumeId, resumeId),
-        lt(jobMatches.matchScore, minScoreNum),
+    if (filters.minScoreNum !== undefined) {
+      const hiddenConditions: (SQL | undefined)[] = [
+        lt(jobMatches.matchScore, filters.minScoreNum),
         statusCondition(),
       ];
-      if (source !== undefined) hiddenConditions.push(eq(jobsTable.dataSource, source));
+      if (filters.resumeId !== undefined) {
+        hiddenConditions.push(eq(jobMatches.resumeId, filters.resumeId));
+      }
+      if (filters.source !== undefined)
+        hiddenConditions.push(eq(jobsTable.dataSource, filters.source));
       const hiddenRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(jobMatches)
@@ -406,9 +446,7 @@ export function registerResumeRoutes(
       hiddenBelowFloor = hiddenRows[0]?.count ?? 0;
     }
 
-    const response: GetResumeResultsResponse = {
-      resumeId,
-      resumeNickname,
+    return {
       results: rows.map((r) => {
         // `commitment` is destructured OUT here rather than spread into the
         // response (ticket 8f5a79c): it's read from the query purely to
@@ -433,6 +471,76 @@ export function registerResumeRoutes(
       }),
       hiddenBelowFloor,
     };
+  }
+
+  app.get<{
+    Params: { id: string };
+    Querystring: ResultsQuerystring;
+  }>("/resumes/:id/results", async (request, reply) => {
+    const resumeId = request.params.id;
+
+    const parsed = parseResultsQuery(request.query);
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
+
+    const resumeRows = await db
+      .select({ id: resumes.id, resumeNickname: resumes.resumeNickname })
+      .from(resumes)
+      .where(eq(resumes.id, resumeId))
+      .limit(1);
+    if (resumeRows.length === 0) {
+      return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
+    }
+    // Ticket 38a7598, review fix: read once here, alongside the existence
+    // check above, and still carried at the TOP LEVEL of the response
+    // below for back-compat/convenience -- but this is no longer the
+    // canonical source a job card reads its "Searched with" label from.
+    // Each row in `results` carries its OWN `resumeNickname` (see
+    // GetResumeResultsResponse's own doc comment) -- ticket 3f0883f is why:
+    // it widens this use case to span MULTIPLE resumes at once (GET
+    // /results below), where a single response-level value can't express
+    // "this posting appears twice, once per resume, with two different
+    // nicknames."
+    const resumeNickname = resumeRows[0]!.resumeNickname;
+
+    const { results, hiddenBelowFloor } = await fetchScoredResults({
+      resumeId,
+      source: parsed.source,
+      minScoreNum: parsed.minScoreNum,
+      statusFilter: parsed.statusFilter,
+      includeDismissedFlag: parsed.includeDismissedFlag,
+    });
+
+    const response: GetResumeResultsResponse = {
+      resumeId,
+      resumeNickname,
+      results,
+      hiddenBelowFloor,
+    };
+    return reply.send(response);
+  });
+
+  // Ticket 3f0883f (Nicole: "users should see every job that they've ever
+  // applied for and which resume they used to search" -- "Already Scored
+  // Jobs" is meant to be the browsable history, silently narrowed to one
+  // resume today only because every results query happened to be scoped
+  // that way, not by deliberate design). Same filters as the single-resume
+  // route above, MINUS any resume scoping at all -- every job_matches row,
+  // for every resume, full stop. Deliberately NOT a 404-able resource (no
+  // resume existence check): "nothing has ever been scored yet" is a real,
+  // valid, empty state here, not an error -- the frontend already renders
+  // that as "No jobs scored yet." (App.tsx).
+  app.get<{ Querystring: ResultsQuerystring }>("/results", async (request, reply) => {
+    const parsed = parseResultsQuery(request.query);
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
+
+    const { results, hiddenBelowFloor } = await fetchScoredResults({
+      source: parsed.source,
+      minScoreNum: parsed.minScoreNum,
+      statusFilter: parsed.statusFilter,
+      includeDismissedFlag: parsed.includeDismissedFlag,
+    });
+
+    const response: GetAllResultsResponse = { results, hiddenBelowFloor };
     return reply.send(response);
   });
 }

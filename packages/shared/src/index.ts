@@ -182,6 +182,21 @@ export type LevelFit = "underqualified" | "well_matched" | "overqualified";
 
 export type ScoredJobResult = {
   jobId: string;
+  /**
+   * Ticket 3f0883f: which resume THIS result was scored against —
+   * `jobMatches.resumeId`, carried per-row for the same reason
+   * `resumeNickname` (below) is: once "Already Scored Jobs" spans every
+   * resume, not just the active one, the SAME `jobId` can legitimately
+   * appear twice, once per resume, with two different match scores. A
+   * response-level `resumeId` can't express that, and neither can a
+   * single `jobId` alone stay a unique list key or a safe target for a
+   * resume-specific action -- see ResultCard.tsx's "Optimize Resume"
+   * handoff, which used to trust a single caller-supplied `resumeId`
+   * prop (silently correct only because every card, at the time,
+   * necessarily belonged to the one active resume) and now reads this
+   * field instead.
+   */
+  resumeId: string;
   externalId: string;
   title: string;
   company: string;
@@ -286,6 +301,22 @@ export type GetResumeResultsResponse = {
   results: ScoredJobResult[];
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */
+  hiddenBelowFloor?: number;
+};
+
+/**
+ * `GET /results` (ticket 3f0883f) -- the cross-resume counterpart to
+ * `GetResumeResultsResponse`, deliberately WITHOUT a top-level `resumeId`/
+ * `resumeNickname`: there isn't one singular resume to name when `results`
+ * spans every resume in the database. Each `ScoredJobResult` already
+ * carries its own `resumeId`/`resumeNickname`, which is what makes this
+ * response shape possible at all -- see that type's own doc comments.
+ */
+export type GetAllResultsResponse = {
+  results: ScoredJobResult[];
+  /** Present only when a minScore floor was actually applied -- same
+   * meaning as `GetResumeResultsResponse.hiddenBelowFloor`, just summed
+   * across every resume instead of one. */
   hiddenBelowFloor?: number;
 };
 
