@@ -129,51 +129,132 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // bounded) real Claude call for a resume it has never seen.
     expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
     expect(createResume).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
-    // Ticket 38a7598: the nickname is part of PersistedAppState too (bumped
-    // to .v4) -- a reload must not show the resume as unnamed even though
-    // the server still has a real nickname for it.
-    expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 1");
+    // Ticket ac141d0: collapsed by default on a reload (resumeEditing
+    // isn't persisted -- see App.tsx's doc comment on that state) --
+    // the form itself isn't rendered, but the nickname the form would
+    // have shown is right here in the summary bar.
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
     expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
     expect(screen.getByLabelText("Also show fully remote roles")).toBeChecked();
 
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
+
+    // Ticket 38a7598: the nickname is part of PersistedAppState too (bumped
+    // to .v4) -- a reload must not show the resume as unnamed even though
+    // the server still has a real nickname for it. Verified through Edit,
+    // since ticket ac141d0's collapsed bar doesn't expose the form's own
+    // nickname field directly.
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
+    expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 1");
   });
 
-  // Review round 2 of ticket cdc2c39 (opus), F5: the first fix for the
-  // textarea's read-only lock cleared `resumeId` on an "Edit resume"
-  // click, which collapsed the whole app (everything gated on
-  // `resumeId !== undefined`) and wiped this exact sessionStorage record
-  // -- reproducing THIS ticket's own header on every Edit click. The
-  // actual fix (App.tsx's separate `resumeEditing` flag) must not
-  // regress back to that.
-  it("clicking 'Edit resume' does not collapse the app or wipe state, and a reload mid-edit restores the last submitted state (review fix round 2, ticket cdc2c39)", async () => {
+  // Ticket ac141d0 (Nicole: "I want the sources to all go away again...
+  // figuring out what resume we're using is before what sources we want
+  // to search"), building on cdc2c39's review round 2, F5 (opus): that
+  // fix established clearing `resumeId` on an edit-click wipes this exact
+  // sessionStorage record before any new resume exists to replace it. The
+  // collapse/expand redesign deliberately hides sources/criteria while
+  // editing (a real behavior change from cdc2c39, approved directly:
+  // "Yes to the Sources criteria hide") -- but the underlying selections,
+  // and the ability to recover them, must not be casualties of that.
+  //
+  // Review fix (F1/F2): an earlier version of this diff UNMOUNTED this
+  // block (`{resumeId && !resumeEditing && (...)}`) instead of hiding it,
+  // which silently killed SearchFlow's poll on Edit with no way back --
+  // worst case, orphaning an already-started, already-paid-for search with
+  // a leaked polling interval nothing could ever clear (see App.tabs
+  // .test.tsx for the same-shaped hazard this project already knew about
+  // for tab-switching, and the `hidden` fix below for the real one).
+  // `not.toBeVisible()`, not `not.toBeInTheDocument()`, is what actually
+  // proves the fix: these elements must still be MOUNTED, just hidden.
+  it("clicking Edit hides sources/criteria (via `hidden`, not unmounting) without wiping their selections, and a reload mid-edit restores everything (ticket ac141d0)", async () => {
     mockHappyPath();
     await setUpRealState();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
 
-    // Nothing unmounted: the textarea unlocked, but sources/criteria are
-    // still right there, not collapsed back to the empty pre-resume view.
-    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
-    expect(screen.getByLabelText("USAJOBS")).toBeInTheDocument();
+    // Sources/criteria hide while the resume section is expanded for a
+    // re-edit -- the new, deliberate behavior this ticket asked for --
+    // but they're still in the document, not torn down.
+    expect(screen.getByLabelText("USAJOBS")).not.toBeVisible();
+    expect(screen.getByLabelText(/Locations you'd commute to/)).not.toBeVisible();
+
+    // But nothing underneath was reset: resubmitting (identical text,
+    // same resumeId) re-collapses, and the same selections are right
+    // back, not defaults.
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
+    expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
 
+    // A reload MID-edit (before resubmitting) must not lose the last
+    // submitted state either -- same "a reload must not read as start
+    // over" reasoning ticket 3f05144 established, now exercised through
+    // the edit flow specifically.
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
     cleanup();
     createResume.mockClear();
     render(<App />);
 
-    // A reload mid-edit must not read as "start over" either -- the last
-    // SUBMITTED state comes back (ResumeInput's in-box edit was never
-    // persisted in the first place; only a successful submit writes it).
     expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
     expect(createResume).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Paste your resume")).toHaveValue(RESUME_TEXT);
-    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
+    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
+  });
+
+  // Review fix (F1/F2), the direct proof: clicking Edit must not reset an
+  // in-progress SearchFlow estimate, the same way switching tabs doesn't
+  // (App.tabs.test.tsx) -- and clicking "Cancel" (review fix F3) must get
+  // back to it without submitting anything.
+  it("an in-progress cost estimate survives clicking Edit and Cancel -- SearchFlow stays mounted, not reset (review fix, ticket ac141d0)", async () => {
+    mockHappyPath();
+    estimateSearch.mockResolvedValue(makeEstimate());
+    await setUpRealState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByLabelText("Cost estimate");
+    createResume.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    // Hidden, not gone -- if this had unmounted SearchFlow, the estimate
+    // would be gone entirely rather than merely invisible.
+    expect(screen.getByLabelText("Cost estimate")).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // Back to collapsed, estimate exactly where it was left -- no
+    // redundant re-estimate, and Cancel did not resubmit the resume.
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Cost estimate")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run search" })).toBeInTheDocument();
+    expect(estimateSearch).toHaveBeenCalledTimes(1);
+    expect(createResume).not.toHaveBeenCalled();
+  });
+
+  // Review round 2 (N1, opus, non-blocking but cheap to close): a failed
+  // resubmit's error must not outlive giving up on it -- clicking Cancel
+  // (or a later Edit) after "Could not save resume: ..." was shown should
+  // not leave that message sitting, stale, under the collapsed bar.
+  it("clears a failed resubmit's error when Cancel is clicked, rather than leaving it stale under the collapsed bar (review fix N1, ticket ac141d0)", async () => {
+    mockHappyPath();
+    await setUpRealState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    createResume.mockRejectedValueOnce(new Error("Network error"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save resume: Network error",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {

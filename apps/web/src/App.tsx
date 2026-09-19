@@ -100,11 +100,14 @@ function App() {
   const [resumeText, setResumeText] = useState(restored?.resumeText ?? "");
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  // Review fix round 2 (ticket cdc2c39): deliberately NOT derived from
-  // `resumeId` -- see ResumeInput.tsx's top-of-file doc comment for why
-  // clearing `resumeId` on "Edit resume" (round-1 fix) reproduced ticket
-  // 3f05144. Not persisted: a mid-edit reload should land back in the
-  // locked, last-submitted-state view, not stay unlocked with stale
+  // Ticket ac141d0: true while ResumeInput shows its full expanded form
+  // for a resume that already exists (i.e. the user clicked "Edit" on
+  // the collapsed summary bar). Deliberately NOT derived from `resumeId`
+  // -- see ResumeInput.tsx's top-of-file doc comment for why conflating
+  // the two reproduced ticket 3f05144 back in cdc2c39. Also gates the
+  // sources/criteria/search section below (ac141d0: hide those while
+  // editing). Not persisted: a mid-edit reload should land back in the
+  // collapsed, last-submitted-state view, not stay expanded with stale
   // text sessionStorage never captured anyway (ResumeInput's `text` is
   // its own uncommitted local state, never written out).
   const [resumeEditing, setResumeEditing] = useState(false);
@@ -438,19 +441,39 @@ function App() {
     }
   }
 
-  // Review fix round 2 (ticket cdc2c39): the textarea's read-only lock
-  // needs a way back to editable, but round 1 of this fix cleared
-  // `resumeId` here and that collapsed the whole app (sources, criteria,
-  // results -- everything gated on `resumeId !== undefined`) and wiped
-  // sessionStorage before any new resume existed to replace it,
-  // reproducing ticket 3f05144. `resumeEditing` unlocks the textarea
-  // without touching `resumeId` or anything downstream of it -- nothing
-  // unmounts, an in-flight search keeps polling, sessionStorage is
-  // untouched. Clears any stale nickname-PATCH error since the user is
-  // about to change what's in the box.
+  // Ticket ac141d0: fires from the collapsed summary bar's "Edit". Sets
+  // `resumeEditing`, not `resumeId` -- see that state's own doc comment
+  // above for why (cdc2c39's round-2 lesson: conflating the two wiped
+  // sessionStorage on every edit). `resumeId` itself is untouched, so
+  // SearchFlow stays MOUNTED and an in-flight search keeps polling --
+  // sources/criteria/search only go `hidden` (review fix: an earlier
+  // version of this diff unmounted that whole block instead, which
+  // silently killed the poll with no way back; see the `hidden`
+  // wrapper's own comment below for the full story). Clears any stale
+  // nickname-PATCH AND resume-submission error since the user is about
+  // to change what's in the box -- review round 2 (N1): without the
+  // latter, a failed resubmit's error message could survive an Edit ->
+  // Cancel round trip and sit, stale, under the collapsed bar.
   function handleEditResume() {
     setResumeEditing(true);
     setNicknameError(null);
+    setResumeError(null);
+  }
+
+  // Review fix (ticket ac141d0): the escape hatch ResumeInput's "Cancel"
+  // needs -- see its own doc comment for why it exists (clearing the
+  // textarea mid-edit was otherwise a genuine dead end, with no Edit
+  // button in that branch and, now, sources/criteria/search hidden
+  // too). Only sets `resumeEditing` back to false; `resumeId`,
+  // `resumeNickname`, `resumeText` are all untouched -- this is a
+  // discard, not a submit, so nothing about the resume actually changes.
+  // Also clears a stale resume-submission error (review round 2, N1): a
+  // failed resubmit shows "Could not save resume: ..." while expanded;
+  // giving up via Cancel rather than fixing and resubmitting shouldn't
+  // leave that error sitting, orphaned, under the collapsed bar.
+  function handleCancelEdit() {
+    setResumeEditing(false);
+    setResumeError(null);
   }
 
   async function handleSetStatus(jobId: string, status: UserJobStatus) {
@@ -519,13 +542,38 @@ function App() {
             nicknameError={nicknameError}
             editingResume={resumeEditing}
             onEditResume={handleEditResume}
+            onCancelEdit={handleCancelEdit}
           />
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
           {resumeId && <p className="resume-confirmed">Resume ready.</p>}
         </section>
 
+        {/* Ticket ac141d0: `hidden`, not conditional rendering -- an
+            earlier version of this fix used `{resumeId && !resumeEditing
+            && (...)}`, which UNMOUNTS this whole block (SearchFlow
+            included) while editing. Review caught that this silently
+            kills an in-flight search's poll with no way back (the exact
+            hazard the tab-switch comment above this one already
+            documents and defends against for the SAME component, via the
+            SAME `hidden` pattern) -- worse, clicking Edit during
+            SearchFlow's brief "starting" phase (between POST /searches
+            and its first successful response) orphans the run entirely:
+            SearchFlow's own persist effect deliberately doesn't write a
+            sessionStorage record for that phase (see its own comment),
+            so there's nothing to re-adopt on remount, AND the polling
+            interval `enterRunning` schedules fires anyway on the by-then
+            -unmounted component, with nothing left able to ever clear
+            it. `hidden` keeps SearchFlow mounted the whole time (its
+            poll keeps running, exactly like an active tab-switch), while
+            still visually and from-the-a11y-tree removing it -- which is
+            what actually closes cdc2c39 review's F10 (a real, paid
+            search running against a resume that's no longer on screen):
+            the user can't SEE or touch it while editing, but it isn't
+            silently destroyed either. Selections underneath
+            (selectedSourceIds, criteriaForm, titleChips) were always
+            untouched by this either way. */}
         {resumeId && (
-          <>
+          <div hidden={resumeEditing}>
             <section className="sources-section">
               <h2>Which sources do you want to search?</h2>
               {sourcesState.status === "loading" && <p>Loading sources...</p>}
@@ -619,7 +667,7 @@ function App() {
                 )}
               </section>
             )}
-          </>
+          </div>
         )}
       </div>
 

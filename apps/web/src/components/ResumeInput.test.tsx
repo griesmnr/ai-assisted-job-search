@@ -35,6 +35,11 @@ function ControlledNicknameHarness({
         onNicknameChange?.(next);
       }}
       onNicknameCommit={onNicknameCommit}
+      // Ticket ac141d0: with a resumeId and no editingResume, this would
+      // render the collapsed summary bar instead of the form -- these
+      // tests are specifically about the nickname FIELD, which only
+      // exists in the expanded form.
+      editingResume={true}
     />
   );
 }
@@ -50,6 +55,12 @@ afterEach(cleanup);
 // living in ResumeInput itself (the resume-submission flow, per Nicole's
 // explicit "right next to the button... at that moment" instruction), not
 // a separate screen.
+// Ticket ac141d0: every test below that supplies a `resumeId` also passes
+// `editingResume={true}` -- with a resumeId and no editingResume, this
+// component now renders the collapsed summary bar instead, and the
+// nickname field (like the rest of the form) only exists in the expanded
+// state. See the "collapsed summary bar" describe block further down for
+// the collapsed state's own (deliberately non-editable) nickname display.
 describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
   // Ticket 5a79aa4 (review of 38a7598's shipped UI, live dogfooding): the
   // field used to render disabled-with-a-placeholder before a resumeId
@@ -68,6 +79,7 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
         submitting={false}
         resumeId="resume-1"
         nickname="Resume 1"
+        editingResume={true}
       />,
     );
 
@@ -85,6 +97,7 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
         resumeId="resume-1"
         nickname="Resume 1"
         onNicknameChange={onNicknameChange}
+        editingResume={true}
       />,
     );
 
@@ -145,6 +158,7 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
         resumeId="resume-1"
         nickname="Resume 1"
         nicknameSaving={true}
+        editingResume={true}
       />,
     );
 
@@ -160,6 +174,7 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
         resumeId="resume-1"
         nickname="Resume 1"
         nicknameError="Network error"
+        editingResume={true}
       />,
     );
 
@@ -213,27 +228,13 @@ describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => 
 
 // Ticket cdc2c39 (Nicole, live dogfooding: "I don't need anything below
 // anything... they can all show up together, but they're just showing up
-// in a different order, and use this resume should be last, horizontally"
-// -- plus the still-standing "when I hit use this resume... I want the
-// text field to become not editable anymore").
-describe("ResumeInput — nickname-first ordering and locked textarea (ticket cdc2c39)", () => {
-  it("textarea is editable with no resumeId yet, and becomes read-only once a resumeId exists", () => {
-    const { rerender } = render(<ResumeInput onSubmit={() => {}} submitting={false} />);
-
-    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
-
-    rerender(
-      <ResumeInput
-        onSubmit={() => {}}
-        submitting={false}
-        resumeId="resume-1"
-        nickname="Resume 1"
-      />,
-    );
-
-    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
-  });
-
+// in a different order, and use this resume should be last, horizontally").
+// The lock-in-place half of that ticket (textarea readOnly) was replaced by
+// ticket ac141d0's collapse/expand design -- see that ticket's describe
+// blocks below -- but the ordering requirement itself still holds, now
+// inside the expanded form specifically (the only place nickname field and
+// "Use this resume" ever render together).
+describe("ResumeInput — nickname-first ordering in the expanded form (ticket cdc2c39)", () => {
   it("places the nickname field before the 'Use this resume' button, horizontally, once both are showing", () => {
     render(
       <ResumeInput
@@ -242,6 +243,7 @@ describe("ResumeInput — nickname-first ordering and locked textarea (ticket cd
         resumeId="resume-1"
         nickname="Resume 1"
         initialText="some resume text"
+        editingResume={true}
       />,
     );
 
@@ -257,23 +259,207 @@ describe("ResumeInput — nickname-first ordering and locked textarea (ticket cd
   });
 });
 
-// Adversarial review of cdc2c39 (opus), round 1: the read-only lock above
-// was a ONE-WAY DOOR with `resumeId` never cleared anywhere else -- no way
-// to ever submit a different resume for the rest of the session/reload.
-// Round 2: the first fix attempt (clearing `resumeId` on click) collapsed
-// the whole app and wiped sessionStorage mid-edit (ticket 3f05144 again) --
-// see App.persistence.test.tsx's "Edit resume" test for that half. This
-// file covers the ResumeInput-local behavior of the actual fix: a separate
-// `editingResume` flag App.tsx owns, never `resumeId` itself.
-describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (review fix, ticket cdc2c39)", () => {
-  it("does not render 'Edit resume' with no resumeId yet -- nothing locked to escape from", () => {
+// Ticket ac141d0 (Nicole, immediately after using cdc2c39's shipped
+// lock-in-place design: "instead of making everything not editable and
+// offering an Edit Resume button... I think we should hide that whole
+// section, and a little thing should pop up that says Using Resume 8...
+// if they say Edit, it's gonna open again this resume, and then you can
+// say Use this resume again, and then it will collapse it"). Replaces
+// cdc2c39's lock-in-place + always-visible-Edit-button design entirely.
+describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
+  it("does not render a summary bar with no resumeId yet -- nothing to summarize", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
 
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
   });
 
-  it("renders 'Edit resume' once locked, calls onEditResume (not onSubmit) when clicked", () => {
+  it("collapses to 'Using {nickname}' once a resume is confirmed and not being edited", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+      />,
+    );
+
+    expect(screen.getByText("Using Resume 8")).toBeInTheDocument();
+    // The full form is GONE, not disabled -- this is a different, smaller
+    // render, not the same form locked in place (that was cdc2c39's
+    // approach, which this ticket replaced).
+    expect(screen.queryByLabelText("Paste your resume")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Resume Nickname")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+  });
+
+  // Nicole, correcting an early draft of this ticket before any code was
+  // written: "I don't want it renameable right there in line... the only
+  // way they can get back to an editable name should be in the
+  // collapse-expand." The summary bar's nickname is plain text, not an
+  // input -- renaming only happens through the expanded form.
+  it("does not render the collapsed nickname as an editable field", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+      />,
+    );
+
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+  });
+
+  it("renders 'Edit' on the collapsed bar, and clicking it calls onEditResume (not onSubmit)", () => {
     const onEditResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+        onEditResume={onEditResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+
+    expect(onEditResume).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("editingResume (as App.tsx sets via onEditResume) expands the full form again, with the existing text and an editable nickname field, and no 'Edit' button", () => {
+    const { rerender } = render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+      />,
+    );
+    expect(screen.getByText("Using Resume 8")).toBeInTheDocument();
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+
+    // Same component instance across the rerender (not a remount), so the
+    // text that was submitted is still right there, now editable again --
+    // this is the mechanism the whole design leans on: `text` is local
+    // state that only ever gets set from `initialText` ONCE, at first
+    // mount, regardless of which branch renders on any given render.
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue("some resume text");
+    expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 8");
+    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Using Resume 8")).not.toBeInTheDocument();
+  });
+
+  // Review fix (F4): the test above passes `initialText` UNCHANGED across
+  // the rerender, so it can't actually distinguish "state persisted" from
+  // "a remount re-seeded useState(initialText) with the same value" -- a
+  // remount would pass it too. This one diverges `text` from `initialText`
+  // BEFORE collapsing, which only a genuine no-remount can survive.
+  it("really does preserve un-submitted, un-collapsed text edits across a collapse/expand cycle (not just the same initialText being re-seeded)", () => {
+    const { rerender } = render(
+      <ResumeInput onSubmit={() => {}} submitting={false} initialText="original text" />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "diverged text nobody submitted" },
+    });
+
+    // Simulates a resume existing now (e.g. from an unrelated App render)
+    // while this component's own `text` still holds the divergent value
+    // above -- collapses, per the usual gate.
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="original text"
+      />,
+    );
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        initialText="original text"
+        editingResume={true}
+      />,
+    );
+
+    // If this were a remount, `useState(initialText)` would have re-seeded
+    // to "original text" -- seeing the diverged value is the actual proof.
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue(
+      "diverged text nobody submitted",
+    );
+  });
+
+  it("re-submitting from the expanded state re-collapses back to the summary bar", () => {
+    const { rerender } = render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+        editingResume={true}
+      />,
+    );
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+
+    // Mirrors what App.tsx actually does on a successful resubmit:
+    // `handleResumeSubmit` clears `resumeEditing` back to false (this
+    // component itself never clears it -- an edit isn't "done" until a
+    // submission lands, same lesson cdc2c39's review established).
+    rerender(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 8"
+        initialText="some resume text"
+        editingResume={false}
+      />,
+    );
+
+    expect(screen.getByText("Using Resume 8")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Paste your resume")).not.toBeInTheDocument();
+  });
+});
+
+// Review fix (F3): without "Cancel", clearing the textarea during a
+// re-edit was a genuine dead end -- no submit button (empty text), no
+// Edit button (only the collapsed branch has one), and since this ticket
+// also hides sources/criteria/search while editing, no way off the
+// screen short of a reload.
+describe("ResumeInput — 'Cancel' escape hatch during a re-edit (review fix, ticket ac141d0)", () => {
+  it("does not render Cancel before any resume exists -- nothing to cancel back to yet", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
+  it("renders Cancel during a re-edit, and clicking it calls onCancelEdit (not onSubmit)", () => {
+    const onCancelEdit = vi.fn();
     const onSubmit = vi.fn();
     render(
       <ResumeInput
@@ -282,53 +468,42 @@ describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (re
         resumeId="resume-1"
         nickname="Resume 1"
         initialText="some resume text"
-        onEditResume={onEditResume}
+        editingResume={true}
+        onCancelEdit={onCancelEdit}
       />,
     );
 
-    const editButton = screen.getByRole("button", { name: "Edit resume" });
-    fireEvent.click(editButton);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-    expect(onEditResume).toHaveBeenCalledTimes(1);
-    // Review round 2, F7: `type="button"` is what stops this from being
-    // the form's implicit submit button -- without it, this same click
-    // would ALSO re-POST the resume via onSubmit. Regressing that one
-    // attribute silently turns "edit" into "edit and resubmit."
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("editingResume (as App.tsx sets via onEditResume) un-readonlys the textarea without touching resumeId-gated content", () => {
-    const { rerender } = render(
+  it("discards an uncommitted edit -- Cancel reverts the textarea to the last actually-submitted text", () => {
+    render(
       <ResumeInput
         onSubmit={() => {}}
         submitting={false}
         resumeId="resume-1"
         nickname="Resume 1"
-        initialText="some resume text"
-      />,
-    );
-    expect(screen.getByLabelText("Paste your resume")).toHaveAttribute("readonly");
-
-    rerender(
-      <ResumeInput
-        onSubmit={() => {}}
-        submitting={false}
-        resumeId="resume-1"
-        nickname="Resume 1"
-        initialText="some resume text"
+        initialText="the real submitted resume"
         editingResume={true}
       />,
     );
 
-    expect(screen.getByLabelText("Paste your resume")).not.toHaveAttribute("readonly");
-    // Deliberately still visible: the resume being edited still has a
-    // nickname, and `resumeId` -- what gates this field -- never changed.
-    // This is exactly what round 1's fix got wrong (it cleared resumeId,
-    // which hid this).
-    expect(screen.getByLabelText("Resume Nickname")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "a half-finished edit nobody asked to keep" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue("the real submitted resume");
   });
 
-  it("hides 'Edit resume' itself once already editing -- a second click would be a no-op", () => {
+  // The actual dead-end scenario the review caught: clearing the box
+  // removes "Use this resume" (empty text), and this branch has no Edit
+  // button at all (that only exists in the collapsed branch) -- Cancel
+  // must survive regardless of what's in the box, or there is no way out.
+  it("stays available even when the textarea is cleared to empty -- the actual dead end this fix closes", () => {
     render(
       <ResumeInput
         onSubmit={() => {}}
@@ -340,29 +515,9 @@ describe("ResumeInput — 'Edit resume' escape hatch from the read-only lock (re
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Edit resume" })).not.toBeInTheDocument();
-  });
+    fireEvent.change(screen.getByLabelText("Paste your resume"), { target: { value: "" } });
 
-  it("sits between the nickname field and 'Use this resume', so 'Use this resume' stays last horizontally", () => {
-    render(
-      <ResumeInput
-        onSubmit={() => {}}
-        submitting={false}
-        resumeId="resume-1"
-        nickname="Resume 1"
-        initialText="some resume text"
-      />,
-    );
-
-    const nicknameField = screen.getByLabelText("Resume Nickname");
-    const editButton = screen.getByRole("button", { name: "Edit resume" });
-    const submitButton = screen.getByRole("button", { name: "Use this resume" });
-
-    expect(
-      nicknameField.compareDocumentPosition(editButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      editButton.compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 });
