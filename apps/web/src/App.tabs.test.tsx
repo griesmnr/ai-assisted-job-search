@@ -115,7 +115,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Already Scored Jobs" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Already Scored Jobs/ })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
@@ -138,7 +138,7 @@ describe("App tabs (ticket f4a7f07)", () => {
     expect(screen.getByLabelText("Cost estimate")).toBeInTheDocument();
 
     // Round trip to the other tab and back.
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
     fireEvent.click(screen.getByRole("button", { name: "New Job Search" }));
 
     // The estimate must still be showing -- if the tab switch had

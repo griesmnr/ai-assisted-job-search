@@ -59,11 +59,6 @@ section {
   padding: 0.5rem;
 }
 
-.resume-confirmed {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
 /* Ticket ac141d0: overrides the column layout above -- this is the
    collapsed summary bar (nickname + Edit), a horizontal row, not the
    paste form. */

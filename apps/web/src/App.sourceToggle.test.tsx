@@ -150,7 +150,7 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
     });
     fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
   }
 
   it("shows a 'no jobs scored yet' message when zero results and nothing hidden below the floor", async () => {
@@ -190,6 +190,44 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       await screen.findByRole("heading", { name: "Already Scored Jobs (3)" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("No jobs scored yet.")).not.toBeInTheDocument();
+  });
+
+  // Ticket 0308d7e (Nicole, dogfooding: "when I said I wanted number, I
+  // wanted it in the tab itself... I want people to know that there are
+  // already scored jobs there"): the count moved into the NAV TAB BUTTON
+  // itself, not just the in-panel heading -- both now show it, computed
+  // from the same `scoredJobCount` (App.tsx), so they can't drift apart.
+  it("shows the same count in the nav tab button itself, not just the in-panel heading", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({
+      resumeId: "resume-1",
+      resumeNickname: "Resume 1",
+      results: [],
+      hiddenBelowFloor: 3,
+    });
+
+    render(<App />);
+
+    // Before results are ready, the tab button has no number yet -- no
+    // misleading "(0)" flash, same behavior the heading has always had.
+    expect(screen.getByRole("button", { name: "Already Scored Jobs" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Already Scored Jobs (3)" }),
+    ).toBeInTheDocument();
+    // "New Job Search" is deliberately untouched -- there's no equivalent
+    // count for it.
+    expect(screen.getByRole("button", { name: "New Job Search" })).toBeInTheDocument();
   });
 
   it("shows real results once they exist", async () => {
@@ -238,5 +276,29 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
     await submitResumeAndOpenScoredTab();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load results");
+  });
+});
+
+// Ticket 0308d7e (Nicole, dogfooding ac141d0: "I don't think we need the
+// resume-ready words anymore") -- redundant once ac141d0's collapsed
+// "Using Resume N" bar already communicates the same thing.
+describe("App — no separate 'Resume ready.' text (ticket 0308d7e)", () => {
+  it("never renders 'Resume ready.' after a resume is submitted", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+
+    expect(await screen.findByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
   });
 });

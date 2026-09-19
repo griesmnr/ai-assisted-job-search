@@ -126,14 +126,15 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     // The resume comes back WITHOUT re-POSTing it — a reload must not
     // silently re-submit anything, and `POST /resumes` makes a (small,
-    // bounded) real Claude call for a resume it has never seen.
-    expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
+    // bounded) real Claude call for a resume it has never seen. Ticket
+    // ac141d0: collapsed by default on a reload (resumeEditing isn't
+    // persisted -- see App.tsx's doc comment on that state) -- the form
+    // itself isn't rendered, but the nickname it would have shown is
+    // right here in the summary bar (ticket 0308d7e dropped the separate
+    // "Resume ready." text this used to also check for -- redundant once
+    // this summary bar already says the same thing).
+    expect(await screen.findByText("Using Resume 1")).toBeInTheDocument();
     expect(createResume).not.toHaveBeenCalled();
-    // Ticket ac141d0: collapsed by default on a reload (resumeEditing
-    // isn't persisted -- see App.tsx's doc comment on that state) --
-    // the form itself isn't rendered, but the nickname the form would
-    // have shown is right here in the summary bar.
-    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
     expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
     expect(screen.getByLabelText("Also show fully remote roles")).toBeChecked();
@@ -199,9 +200,8 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     createResume.mockClear();
     render(<App />);
 
-    expect(await screen.findByText("Resume ready.")).toBeInTheDocument();
+    expect(await screen.findByText("Using Resume 1")).toBeInTheDocument();
     expect(createResume).not.toHaveBeenCalled();
-    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
@@ -271,7 +271,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     render(<App />);
 
-    await screen.findByText("Resume ready.");
+    await screen.findByText("Using Resume 1");
     expect(screen.getByLabelText(/Any location/)).toBeChecked();
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
     await waitFor(() =>
@@ -308,7 +308,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     cleanup();
 
     render(<App />);
-    await screen.findByText("Resume ready.");
+    await screen.findByText("Using Resume 1");
 
     // The `prev.size > 0` guard alone cannot tell "the user unchecked
     // everything" from "nothing has been chosen yet", so without the
@@ -329,7 +329,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     // No resume means nothing worth restoring; the empty screen IS the
     // right state, and no record should have been written to resurrect.
-    expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
     expect(sessionStorage.getItem("jobsearch.web.appState.v4")).toBeNull();
   });
 
@@ -347,7 +347,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     render(<App />);
 
     expect(screen.getByLabelText("Paste your resume")).toHaveValue("");
-    expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
   });
 
   it("falls back to the default floor when a persisted scoreFloor is out of the slider's 0-90 range (opus review, ticket ffbf9fb minor)", async () => {
@@ -383,7 +383,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // rejected field in this file's "corrupt record" test behaves) rather
     // than salvaging the in-range fields — falls back to a clean start.
     expect(screen.getByLabelText("Paste your resume")).toHaveValue("");
-    expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
 
     // And once a fresh resume is submitted from this clean state, the
     // floor sent to the server is the real default, not the corrupt value.
