@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MATCH_SCORE_FLOOR,
+  type GetAllResultsResponse,
   type GetResumeResultsResponse,
   type GetSourcesResponse,
 } from "@app/shared";
@@ -25,6 +26,11 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" reads GET /results (getAllResults)
+// now, not GET /resumes/:id/results (getResults) -- this file's own
+// "Already Scored Jobs tab" describe block below moves its real
+// assertions from getResults to getAllResults accordingly.
+const getAllResults = vi.fn();
 const setJobStatus = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
@@ -34,6 +40,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -86,6 +93,7 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     render(<App />);
 
@@ -161,6 +169,8 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       suggestedTitles: [],
     });
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    // Ticket 3f0883f: this tab's real content comes from getAllResults now.
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
 
@@ -177,12 +187,11 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValue({
-      resumeId: "resume-1",
-      resumeNickname: "Resume 1",
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({
       results: [],
       hiddenBelowFloor: 3,
-    });
+    } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
 
@@ -204,17 +213,18 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValue({
-      resumeId: "resume-1",
-      resumeNickname: "Resume 1",
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({
       results: [],
       hiddenBelowFloor: 3,
-    });
+    } satisfies GetAllResultsResponse);
 
     render(<App />);
 
     // Before results are ready, the tab button has no number yet -- no
     // misleading "(0)" flash, same behavior the heading has always had.
+    // (getAllResults resolves asynchronously, same as any other fetch --
+    // this assertion runs before that first microtask flush.)
     expect(screen.getByRole("button", { name: "Already Scored Jobs" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
@@ -237,12 +247,12 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockResolvedValue({
-      resumeId: "resume-1",
-      resumeNickname: "Resume 1",
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({
       results: [
         {
           jobId: "job-1",
+          resumeId: "resume-1",
           externalId: "ext-1",
           title: "Backend Engineer",
           company: "Acme",
@@ -255,9 +265,13 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
           strengths: [],
           gaps: [],
           status: null,
+          levelFit: null,
+          levelFitNote: null,
+          isContractOrTemp: false,
+          resumeNickname: "Resume 1",
         },
       ],
-    });
+    } satisfies GetAllResultsResponse);
 
     await submitResumeAndOpenScoredTab();
 
@@ -271,7 +285,8 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
       resumeNickname: "Resume 1",
       suggestedTitles: [],
     });
-    getResults.mockRejectedValue(new Error("network down"));
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockRejectedValue(new Error("network down"));
 
     await submitResumeAndOpenScoredTab();
 
@@ -291,6 +306,7 @@ describe("App — no separate 'Resume ready.' text (ticket 0308d7e)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
 
     render(<App />);
     fireEvent.change(screen.getByLabelText("Paste your resume"), {

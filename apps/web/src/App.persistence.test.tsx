@@ -26,6 +26,11 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" reads GET /results now -- see
+// App.criteria.test.tsx's identical comment for the full reasoning. This
+// file never checks that tab's content, so `mockHappyPath` below gives it
+// an empty, unchecked stub.
+const getAllResults = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
@@ -35,6 +40,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -91,6 +97,7 @@ function mockHappyPath() {
     suggestedTitles: ["Backend Engineer"],
   });
   getResults.mockResolvedValue(RESULTS);
+  getAllResults.mockResolvedValue({ results: [] });
 }
 
 /** Gets the app into the state Nicole was in when she put the laptop

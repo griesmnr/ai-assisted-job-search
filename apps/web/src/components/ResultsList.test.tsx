@@ -17,6 +17,7 @@ const DATA: GetResumeResultsResponse = {
   results: [
     {
       jobId: "job-1",
+      resumeId: "resume-1",
       externalId: "ext-1",
       title: "Senior Backend Engineer",
       company: "Samsara",
@@ -38,6 +39,7 @@ const DATA: GetResumeResultsResponse = {
     },
     {
       jobId: "job-2",
+      resumeId: "resume-1",
       externalId: "ext-2",
       title: "Platform Engineer",
       company: "Stripe",
@@ -64,7 +66,6 @@ describe("ResultsList", () => {
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -90,7 +91,6 @@ describe("ResultsList", () => {
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -106,7 +106,6 @@ describe("ResultsList", () => {
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set()}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -127,7 +126,6 @@ describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', 
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -145,7 +143,6 @@ describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', 
       <ResultsList
         data={DATA}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -188,7 +185,6 @@ describe('ResultsList — "Hide roles above my level" filter (ticket b182bde)', 
       <ResultsList
         data={ALL_OVERQUALIFIED}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -221,6 +217,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
   // criteria calls out.
   const CONTRACT_JOB: ScoredJobResult = {
     jobId: "job-3",
+    resumeId: "resume-1",
     externalId: "ext-3",
     title: "Software Engineer (Contract)",
     company: "Acme",
@@ -249,7 +246,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -266,7 +262,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -299,7 +294,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={ALL_CONTRACT}
         selectedSourceIds={new Set(["greenhouse"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -327,7 +321,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={WITH_CONTRACT}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -357,7 +350,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={ONLY_OVERQUALIFIED_AND_CONTRACT}
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,
@@ -399,7 +391,6 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
       <ResultsList
         data={DATA_BOTH}
         selectedSourceIds={new Set(["greenhouse"])}
-        resumeId="resume-1"
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
       />,

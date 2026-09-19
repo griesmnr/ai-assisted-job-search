@@ -1021,3 +1021,323 @@ describe("GET /resumes/:id/results — isContractOrTemp (ticket 8f5a79c)", () =>
     expect(body.results[0]).not.toHaveProperty("commitment");
   });
 });
+
+// Ticket 3f0883f (Nicole: "users should see every job that they've ever
+// applied for and which resume they used to search" -- "Already Scored
+// Jobs" is meant to be the browsable history, silently narrowed to one
+// resume today only because every results query happened to be scoped that
+// way, not by deliberate design). `GET /resumes/:id/results` above already
+// established the per-row `resumeNickname` JOIN this route reuses via
+// `fetchScoredResults` -- these tests are the ones that comment at line
+// ~452 above says become meaningful once results can genuinely span more
+// than one resume.
+describe("GET /results (ticket 3f0883f)", () => {
+  async function seedJobRow(title: string): Promise<string> {
+    const jobId = randomUUID();
+    await db.insert(jobsTable).values({
+      id: jobId,
+      externalId: `all-results-test-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title,
+      description: "a job description",
+      company: "Test Co",
+      linkToApply: `https://example.com/${jobId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    return jobId;
+  }
+
+  async function seedMatch(resumeId: string, jobId: string, matchScore: number): Promise<void> {
+    await db.insert(jobMatches).values({
+      id: randomUUID(),
+      resumeId,
+      jobId,
+      matchScore,
+      rationale: "fake rationale",
+      strengths: [],
+      gaps: [],
+    });
+  }
+
+  // Ticket c434a6e: this whole FILE shares one test database, seeded
+  // across every describe block above with no truncation between tests --
+  // so unlike `GET /resumes/:id/results` (which every other test scopes
+  // to a resumeId it just created), a bare `GET /results` genuinely
+  // returns every job_matches row every earlier test in this file has
+  // ever inserted. Every assertion below is written to be robust to that:
+  // filtering `body.results` down to just the fixtures THIS test created
+  // before asserting on it, or asserting presence/absence of a specific
+  // (randomUUID-unique) jobId rather than an exact total count.
+
+  it("never 404s, unlike the single-resume route -- there is no single resource to 404 on", async () => {
+    const app = buildTestApp();
+
+    const response = await app.inject({ method: "GET", url: "/results" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { results: unknown[] };
+    expect(Array.isArray(body.results)).toBe(true);
+  });
+
+  it("returns job_matches rows from every resume, not just one -- and each row carries the resume it was actually scored against", async () => {
+    const app = buildTestApp();
+    const firstCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `First cross-resume text ${randomUUID()}` },
+    });
+    const { id: firstResumeId, resumeNickname: firstNickname } =
+      firstCreated.json() as CreateResumeResponse;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Second cross-resume text ${randomUUID()}` },
+    });
+    const { id: secondResumeId, resumeNickname: secondNickname } =
+      secondCreated.json() as CreateResumeResponse;
+    // Same content-addressed resume never collides with itself here --
+    // these are two genuinely different resumeTexts, so two real rows.
+    expect(firstResumeId).not.toBe(secondResumeId);
+
+    const jobUnderFirst = await seedJobRow("Job only the first resume ever saw");
+    const jobUnderSecond = await seedJobRow("Job only the second resume ever saw");
+    await seedMatch(firstResumeId, jobUnderFirst, 80);
+    await seedMatch(secondResumeId, jobUnderSecond, 70);
+
+    const response = await app.inject({ method: "GET", url: "/results" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      results: Array<{ jobId: string; resumeId: string; resumeNickname: string }>;
+    };
+
+    // Scoped to exactly the two (randomUUID-unique) jobIds this test just
+    // created -- a bare length assertion on the full array would break the
+    // moment any earlier test in this file has also scored something.
+    const byJobId = new Map(
+      body.results
+        .filter((r) => r.jobId === jobUnderFirst || r.jobId === jobUnderSecond)
+        .map((r) => [r.jobId, r]),
+    );
+    expect(byJobId.size).toBe(2);
+    expect(byJobId.get(jobUnderFirst)).toMatchObject({
+      resumeId: firstResumeId,
+      resumeNickname: firstNickname,
+    });
+    expect(byJobId.get(jobUnderSecond)).toMatchObject({
+      resumeId: secondResumeId,
+      resumeNickname: secondNickname,
+    });
+  });
+
+  // The core acceptance criterion this ticket exists for: the SAME real
+  // posting, scored under two different resumes, is two distinct
+  // judgments (two different scores are entirely plausible -- a resume
+  // tailored one way fits differently than one tailored another), and
+  // both must survive as separate, correctly-labeled rows -- never merged
+  // or deduplicated down to one just because `jobId` repeats.
+  it("the SAME job posting scored under two different resumes appears as two separate, correctly-labeled results -- not merged or deduplicated", async () => {
+    const app = buildTestApp();
+    const firstCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Backend-flavored resume ${randomUUID()}` },
+    });
+    const { id: firstResumeId, resumeNickname: firstNickname } =
+      firstCreated.json() as CreateResumeResponse;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Frontend-flavored resume ${randomUUID()}` },
+    });
+    const { id: secondResumeId, resumeNickname: secondNickname } =
+      secondCreated.json() as CreateResumeResponse;
+    expect(firstResumeId).not.toBe(secondResumeId);
+    expect(firstNickname).not.toBe(secondNickname);
+
+    const sharedJobId = await seedJobRow("Full-Stack Engineer (scored by both resumes)");
+    // Two genuinely different judgments against the SAME posting -- this
+    // is real and expected, not a bug: two different resumes produced two
+    // different scores.
+    await seedMatch(firstResumeId, sharedJobId, 85);
+    await seedMatch(secondResumeId, sharedJobId, 55);
+
+    const response = await app.inject({ method: "GET", url: "/results" });
+    const body = response.json() as {
+      results: Array<{
+        jobId: string;
+        resumeId: string;
+        resumeNickname: string;
+        matchScore: number;
+      }>;
+    };
+
+    const rowsForThisJob = body.results.filter((r) => r.jobId === sharedJobId);
+    expect(rowsForThisJob).toHaveLength(2);
+
+    const byResumeId = new Map(rowsForThisJob.map((r) => [r.resumeId, r]));
+    expect(byResumeId.get(firstResumeId)).toMatchObject({
+      resumeNickname: firstNickname,
+      matchScore: 85,
+    });
+    expect(byResumeId.get(secondResumeId)).toMatchObject({
+      resumeNickname: secondNickname,
+      matchScore: 55,
+    });
+  });
+
+  it("applies the same minScore floor across every resume combined, not per-resume, and sums hiddenBelowFloor across all of them too", async () => {
+    const app = buildTestApp();
+    const firstCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Floor-test first resume ${randomUUID()}` },
+    });
+    const { id: firstResumeId } = firstCreated.json() as CreateResumeResponse;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Floor-test second resume ${randomUUID()}` },
+    });
+    const { id: secondResumeId } = secondCreated.json() as CreateResumeResponse;
+
+    // Review round 1 finding (opus, BLOCKING): `hiddenBelowFloor` on this
+    // route was entirely unguarded -- a mutation hard-coding it to 0 for
+    // every cross-resume request passed the full suite. `hiddenBelowFloor`
+    // is a GLOBAL count across this file's whole shared test database (no
+    // resumeId to scope it by), so -- same reasoning as the jobId
+    // presence/absence checks below -- this asserts the DELTA this test's
+    // own fixtures contribute, not an absolute value other tests' rows
+    // would make flaky.
+    const beforeFloored = await app.inject({ method: "GET", url: "/results?minScore=55" });
+    const hiddenBefore =
+      (beforeFloored.json() as { hiddenBelowFloor?: number }).hiddenBelowFloor ?? 0;
+
+    const highFirst = await seedJobRow("High match, first resume");
+    const lowFirst = await seedJobRow("Low match, first resume");
+    const highSecond = await seedJobRow("High match, second resume");
+    const lowSecond = await seedJobRow("Low match, second resume");
+    await seedMatch(firstResumeId, highFirst, 90);
+    await seedMatch(firstResumeId, lowFirst, 20);
+    await seedMatch(secondResumeId, highSecond, 80);
+    await seedMatch(secondResumeId, lowSecond, 10);
+
+    const floored = await app.inject({ method: "GET", url: "/results?minScore=55" });
+    expect(floored.statusCode).toBe(200);
+    const body = floored.json() as {
+      results: Array<{ jobId: string; matchScore: number }>;
+      hiddenBelowFloor?: number;
+    };
+    const jobIds = new Set(body.results.map((r) => r.jobId));
+
+    // Both above-floor rows come back, from BOTH resumes -- the floor is
+    // not accidentally scoping to whichever resume happened to be queried
+    // first -- and both below-floor rows are correctly excluded, from
+    // both resumes too. Presence/absence of these specific jobIds, not an
+    // exact total count (this file's shared test database means other
+    // tests' rows are in the same response).
+    expect(jobIds.has(highFirst)).toBe(true);
+    expect(jobIds.has(highSecond)).toBe(true);
+    expect(jobIds.has(lowFirst)).toBe(false);
+    expect(jobIds.has(lowSecond)).toBe(false);
+
+    // This test's own two below-floor rows (one per resume) are exactly
+    // what moved the count -- summed across BOTH resumes, not just one.
+    const hiddenAfter = body.hiddenBelowFloor ?? 0;
+    expect(hiddenAfter - hiddenBefore).toBe(2);
+  });
+
+  it("filters by source across every resume, same validation as the single-resume route", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Source-filter-all resume ${randomUUID()}` },
+    });
+    const { id: resumeId } = created.json() as CreateResumeResponse;
+    const jobId = await seedJobRow("Matches the filtered source");
+    await seedMatch(resumeId, jobId, 70);
+
+    const unknownSource = await app.inject({ method: "GET", url: "/results?source=not-a-real-id" });
+    expect(unknownSource.statusCode).toBe(400);
+
+    const matching = await app.inject({ method: "GET", url: `/results?source=${DATA_SOURCE}` });
+    expect(matching.statusCode).toBe(200);
+    const matchingIds = new Set(
+      (matching.json() as { results: Array<{ jobId: string }> }).results.map((r) => r.jobId),
+    );
+    expect(matchingIds.has(jobId)).toBe(true);
+
+    const nonMatching = await app.inject({
+      method: "GET",
+      url: `/results?source=${OTHER_REAL_DATA_SOURCE}`,
+    });
+    expect(nonMatching.statusCode).toBe(200);
+    const nonMatchingIds = new Set(
+      (nonMatching.json() as { results: Array<{ jobId: string }> }).results.map((r) => r.jobId),
+    );
+    // `jobId` was seeded with DATA_SOURCE -- it must not leak into a
+    // different source's filtered view, even though this shared test
+    // database has plenty of other resumes' rows in it too.
+    expect(nonMatchingIds.has(jobId)).toBe(false);
+  });
+
+  // Review round 1 (opus, minor): the default dismissed-exclusion has the
+  // subtlest SQL of any filter this route shares with the single-resume
+  // route (`isNull OR ne`, ticket 484889d) -- worth its own cross-resume
+  // check, not just inherited confidence from the single-resume tests.
+  it("the default dismissed-exclusion, and ?includeDismissed=true, both apply across every resume", async () => {
+    const app = buildTestApp();
+    const firstCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Status-filter-all first resume ${randomUUID()}` },
+    });
+    const { id: firstResumeId } = firstCreated.json() as CreateResumeResponse;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Status-filter-all second resume ${randomUUID()}` },
+    });
+    const { id: secondResumeId } = secondCreated.json() as CreateResumeResponse;
+
+    const dismissedUnderFirst = await seedJobRow("Dismissed under the first resume");
+    const dismissedUnderSecond = await seedJobRow("Dismissed under the second resume");
+    await seedMatch(firstResumeId, dismissedUnderFirst, 70);
+    await seedMatch(secondResumeId, dismissedUnderSecond, 65);
+    await db.insert(userJobStatuses).values([
+      {
+        id: randomUUID(),
+        jobId: dismissedUnderFirst,
+        status: "dismissed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        jobId: dismissedUnderSecond,
+        status: "dismissed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    const defaultView = await app.inject({ method: "GET", url: "/results" });
+    const defaultIds = new Set(
+      (defaultView.json() as { results: Array<{ jobId: string }> }).results.map((r) => r.jobId),
+    );
+    // Dismissed under EITHER resume -- both excluded by default, not just
+    // whichever resume this route happens to process first.
+    expect(defaultIds.has(dismissedUnderFirst)).toBe(false);
+    expect(defaultIds.has(dismissedUnderSecond)).toBe(false);
+
+    const withDismissed = await app.inject({
+      method: "GET",
+      url: "/results?includeDismissed=true",
+    });
+    const withDismissedIds = new Set(
+      (withDismissed.json() as { results: Array<{ jobId: string }> }).results.map((r) => r.jobId),
+    );
+    expect(withDismissedIds.has(dismissedUnderFirst)).toBe(true);
+    expect(withDismissedIds.has(dismissedUnderSecond)).toBe(true);
+  });
+});

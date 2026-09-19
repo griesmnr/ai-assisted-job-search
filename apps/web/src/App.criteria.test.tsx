@@ -22,6 +22,12 @@ import App from "./App";
 const getSources = vi.fn();
 const createResume = vi.fn();
 const getResults = vi.fn();
+// Ticket 3f0883f: "Already Scored Jobs" reads GET /results now, not
+// GET /resumes/:id/results -- useAllResults calls this unconditionally on
+// every mount, same as getResults, so every test in this file (none of
+// which care about that tab's content) needs it mocked to resolve or the
+// hook's `.then()` throws against an unmocked `undefined` return.
+const getAllResults = vi.fn();
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
@@ -31,6 +37,7 @@ vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
   createResume: (...args: unknown[]) => createResume(...args),
   getResults: (...args: unknown[]) => getResults(...args),
+  getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
@@ -121,6 +128,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -152,6 +160,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       suggestedTitles: ["Backend Engineer", "Platform Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -176,6 +185,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       suggestedTitles: ["Backend Engineer", "Platform Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -198,6 +208,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       suggestedTitles: ["Backend Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -225,6 +236,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -259,6 +271,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
@@ -278,6 +291,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -302,6 +316,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -326,6 +341,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
@@ -346,6 +362,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -364,6 +381,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
@@ -394,6 +412,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -429,6 +448,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
     fireEvent.click(screen.getByLabelText("USAJOBS")); // uncheck the only source
@@ -447,6 +467,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -478,6 +499,7 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
       suggestedTitles: ["Backend Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     // `submitResume` waits for the USAJOBS toggle to be checked, so by the
     // time it resolves the suggestion row must already be showing.
@@ -505,6 +527,7 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
     expect(screen.getByRole("list", { name: "Suggested federal job titles" })).toBeInTheDocument();
@@ -524,6 +547,7 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -551,6 +575,7 @@ describe("App — federal job-series title suggestions when USAJOBS is selected 
       suggestedTitles: ["Program Analyst"],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
@@ -595,6 +620,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
@@ -626,6 +652,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
@@ -647,6 +674,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
       suggestedTitles: [],
     });
     getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();

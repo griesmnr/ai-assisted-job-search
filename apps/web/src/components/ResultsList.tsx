@@ -17,14 +17,15 @@ import { ResultCard } from "./ResultCard";
 export function ResultsList({
   data,
   selectedSourceIds,
-  resumeId,
   onSetStatus,
   onClearStatus,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
-  resumeId: string;
-  onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
+  // Ticket 3f0883f review fix: passthrough to ResultCard, which now
+  // supplies `resumeId` itself (from `result.resumeId`) -- see that
+  // component's own doc comment on this prop.
+  onSetStatus: (jobId: string, status: UserJobStatus, resumeId: string) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
 }) {
   // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter on already-
@@ -159,7 +160,6 @@ export function ResultsList({
             <ResultCard
               key={result.jobId}
               result={result}
-              resumeId={resumeId}
               onSetStatus={onSetStatus}
               onClearStatus={onClearStatus}
             />

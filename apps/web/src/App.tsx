@@ -17,6 +17,7 @@ import { ScoreFloorControl } from "./components/ScoreFloorControl";
 import { SearchCriteriaForm } from "./components/SearchCriteriaForm";
 import { SearchFlow } from "./components/SearchFlow";
 import { SourceToggles } from "./components/SourceToggles";
+import { useAllResults } from "./hooks/useAllResults";
 import { useResults } from "./hooks/useResults";
 import { useSources } from "./hooks/useSources";
 import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
@@ -211,20 +212,30 @@ function App() {
   }
 
   const { state: resultsState, refresh } = useResults(resumeId, scoreFloor);
+  // Ticket 3f0883f: "Already Scored Jobs" is the cross-resume browsable
+  // history now, not the current resume's own results narrowed down --
+  // its own, separately-fetched state, deliberately not derived from
+  // `resultsState` above (which stays single-resume, feeding ONLY
+  // "Results from this search"). See hooks/useAllResults.ts's own doc
+  // comment for why it isn't gated on `resumeId` the way `useResults` is.
+  const { state: allResultsState, refresh: refreshAllResults } = useAllResults(scoreFloor);
 
   // Ticket 0308d7e (Nicole, dogfooding ac141d0: "when I said I wanted
   // number, I wanted it in the tab itself... I want people to know that
   // there are already scored jobs there"): computed once here so the
   // "Already Scored Jobs" nav tab button and its own h2 heading (below)
-  // can't drift apart -- EVERY scored job for this resume, shown or not
-  // (a job hidden below the match-quality floor was still scored, and
-  // still cost real money to score, so it counts here). `undefined`
-  // before there's real data to count (`resultsState.status !== "ready"`),
-  // not 0 -- both call sites treat that as "show no number yet" rather
-  // than a misleading "(0)".
+  // can't drift apart -- EVERY scored job across every resume, shown or
+  // not (a job hidden below the match-quality floor was still scored, and
+  // still cost real money to score, so it counts here). Ticket 3f0883f:
+  // now reads `allResultsState`, not `resultsState` -- the whole point of
+  // this count is "how many scored jobs exist to browse," which stopped
+  // meaning "for the current resume" once the tab itself did.  `undefined`
+  // before there's real data to count (`allResultsState.status !==
+  // "ready"`), not 0 -- both call sites treat that as "show no number yet"
+  // rather than a misleading "(0)".
   const scoredJobCount =
-    resultsState.status === "ready"
-      ? resultsState.data.results.length + (resultsState.data.hiddenBelowFloor ?? 0)
+    allResultsState.status === "ready"
+      ? allResultsState.data.results.length + (allResultsState.data.hiddenBelowFloor ?? 0)
       : undefined;
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
@@ -243,25 +254,38 @@ function App() {
     setHasFreshSearchResults(false);
   }, [selectedSourceIds, criteria]);
 
+  // Ticket 3f0883f: the snapshot below (and its fallback) used to key by
+  // bare `jobId` -- safe only because a single resume's results can never
+  // repeat a `jobId` (job_matches is UNIQUE(resume_id, job_id)). Now that
+  // "Already Scored Jobs" spans every resume, the SAME jobId can appear
+  // twice with two different groups (e.g. saved under one resume,
+  // untouched under another) -- a bare-jobId Map would let the second
+  // resume's entry silently clobber the first's. Same composite identity
+  // GroupedResultsList.tsx uses for its own list keys, for the same reason.
+  function scoredResultKey(r: { jobId: string; resumeId: string }): string {
+    return `${r.jobId}-${r.resumeId}`;
+  }
+
   // Ticket bec2f98: "Already Scored Jobs" group placement is a SNAPSHOT
   // taken when the tab is opened, not a live recompute on every render --
   // Nicole caught this herself: "if somebody clicks optimize resume on a
   // saved job, it's going to suddenly disappear... from that current
-  // state." `handleSetStatus` below still calls `refresh()` on every
-  // status write (so a card's own badge/actions update in place, via live
-  // `resultsState.data`), but that refetch must NOT itself reshuffle which
-  // group a card renders under -- only opening (or re-opening) this tab
-  // takes a new snapshot.
+  // state." `handleSetStatus` below still calls `refresh()`/
+  // `refreshAllResults()` on every status write (so a card's own badge/
+  // actions update in place, via live `allResultsState.data`), but that
+  // refetch must NOT itself reshuffle which group a card renders under --
+  // only opening (or re-opening) this tab takes a new snapshot.
   //
   // Two effects because the snapshot needs BOTH "the tab just became
   // active" and "data is actually ready" to fire, and those don't
   // necessarily land on the same render (data can still be loading the
   // instant the tab opens). `snapshotPendingRef` bridges them: the first
   // effect (keyed only on `activeTab`) arms it exactly once per tab-open;
-  // the second effect (keyed on `[activeTab, resultsState]`, so it re-runs
-  // on every refetch too) only actually captures a new snapshot while the
-  // flag is armed, then disarms it -- a later refetch from a status write
-  // re-runs this effect but does nothing, since the flag is already false.
+  // the second effect (keyed on `[activeTab, allResultsState]`, so it
+  // re-runs on every refetch too) only actually captures a new snapshot
+  // while the flag is armed, then disarms it -- a later refetch from a
+  // status write re-runs this effect but does nothing, since the flag is
+  // already false.
   const [scoredGroupSnapshot, setScoredGroupSnapshot] = useState<Map<
     string,
     ScoredGroupKey
@@ -276,22 +300,24 @@ function App() {
     if (
       activeTab === "scored" &&
       scoredSnapshotPendingRef.current &&
-      resultsState.status === "ready"
+      allResultsState.status === "ready"
     ) {
       const snapshot = new Map(
-        resultsState.data.results.map((r) => [r.jobId, groupKeyForStatus(r.status)] as const),
+        allResultsState.data.results.map(
+          (r) => [scoredResultKey(r), groupKeyForStatus(r.status)] as const,
+        ),
       );
       setScoredGroupSnapshot(snapshot);
       scoredSnapshotPendingRef.current = false;
     }
-  }, [activeTab, resultsState]);
+  }, [activeTab, allResultsState]);
 
   // Fallback covers a job the snapshot has never seen (e.g. a fresh search
   // landed new jobs while already on this tab, before the next open
   // re-snapshots) -- it gets a live-computed group rather than being
   // silently dropped.
   function scoredGroupFor(result: ScoredJobResult): ScoredGroupKey {
-    return scoredGroupSnapshot?.get(result.jobId) ?? groupKeyForStatus(result.status);
+    return scoredGroupSnapshot?.get(scoredResultKey(result)) ?? groupKeyForStatus(result.status);
   }
 
   // Default every CONFIGURED source to selected the first time the source
@@ -491,14 +517,30 @@ function App() {
     setResumeError(null);
   }
 
-  async function handleSetStatus(jobId: string, status: UserJobStatus) {
+  // Review fix, ticket 3f0883f: `resumeId` is now a REQUIRED parameter,
+  // supplied by the caller (ResultCard, via `result.resumeId`) -- not
+  // this function closing over the session's own active `resumeId`
+  // state. Same bug class the "Optimize Resume" handoff had and was
+  // fixed for (see ResultCard.tsx's doc comment on `onSetStatus`): once
+  // a card on "Already Scored Jobs" can belong to a DIFFERENT resume
+  // than whatever's active this session (or none at all), writing the
+  // session's `resumeId` into `user_job_statuses.resume_id` would
+  // silently attribute the status to the wrong resume -- or NULL, on a
+  // tab this ticket newly makes reachable with no active resume at all.
+  async function handleSetStatus(jobId: string, status: UserJobStatus, resumeId: string) {
     await setJobStatus(jobId, status, resumeId);
     refresh();
+    // Ticket 3f0883f: a status write must also update the cross-resume
+    // "Already Scored Jobs" view, not just "Results from this search" --
+    // a job can be visible in both (or only the former, once a card
+    // belongs to a resume that isn't the current session's active one).
+    refreshAllResults();
   }
 
   async function handleClearStatus(jobId: string) {
     await clearJobStatus(jobId);
     refresh();
+    refreshAllResults();
   }
 
   function handleSearchComplete() {
@@ -678,7 +720,6 @@ function App() {
                   <ResultsList
                     data={resultsState.data}
                     selectedSourceIds={selectedSourceIds}
-                    resumeId={resumeId}
                     onSetStatus={handleSetStatus}
                     onClearStatus={handleClearStatus}
                   />
@@ -704,20 +745,24 @@ function App() {
             Already Scored Jobs
             {scoredJobCount !== undefined && ` (${scoredJobCount})`}
           </h2>
-          {!resumeId && <p>Paste a resume in "New Job Search" to see your results here.</p>}
-          {resumeId && <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />}
-          {resumeId && resultsState.status === "loading" && <p>Loading results...</p>}
-          {resumeId && resultsState.status === "error" && (
-            <p role="alert">Could not load results: {resultsState.message}</p>
+          {/* Ticket 3f0883f: no longer gated on `resumeId` -- this tab is
+              the cross-resume browsable history now, and "no resume active
+              THIS session" is not the same question as "has anything ever
+              been scored." The old "Paste a resume in 'New Job Search'..."
+              placeholder is gone with it: an empty `allResultsState` (truly
+              nothing ever scored) already renders "No jobs scored yet."
+              below, which is the correct message either way. */}
+          <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />
+          {allResultsState.status === "loading" && <p>Loading results...</p>}
+          {allResultsState.status === "error" && (
+            <p role="alert">Could not load results: {allResultsState.message}</p>
           )}
-          {resumeId &&
-            resultsState.status === "ready" &&
-            (resultsState.data.results.length > 0 ||
-            (resultsState.data.hiddenBelowFloor ?? 0) > 0 ? (
+          {allResultsState.status === "ready" &&
+            (allResultsState.data.results.length > 0 ||
+            (allResultsState.data.hiddenBelowFloor ?? 0) > 0 ? (
               <GroupedResultsList
-                data={resultsState.data}
+                data={allResultsState.data}
                 selectedSourceIds={selectedSourceIds}
-                resumeId={resumeId}
                 groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
                 onClearStatus={handleClearStatus}
