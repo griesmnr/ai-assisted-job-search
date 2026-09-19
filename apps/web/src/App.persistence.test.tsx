@@ -236,6 +236,27 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(createResume).not.toHaveBeenCalled();
   });
 
+  // Review round 2 (N1, opus, non-blocking but cheap to close): a failed
+  // resubmit's error must not outlive giving up on it -- clicking Cancel
+  // (or a later Edit) after "Could not save resume: ..." was shown should
+  // not leave that message sitting, stale, under the collapsed bar.
+  it("clears a failed resubmit's error when Cancel is clicked, rather than leaving it stale under the collapsed bar (review fix N1, ticket ac141d0)", async () => {
+    mockHappyPath();
+    await setUpRealState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    createResume.mockRejectedValueOnce(new Error("Network error"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save resume: Network error",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("restores 'Any location' checked across a reload, with the button enabled and no warning (ticket b9e6251)", async () => {
     mockHappyPath();
     render(<App />);

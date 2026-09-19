@@ -450,11 +450,14 @@ function App() {
   // version of this diff unmounted that whole block instead, which
   // silently killed the poll with no way back; see the `hidden`
   // wrapper's own comment below for the full story). Clears any stale
-  // nickname-PATCH error since the user is about to change what's in
-  // the box.
+  // nickname-PATCH AND resume-submission error since the user is about
+  // to change what's in the box -- review round 2 (N1): without the
+  // latter, a failed resubmit's error message could survive an Edit ->
+  // Cancel round trip and sit, stale, under the collapsed bar.
   function handleEditResume() {
     setResumeEditing(true);
     setNicknameError(null);
+    setResumeError(null);
   }
 
   // Review fix (ticket ac141d0): the escape hatch ResumeInput's "Cancel"
@@ -464,8 +467,13 @@ function App() {
   // too). Only sets `resumeEditing` back to false; `resumeId`,
   // `resumeNickname`, `resumeText` are all untouched -- this is a
   // discard, not a submit, so nothing about the resume actually changes.
+  // Also clears a stale resume-submission error (review round 2, N1): a
+  // failed resubmit shows "Could not save resume: ..." while expanded;
+  // giving up via Cancel rather than fixing and resubmitting shouldn't
+  // leave that error sitting, orphaned, under the collapsed bar.
   function handleCancelEdit() {
     setResumeEditing(false);
+    setResumeError(null);
   }
 
   async function handleSetStatus(jobId: string, status: UserJobStatus) {
