@@ -301,7 +301,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // worst of both worlds: a screen that looks right pricing a search it
     // isn't describing.
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Backend Engineer"],
+      titleInclude: ["Backend Engineer", "Program Analyst", "IT Specialist", "Computer Scientist"],
       nearLocations: ["seattle", "bellevue"],
       remoteOk: true,
     });

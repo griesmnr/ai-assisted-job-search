@@ -30,26 +30,12 @@ const COMMITMENT_OPTIONS: { value: "full-time" | "part-time" | "contract"; label
   { value: "contract", label: "Contract" },
 ];
 
-/**
- * Ticket 09b8e4d, follow-up from d1fc9e2's Scope section: d1fc9e2 fixed
- * USAJOBS to actually search on whatever title chips exist, which made the
- * real gap concrete -- a private-sector resume's inferred titles ("Software
- * Engineer", "Backend Engineer", ticket 39b4a48) will never contain OPM
- * job-series names, so a user relying on resume-inferred chips alone misses
- * federal postings entirely even though the fetch itself is correct. This
- * is a fixed list, not resume-derived guessing (explicitly out of scope --
- * inferring federal-equivalent titles from arbitrary resume content is
- * speculative NLP the ticket doesn't ask for).
- */
-export const FEDERAL_TITLE_SUGGESTIONS = ["Program Analyst", "IT Specialist", "Computer Scientist"];
-
 export function SearchCriteriaForm({
   titleChips,
   nearLocations,
   remoteOk,
   anyLocationOk,
   commitmentIn,
-  showFederalTitleSuggestions,
   locationSectionRef,
   onTitleChipsChange,
   onChange,
@@ -64,11 +50,6 @@ export function SearchCriteriaForm({
    * thing. */
   anyLocationOk: boolean;
   commitmentIn: ("full-time" | "part-time" | "contract")[];
-  /** Ticket 09b8e4d: whether USAJOBS is among the currently-selected
-   * sources. This component stays "dumb" about source IDs -- App.tsx is the
-   * one place that knows `"usajobs"` is a source ID, this just gets told
-   * yes/no whether to show the federal suggestions. */
-  showFederalTitleSuggestions: boolean;
   /** Ticket 371713d: a plain ref object, lifted to and owned by App.tsx
    * (the coordinator between this component and its SIBLING `SearchFlow`),
    * attached to the DOM node wrapping the location input/checkboxes below.
@@ -97,16 +78,15 @@ export function SearchCriteriaForm({
     onTitleChipsChange(titleChips.filter((c) => c !== chip));
   }
 
-  // Shared by the manual "Add a job title keyword" input and the federal
-  // suggestion buttons below -- both are just "put this exact string into
-  // titleChips", so both get the same case-insensitive de-dupe rather than
-  // risking the two paths drifting apart.
+  // Ticket 8a403ee: used to also back a row of federal-title suggestion
+  // buttons (removed -- those titles are folded into `titleChips`
+  // directly now, at resume-submission time, App.tsx). Still the one
+  // place a title gets added, case-insensitively de-duped against
+  // whatever's already there, so a manual add can never produce a
+  // visually-identical duplicate chip.
   function addTitle(title: string) {
     const trimmed = title.trim();
     if (trimmed.length === 0) return;
-    // Case-insensitive de-dupe: adding "Software Engineer" when it's
-    // already there (from suggestions or a prior add) should not produce
-    // two visually-identical chips.
     if (titleChips.some((c) => c.toLowerCase() === trimmed.toLowerCase())) return;
     onTitleChipsChange([...titleChips, trimmed]);
   }
@@ -114,10 +94,6 @@ export function SearchCriteriaForm({
   function addChip() {
     addTitle(newChipText);
     setNewChipText("");
-  }
-
-  function hasChip(title: string) {
-    return titleChips.some((c) => c.toLowerCase() === title.toLowerCase());
   }
 
   function set(
@@ -156,6 +132,24 @@ export function SearchCriteriaForm({
           ? "Based on your resume, we think these job titles would be good. Remove any that don't fit, or add your own."
           : "No title keywords yet — add your own, or leave this empty to search every title."}
       </p>
+      {/* Ticket 8a403ee (Nicole, dogfooding: the old separate "click to add"
+          federal-title row risked someone missing it entirely -- "you
+          never know if somebody's going to zone out"). A few title
+          variations some employers phrase differently (USAJOBS' federal
+          job-series names among them) are now folded directly into
+          `titleChips` at resume-submission time (App.tsx), same as any
+          resume-inferred chip -- this is just the explanatory note for why
+          an unfamiliar-looking title might be sitting in the list below.
+          Deliberately unconditional (not gated on which sources are
+          selected): the chips themselves no longer are either, per
+          Nicole's explicit "I don't want to build all the functionality
+          for" toggle-state tracking. Wording is a starting point, not
+          final copy -- her own words: "we can work on the language
+          together." */}
+      <p className="search-criteria-hint">
+        A few title variations some employers use — like USAJOBS' federal job titles — are included
+        automatically.
+      </p>
       <ul className="title-chip-list" aria-label="Job title keywords">
         {titleChips.map((chip) => (
           <li key={chip} className="title-chip">
@@ -192,38 +186,6 @@ export function SearchCriteriaForm({
           </button>
         </div>
       </div>
-      {showFederalTitleSuggestions && (
-        // Ticket 09b8e4d: distinct from the resume-inferred chips above --
-        // these are never auto-added to titleChips (same "suggest, don't
-        // silently default" principle ticket 39b4a48 already established),
-        // they only appear while USAJOBS is selected, and clicking one goes
-        // through the exact same `addTitle` de-dupe path as the manual
-        // input, so re-clicking an already-added suggestion is a no-op
-        // rather than a duplicate chip. Buttons for already-added titles
-        // are disabled rather than removed, so the row doesn't reflow and a
-        // user can see at a glance which of the three they've already
-        // taken.
-        <div className="federal-title-suggestions">
-          <p className="search-criteria-hint">
-            USAJOBS uses federal job-series titles that don't overlap much with private-sector
-            phrasing — click to add any that fit:
-          </p>
-          <ul className="federal-title-suggestion-list" aria-label="Suggested federal job titles">
-            {FEDERAL_TITLE_SUGGESTIONS.map((title) => (
-              <li key={title}>
-                <button
-                  type="button"
-                  className="federal-title-suggestion"
-                  onClick={() => addTitle(title)}
-                  disabled={hasChip(title)}
-                >
-                  + {title}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       {/* Ticket 371713d: this whole block is what "Estimate search cost"
           (SearchFlow, a SIBLING component) scrolls into view when clicked
           with no location signal set -- see `locationSectionRef`'s own doc

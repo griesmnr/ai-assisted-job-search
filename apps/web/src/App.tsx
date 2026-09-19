@@ -24,6 +24,30 @@ import { clearAppState, readAppState, writeAppState, type CriteriaFormState } fr
 import { splitPhrases } from "./criteriaText";
 
 /**
+ * Ticket 09b8e4d, then ticket 8a403ee: some employers phrase job titles
+ * differently enough that a resume-inferred title alone misses them --
+ * USAJOBS' federal job-series names (Program Analyst, IT Specialist,
+ * Computer Scientist) are the concrete case that motivated this, but
+ * Nicole's own point (dogfooding, ticket 8a403ee) is that it isn't
+ * strictly a federal/private-sector split -- Boeing uses "Program
+ * Analyst"/"Programmer Analyst" too. Fixed list, not resume-derived
+ * guessing (inferring title-equivalents from arbitrary resume content is
+ * speculative NLP no ticket has asked for).
+ *
+ * Ticket 09b8e4d originally surfaced these as a separate "click to add"
+ * suggestion row, shown only while USAJOBS was selected. Ticket 8a403ee
+ * folds them directly into `titleChips` instead, unconditionally, at the
+ * same moment resume-inferred titles populate it (`handleResumeSubmit`
+ * below) -- Nicole, dogfooding: "you never know if somebody's going to
+ * zone out" past a suggestion they had to notice and click. Deliberately
+ * NOT re-synced to source-toggle state after that: her own explicit
+ * simplification ("I don't want to build all the functionality for...
+ * they should just behave the same as every other chips") -- added once,
+ * then a fully ordinary, user-owned, removable chip like any other.
+ */
+const EXTRA_TITLE_CHIPS = ["Program Analyst", "IT Specialist", "Computer Scientist"];
+
+/**
  * Derives the actual `SearchCriteria` to send from the current title chips
  * and the remaining plain-text fields (ticket 39b4a48, superseding ticket
  * 957bc22's undefined-vs-{} design).
@@ -422,7 +446,19 @@ function App() {
       // test fixture written before this field existed, or any future API
       // response shape drift should degrade to "no suggestions" rather
       // than crash buildSearchCriteria's `.length` check below.
-      setTitleChips(suggestedTitles ?? []);
+      const inferredTitles = suggestedTitles ?? [];
+      // Ticket 8a403ee: EXTRA_TITLE_CHIPS appended AFTER the resume-
+      // inferred ones (Nicole: "add the chips... after all of the other
+      // ones"), case-insensitively deduped against them so a resume whose
+      // own inferred titles already include e.g. "IT Specialist" doesn't
+      // get a visually-duplicate chip. Runs on every successful submit,
+      // not just the first -- same lifecycle `inferredTitles` itself
+      // already has (a resubmit already fully replaces titleChips from
+      // the server's fresh suggestedTitles; this follows that same reset,
+      // per Nicole's "behave the same as every other chip").
+      const inferredLower = new Set(inferredTitles.map((t) => t.toLowerCase()));
+      const extras = EXTRA_TITLE_CHIPS.filter((t) => !inferredLower.has(t.toLowerCase()));
+      setTitleChips([...inferredTitles, ...extras]);
       // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
       // a submission actually lands -- not on the Edit click itself (see
       // `resumeEditing`'s own doc comment above). A no-op on the
@@ -666,11 +702,6 @@ function App() {
                 remoteOk={criteriaForm.remoteOk}
                 anyLocationOk={criteriaForm.anyLocationOk}
                 commitmentIn={criteriaForm.commitmentIn}
-                // Ticket 09b8e4d: SearchCriteriaForm stays "dumb" about
-                // source IDs (see its own comment) -- this is the one place
-                // that knows `"usajobs"` is a source ID, same as the
-                // `SOURCES` fixtures already do in this file's tests.
-                showFederalTitleSuggestions={selectedSourceIds.has("usajobs")}
                 locationSectionRef={locationSectionRef}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
