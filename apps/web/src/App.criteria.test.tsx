@@ -157,6 +157,42 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     });
   });
 
+  // Review round 1 finding (opus, F2): ticket 8a403ee means titleChips is
+  // never empty immediately after a submit (the extras always populate
+  // it), which left this file with no test at all exercising the
+  // `titleChips.length === 0` branch (buildSearchCriteria, App.tsx) --
+  // still live and reachable any time a user removes every chip by hand.
+  // Restores that coverage explicitly, now via manual removal rather than
+  // "nothing was ever suggested."
+  it("sends a real empty criteria object (not undefined, not omitted) once every chip -- including the extras -- is manually removed", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.click(screen.getByRole("button", { name: 'Remove "Program Analyst"' }));
+    fireEvent.click(screen.getByRole("button", { name: 'Remove "IT Specialist"' }));
+    fireEvent.click(screen.getByRole("button", { name: 'Remove "Computer Scientist"' }));
+
+    // Ticket 39b4a48's original empty-state hint is reachable again, same
+    // as before this ticket ever added anything automatically.
+    expect(
+      screen.getByText(/No title keywords yet.*leave this empty to search every title/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {});
+  });
+
   it("pre-populates chips from the resume's real suggestedTitles and sends them as titleInclude", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
@@ -540,19 +576,32 @@ describe("App — extra title chips folded in automatically at resume-submission
     expect(screen.getByRole("button", { name: 'Remove "Program Analyst"' })).toBeInTheDocument();
   });
 
-  it("does not duplicate an extra chip the resume's own inferred titles already include", async () => {
+  // Review round 1 finding (opus, F1): the original version of this test
+  // used an EXACT-case match ("Program Analyst"), which a case-SENSITIVE
+  // dedupe would also have passed -- not a real proof of the
+  // case-insensitive comparison App.tsx's own comment claims. Claude
+  // (the real source of `suggestedTitles`) can plausibly return "Program
+  // analyst" or "program Analyst"; a mismatched-case fixture is what
+  // actually exercises that path. Mutation-verified: dropping the
+  // `.toLowerCase()` calls in App.tsx's dedupe made this exact test fail
+  // (two "Program Analyst"-ish chips instead of one), while it silently
+  // passed against the old exact-case fixture.
+  it("does not duplicate an extra chip the resume's own inferred titles already include, even in a different case", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
       resumeNickname: "Resume 1",
-      suggestedTitles: ["Program Analyst"],
+      suggestedTitles: ["program analyst"],
     });
     getResults.mockResolvedValue(RESULTS);
     getAllResults.mockResolvedValue(RESULTS);
 
     await submitResume();
 
-    expect(screen.getAllByText("Program Analyst")).toHaveLength(1);
+    // Exactly one chip for this title -- whichever casing the resume
+    // inference returned, not a second "Program Analyst" alongside it.
+    expect(screen.getByText("program analyst")).toBeInTheDocument();
+    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
     // The other two extras still get added -- de-dupe is per-title, not
     // "skip the whole list if anything overlaps."
     expect(screen.getByText("IT Specialist")).toBeInTheDocument();
