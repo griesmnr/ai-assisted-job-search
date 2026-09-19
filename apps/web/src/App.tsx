@@ -212,6 +212,21 @@ function App() {
 
   const { state: resultsState, refresh } = useResults(resumeId, scoreFloor);
 
+  // Ticket 0308d7e (Nicole, dogfooding ac141d0: "when I said I wanted
+  // number, I wanted it in the tab itself... I want people to know that
+  // there are already scored jobs there"): computed once here so the
+  // "Already Scored Jobs" nav tab button and its own h2 heading (below)
+  // can't drift apart -- EVERY scored job for this resume, shown or not
+  // (a job hidden below the match-quality floor was still scored, and
+  // still cost real money to score, so it counts here). `undefined`
+  // before there's real data to count (`resultsState.status !== "ready"`),
+  // not 0 -- both call sites treat that as "show no number yet" rather
+  // than a misleading "(0)".
+  const scoredJobCount =
+    resultsState.status === "ready"
+      ? resultsState.data.results.length + (resultsState.data.hiddenBelowFloor ?? 0)
+      : undefined;
+
   // Ticket f4a7f07, refined live: "results should be reserved for results
   // from the most recent search... cleared every time a new search is
   // estimated or a filter is toggled, and they should only reappear when
@@ -515,6 +530,7 @@ function App() {
           onClick={() => setActiveTab("scored")}
         >
           Already Scored Jobs
+          {scoredJobCount !== undefined && ` (${scoredJobCount})`}
         </button>
       </nav>
 
@@ -544,8 +560,12 @@ function App() {
             onEditResume={handleEditResume}
             onCancelEdit={handleCancelEdit}
           />
+          {/* Ticket 0308d7e: the "Resume ready." paragraph that used to
+              sit here is gone -- Nicole, dogfooding ac141d0: "I don't
+              think we need the resume-ready words anymore." Redundant
+              once the collapsed "Using Resume N" bar (ac141d0) already
+              says the same thing. */}
           {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
-          {resumeId && <p className="resume-confirmed">Resume ready.</p>}
         </section>
 
         {/* Ticket ac141d0: `hidden`, not conditional rendering -- an
@@ -675,18 +695,14 @@ function App() {
         <section className="results-section">
           {/* Nicole, dogfooding: a bare "Results" heading here read as a
               stray leftover (the tab button itself already says "Already
-              Scored Jobs") and she separately wanted the total count
-              visible up top. Both are addressed by one heading: the count
-              is EVERY scored job for this resume, shown or not (a job
-              hidden below the match-quality floor was still scored, and
-              still cost real money to score, so it counts here) -- only
-              shown once there's real data to count (`resultsState.status
-              === "ready"`); before that the heading has no number rather
-              than a misleading "(0)". */}
+              Scored Jobs"). Ticket 0308d7e: the count itself moved into
+              that same tab button (see `scoredJobCount`'s own comment
+              above for what it counts and why) -- kept here too,
+              deliberately, per Nicole's own "why not, let's just leave it
+              there" when asked if the duplication was fine. */}
           <h2>
             Already Scored Jobs
-            {resultsState.status === "ready" &&
-              ` (${resultsState.data.results.length + (resultsState.data.hiddenBelowFloor ?? 0)})`}
+            {scoredJobCount !== undefined && ` (${scoredJobCount})`}
           </h2>
           {!resumeId && <p>Paste a resume in "New Job Search" to see your results here.</p>}
           {resumeId && <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />}

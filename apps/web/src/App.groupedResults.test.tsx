@@ -201,7 +201,7 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     getResults.mockResolvedValue(GROUPED_RESULTS);
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
 
     // Job titles ("Saved Job", etc.) also render as level-3 headings
     // (ResultCard's own `<h3>`), so filter down to just the GROUP labels
@@ -246,7 +246,7 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     });
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
     await screen.findByRole("heading", { name: "Saved" });
 
     // Refetch after the status write returns job-saved with its status
@@ -274,7 +274,7 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // Now leave and re-open the tab -- THIS is when the snapshot
     // recomputes, and the card should move.
     fireEvent.click(screen.getByRole("button", { name: "New Job Search" }));
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
 
     await waitFor(() => {
       const resumeOptimizedSection = screen
@@ -320,7 +320,7 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     });
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
     await screen.findByRole("heading", { name: "Saved" });
 
     // Quick-links reflect the initial state: one Saved, one Dismissed, no

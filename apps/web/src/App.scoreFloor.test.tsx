@@ -83,7 +83,7 @@ async function submitResumeAndOpenScoredTab() {
   });
   fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
   await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
-  fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+  fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
 }
 
 function makeEstimate(): EstimateSearchResponse {
@@ -256,7 +256,7 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
         includeDismissed: true,
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Already Scored Jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
     expect(await screen.findByLabelText("Minimum match score to show")).toHaveValue("25");
   });
 
