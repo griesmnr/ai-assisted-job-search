@@ -101,7 +101,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "saved");
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "saved", "resume-1");
   });
 
   it("Optimize Resume mints a handoff, opens the optimizer app with it, and records resume_optimized (ticket dbfd594)", async () => {
@@ -122,7 +122,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       "_blank",
       "noreferrer",
     );
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized");
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized", "resume-1");
   });
 });
 
@@ -159,7 +159,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     expect(applyButton).not.toHaveAttribute("href");
     fireEvent.click(applyButton);
 
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied");
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied", "resume-1");
   });
 
   it("Apply stays enabled once already applied -- it's a toggle now (ticket e367a63), not a disabled state", () => {
@@ -288,7 +288,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
-    await waitFor(() => expect(onSetStatus).toHaveBeenCalledWith("job-1", "dismissed"));
+    await waitFor(() => expect(onSetStatus).toHaveBeenCalledWith("job-1", "dismissed", "resume-1"));
     expect(onClearStatus).not.toHaveBeenCalled();
   });
 
@@ -357,7 +357,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       "_blank",
       "noreferrer",
     );
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized");
+    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized", "resume-1");
   });
 });
 

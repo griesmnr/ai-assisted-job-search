@@ -517,7 +517,17 @@ function App() {
     setResumeError(null);
   }
 
-  async function handleSetStatus(jobId: string, status: UserJobStatus) {
+  // Review fix, ticket 3f0883f: `resumeId` is now a REQUIRED parameter,
+  // supplied by the caller (ResultCard, via `result.resumeId`) -- not
+  // this function closing over the session's own active `resumeId`
+  // state. Same bug class the "Optimize Resume" handoff had and was
+  // fixed for (see ResultCard.tsx's doc comment on `onSetStatus`): once
+  // a card on "Already Scored Jobs" can belong to a DIFFERENT resume
+  // than whatever's active this session (or none at all), writing the
+  // session's `resumeId` into `user_job_statuses.resume_id` would
+  // silently attribute the status to the wrong resume -- or NULL, on a
+  // tab this ticket newly makes reachable with no active resume at all.
+  async function handleSetStatus(jobId: string, status: UserJobStatus, resumeId: string) {
     await setJobStatus(jobId, status, resumeId);
     refresh();
     // Ticket 3f0883f: a status write must also update the cross-resume

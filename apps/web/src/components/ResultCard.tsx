@@ -46,7 +46,18 @@ export function ResultCard({
   onClearStatus,
 }: {
   result: ScoredJobResult;
-  onSetStatus: (jobId: string, status: UserJobStatus) => Promise<void>;
+  /**
+   * Review fix, ticket 3f0883f: takes `resumeId` as a third argument now,
+   * sourced below from `result.resumeId` -- NOT a caller-supplied prop the
+   * way `resumeId` briefly was for the handoff call (see this file's other
+   * doc comment on `handleOptimizeResume`). Same bug, same fix: once a
+   * card can belong to a DIFFERENT resume than whichever one is active
+   * this session (or none at all), `user_job_statuses.resume_id` -- which
+   * exists specifically to answer "which resume version did I apply
+   * with" (schema.ts's own doc comment on that column) -- must record
+   * the resume that actually produced THIS card, not session state.
+   */
+  onSetStatus: (jobId: string, status: UserJobStatus, resumeId: string) => Promise<void>;
   /** "Untoggle" (dogfooding, 2026-09-08 — Nicole: "you should be able to
    * untoggle the buttons, like undismiss") — clears back to no-action-taken
    * rather than writing a new status value. */
@@ -60,7 +71,7 @@ export function ResultCard({
     setPending(status);
     setError(null);
     try {
-      await onSetStatus(result.jobId, status);
+      await onSetStatus(result.jobId, status, result.resumeId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,7 +126,7 @@ export function ResultCard({
         handoffFetchUrl(handoff.id),
       )}`;
       window.open(importUrl, "_blank", "noreferrer");
-      await onSetStatus(result.jobId, "resume_optimized");
+      await onSetStatus(result.jobId, "resume_optimized", result.resumeId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
