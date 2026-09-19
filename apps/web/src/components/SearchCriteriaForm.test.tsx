@@ -15,7 +15,6 @@ function baseProps() {
     remoteOk: false,
     anyLocationOk: false,
     commitmentIn: [] as ("full-time" | "part-time" | "contract")[],
-    showFederalTitleSuggestions: false,
     onTitleChipsChange: () => {},
     onChange: () => {},
   };
