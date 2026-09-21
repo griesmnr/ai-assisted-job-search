@@ -178,6 +178,14 @@ export function GroupedResultsList({
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.
         </p>
       )}
+      {/* Ticket e9a82f3: see ResultsList.tsx's identical block -- only
+          rendered when the server's LIMIT actually truncated the matching
+          rows. */}
+      {data.totalMatchingCount !== undefined && (
+        <p className="results-truncated">
+          Showing top {data.results.length} of {data.totalMatchingCount} matching jobs.
+        </p>
+      )}
       {/* Quick links (dogfooding feedback, 2026-09-08 -- Nicole's own
           suggestion when she punted on the exact group order: "I think
           there should be quick links at the top of the page"). Plain

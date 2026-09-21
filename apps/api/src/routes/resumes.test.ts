@@ -1341,3 +1341,110 @@ describe("GET /results (ticket 3f0883f)", () => {
     expect(withDismissedIds.has(dismissedUnderSecond)).toBe(true);
   });
 });
+
+describe("GET /resumes/:id/results — server-side LIMIT (ticket e9a82f3)", () => {
+  // Matches RESULTS_LIMIT in apps/api/src/routes/resumes.ts. Not imported
+  // directly (that constant isn't exported -- it's route-internal), so this
+  // is deliberately kept in sync by comment rather than by reference; a
+  // change to the real constant without updating this one would make these
+  // tests fail loudly (wrong truncation boundary), not pass silently.
+  const RESULTS_LIMIT = 500;
+
+  // Bulk insert (one multi-row VALUES statement per table) rather than
+  // `RESULTS_LIMIT + 1` sequential `db.insert` round trips -- this test
+  // seeds 501 rows, and one-at-a-time inserts would make the suite
+  // noticeably slower for no benefit (nothing here depends on insert
+  // order; `matchScore` is set per-row explicitly instead).
+  async function seedManyScoredJobs(resumeId: string, count: number): Promise<void> {
+    const jobRows = Array.from({ length: count }, (_, i) => {
+      const jobId = randomUUID();
+      return {
+        id: jobId,
+        externalId: `limit-test-${jobId}`,
+        dataSource: DATA_SOURCE,
+        title: `Bulk job ${i}`,
+        description: "a job description",
+        company: "Test Co",
+        linkToApply: `https://example.com/${jobId}`,
+        postedAt: new Date("2026-01-01T00:00:00Z"),
+      };
+    });
+    await db.insert(jobsTable).values(jobRows);
+    await db.insert(jobMatches).values(
+      jobRows.map((job, i) => ({
+        id: randomUUID(),
+        resumeId,
+        jobId: job.id,
+        // Descending, distinct scores -- keeps `orderBy(matchScore DESC,
+        // ...)` deterministic enough that "first RESULTS_LIMIT rows" is a
+        // stable, well-defined set for the boundary test below.
+        matchScore: count - i,
+        rationale: "fake rationale",
+        strengths: [],
+        gaps: [],
+      })),
+    );
+  }
+
+  it("truncates to RESULTS_LIMIT and reports the true total via totalMatchingCount when rows exceed the limit", async () => {
+    const app = buildTestApp();
+    const resumeText = `Limit-truncation resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedManyScoredJobs(resumeId, RESULTS_LIMIT + 1);
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      results: Array<{ matchScore: number }>;
+      totalMatchingCount?: number;
+    };
+    expect(body.results.length).toBe(RESULTS_LIMIT);
+    expect(body.totalMatchingCount).toBe(RESULTS_LIMIT + 1);
+    // The truncation drops the LOWEST-ranked row, not an arbitrary one --
+    // still best-match-first, just capped.
+    expect(body.results[body.results.length - 1]?.matchScore).toBe(2);
+  });
+
+  it("a matching count exactly AT the limit is not reported as truncated (boundary: > not >=)", async () => {
+    const app = buildTestApp();
+    const resumeText = `Limit-boundary resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedManyScoredJobs(resumeId, RESULTS_LIMIT);
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      results: unknown[];
+      totalMatchingCount?: number;
+    };
+    expect(body.results.length).toBe(RESULTS_LIMIT);
+    expect(body.totalMatchingCount).toBeUndefined();
+  });
+
+  it("GET /results (cross-resume) truncates and reports totalMatchingCount the same way", async () => {
+    const app = buildTestApp();
+    const resumeText = `Limit cross-resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    await seedManyScoredJobs(resumeId, RESULTS_LIMIT + 1);
+
+    const response = await app.inject({ method: "GET", url: "/results" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      results: unknown[];
+      totalMatchingCount?: number;
+    };
+    // This file shares one test database with no truncation between tests
+    // (see the "GET /results" describe block's own comment above), so the
+    // cross-resume total here is `>=` this test's own RESULTS_LIMIT + 1
+    // fixtures, not necessarily exactly equal to them -- but it must still
+    // be truncated and must still be internally consistent.
+    expect(body.results.length).toBe(RESULTS_LIMIT);
+    expect(body.totalMatchingCount).toBeGreaterThanOrEqual(RESULTS_LIMIT + 1);
+  });
+});
