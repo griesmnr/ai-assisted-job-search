@@ -286,11 +286,10 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // Review finding (opus, ticket 3f0883f, non-blocking nit): without a
     // fallback, the mockResolvedValueOnce budget above is EXACTLY what
     // this test currently needs -- any extra getAllResults call a future
-    // edit introduces would resolve `undefined`, and
-    // `allResultsState.data.results.length` would throw. This fallback
-    // keeps every call past the two explicit ones on the same
-    // already-settled state, so an extra call degrades to "no visible
-    // change" instead of a crash.
+    // edit introduces would resolve `undefined`, and the hook's `.then()`
+    // would throw against it (useAllResults.ts). This fallback keeps every
+    // call past the two explicit ones on the same already-settled state, so
+    // an extra call degrades to "no visible change" instead of a crash.
     getAllResults.mockResolvedValue(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
@@ -377,11 +376,10 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     // Review finding (opus, ticket 3f0883f, non-blocking nit): without a
     // fallback, the mockResolvedValueOnce budget above is EXACTLY what
     // this test currently needs -- any extra getAllResults call a future
-    // edit introduces would resolve `undefined`, and
-    // `allResultsState.data.results.length` would throw. This fallback
-    // keeps every call past the two explicit ones on the same
-    // already-settled state, so an extra call degrades to "no visible
-    // change" instead of a crash.
+    // edit introduces would resolve `undefined`, and the hook's `.then()`
+    // would throw against it (useAllResults.ts). This fallback keeps every
+    // call past the two explicit ones on the same already-settled state, so
+    // an extra call degrades to "no visible change" instead of a crash.
     getAllResults.mockResolvedValue(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
