@@ -231,11 +231,11 @@ export const ARM_B_EXTRA_OUTPUT_TOKENS_ESTIMATE = 65;
 // savings.ts's `OLD_NOT` precedent (see that file's top comment): the whole
 // point of arm A is to diff against what actually shipped BEFORE this
 // ticket's subject change, not against a moving target that would silently
-// track demo-match.ts's SCHEMA/SCORING_PREAMBLE if either changes again in
-// the future. If demo-match.ts's schema changes again, arm A must stay
-// exactly what it is here -- update it only by deliberately re-copying the
-// PRE-b182bde version again for a *different* validation ticket, never by
-// "keeping it in sync."
+// track matching/scoring.ts's SCHEMA/SCORING_PREAMBLE (matching/pipeline.ts
+// before ticket 690c838 moved it there) if either changes again in the
+// future. If that SCHEMA changes again, arm A must stay exactly what it is
+// here -- update it only by deliberately re-copying the PRE-b182bde version
+// again for a *different* validation ticket, never by "keeping it in sync."
 // ---------------------------------------------------------------------------
 
 const OLD_SCHEMA = {
