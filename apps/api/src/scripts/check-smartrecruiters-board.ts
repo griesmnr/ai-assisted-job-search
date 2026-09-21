@@ -68,7 +68,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { checkCareersSiteValidity } from "../sources/smartrecruiters.js";
-import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import { filterSoftwareEngineeringJobs } from "../matching/swe-filter.js";
 import type { NormalizedJob } from "../sources/types.js";
 
 const BASE_URL = "https://api.smartrecruiters.com/v1/companies";

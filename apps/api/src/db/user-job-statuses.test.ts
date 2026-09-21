@@ -28,7 +28,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "./schema.js";
 import { createTestDatabase, type TestDatabase } from "./test-db.js";
-import { fetchAppliedJobIds, runDemoMatch, type ScoreJobFn } from "../demo-match.js";
+import { fetchAppliedJobIds, runDemoMatch, type ScoreJobFn } from "../matching/index.js";
 import { loadEnvFile } from "../load-env.js";
 import type { JobSource, NormalizedJob, SourceSearchResult } from "../sources/types.js";
 

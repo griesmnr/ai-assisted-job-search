@@ -32,7 +32,7 @@
  */
 import { compileFilter } from "../sources/criteria.js";
 import { createGreenhouseSourceFromEnv } from "../sources/greenhouse.js";
-import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import { filterSoftwareEngineeringJobs } from "../matching/swe-filter.js";
 import type { NormalizedJob } from "../sources/types.js";
 
 function survivorKey(job: NormalizedJob): string {

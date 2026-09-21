@@ -57,7 +57,7 @@ import type {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { runDemoMatch, type RunDemoMatchResult, type ScoreJobFn } from "../demo-match.js";
+import { runDemoMatch, type RunDemoMatchResult, type ScoreJobFn } from "../matching/index.js";
 import { resumes, searches as searchesTable } from "../db/schema.js";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";

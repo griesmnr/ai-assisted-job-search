@@ -70,7 +70,7 @@ import {
   SONNET_PRICE_PER_MILLION_TOKENS,
   buildJobSuffix,
   type RankedResult,
-} from "../demo-match.js";
+} from "../matching/index.js";
 import { loadEnvFile } from "../load-env.js";
 import { createAshbySourceFromEnv } from "../sources/ashby.js";
 import { CompositeSource } from "../sources/composite.js";

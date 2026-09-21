@@ -41,7 +41,7 @@ import {
   type ScoredJob,
   type ScoreJobFn,
   type SourceOutcome,
-} from "./demo-match.js";
+} from "./matching/index.js";
 import type { PerSourceOutcome } from "./sources/composite.js";
 import type {
   JobSource,
@@ -62,8 +62,9 @@ loadEnvFile();
 let testDb: TestDatabase;
 let db: NodePgDatabase;
 
-// "usajobs" is one of the real dataSource ids demo-match.ts always seeds
-// via seedSourceDescriptors (see db/seed.ts) — using it here also proves
+// "usajobs" is one of the real dataSource ids the pipeline (matching/
+// pipeline.ts) always seeds via seedSourceDescriptors (see db/seed.ts) —
+// using it here also proves
 // runDemoMatch's own seeding step works, without needing a throwaway
 // source_descriptors row. Unlike the jobs/resumes/searches rows this test
 // creates, the "usajobs" source_descriptors row is real, permanent setup
@@ -683,7 +684,7 @@ describe("runDemoMatch: the searches row survives a rejection during fetch/filte
       .from(searches)
       .where(eq(searches.resumeId, resumeRows[0]!.id));
     expect(searchRows).toHaveLength(1);
-    // Never reached markSearchComplete (demo-match.ts) — the row is exactly
+    // Never reached markSearchComplete (matching/pipeline.ts) — the row is exactly
     // where a caller's own failure handler needs to find it: existing, and
     // still at its 'running' default, ready to be marked 'failed'.
     expect(searchRows[0]!.status).toBe("running");
@@ -1409,7 +1410,7 @@ describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b
   // The single mechanism the entire caching saving depends on: a cache
   // entry isn't readable until the WRITING call's response begins (see the
   // "do NOT collapse this back" comment on `[firstId, ...restIds]` in
-  // demo-match.ts). Before this test, that shape was guarded only by a
+  // matching/pipeline.ts). Before this test, that shape was guarded only by a
   // comment — nothing here would have failed if someone collapsed it back
   // into a single `Promise.allSettled(toScoreIds.map(scoreOne))`.
   const PREWARM_JOBS: NormalizedJob[] = Array.from({ length: 4 }, (_, i) =>
@@ -1541,7 +1542,7 @@ describe("runDemoMatch: first-then-batch cache pre-warm ordering (ticket aff284b
       log: () => {},
       // Ticket 1998875: `onJobScored` is called synchronously inside
       // `scoreOne`, immediately after `await scoreJob(...)` resolves and
-      // BEFORE `scoreOne` returns — see demo-match.ts. Pushing into the
+      // BEFORE `scoreOne` returns — see matching/pipeline.ts. Pushing into the
       // scorer's own `events` array here, rather than a separate counter,
       // is what lets this test check ADJACENCY (below), not just a final
       // count.

@@ -38,7 +38,7 @@
  * unhandled exception in `main()` itself.
  */
 import { pathToFileURL } from "node:url";
-import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import { filterSoftwareEngineeringJobs } from "../matching/swe-filter.js";
 import type { NormalizedJob } from "../sources/types.js";
 
 const BASE_URL = "https://api.lever.co/v0/postings";

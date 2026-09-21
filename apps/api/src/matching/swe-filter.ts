@@ -1,26 +1,31 @@
-import type { NormalizedJob } from "./types.js";
+import type { NormalizedJob } from "../sources/types.js";
 
 // ---------------------------------------------------------------------------
-// The shortlist filter demo-match.ts applies to every search. Greenhouse in
-// particular has no server-side keyword/location query support (it always
-// returns a whole board — see greenhouse.ts), so all of this narrowing has
-// to happen client-side; the other three sources get it applied the same
-// way for consistency even where they support a server-side query.
+// The shortlist filter the matching pipeline (matching/pipeline.ts) applies
+// to every search. Greenhouse in particular has no server-side
+// keyword/location query support (it always returns a whole board — see
+// sources/greenhouse.ts), so all of this narrowing has to happen
+// client-side; the other three sources get it applied the same way for
+// consistency even where they support a server-side query.
 //
-// Lives in its own module, separate from demo-match.ts (which re-exports
-// `filterSoftwareEngineeringJobs` for backward compatibility — every
-// existing import of it from "./demo-match.js" keeps working unchanged),
+// Lives in its own module, separate from matching/pipeline.ts (and, before
+// ticket 690c838 moved both, separate from demo-match.ts, which used to
+// re-export `filterSoftwareEngineeringJobs` for backward compatibility),
 // specifically so `check-greenhouse-board.ts` (ticket b723fb9 review fix
 // #3) can reuse the exact same filter a real run applies without pulling in
-// demo-match.ts's much heavier import graph: Drizzle, `pg`, the Anthropic
+// the pipeline's much heavier import graph: Drizzle, `pg`, the Anthropic
 // SDK, and the db schema/seed/ingest modules. A script whose whole point is
 // "check whether a candidate employer is worth adding to
 // GREENHOUSE_BOARD_TOKENS" has no business requiring a working Postgres
-// connection or an ANTHROPIC_API_KEY to run. (Ticket 2b54470: demo-match.ts's
-// top-level env-file load used to also throw outright if no `.env` existed
-// in the current working directory -- that's fixed now, see load-env.ts,
-// but the import-graph-weight reasoning above is independent of that and
-// still the real reason this stays a separate module.)
+// connection or an ANTHROPIC_API_KEY to run — so it (and its siblings, and
+// sources/criteria.ts) import this file directly, NOT through
+// matching/index.ts, which would pull pipeline.ts (and its
+// `loadEnvFile()` call) in regardless of which export is actually needed.
+// (Ticket 2b54470: the pipeline's top-level env-file load used to also
+// throw outright if no `.env` existed in the current working directory --
+// that's fixed now, see load-env.ts, but the import-graph-weight reasoning
+// above is independent of that and still the real reason this stays a
+// separate module.)
 //
 // Deliberately out of scope for this ticket: relaxing the TITLE regexes
 // below to inflate survivor counts. Tightening them is the proven 58% ->

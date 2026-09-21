@@ -6,8 +6,9 @@
  * as of this ticket its own docs/adr/002-resume-input.md acceptance
  * criterion is still unwritten) — a `POST` taking raw text, never a file
  * upload. Resumes are content-addressed by `resumeHash`, so this reuses
- * `getOrCreateResumeId` from demo-match.ts rather than reimplementing the
- * hash-then-upsert logic.
+ * `getOrCreateResumeId` from the matching pipeline (`matching/pipeline.ts`,
+ * via `matching/index.ts`) rather than reimplementing the hash-then-upsert
+ * logic.
  *
  * `GET /resumes/:id/results` is the filtering endpoint the frontend's source
  * toggles and score-floor slider hit — decision #1 (git-bug 484889d,
@@ -50,10 +51,10 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { SQL } from "drizzle-orm";
 import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { getOrCreateResumeId } from "../demo-match.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
-import { looksLikeContractOrTemp } from "../sources/swe-filter.js";
+import { getOrCreateResumeId } from "../matching/index.js";
+import { looksLikeContractOrTemp } from "../matching/swe-filter.js";
 
 /**
  * Generous ceiling for a pasted resume — well above any real resume, well

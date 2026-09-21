@@ -51,7 +51,7 @@
  * unhandled exception in `main()` itself.
  */
 import { pathToFileURL } from "node:url";
-import { filterSoftwareEngineeringJobs } from "../sources/swe-filter.js";
+import { filterSoftwareEngineeringJobs } from "../matching/swe-filter.js";
 
 const BASE_URL = "https://boards-api.greenhouse.io/v1/boards";
 export const TIMEOUT_MS = 10_000;

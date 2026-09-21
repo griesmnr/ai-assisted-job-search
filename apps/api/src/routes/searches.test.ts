@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../index.js";
 import { jobMatches, searches as searchesTable } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
-import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../demo-match.js";
+import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../matching/index.js";
 import { loadEnvFile } from "../load-env.js";
 import { __testing } from "./searches.js";
 import type {

@@ -11,7 +11,7 @@ import {
   passesLocationFilter,
   resolveWorkArrangement,
 } from "./swe-filter.js";
-import type { NormalizedJob } from "./types.js";
+import type { NormalizedJob } from "../sources/types.js";
 
 // ---------------------------------------------------------------------------
 // Ticket 4450f39: the old `PLACE` regex conflated WHERE a job is (Seattle /
@@ -45,7 +45,7 @@ import type { NormalizedJob } from "./types.js";
 type Fixture = { jobs?: unknown[]; content?: unknown[] };
 
 function loadFixture(name: string): Fixture {
-  const path = fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url));
+  const path = fileURLToPath(new URL(`../sources/__fixtures__/${name}`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf-8")) as Fixture;
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "./criteria.js";
-import { excludedForMissingWorkArrangement, filterSoftwareEngineeringJobs } from "./swe-filter.js";
+import {
+  excludedForMissingWorkArrangement,
+  filterSoftwareEngineeringJobs,
+} from "../matching/swe-filter.js";
 import type { NormalizedJob } from "./types.js";
 
 function job(overrides: Partial<NormalizedJob> & Pick<NormalizedJob, "externalId">): NormalizedJob {
