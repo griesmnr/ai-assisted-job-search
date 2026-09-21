@@ -80,12 +80,13 @@ import {
   makeClaudeScorer,
   readUsageStats,
   recordUsageStats,
+  toNormalizedJob,
   type CostEstimate,
+  type JobDescriptionRow,
   type ScoredJob,
 } from "../matching/index.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { loadEnvFile } from "../load-env.js";
-import type { NormalizedJob } from "../sources/types.js";
 
 loadEnvFile();
 
@@ -354,52 +355,6 @@ export function checkSpendCeiling(
 ): SpendCeilingCheck {
   const costUsd = estimate.maxCostUsd;
   return { withinCeiling: costUsd <= ceilingUsd, ceilingUsd, costUsd };
-}
-
-/** The subset of a `jobs` row this script needs to build a `NormalizedJob`
- * for re-scoring -- exactly the columns `db/schema.ts`'s `jobs` table
- * carries, minus `id`/`postedAt` type narrowing quirks. */
-export type JobDescriptionRow = {
-  externalId: string;
-  dataSource: string;
-  title: string;
-  description: string;
-  company: string;
-  payType: "hourly" | "salary" | null;
-  commitment: "full-time" | "part-time" | "contract" | null;
-  locationType: "remote" | "onsite" | "hybrid" | null;
-  location: string | null;
-  linkToApply: string;
-  postedAt: Date;
-};
-
-/**
- * Converts one already-stored `jobs` row into the `NormalizedJob` shape
- * `buildJobSuffix`/`makeClaudeScorer` expect -- no live re-fetch, per this
- * ticket's whole premise (`jobs.description` is `NOT NULL`, confirmed
- * already stored from original ingestion). Only real conversion needed:
- * drizzle's nullable columns come back as `null`; `NormalizedJob`'s optional
- * fields want `undefined` for "not stated" (same convention `Job`'s own doc
- * comment in packages/shared uses). `dataSource` is widened from the
- * column's plain `text` type to `NormalizedJob["dataSource"]`'s literal
- * union with a cast: the column is a `text` FK to `source_descriptors.id`
- * at the TYPE level, but every real row's value IS one of that union's
- * literals (ingestion never writes anything else there).
- */
-export function toNormalizedJob(row: JobDescriptionRow): NormalizedJob {
-  return {
-    externalId: row.externalId,
-    dataSource: row.dataSource as NormalizedJob["dataSource"],
-    title: row.title,
-    description: row.description,
-    company: row.company,
-    payType: row.payType ?? undefined,
-    commitment: row.commitment ?? undefined,
-    locationType: row.locationType ?? undefined,
-    location: row.location ?? undefined,
-    linkToApply: row.linkToApply,
-    postedAt: row.postedAt,
-  };
 }
 
 // ---------------------------------------------------------------------------
