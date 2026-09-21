@@ -178,12 +178,15 @@ export function GroupedResultsList({
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.
         </p>
       )}
-      {/* Ticket e9a82f3: see ResultsList.tsx's identical block -- only
-          rendered when the server's LIMIT actually truncated the matching
-          rows. */}
+      {/* Ticket e9a82f3 (opus review fix): see ResultsList.tsx's identical
+          block -- only rendered when the server's LIMIT actually truncated
+          the matching rows. Worded "Only the top X of Y were loaded" rather
+          than "Showing X of Y" to avoid colliding with the results-summary
+          paragraph above, which already uses "Showing" for a different
+          count (post client-side-filter, not fetched-from-server). */}
       {data.totalMatchingCount !== undefined && (
         <p className="results-truncated">
-          Showing top {data.results.length} of {data.totalMatchingCount} matching jobs.
+          Only the top {data.results.length} of {data.totalMatchingCount} matching jobs were loaded.
         </p>
       )}
       {/* Quick links (dogfooding feedback, 2026-09-08 -- Nicole's own

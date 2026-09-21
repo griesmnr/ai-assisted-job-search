@@ -1447,4 +1447,74 @@ describe("GET /resumes/:id/results — server-side LIMIT (ticket e9a82f3)", () =
     expect(body.results.length).toBe(RESULTS_LIMIT);
     expect(body.totalMatchingCount).toBeGreaterThanOrEqual(RESULTS_LIMIT + 1);
   });
+
+  // Opus review, round 1 (coverage gap A): the production `GET /results`
+  // call (useAllResults.ts) always sends `minScore`, so `hiddenBelowFloor`
+  // and `totalMatchingCount` are computed on every real request together --
+  // no existing test pinned that they stay disjoint (each counting its own
+  // set, neither double-counting the other) once both apply at once. If a
+  // future change made `totalMatchingCount` floor-independent, this would
+  // silently start claiming truncation included below-floor rows that no
+  // user action can ever reach.
+  it("hiddenBelowFloor and totalMatchingCount stay disjoint when both a minScore floor and truncation apply together", async () => {
+    const app = buildTestApp();
+    const resumeText = `Limit plus floor resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const resumeId = (created.json() as { id: string }).id;
+
+    const floor = 55; // MATCH_SCORE_FLOOR (packages/shared)
+    const aboveFloorCount = RESULTS_LIMIT + 1; // forces truncation
+    const belowFloorCount = 7; // arbitrary, distinct from any limit boundary
+
+    async function seedAt(scores: number[]): Promise<void> {
+      const jobRows = scores.map((_, i) => {
+        const jobId = randomUUID();
+        return {
+          id: jobId,
+          externalId: `limit-floor-test-${jobId}`,
+          dataSource: DATA_SOURCE,
+          title: `Floor+limit job ${i}`,
+          description: "a job description",
+          company: "Test Co",
+          linkToApply: `https://example.com/${jobId}`,
+          postedAt: new Date("2026-01-01T00:00:00Z"),
+        };
+      });
+      await db.insert(jobsTable).values(jobRows);
+      await db.insert(jobMatches).values(
+        jobRows.map((job, i) => ({
+          id: randomUUID(),
+          resumeId,
+          jobId: job.id,
+          matchScore: scores[i]!,
+          rationale: "fake rationale",
+          strengths: [],
+          gaps: [],
+        })),
+      );
+    }
+
+    // Scores strictly ABOVE the floor (56..56+aboveFloorCount-1) -- none of
+    // these can be mistaken for a below-floor row.
+    await seedAt(Array.from({ length: aboveFloorCount }, (_, i) => floor + 1 + i));
+    // Scores strictly BELOW the floor (1..belowFloorCount).
+    await seedAt(Array.from({ length: belowFloorCount }, (_, i) => i + 1));
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/resumes/${resumeId}/results?minScore=${floor}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      results: unknown[];
+      totalMatchingCount?: number;
+      hiddenBelowFloor?: number;
+    };
+    // Truncated to the limit, from the above-floor set only.
+    expect(body.results.length).toBe(RESULTS_LIMIT);
+    // The true above-floor total, not inflated by the below-floor rows.
+    expect(body.totalMatchingCount).toBe(aboveFloorCount);
+    // The below-floor count, not deflated by the truncation applied above.
+    expect(body.hiddenBelowFloor).toBe(belowFloorCount);
+  });
 });

@@ -86,6 +86,40 @@ describe("ResultsList", () => {
     ).toBeInTheDocument();
   });
 
+  // Opus review, round 1 (coverage gap B): the truncation paragraph
+  // (ticket e9a82f3) had no component test -- the existing fixture simply
+  // omits `totalMatchingCount`, so it passed trivially without ever
+  // exercising the render branch. Mirrors the hidden-below-floor test
+  // above, which is the direct precedent for "a real, scored-but-not-shown
+  // count must render as visible text, not go quiet."
+  it("shows an honest 'only the top N of M were loaded' notice when the server truncated the results", () => {
+    render(
+      <ResultsList
+        data={{ ...DATA, totalMatchingCount: 650 }}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Only the top 2 of 650 matching jobs were loaded\./),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show a truncation notice when the response has no totalMatchingCount", () => {
+    render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.queryByText(/matching jobs were loaded/)).not.toBeInTheDocument();
+  });
+
   it("filters by the selected sources client-side, without dropping results from a source that IS selected", () => {
     render(
       <ResultsList

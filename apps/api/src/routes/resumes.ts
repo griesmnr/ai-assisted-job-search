@@ -75,8 +75,11 @@ const MAX_RESUME_TEXT_LENGTH = 200_000;
  * (git-bug e9a82f3 context, 2026-09-21); 500 gives real headroom above that
  * without being pointlessly huge, and keeps the payload bounded as the
  * cross-resume total keeps growing across searches instead of growing
- * forever. See `totalMatchingCount` below for how truncation past this
- * limit is surfaced rather than silently dropped.
+ * forever. At ~1.65 KB/result (measured against prep/match-results.json,
+ * 329,465 bytes for 200 records), a full 500-row response is roughly
+ * 800 KB -- still refetched on every mount/status-write today, but no
+ * longer unbounded on top of that. See `totalMatchingCount` below for how
+ * truncation past this limit is surfaced rather than silently dropped.
  */
 const RESULTS_LIMIT = 500;
 
@@ -447,6 +450,16 @@ export function registerResumeRoutes(
     // was trying to return, not just what's below a floor.
     let totalMatchingCount: number | undefined;
     if (rows.length === RESULTS_LIMIT) {
+      // Deliberately NO `.innerJoin(resumes, ...)` here, unlike the main
+      // query above -- opus review, ticket e9a82f3: this count only needs
+      // jobsTable/userJobStatuses because `conditions` never references a
+      // `resumes` column, and it's safe to drop even though `resumes` is
+      // joined above: `jobMatches.resumeId` is `notNull().references(() =>
+      // resumes.id)` and `resumes.id` is the PK, so that join can neither
+      // drop nor multiply rows (schema.ts) -- it exists in the main query
+      // only to read `resumeNickname` for the response, which this COUNT
+      // doesn't need. If `conditions` ever grows a `resumes`-column filter,
+      // this join must be added back or the query will throw.
       const totalRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(jobMatches)

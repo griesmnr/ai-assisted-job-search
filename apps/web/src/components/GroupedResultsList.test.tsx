@@ -593,3 +593,40 @@ describe("GroupedResultsList — the same job scored under two different resumes
     consoleError.mockRestore();
   });
 });
+
+// Opus review, round 1 (coverage gap B, ticket e9a82f3): the truncation
+// paragraph had no component test in this file -- the existing fixtures
+// simply omit `totalMatchingCount`, so they passed trivially without ever
+// exercising the render branch. Mirrors ResultsList.test.tsx's equivalent
+// coverage for the same shared behavior.
+describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
+  it("shows an honest 'only the top N of M were loaded' notice when the server truncated the results", () => {
+    render(
+      <GroupedResultsList
+        data={{ ...DATA, totalMatchingCount: 650 }}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Only the top 2 of 650 matching jobs were loaded\./),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show a truncation notice when the response has no totalMatchingCount", () => {
+    render(
+      <GroupedResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    expect(screen.queryByText(/matching jobs were loaded/)).not.toBeInTheDocument();
+  });
+});
