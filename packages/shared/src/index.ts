@@ -302,6 +302,15 @@ export type GetResumeResultsResponse = {
   /** Present only when a minScore floor was actually applied — see
    * git-bug 1b9f81e. */
   hiddenBelowFloor?: number;
+  /** Present only when `fetchScoredResults`'s server-side LIMIT actually
+   * truncated the matching rows (see git-bug e9a82f3) -- the true count of
+   * rows matching the same filters, BEFORE the limit was applied. `results`
+   * is capped at that limit regardless of how large this number gets, so
+   * the frontend can tell "everything that matched" (`results.length ===
+   * totalMatchingCount`, this field absent) apart from "there's more than
+   * we're showing" (this field present and larger than `results.length`)
+   * without guessing from `results.length` alone. */
+  totalMatchingCount?: number;
 };
 
 /**
@@ -318,6 +327,10 @@ export type GetAllResultsResponse = {
    * meaning as `GetResumeResultsResponse.hiddenBelowFloor`, just summed
    * across every resume instead of one. */
   hiddenBelowFloor?: number;
+  /** Present only when truncated -- same meaning as
+   * `GetResumeResultsResponse.totalMatchingCount`, just summed across every
+   * resume instead of one (see git-bug e9a82f3). */
+  totalMatchingCount?: number;
 };
 
 /**

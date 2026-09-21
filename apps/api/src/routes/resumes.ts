@@ -67,6 +67,23 @@ import { looksLikeContractOrTemp } from "../sources/swe-filter.js";
 const MAX_RESUME_TEXT_LENGTH = 200_000;
 
 /**
+ * Ticket e9a82f3: hard ceiling on a single `fetchScoredResults` response.
+ * Opus's review of 3f0883f flagged this query as genuinely unbounded --
+ * every `job_matches` row matching the filters, full stop -- fetched on
+ * every `<App/>` mount (`useAllResults.ts`) and after every job-status
+ * write. Current single-resume-search scale is ~200 scored jobs per run
+ * (git-bug e9a82f3 context, 2026-09-21); 500 gives real headroom above that
+ * without being pointlessly huge, and keeps the payload bounded as the
+ * cross-resume total keeps growing across searches instead of growing
+ * forever. At ~1.65 KB/result (measured against prep/match-results.json,
+ * 329,465 bytes for 200 records), a full 500-row response is roughly
+ * 800 KB -- still refetched on every mount/status-write today, but no
+ * longer unbounded on top of that. See `totalMatchingCount` below for how
+ * truncation past this limit is surfaced rather than silently dropped.
+ */
+const RESULTS_LIMIT = 500;
+
+/**
  * Ticket 38a7598: generous ceiling for a resume nickname, same reasoning as
  * `MAX_RESUME_TEXT_LENGTH` above but far smaller — this is a short label
  * ("Resume 1", "Senior SWE draft", ...), never a document, so a limit this
@@ -341,9 +358,11 @@ export function registerResumeRoutes(
   // `jobMatches.resumeId` is constrained at all -- is a single conditional
   // push, not ~150 lines of copy-pasted query building that could silently
   // drift apart.
-  async function fetchScoredResults(
-    filters: ResultsFilters,
-  ): Promise<{ results: GetResumeResultsResponse["results"]; hiddenBelowFloor?: number }> {
+  async function fetchScoredResults(filters: ResultsFilters): Promise<{
+    results: GetResumeResultsResponse["results"];
+    hiddenBelowFloor?: number;
+    totalMatchingCount?: number;
+  }> {
     // The default-dismissed-exclusion (ticket 484889d decision #2: "a
     // dismissed job should leave the visible list") applies whenever the
     // caller didn't ask for a specific status AND didn't opt into
@@ -417,7 +436,43 @@ export function registerResumeRoutes(
       .innerJoin(resumes, eq(jobMatches.resumeId, resumes.id))
       .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
       .where(and(...conditions))
-      .orderBy(desc(jobMatches.matchScore), levelFitRank, asc(jobsTable.id));
+      .orderBy(desc(jobMatches.matchScore), levelFitRank, asc(jobsTable.id))
+      .limit(RESULTS_LIMIT);
+
+    // Ticket e9a82f3: unlike `hiddenBelowFloor` below (conditional on a
+    // minScore filter being present -- there's nothing to compute when no
+    // floor was applied), whether the LIMIT above truncated anything can't
+    // be known from a filter being set; it depends on how many rows exist.
+    // So this always runs when the main query came back exactly at the cap
+    // (the only case where truncation is even possible) -- scoped to the
+    // SAME `conditions` as the main query above, not the floor-specific
+    // `hiddenConditions` below, since this counts everything the main query
+    // was trying to return, not just what's below a floor.
+    let totalMatchingCount: number | undefined;
+    if (rows.length === RESULTS_LIMIT) {
+      // Deliberately NO `.innerJoin(resumes, ...)` here, unlike the main
+      // query above -- opus review, ticket e9a82f3: this count only needs
+      // jobsTable/userJobStatuses because `conditions` never references a
+      // `resumes` column, and it's safe to drop even though `resumes` is
+      // joined above: `jobMatches.resumeId` is `notNull().references(() =>
+      // resumes.id)` and `resumes.id` is the PK, so that join can neither
+      // drop nor multiply rows (schema.ts) -- it exists in the main query
+      // only to read `resumeNickname` for the response, which this COUNT
+      // doesn't need. If `conditions` ever grows a `resumes`-column filter,
+      // this join must be added back or the query will throw.
+      const totalRows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(jobMatches)
+        .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
+        .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
+        .where(and(...conditions));
+      const total = totalRows[0]?.count ?? 0;
+      // Boundary: a matching count exactly AT the limit (not over it) is
+      // not truncation -- every matching row is already in `rows`, same
+      // ">" (not ">=") boundary convention as smartrecruiters.ts's
+      // `truncated` check.
+      if (total > RESULTS_LIMIT) totalMatchingCount = total;
+    }
 
     // The "hidden count" the frontend's score-floor design (git-bug
     // 484889d/1b9f81e) needs: a short filtered list must never read as a
@@ -470,6 +525,7 @@ export function registerResumeRoutes(
         };
       }),
       hiddenBelowFloor,
+      totalMatchingCount,
     };
   }
 
@@ -502,7 +558,7 @@ export function registerResumeRoutes(
     // nicknames."
     const resumeNickname = resumeRows[0]!.resumeNickname;
 
-    const { results, hiddenBelowFloor } = await fetchScoredResults({
+    const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
       resumeId,
       source: parsed.source,
       minScoreNum: parsed.minScoreNum,
@@ -515,6 +571,7 @@ export function registerResumeRoutes(
       resumeNickname,
       results,
       hiddenBelowFloor,
+      totalMatchingCount,
     };
     return reply.send(response);
   });
@@ -533,14 +590,14 @@ export function registerResumeRoutes(
     const parsed = parseResultsQuery(request.query);
     if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
 
-    const { results, hiddenBelowFloor } = await fetchScoredResults({
+    const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
       source: parsed.source,
       minScoreNum: parsed.minScoreNum,
       statusFilter: parsed.statusFilter,
       includeDismissedFlag: parsed.includeDismissedFlag,
     });
 
-    const response: GetAllResultsResponse = { results, hiddenBelowFloor };
+    const response: GetAllResultsResponse = { results, hiddenBelowFloor, totalMatchingCount };
     return reply.send(response);
   });
 }

@@ -342,7 +342,8 @@ button[aria-disabled="true"] {
 }
 
 .results-summary,
-.results-hidden-floor {
+.results-hidden-floor,
+.results-truncated {
   font-size: 0.9rem;
   color: var(--muted);
 }

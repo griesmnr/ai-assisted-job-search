@@ -154,6 +154,20 @@ export function ResultsList({
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.
         </p>
       )}
+      {/* Ticket e9a82f3 (opus review fix): only rendered when the server's
+          LIMIT actually truncated the matching rows -- untruncated
+          responses never carry `totalMatchingCount`, so this never appears
+          when everything that matched is already in `data.results`.
+          Deliberately NOT worded "Showing X of Y" -- the `results-summary`
+          paragraph above already uses "Showing" to mean "rendered after
+          client-side source/level/contract filters", and reusing the verb
+          here (for "fetched from the server" instead) produced two
+          adjacent sentences with contradictory numbers for the same word. */}
+      {data.totalMatchingCount !== undefined && (
+        <p className="results-truncated">
+          Only the top {data.results.length} of {data.totalMatchingCount} matching jobs were loaded.
+        </p>
+      )}
       {visible.length > 0 && (
         <ul className="result-cards">
           {visible.map((result) => (
