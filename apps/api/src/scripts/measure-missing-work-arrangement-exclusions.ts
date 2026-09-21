@@ -59,7 +59,7 @@ import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
   matchesTitleExclusion,
-} from "../sources/swe-filter.js";
+} from "../matching/swe-filter.js";
 import type { JobSource, NormalizedJob } from "../sources/types.js";
 
 // Verbatim from .env.example's documented defaults (see that file's own

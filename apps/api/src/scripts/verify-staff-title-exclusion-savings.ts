@@ -33,7 +33,7 @@
  *   npx tsx apps/api/src/scripts/verify-staff-title-exclusion-savings.ts
  */
 import { createGreenhouseSourceFromEnv } from "../sources/greenhouse.js";
-import { filterSoftwareEngineeringJobs, passesLocationFilter } from "../sources/swe-filter.js";
+import { filterSoftwareEngineeringJobs, passesLocationFilter } from "../matching/swe-filter.js";
 import type { NormalizedJob } from "../sources/types.js";
 
 // The pre-ticket NOT regex, copied verbatim from swe-filter.ts's git history

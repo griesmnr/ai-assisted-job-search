@@ -5,8 +5,8 @@ import Fastify from "fastify";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { makeClaudeScorer, type ScoreJobFn } from "./demo-match.js";
 import { loadEnvFile } from "./load-env.js";
+import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
 import { inferTitleKeywords } from "./resume-title-inference.js";
 import { registerHandoffRoutes } from "./routes/handoffs.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
@@ -28,9 +28,10 @@ export type BuildAppDeps = {
    * `demo-match.ts`'s non-negotiable: its own `main()` (which reads
    * `prep/resume.txt` off disk and constructs its own `Anthropic` client at
    * the top of the function) must never be reachable from an HTTP request —
-   * this app only ever imports named exports from demo-match.ts
+   * this app only ever imports named exports from `matching/index.js`
    * (`runDemoMatch`, `makeClaudeScorer`, `getOrCreateResumeId`), never
-   * `main` itself.
+   * `demo-match.ts`'s `main` (ticket 690c838 moved the pipeline itself to
+   * `matching/`; `demo-match.ts` is now only that CLI tail).
    */
   getScoreJob: () => ScoreJobFn;
   /**

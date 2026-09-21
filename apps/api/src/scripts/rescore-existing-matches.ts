@@ -82,7 +82,7 @@ import {
   recordUsageStats,
   type CostEstimate,
   type ScoredJob,
-} from "../demo-match.js";
+} from "../matching/index.js";
 import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
 import { loadEnvFile } from "../load-env.js";
 import type { NormalizedJob } from "../sources/types.js";

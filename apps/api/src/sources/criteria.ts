@@ -39,7 +39,10 @@
  * guarantee.
  */
 import type { SearchCriteria } from "@app/shared";
-import { excludedForMissingWorkArrangement, filterSoftwareEngineeringJobs } from "./swe-filter.js";
+import {
+  excludedForMissingWorkArrangement,
+  filterSoftwareEngineeringJobs,
+} from "../matching/swe-filter.js";
 import type { NormalizedJob } from "./types.js";
 
 export type { SearchCriteria };
