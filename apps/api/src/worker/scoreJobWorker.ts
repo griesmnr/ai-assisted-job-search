@@ -4,8 +4,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatches, jobs as jobsTable, resumes, searchResults, searches } from "../db/schema.js";
-import { toNormalizedJob, type JobDescriptionRow } from "../matching/pipeline.js";
-import type { ScoreJobFn, ScoredJob } from "../matching/scoring.js";
+import {
+  toNormalizedJob,
+  type JobDescriptionRow,
+  type ScoreJobFn,
+  type ScoredJob,
+} from "../matching/index.js";
 import { pickRetryTier, type RetryTier, type ScoreJobMessage } from "./fetchSourceWorker.js";
 import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/topology.js";
 
