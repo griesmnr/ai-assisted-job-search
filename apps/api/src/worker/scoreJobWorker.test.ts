@@ -210,6 +210,25 @@ describe("classifyScoringError", () => {
       kind: "unknown",
     });
   });
+
+  // Opus review fix (ticket 4065511, F1): the base-APIError branch used to
+  // return retryable: false, contradicting this function's own doc comment
+  // and silently permanently-classifying any status this SDK version has no
+  // named subclass for -- concretely, 408 Request Timeout (which the SDK's
+  // OWN internal shouldRetry() treats as transient) and APIUserAbortError
+  // (instanceof APIError, status undefined). Mutation-verified: reverting
+  // the F1 fix left this test the only one that failed, out of the full
+  // suite.
+  it("treats an unnamed APIError status (e.g. 408) and APIUserAbortError as retryable, matching this function's own doc comment", () => {
+    const timeout = Anthropic.APIError.generate(408, {}, "request timeout", new Headers());
+    expect(classifyScoringError(timeout)).toEqual({ retryable: true, kind: "api-error-408" });
+
+    const aborted = new Anthropic.APIUserAbortError({ message: "aborted" });
+    expect(classifyScoringError(aborted)).toEqual({
+      retryable: true,
+      kind: "api-error-unknown",
+    });
+  });
 });
 
 describe("parseScoreJobMessage", () => {
@@ -445,6 +464,95 @@ describe("scoreJobWorker", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.resumeId).toBe(goodResume);
     expect(rows[0]!.matchScore).toBe(88);
+  });
+
+  // Opus review fix (ticket 4065511, F2): previously, ZERO successes plus
+  // every failure permanent still acked -- correct for a genuinely
+  // per-resume-only failure, but a silent data-loss path for a SYSTEMIC one
+  // (an expired API key, a retired model id): every message hitting the
+  // same outage would ack and vanish, draining the whole queue with no
+  // job_matches rows and no DLQ record of which jobIds were ever consumed.
+  // fetchSourceWorker.ts dead-letters every permanent failure
+  // unconditionally; this pins the same behavior here, scoped to the
+  // zero-success case (a partial success still acks -- see the test above).
+  it("dead-letters (does not ack) when every failure is permanent AND nothing was scored, so a systemic outage stays visible", async () => {
+    const jobId = await insertJob();
+    const badResumeA = await insertResume("bad resume A");
+    const badResumeB = await insertResume("bad resume B");
+    await linkJobToResumeViaSearch(jobId, badResumeA);
+    await linkJobToResumeViaSearch(jobId, badResumeB);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockRejectedValue(badRequestError());
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.acked).toHaveLength(0);
+    expect(channel.nacked).toHaveLength(1);
+    expect(channel.nacked[0]!.requeue).toBe(false); // straight to score.job.dlq
+    expect(channel.sentToQueue).toHaveLength(0); // not a retry - permanent
+
+    const rows = await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId));
+    expect(rows).toHaveLength(0);
+  });
+
+  // Opus review recommendation (ticket 4065511, F3): the three-way mixed
+  // case (one resume succeeds, one hits a permanent failure, one hits a
+  // retryable failure) was implemented but had no direct test. Verifies:
+  // the message still retries (the retryable failure keeps it alive), the
+  // successful resume's score is persisted immediately rather than held
+  // hostage by the other two resumes' fates, and a redelivery does not
+  // re-score (re-bill) the already-persisted resume.
+  it("on a mixed outcome (one success, one permanent failure, one retryable failure), persists the success immediately, retries the message, and does not re-score the already-persisted resume on redelivery", async () => {
+    const jobId = await insertJob();
+    const goodResume = await insertResume("good resume");
+    const permanentlyBadResume = await insertResume("permanently bad resume");
+    const rateLimitedResume = await insertResume("rate limited resume");
+    await linkJobToResumeViaSearch(jobId, goodResume);
+    await linkJobToResumeViaSearch(jobId, permanentlyBadResume);
+    await linkJobToResumeViaSearch(jobId, rateLimitedResume);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockImplementation(async (_job, resumeText: string) => {
+      if (resumeText === "good resume") return scoredJob({ matchScore: 77 });
+      if (resumeText === "permanently bad resume") throw badRequestError();
+      throw rateLimitError();
+    });
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    // At least one retryable failure remains -> a retry copy is published
+    // to a retry-tier queue and the ORIGINAL message is acked immediately
+    // (the retry-tier copy, not an AMQP-level requeue, takes responsibility
+    // from here - same pattern as the existing "retries a retryable
+    // scoring failure via a retry tier" test above).
+    expect(channel.acked).toHaveLength(1);
+    expect(channel.nacked).toHaveLength(0);
+    expect(channel.sentToQueue).toHaveLength(1);
+
+    // The success is persisted immediately -- not held back by the other
+    // two resumes' fates.
+    const rowsAfterFirstAttempt = await db
+      .select()
+      .from(jobMatches)
+      .where(eq(jobMatches.jobId, jobId));
+    expect(rowsAfterFirstAttempt).toHaveLength(1);
+    expect(rowsAfterFirstAttempt[0]!.resumeId).toBe(goodResume);
+
+    // Redelivery (simulated: call the handler again with the same jobId,
+    // attempt incremented via the retry-tier publish's headers): the
+    // already-scored resume must be skipped, not re-billed.
+    const [republished] = channel.sentToQueue;
+    scoreJob.mockClear();
+    await handler(makeMessage({ jobId }, republished!.options.headers as Record<string, unknown>));
+
+    const scoredResumeTexts = scoreJob.mock.calls.map((call) => call[1]);
+    expect(scoredResumeTexts).not.toContain("good resume");
+    expect(scoredResumeTexts).toEqual(
+      expect.arrayContaining(["permanently bad resume", "rate limited resume"]),
+    );
   });
 
   it("dead-letters immediately (no retry) on an invalid message body", async () => {

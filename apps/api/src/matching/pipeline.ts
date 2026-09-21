@@ -765,6 +765,57 @@ export async function getOrCreateResumeId(
   return rows[0]!.id;
 }
 
+/** The subset of a `jobs` row needed to build a `NormalizedJob` for
+ * (re-)scoring -- exactly the columns `db/schema.ts`'s `jobs` table
+ * carries, minus `id`/`postedAt` type narrowing quirks. Moved here from
+ * `scripts/rescore-existing-matches.ts` (opus review, ticket 4065511):
+ * `worker/scoreJobWorker.ts` needs this same DB-row-to-NormalizedJob
+ * conversion and importing it from a CLI script pointed the dependency
+ * arrow backwards -- exactly the "shared pipeline pieces don't belong in
+ * scripts" problem ticket 690c838 created `matching/` to fix. */
+export type JobDescriptionRow = {
+  externalId: string;
+  dataSource: string;
+  title: string;
+  description: string;
+  company: string;
+  payType: "hourly" | "salary" | null;
+  commitment: "full-time" | "part-time" | "contract" | null;
+  locationType: "remote" | "onsite" | "hybrid" | null;
+  location: string | null;
+  linkToApply: string;
+  postedAt: Date;
+};
+
+/**
+ * Converts one already-stored `jobs` row into the `NormalizedJob` shape
+ * `buildJobSuffix`/`makeClaudeScorer` expect -- no live re-fetch (`jobs.
+ * description` is `NOT NULL`, always populated from original ingestion).
+ * Only real conversion needed: drizzle's nullable columns come back as
+ * `null`; `NormalizedJob`'s optional fields want `undefined` for "not
+ * stated" (same convention `Job`'s own doc comment in packages/shared
+ * uses). `dataSource` is widened from the column's plain `text` type to
+ * `NormalizedJob["dataSource"]`'s literal union with a cast: the column is
+ * a `text` FK to `source_descriptors.id` at the TYPE level, but every real
+ * row's value IS one of that union's literals (ingestion never writes
+ * anything else there).
+ */
+export function toNormalizedJob(row: JobDescriptionRow): NormalizedJob {
+  return {
+    externalId: row.externalId,
+    dataSource: row.dataSource as NormalizedJob["dataSource"],
+    title: row.title,
+    description: row.description,
+    company: row.company,
+    payType: row.payType ?? undefined,
+    commitment: row.commitment ?? undefined,
+    locationType: row.locationType ?? undefined,
+    location: row.location ?? undefined,
+    linkToApply: row.linkToApply,
+    postedAt: row.postedAt,
+  };
+}
+
 /**
  * Marks `searches.status = 'complete'` for `searchId`. Called right before
  * EVERY successful return point in `runDemoMatch` (the empty-pool early

@@ -4,8 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatches, jobs as jobsTable, resumes, searchResults, searches } from "../db/schema.js";
+import { toNormalizedJob, type JobDescriptionRow } from "../matching/pipeline.js";
 import type { ScoreJobFn, ScoredJob } from "../matching/scoring.js";
-import { toNormalizedJob, type JobDescriptionRow } from "../scripts/rescore-existing-matches.js";
 import { pickRetryTier, type RetryTier, type ScoreJobMessage } from "./fetchSourceWorker.js";
 import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/topology.js";
 
@@ -144,7 +144,12 @@ export class UnknownJobError extends Error {}
  * useful `Retry-After`).
  */
 function parseRetryAfterMs(header: string | null): number | undefined {
-  if (!header) return undefined;
+  // `Number("")` and `Number("  ")` are both `0`, not `NaN` -- an empty or
+  // whitespace header must not read as "wait exactly 0ms" (indistinguishable
+  // from a real, deliberate 0-second Retry-After). Opus review note (ticket
+  // 4065511): harmless today (0 just picks the shortest configured tier),
+  // but worth guarding explicitly rather than relying on that coincidence.
+  if (!header || header.trim() === "") return undefined;
   const seconds = Number(header);
   if (!Number.isNaN(seconds)) return seconds * 1000;
   const asDate = Date.parse(header);
@@ -156,6 +161,16 @@ function retryAfterMsFromError(err: unknown): number | undefined {
   if (!(err instanceof Anthropic.APIError)) return undefined;
   const headers = err.headers;
   if (!headers) return undefined;
+  // Opus review fix (ticket 4065511): prefer `retry-after-ms` over
+  // `retry-after` when both are present, matching the Anthropic SDK's own
+  // internal `retryRequest` precedent (client.js) -- a non-standard but
+  // more precise header the SDK proactively supports. `retry-after` (the
+  // standard seconds-or-HTTP-date header) remains the fallback.
+  const msHeader = headers.get("retry-after-ms");
+  if (msHeader && msHeader.trim() !== "") {
+    const ms = Number(msHeader);
+    if (!Number.isNaN(ms)) return ms;
+  }
   return parseRetryAfterMs(headers.get("retry-after"));
 }
 
@@ -236,7 +251,21 @@ export function classifyScoringError(err: unknown): ScoringClassification {
     return { retryable: false, kind: "unprocessable" };
   }
   if (err instanceof Anthropic.APIError) {
-    return { retryable: false, kind: `api-error-${err.status ?? "unknown"}` };
+    // Opus review fix (ticket 4065511, F1): this branch previously returned
+    // retryable: false, contradicting this function's own doc comment two
+    // lines above ("Anything else ... defaults retryable") and
+    // fetchSourceWorker.ts's identical-fallback precedent. Verified against
+    // the installed SDK: `APIError.generate(408, ...)` produces a base
+    // APIError with no subclass (the SDK's own internal `shouldRetry` DOES
+    // retry 408/409/429/5xx), and `APIUserAbortError` is also `instanceof
+    // APIError` with `status: undefined` -- both were being permanently
+    // dropped by the old `false` here. No status in this SDK version's
+    // named subclasses (RateLimitError/InternalServerError/BadRequestError/
+    // AuthenticationError/PermissionDeniedError/NotFoundError/ConflictError/
+    // UnprocessableEntityError, all handled above) reaches this branch, so
+    // "unnamed APIError" and "not an Anthropic error at all" collapse into
+    // the same reasoning: no evidence a retry is futile.
+    return { retryable: true, kind: `api-error-${err.status ?? "unknown"}` };
   }
   // Anything not an Anthropic SDK error at all (a JSON.parse failure inside
   // makeClaudeScorer, a DB blip surfacing through the same promise, ...) -
@@ -416,9 +445,9 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         .limit(1);
       // Explicit `JobDescriptionRow` annotation (not just relying on
       // inference) documents that this select's column list is exactly the
-      // shape `toNormalizedJob` (scripts/rescore-existing-matches.ts)
-      // expects - see this module's own doc comment on reusing that
-      // function rather than writing a second row->NormalizedJob mapper.
+      // shape `toNormalizedJob` (matching/pipeline.ts) expects - see this
+      // module's own doc comment on reusing that function rather than
+      // writing a second row->NormalizedJob mapper.
       const jobRow: JobDescriptionRow | undefined = jobRows[0];
       if (!jobRow) {
         throw new UnknownJobError(`no jobs row found for jobId "${message.jobId}"`);
@@ -546,13 +575,44 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // Every failure is permanent - see classifyScoringError. Nothing
         // about retrying the WHOLE message fixes a permanent per-resume
         // failure, and every resumeId that COULD be scored already was
-        // (persisted above). Ack: this message is as done as it will ever
-        // be.
+        // (persisted above).
+        if (succeeded.length > 0) {
+          // Partial success: at least one resumeId's score is already
+          // persisted, so this message has produced everything it ever
+          // will. Ack is correct here - a DLQ entry would just be noise
+          // about resumeIds that were never going to score.
+          log(
+            `[score.job] jobId ${message.jobId}: ${failed.length} permanent failure(s), ` +
+              `${succeeded.length} scored - acking (nothing left to retry)`,
+          );
+          channel.ack(msg);
+          return;
+        }
+        // Opus review fix (ticket 4065511, F2): zero successes AND every
+        // failure permanent used to ack unconditionally here, which is
+        // correct for a genuinely per-resume-only failure
+        // (MissingResumeTextError) but silently DROPS a systemic one -
+        // AuthenticationError (expired/revoked API key), PermissionDeniedError,
+        // NotFoundError (e.g. a retired model id after a version bump) all
+        // classify permanent too, and none of them are specific to this
+        // resumeId: every message the worker processes after the outage
+        // starts would hit the identical wall, ack, and vanish - the queue
+        // drains with zero job_matches rows and zero record ANYWHERE that
+        // this jobId was ever consumed, so nothing can even be found to
+        // republish once the outage is fixed. fetchSourceWorker.ts
+        // dead-letters every permanent failure unconditionally (line ~664)
+        // specifically so the DLQ stays the audit trail of discarded work;
+        // this worker was the only one that didn't. Nack to the DLQ instead
+        // - it costs nothing when the failure really was resume-specific
+        // (the DLQ entry is just inert evidence a resume text was missing),
+        // and it's the only thing that makes a systemic outage visible and
+        // replayable instead of silent.
         log(
           `[score.job] jobId ${message.jobId}: ${failed.length} permanent failure(s), ` +
-            `${succeeded.length} scored - acking (nothing left to retry)`,
+            `0 scored - dead-lettering (no successful score to preserve, and acking here would ` +
+            `discard this jobId with no record if the failure turns out to be systemic)`,
         );
-        channel.ack(msg);
+        channel.nack(msg, false, false);
         return;
       }
 

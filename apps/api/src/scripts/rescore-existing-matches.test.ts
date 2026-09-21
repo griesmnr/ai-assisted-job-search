@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { NormalizedJob } from "../sources/types.js";
-import type { CostEstimate, ScoredJob, UsageStats } from "../matching/index.js";
-import { estimateScoringCost } from "../matching/index.js";
+import type { CostEstimate, JobDescriptionRow, ScoredJob, UsageStats } from "../matching/index.js";
+import { estimateScoringCost, toNormalizedJob } from "../matching/index.js";
 import { jobMatches, jobs, resumes, sourceDescriptors, userJobStatuses } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
@@ -12,8 +12,6 @@ import {
   checkSpendCeiling,
   fetchExistingMatches,
   parseArgs,
-  toNormalizedJob,
-  type JobDescriptionRow,
 } from "./rescore-existing-matches.js";
 
 loadEnvFile();
