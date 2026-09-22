@@ -306,9 +306,13 @@ path, matching every other `prep/`-touching entry point in this repo
 `apps/api/` instead silently writes to `apps/api/prep/...`, a second,
 disconnected usage-stats file the spend guard's cost estimate never sees
 (opus review, ticket b53c422, F1). The `package.json` `worker:*` scripts
-still exist and are fine for `:start` (built, deployed, cwd controlled by
-whatever process manager runs `node dist/...`) -- just don't use the dev
-`pnpm --filter` form here.
+still exist for the built `:start` form, but the same cwd rule applies to
+THEM too: `pnpm --filter @app/api worker:score-job:start` runs with
+`apps/api/` as cwd exactly like the dev form does and reintroduces the
+identical bug (re-review note, ticket b53c422) -- only invoking
+`node dist/worker/run-score-job-worker.js` directly, from the repo root,
+is safe. Nothing in this repo deploys via `pnpm --filter ...:start` today,
+but don't assume it would be safe if that changes.
 
 The scoring worker enforces a lifetime-per-process spend ceiling
 (`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket

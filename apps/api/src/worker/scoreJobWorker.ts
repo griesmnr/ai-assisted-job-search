@@ -123,10 +123,12 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  *
  * NOW WIRED TO RUN (ticket b53c422): `startScoreJobWorker` is called from a
  * real long-lived process by `run-score-job-worker.ts` in this same
- * directory - see that file for how the real `channel`/`db`/`scoreJob`
- * dependencies are constructed, and `package.json`'s `worker:score-job`
- * script for how it's launched. `fetchSourceWorker.ts` gets the identical
- * treatment via `run-fetch-source-worker.ts`, same ticket.
+ * directory - see that file's own doc comment (and README "Run the queue
+ * workers") for how the real `channel`/`db`/`scoreJob` dependencies are
+ * constructed and the correct (root-relative, NOT `package.json`'s
+ * `worker:score-job` `pnpm --filter` form - see `USAGE_STATS_PATH`'s doc
+ * comment below for why that matters) way to launch it. `fetchSourceWorker.ts`
+ * gets the identical treatment via `run-fetch-source-worker.ts`, same ticket.
  */
 
 /** The message body didn't parse as JSON or didn't match `ScoreJobMessage`.
@@ -170,8 +172,11 @@ export class UnknownJobError extends Error {}
  * silently writes/reads `apps/api/prep/scoring-usage-stats.json`, the exact
  * "second, disconnected figure" the paragraph above says this wiring exists
  * to prevent, and pins the spend guard to the less-conservative bootstrap
- * cost basis forever (measured is ~17% higher per call; a guard that never
- * sees real history under-estimates every call by that much). */
+ * cost basis forever (measured is ~20.9% higher per call than bootstrap --
+ * re-review correction: the prior draft of this comment had the direction
+ * inverted, ~17% is how much LOWER bootstrap is than measured, not the
+ * reverse; a guard that never sees real history under-estimates every call
+ * by the ~20.9% figure). */
 export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
 
 /**
