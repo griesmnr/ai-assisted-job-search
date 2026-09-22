@@ -1,5 +1,7 @@
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
+import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { searchSources } from "../db/schema.js";
 import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
 import {
   RateLimitedError,
@@ -26,6 +28,18 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  *       happened to insert" (see the note on `newlyInsertedJobIds` below) -
  *       the scoring worker (RTK-10, out of scope here) owns deduping
  *       repeated score.job messages for a job it already scored.
+ *
+ * COMPLETION LEDGER (ticket 4f88339): this worker also owns the per-source
+ * half of the record `GET /searches/:id` derives completion from. Three
+ * writes, all to the `search_sources` row addressed by (searchId,
+ * sourceId): `complete` + `linkedJobCount` on success, `failed` +
+ * `errorKind`/`errorMessage` on either terminal failure path, and nothing
+ * at all on the retry path (a message riding a backoff tier is still
+ * legitimately pending). This is what tells a poller "still waiting on 2
+ * of 5 sources" apart from "this really is done", and it is what makes a
+ * dead-lettered source PRODUCT-VISIBLE rather than merely logged —
+ * CLAUDE.md's "the UI shows that source as unavailable, and the other
+ * sources still return". Retry/DLQ behaviour itself is unchanged.
  *
  * Retry/DLQ: see topology.ts for the queue wiring this relies on
  * (fetch.source -> one of the fetch.source.retry.* tiers -> back to
@@ -555,11 +569,55 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
 
   ensureRetryReturnHandler(channel, log);
 
+  /**
+   * Marks this (search, source) pair permanently failed (ticket 4f88339,
+   * design c54b9e0 §4.2). Called immediately before a `nack` to the DLQ on
+   * BOTH terminal paths — non-retryable, and retries-exhausted.
+   *
+   * WHY THIS IS BEST-EFFORT, UNLIKE THE SUCCESS-PATH WRITE BELOW: the
+   * message must dead-letter regardless. Letting a bookkeeping failure
+   * throw here would either lose the nack entirely or hold a doomed
+   * message hostage, and neither is better than degrading to the staleness
+   * backstop (`STALL_AFTER_MS`, routes/searches.ts), which exists for
+   * exactly this residual case. Mirrors `markSearchFailed`'s own
+   * best-effort posture in routes/searches.ts.
+   */
+  async function markSourceFailed(
+    message: FetchSourceMessage,
+    kind: string,
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      await db
+        .update(searchSources)
+        .set({ status: "failed", errorKind: kind, errorMessage, updatedAt: new Date() })
+        .where(
+          and(
+            eq(searchSources.searchId, message.searchId),
+            eq(searchSources.sourceDescriptorId, message.sourceId),
+          ),
+        );
+    } catch (err) {
+      log(
+        `[fetch.source] WARNING: could not mark search_sources failed for search=` +
+          `${message.searchId} source=${message.sourceId} (${err instanceof Error ? err.message : String(err)}) ` +
+          `- the message still dead-letters; this search now depends on the staleness backstop ` +
+          `in GET /searches/:id to stop waiting on it`,
+      );
+    }
+  }
+
   return async function handleFetchSourceMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
+    // Hoisted out of the try so the catch below can address the
+    // `search_sources` row by its natural key. Still `undefined` when the
+    // body itself didn't parse — an `InvalidMessageError` names no
+    // (search, source) pair, so there is nothing to mark.
+    let parsed: FetchSourceMessage | undefined;
 
     try {
       const message = parseFetchSourceMessage(msg.content);
+      parsed = message;
 
       const source = sources[message.sourceId];
       if (!source) {
@@ -651,6 +709,44 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         await channel.waitForConfirms();
       }
 
+      // SUCCESS-PATH LEDGER WRITE (ticket 4f88339, design c54b9e0 §4.2).
+      // Placed here — after the score.job publishes are confirmed,
+      // immediately before the ack — deliberately:
+      //
+      // (a) NOT swallowed. If this UPDATE throws it falls into the catch
+      //     below and the message is RETRIED. Re-running the whole fetch
+      //     is wasteful but correct (everything downstream is idempotent),
+      //     and the alternative — acking with the row left `pending` — is
+      //     a permanent stall for that search.
+      // (b) As late as possible. The one race this design names rather
+      //     than hides (§6.2) is a worker marking `complete` and then
+      //     dying before its ack: the redelivery re-fetches and could link
+      //     a NEW job to a search a poll has meanwhile reported complete.
+      //     Nothing is lost or double-billed when that happens (the
+      //     results endpoint reads `job_matches` directly), and keeping
+      //     this write adjacent to the ack makes the window microseconds
+      //     wide. The airtight fix is a transactional outbox, rejected as
+      //     disproportionate for a single-user app.
+      //
+      // SET, never incremented: a redelivered message writes the same (or
+      // a superset) `linkedJobCount`, so at-least-once delivery cannot
+      // inflate it.
+      await db
+        .update(searchSources)
+        .set({
+          status: "complete",
+          linkedJobCount: linkedJobIds.length,
+          errorKind: null,
+          errorMessage: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(searchSources.searchId, message.searchId),
+            eq(searchSources.sourceDescriptorId, message.sourceId),
+          ),
+        );
+
       channel.ack(msg);
     } catch (err) {
       const { retryable, kind } = classify(err);
@@ -661,6 +757,7 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           `[fetch.source] non-retryable error (${kind}) on attempt ${attempt} - ` +
             `dead-lettering immediately without consuming a retry: ${errorMessage}`,
         );
+        if (parsed) await markSourceFailed(parsed, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
@@ -670,9 +767,15 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           `[fetch.source] attempt ${attempt}/${maxAttempts} failed (${kind}): ${errorMessage} ` +
             `- retries exhausted, dead-lettering`,
         );
+        if (parsed) await markSourceFailed(parsed, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
+
+      // RETRY PATH: no write. The source is still `pending`, which is the
+      // truth — a message riding a backoff tier is legitimately
+      // outstanding, and marking it either way here would be a lie the
+      // completion derive would act on.
 
       const nextAttempt = attempt + 1;
       const desiredDelayMs =

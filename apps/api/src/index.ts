@@ -13,6 +13,7 @@ import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
 import { registerSearchRoutes } from "./routes/searches.js";
 import { registerSourceRoutes } from "./routes/sources.js";
+import type { PublishFetchSourceFn } from "./queue/publisher.js";
 import type { buildSourceSelection } from "./sources/registry.js";
 
 export type BuildAppDeps = {
@@ -53,6 +54,15 @@ export type BuildAppDeps = {
    * `registerSearchRoutes`'s matching parameter.
    */
   resolveSourceIds?: (sourceIds: string[]) => ReturnType<typeof buildSourceSelection>;
+  /**
+   * Overrides how `POST /searches` publishes its `fetch.source` messages
+   * (ticket 4f88339). Defaults to the real, lazily-connecting AMQP
+   * publisher (`queue/publisher.ts`) — production always gets this, and
+   * because it is lazy, a machine with no RabbitMQ running can still serve
+   * every other route. Route tests pass a fake so `rtk vitest` never needs
+   * a live broker; they assert what WOULD have been published.
+   */
+  publishFetchSource?: PublishFetchSourceFn;
 };
 
 /**
@@ -121,7 +131,13 @@ export function buildApp(deps: BuildAppDeps) {
 
   registerSourceRoutes(app);
   registerResumeRoutes(app, deps.db, deps.inferTitles);
-  registerSearchRoutes(app, deps.db, deps.getScoreJob, deps.resolveSourceIds);
+  registerSearchRoutes(
+    app,
+    deps.db,
+    deps.getScoreJob,
+    deps.resolveSourceIds,
+    deps.publishFetchSource,
+  );
   registerJobStatusRoutes(app, deps.db);
   registerHandoffRoutes(app, deps.db);
 

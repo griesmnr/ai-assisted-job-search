@@ -19,10 +19,16 @@ describe("ping", () => {
  * kept as a permanent compile-time regression check rather than a one-off
  * manual verification. `npx tsc --noEmit` on this file is the real
  * assertion; the runtime test below just proves the values flow through.
+ *
+ * Ticket 4f88339: the `"complete"` member's own fields changed (the union
+ * is now rebuilt from durable state — see `SearchStatusResponse`'s doc
+ * comment), so the fields this function reaches for changed with them.
+ * What is being regression-tested is unchanged and is NOT the field names:
+ * it is that `status` alone still narrows to exactly one member.
  */
 function describeSearchStatus(r: SearchStatusResponse): string {
   if (r.status === "complete") {
-    return `scored ${r.newlyScored} new job(s), ${r.failed} failed`;
+    return `scored ${r.scored} job(s), ${r.permanentlyFailed} permanently failed`;
   }
   if (r.status === "complete-details-unavailable") {
     return `complete, details unavailable: ${r.note}`;
@@ -37,29 +43,45 @@ function describeSearchStatus(r: SearchStatusResponse): string {
 }
 
 describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review round 3, F3)", () => {
-  it("narrows to the live 'complete' member's own fields", () => {
+  it("narrows to the durable 'complete' member's own fields", () => {
     const r: SearchStatusResponse = {
       searchId: "s1",
       resumeId: "r1",
       status: "complete",
-      newlyScored: 3,
-      failed: 1,
-      skipped: 0,
-      cappedCount: 0,
-      costEstimate: {
-        jobCount: 0,
-        estimatedInputTokens: 0,
-        estimatedCacheReadTokens: 0,
-        estimatedCacheCreationTokens: 0,
-        estimatedOutputTokens: 0,
-        estimatedCostUsd: 0,
-        maxCostUsd: 0,
-        probableCostUsd: 0,
-        basis: "bootstrap",
-      },
-      sourceOutcomes: [],
+      scored: 3,
+      permanentlyFailed: 1,
+      linked: 4,
+      sources: [
+        { sourceId: "usajobs", status: "complete", linkedJobCount: 4 },
+        {
+          sourceId: "wa-state",
+          status: "failed",
+          linkedJobCount: null,
+          errorKind: "rate-limited",
+          errorMessage: "429 from the source",
+        },
+      ],
+      completedAt: "2026-09-22T00:00:00.000Z",
+      degraded: true,
     };
-    expect(describeSearchStatus(r)).toBe("scored 3 new job(s), 1 failed");
+    expect(describeSearchStatus(r)).toBe("scored 3 job(s), 1 permanently failed");
+  });
+
+  it("narrows the 'pending' member's own durable progress fields", () => {
+    const r: SearchStatusResponse = {
+      searchId: "s1",
+      resumeId: "r1",
+      status: "pending",
+      scoredSoFar: 2,
+      linked: 5,
+      permanentlyFailed: 0,
+      sourcesSettled: false,
+      sources: [{ sourceId: "usajobs", status: "pending", linkedJobCount: null }],
+    };
+    expect(describeSearchStatus(r)).toBe("pending");
+    // `linked` is the denominator a reloaded page needs — previously not
+    // rebuildable from GET /searches/:id at all (ticket 4f88339).
+    if (r.status === "pending") expect(r.linked).toBe(5);
   });
 
   it("narrows the restart-fallback 'complete-details-unavailable' member separately", () => {
