@@ -3,7 +3,14 @@ import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { jobMatches, jobs as jobsTable, resumes, searchResults, searches } from "../db/schema.js";
+import {
+  jobMatchFailures,
+  jobMatches,
+  jobs as jobsTable,
+  resumes,
+  searchResults,
+  searches,
+} from "../db/schema.js";
 import {
   estimateScoringCost,
   readUsageStats,
@@ -120,6 +127,20 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  * ONE call per message (aggregating every resumeId scored, not one call per
  * resumeId) and why that grouping is what keeps it safe under this worker's
  * current single-process, `prefetch(1)` deployment.
+ *
+ * COMPLETION LEDGER (ticket 4f88339): this worker now also writes the
+ * FAILURE half of the durable record a search's completion is derived
+ * from. A `job_matches` row says "this (resume, job) pair is done"; a
+ * `job_match_failures` row says "this pair will never be done". Without
+ * the second, a dead-lettered `score.job` leaves nothing in Postgres at
+ * all — the message body is `{jobId}`, with no searchId and no resumeId —
+ * and the search that linked the job waits forever for a score that is
+ * never coming. See `recordPermanentFailures` below for where the rows are
+ * written and why the write is best-effort, and db/schema.ts's
+ * `jobMatchFailures` for why the failures live in their own table rather
+ * than as a status column on `job_matches` (short version: a failure row
+ * in `job_matches` would satisfy the already-scored check in step 2 above
+ * and permanently stop retrying a transiently-failed job).
  *
  * NOW WIRED TO RUN (ticket b53c422): `startScoreJobWorker` is called from a
  * real long-lived process by `run-score-job-worker.ts` in this same
@@ -653,6 +674,60 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
 
   ensureRetryReturnHandler(channel, log);
 
+  /**
+   * Records "we permanently gave up scoring this (resume, job) pair"
+   * (ticket 4f88339, design c54b9e0 §4.3) — the durable twin of the DLQ
+   * entry this message is about to become.
+   *
+   * WHY IT EXISTS: a dead-lettered `score.job` leaves no relational trace
+   * (the body is `{jobId}`, with no searchId and no resumeId), so without
+   * this row the search that linked the job waits for a `job_matches` row
+   * that is never coming — the exact "hangs forever on a DLQ'd job"
+   * failure the queue-driven completion design exists to prevent. This is
+   * ADVISORY FOR COMPLETION ONLY: it lives in its own table precisely so
+   * it never reaches the already-scored check above, which means a manual
+   * republish from the DLQ still re-scores normally. See
+   * `jobMatchFailures`' doc comment in db/schema.ts.
+   *
+   * `ON CONFLICT DO NOTHING` keeps the FIRST recorded cause, which is the
+   * more useful one diagnostically (the original error, not the one from a
+   * manual replay), and makes a redelivery a no-op rather than an error.
+   *
+   * Best-effort, then nack regardless — never lose a message to a
+   * bookkeeping failure. The residual case (row not written AND message
+   * dead-lettered) degrades to the staleness backstop in
+   * `GET /searches/:id`.
+   */
+  async function recordPermanentFailures(
+    jobId: string,
+    attempt: number,
+    failures: ReadonlyArray<{ resumeId: string; kind: string; errorMessage: string }>,
+  ): Promise<void> {
+    if (failures.length === 0) return;
+    try {
+      await db
+        .insert(jobMatchFailures)
+        .values(
+          failures.map((failure) => ({
+            id: randomUUID(),
+            resumeId: failure.resumeId,
+            jobId,
+            kind: failure.kind,
+            errorMessage: failure.errorMessage,
+            attempts: attempt,
+          })),
+        )
+        .onConflictDoNothing({ target: [jobMatchFailures.resumeId, jobMatchFailures.jobId] });
+    } catch (err) {
+      log(
+        `[score.job] WARNING: could not record ${failures.length} job_match_failures row(s) for ` +
+          `jobId ${jobId} (${err instanceof Error ? err.message : String(err)}) - the message ` +
+          `still dead-letters; any search waiting on this job now depends on the staleness ` +
+          `backstop in GET /searches/:id`,
+      );
+    }
+  }
+
   return async function handleScoreJobMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
 
@@ -928,6 +1003,13 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // about retrying the WHOLE message fixes a permanent per-resume
         // failure, and every resumeId that COULD be scored already was
         // (persisted above).
+        //
+        // Terminal for every failed resumeId, so each gets its durable
+        // failure row (ticket 4f88339) BEFORE the ack/nack below - written
+        // on both sub-branches, because a search waiting on this pair
+        // needs the row whether or not some OTHER resume's score
+        // succeeded.
+        await recordPermanentFailures(message.jobId, attempt, failed);
         if (succeeded.length > 0) {
           // Partial success: at least one resumeId's score is already
           // persisted, so this message has produced everything it ever
@@ -974,6 +1056,25 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
             `${retryableFailures.length} retryable failure(s) remain - retries exhausted, ` +
             `dead-lettering (${succeeded.length} already-scored resume(s) stay persisted)`,
         );
+        // DELIBERATE REFINEMENT OF design c54b9e0 §4.3, which says to
+        // record a row per STILL-RETRYABLE resumeId here. That would leak:
+        // a message carrying one permanent failure (resume A) alongside
+        // one retryable failure (resume B) never passes through the
+        // all-permanent branch above, so on exhaustion A would
+        // dead-letter with no durable record and A's search would wait on
+        // it forever. Retries are exhausted, so the message is terminal
+        // for EVERY resumeId that still has a failure - record all of
+        // them. Resumes that succeeded got `job_matches` rows and
+        // correctly get no failure row.
+        //
+        // This is also where ticket b53c422's spend guard lands (design
+        // §10): `SpendGuardExceededError` classifies RETRYABLE, so a
+        // refused job rides the normal retry budget and arrives here,
+        // where it now becomes a `kind = "spend-guard-exceeded"` failure
+        // row and dead-letters. Without that row, a budget-limited search
+        // would hang indefinitely instead of resolving as "complete, N
+        // deferred for budget".
+        await recordPermanentFailures(message.jobId, attempt, failed);
         channel.nack(msg, false, false);
         return;
       }

@@ -564,6 +564,35 @@ export type StartSearchResponse = {
 };
 
 /**
+ * One source's durable state within a search (ticket 4f88339, design
+ * c54b9e0 §5.3) — the `search_sources` row, as the REST contract sees it.
+ *
+ * Deliberately THINNER than `SourceOutcome` above: no `boardCoverage`, no
+ * `skipRate`, no `survivedFilter`. Those exist only in the fetch worker's
+ * memory for the duration of one message and were never persisted, so a
+ * durable read path cannot honestly produce them. What IS here is what
+ * ticket 59fdc52's fourth acceptance criterion actually asked for —
+ * "unavailable sources are reported per-source so the UI can show a source
+ * as failed" — now answerable from Postgres alone, after a restart, from a
+ * process that never handled the search. Persisting the richer per-source
+ * telemetry is real follow-up work, deliberately not smuggled in here.
+ */
+export type SearchSourceState = {
+  /** `Job["dataSource"]` — the same id `POST /searches` was given. */
+  sourceId: string;
+  status: "pending" | "complete" | "failed";
+  /** Jobs this source linked to the search. `null` until the source
+   * reaches a terminal state (and for a `failed` source that never got
+   * far enough to link anything). */
+  linkedJobCount: number | null;
+  /** Only on `failed`: the worker's own classification
+   * ("rate-limited", "source-search-timeout", "unknown-source", ...) or
+   * "dispatch-failed" when the API could not publish the message at all. */
+  errorKind?: string;
+  errorMessage?: string;
+};
+
+/**
  * `GET /searches/:id`. Every member has its OWN `status` literal (ticket
  * 59fdc52 review round 3, F3 — blocking): an earlier version reused
  * `status: "complete"` for both the live, in-memory-tracked result AND the
@@ -578,47 +607,112 @@ export type StartSearchResponse = {
  * on `status` the normal way — exactly what AC3 (response types come from
  * `@app/shared`, not redeclared) exists to prevent.
  *
- * - `"pending"` / `"failed"` / `"complete"` — live, in-memory-tracked
- *   status for a run this API process started and is still tracking (or
- *   just finished tracking). `"pending"` additionally carries `scoredSoFar`
- *   (ticket 1998875) — a running count of jobs successfully scored so far
- *   this run, incremented as each `scoreOne` call in `runDemoMatch`
- *   resolves (see that function's `onJobScored` option). It counts
- *   SUCCESSFUL scores only, matching `newlyScored`'s semantics on the
- *   `"complete"` member below — a job whose call failed isn't "scored," it
- *   will be retried on the next run. This is the only piece of progress
- *   surfaced mid-run; per-job scores themselves are still never exposed
- *   until the run completes (decision: results come from the database,
- *   never from in-memory state).
- * - `"complete-details-unavailable"` — the `searches` row's own completion
- *   marker (schema.ts's `searchStatusEnum`) says `'complete'`, but this API
- *   process's in-memory tracker has lost the run (e.g. a restart) so the
- *   rich per-run details (`newlyScored`, `costEstimate`, ...) aren't
- *   available — only that it finished. Results are still fully queryable
- *   via `GET /resumes/:id/results` regardless (decision: results come from
- *   the database, never from in-memory state).
- * - `"incomplete"` — the row's own marker was never set to `'complete'`
- *   (still at `'running'`, or explicitly `'failed'` with no live error
- *   detail available). Distinct from `"failed"`: it means "this API
- *   process cannot confirm what happened" — it may still be running
+ * REVISED FOR QUEUE-DRIVEN SEARCH (ticket 4f88339, design c54b9e0 §5.3).
+ * Every field on the `"pending"` and `"complete"` members is now REBUILT
+ * FROM POSTGRES on each request rather than read out of an in-memory
+ * tracker that a restart erases — which is strictly stronger than what the
+ * tracker provided: correct across restarts, correct across multiple API
+ * processes, correct for a search this process never handled. The
+ * `searchRuns` Map that used to back them is deleted outright.
+ *
+ * - `"pending"` — the search is genuinely still outstanding: at least one
+ *   source has not reached a terminal state, or at least one linked job
+ *   has neither a score nor a permanent-failure record. `scoredSoFar` is
+ *   KEPT under its existing name and semantics (a count of jobs
+ *   successfully scored, never a count of attempts) so `SearchFlow.tsx`'s
+ *   poll loop and its out-of-order-poll guard keep working; it is now the
+ *   durable count (linked jobs with a `job_matches` row for this search's
+ *   resume) rather than an in-process increment. `linked` is the
+ *   denominator that count is "of" — durable for the first time, which is
+ *   what a reloaded page needs to rebuild a progress bar.
+ * - `"complete"` — nothing is outstanding. `scored` + `permanentlyFailed`
+ *   account for every one of the `linked` jobs. `degraded` is exactly
+ *   `permanentlyFailed > 0`: a job that could not be scored is a
+ *   REPORTABLE OUTCOME, not a blocker (one unscorable posting out of 180
+ *   must never hide the other 179 — CLAUDE.md's DLQ philosophy applied one
+ *   level down from sources to jobs). There is deliberately no
+ *   "mostly failed" middle state: real counts plus `degraded` let the UI
+ *   decide how loud to be, which is the right place for that decision.
+ *   `costEstimate` is NOT on this member any more — it was a
+ *   `RunDemoMatchResult` field with no queue-driven analogue (no single
+ *   run computes one) and no durable home. `POST /searches/estimate` still
+ *   returns it, unchanged; that is where it belongs.
+ * - `"failed"` — either the search could not be dispatched at all (no
+ *   source's `fetch.source` message could be published), or TOTAL SCORING
+ *   FAILURE: every linked job permanently failed and none was scored.
+ *   That carve-out is deliberate and follows `runDemoMatch`'s own
+ *   `isTotalScoringFailure` precedent: source failures are independent
+ *   (USAJOBS being down says nothing about Lever), but scoring failures
+ *   usually are not — an expired API key, a retired model id, or an
+ *   exhausted budget fails every job identically, and reporting
+ *   "complete, 0 of 180 scored" as a normal completion would be
+ *   technically true and practically a lie.
+ * - `"complete-details-unavailable"` — the `searches` row says
+ *   `'complete'` but carries no `completed_at` latch, so there is no
+ *   durable per-source/per-job ledger to derive details from. Still
+ *   reachable, and deliberately kept: every pre-migration row, every
+ *   CLI (`runDemoMatch`) row and every `POST /searches/estimate` row looks
+ *   exactly like this, and they must keep behaving the way ticket 59fdc52
+ *   made them behave. Results are fully queryable via
+ *   `GET /resumes/:id/results` regardless.
+ * - `"incomplete"` — a pre-queue row stuck at `'running'` with no
+ *   `search_sources` ledger to interrogate. It may still be running
  *   elsewhere, or it may have died mid-scoring — never presented as
  *   `"complete"` just because a row exists (ticket 59fdc52 review round 2,
  *   "restart fallback can't report complete for a run that died after
- *   scoring 3 of 200").
+ *   scoring 3 of 200"). Queue-driven searches do not reach this member:
+ *   their work lives in RabbitMQ rather than in a process that can die
+ *   with it, so the derive can say precisely what is still outstanding.
  */
 export type SearchStatusResponse =
-  | { searchId: string; status: "pending"; resumeId: string; scoredSoFar: number }
+  | {
+      searchId: string;
+      status: "pending";
+      resumeId: string;
+      /** Linked jobs already scored for this search's resume. Same name
+       * and same "successful scores only" semantics as before. */
+      scoredSoFar: number;
+      /** Jobs this search has linked SO FAR (it grows while sources are
+       * still fetching). The denominator `scoredSoFar` is "of". */
+      linked: number;
+      /** Linked jobs that will never be scored — a `score.job` message
+       * that exhausted its retries or failed permanently. */
+      permanentlyFailed: number;
+      /** False while any source is still `pending`. This is what keeps
+       * "every linked job is scored" from reading as TRUE for a search
+       * with zero linked jobs — a brand-new search is `pending`, never
+       * `complete`. */
+      sourcesSettled: boolean;
+      sources: SearchSourceState[];
+      /** Set only when the search has been outstanding past the stall
+       * window (see `routes/searches.ts`'s `STALL_AFTER_MS`): the marker
+       * write for a dead-lettered message failed, so nothing will ever
+       * settle this on its own. REPORTED, never auto-healed — replaying
+       * from the DLQ is an operator action. Its value is the search's
+       * `searchedAt`. */
+      stalledSince?: string;
+      /** Enumerated only alongside `stalledSince`: exactly which jobs are
+       * still outstanding, so an operator can find them in the DLQ. */
+      outstandingJobIds?: string[];
+    }
   | { searchId: string; status: "failed"; resumeId: string; error?: string }
   | {
       searchId: string;
       status: "complete";
       resumeId: string;
-      newlyScored: number;
-      failed: number;
-      skipped: number;
-      cappedCount: number;
-      costEstimate: CostEstimate;
-      sourceOutcomes: SourceOutcome[];
+      /** Linked jobs with a score for this search's resume. */
+      scored: number;
+      /** Linked jobs that permanently failed scoring. */
+      permanentlyFailed: number;
+      /** Jobs this search linked. `scored + permanentlyFailed === linked`. */
+      linked: number;
+      sources: SearchSourceState[];
+      /** ISO timestamp of the first read that observed this search
+       * terminal (schema.ts's `searches.completedAt`). */
+      completedAt: string;
+      /** `permanentlyFailed > 0` — finished, but not everything could be
+       * scored. */
+      degraded: boolean;
     }
   | {
       searchId: string;

@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
+import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { jobMatchFailures, searchSources, searches } from "../db/schema.js";
 import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
+import { DEFAULT_SCORE_THRESHOLD } from "../matching/index.js";
 import {
   RateLimitedError,
   SourceError,
@@ -13,7 +17,9 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * The fetch.source worker: consumes one message per (search, source) pair,
  * calls the matching adapter, persists whatever it found idempotently
  * (ingestJobsForSearch, ticket 6bf2196), and publishes one score.job
- * message per job now linked to the search - new or already known.
+ * message per job now linked to the search - new or already known - up to
+ * `DEFAULT_SCORE_THRESHOLD` of them per (search, source) pair (see "THE
+ * PER-SOURCE SCORING CAP" below; ingestion itself stays uncapped).
  *
  * Message shapes (JSON bodies on the "jobs" exchange):
  *
@@ -22,10 +28,24 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  *       and is how this worker dispatches to the right adapter.
  *
  *   score.job: { jobId: string }
- *     - one per job linked to this search. NOT filtered to "rows this call
- *       happened to insert" (see the note on `newlyInsertedJobIds` below) -
- *       the scoring worker (RTK-10, out of scope here) owns deduping
- *       repeated score.job messages for a job it already scored.
+ *     - one per job linked to this search, capped at
+ *       `DEFAULT_SCORE_THRESHOLD` per (search, source) pair. NOT filtered
+ *       to "rows this call happened to insert" (see the note on
+ *       `newlyInsertedJobIds` below) - the scoring worker (RTK-10, out of
+ *       scope here) owns deduping repeated score.job messages for a job it
+ *       already scored.
+ *
+ * COMPLETION LEDGER (ticket 4f88339): this worker also owns the per-source
+ * half of the record `GET /searches/:id` derives completion from. Three
+ * writes, all to the `search_sources` row addressed by (searchId,
+ * sourceId): `complete` + `linkedJobCount` on success, `failed` +
+ * `errorKind`/`errorMessage` on either terminal failure path, and nothing
+ * at all on the retry path (a message riding a backoff tier is still
+ * legitimately pending). This is what tells a poller "still waiting on 2
+ * of 5 sources" apart from "this really is done", and it is what makes a
+ * dead-lettered source PRODUCT-VISIBLE rather than merely logged —
+ * CLAUDE.md's "the UI shows that source as unavailable, and the other
+ * sources still return". Retry/DLQ behaviour itself is unchanged.
  *
  * Retry/DLQ: see topology.ts for the queue wiring this relies on
  * (fetch.source -> one of the fetch.source.retry.* tiers -> back to
@@ -137,6 +157,103 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * lost. At-least-once delivery over score.job, with the scoring worker
  * responsible for not scoring the same job twice, is a better trade than
  * silently dropping jobs that need scoring.
+ *
+ * THE PER-SOURCE SCORING CAP (ticket 4f88339, adversarial review round 1,
+ * F1 — read this before removing or loosening the slice below).
+ *
+ * WHAT WENT WRONG WITHOUT IT. `POST /searches/estimate` shows the caller a
+ * number that is both FILTERED (`compileFilter(criteria)`) and CAPPED
+ * (`DEFAULT_SCORE_THRESHOLD`, 200 — matching/pipeline.ts applies it to
+ * `needsScoreIds` before pricing anything). That number is what the user
+ * reads and implicitly authorizes by clicking "Run search". The queue path
+ * this ticket introduced had NEITHER: it published one `score.job` per job
+ * a source returned, unbounded. The only remaining backstop was
+ * `scoreJobWorker`'s `ScoringSpendGuard` — a LIFETIME-PER-PROCESS ceiling
+ * ($15, `DEFAULT_LIFETIME_SPEND_CEILING_USD`, ticket b53c422), not a
+ * per-run one — so one large search could drain it and every later search
+ * in that process would produce nothing but refused, dead-lettered
+ * messages until someone restarted the worker. That is ticket 59fdc52
+ * review round 2's ~30x estimate-vs-spend defect (see matching/pipeline.ts
+ * around the `overThreshold`/`toScoreIds` slice, which documents the 30x)
+ * reintroduced one layer down.
+ *
+ * WHAT THE CAP HERE IS, EXACTLY. It is a PER-SOURCE APPROXIMATION of the
+ * CLI path's PER-SEARCH cap, and the difference is deliberate, not an
+ * oversight: worst-case spend is now bounded by roughly
+ * `num_sources x DEFAULT_SCORE_THRESHOLD` rather than by the whole
+ * unfiltered pool. A large improvement; not a faithful reproduction of the
+ * old semantics. A TRUE per-search cap is real follow-up work and was
+ * deliberately not attempted here, because both ways of building one are
+ * worse than this on purpose:
+ *
+ *   (a) A running per-search counter. The completion-detection design
+ *       (c54b9e0 §5.2) rejects counters outright — under at-least-once
+ *       delivery a redelivered message would re-increment, and making that
+ *       safe requires a per-(search, job) dedupe ledger, at which point the
+ *       ledger IS the design, minus the counter.
+ *   (b) A live cross-worker query ("how many score.job messages have my
+ *       siblings already published for this search?"). Two workers reading
+ *       and then publishing concurrently race each other, so this needs its
+ *       own locking to be worth anything.
+ *
+ * Both are a design decision this review round did not ask for. The cheap,
+ * sound bound goes in first; tighten it if a real multi-source run shows
+ * `num_sources x 200` is actually too much money.
+ *
+ * WHY THE SLICE IS DETERMINISTIC, AND WHY THAT MATTERS. This whole file is
+ * built on "a redelivery re-runs the same work and writes the same rows".
+ * `ingestJobsForSearch` returns `linkedJobIds` in a stable order — verified
+ * by reading it, not assumed: it builds a `Map` keyed by `externalId` from
+ * `normalizedJobs` (insertion-ordered), takes `[...map.values()]`, and
+ * pushes onto `linkedJobIds` in exactly that order. So for a given
+ * `result.jobs` the first N ids are the SAME first N ids on every
+ * redelivery, and a retried attempt republishes precisely the set it
+ * published before. (If the SOURCE itself returns postings in a different
+ * order on a later attempt, a different subset can be capped — harmless:
+ * score.job is already at-least-once, the failure rows below are
+ * `ON CONFLICT DO NOTHING`, and the completion derive prefers a
+ * `job_matches` row over a `job_match_failures` row for the same pair.)
+ *
+ * WHY THE CAPPED JOBS GET A `job_match_failures` ROW, AND WHY THE LEDGER'S
+ * `linkedJobCount` DOES NOT CHANGE. `ingestJobsForSearch` runs BEFORE the
+ * cap and links everything — every capped job has a real `search_results`
+ * row. Capping only the publish loop would therefore create a NEW and worse
+ * bug than the one being fixed: the completion derive
+ * (`sourcesSettled && outstanding === 0`, routes/searches.ts) counts a job
+ * as outstanding while it has neither a `job_matches` nor a
+ * `job_match_failures` row for the search's resume — and a job that was
+ * never sent a `score.job` will never get either, so the search would hang
+ * pending FOREVER. Two ways out were available; this takes the one that
+ * keeps ingestion honest:
+ *
+ *   - NOT chosen: cap before ingest, so the extra jobs are never linked.
+ *     That would make `search_results` a lie about what the source returned
+ *     and would break `DEFAULT_SCORE_THRESHOLD`'s own stated contract
+ *     ("INGESTION has no truncation-by-order cap at all, full stop" —
+ *     matching/scoring.ts). The CLI path caps SCORING, never ingestion, and
+ *     this path must match it.
+ *   - CHOSEN: link everything, publish the first N, and write a
+ *     `job_match_failures` row (kind `SCORE_THRESHOLD_CAPPED_KIND`) for the
+ *     rest. That table already means exactly "we are not going to produce a
+ *     score for this (resume, job) pair", which is precisely true here, and
+ *     it is ADVISORY FOR COMPLETION ONLY — it never gates scoring (see its
+ *     doc comment in db/schema.ts), so republishing a capped job later
+ *     scores it normally. `linked_job_count` stays the TRUE number of jobs
+ *     this source linked, because that is what the derive and the UI mean
+ *     by it; capping it there would desynchronize the ledger from
+ *     `search_results` for no gain.
+ *
+ * The one honest wart: a capped job is reported to the caller as
+ * `permanentlyFailed`/`degraded`, alongside genuine scoring failures, which
+ * overstates how badly the search went ("we ran out of budget for these" is
+ * not "these are broken"). Distinguishing the two in the response means a
+ * new field on `SearchStatusResponse` and a frontend change, both out of
+ * scope for a fix round; `kind` on the row already carries the distinction
+ * durably for whoever picks that up. Related and also still open: the
+ * QUALITY FILTER gap documented in routes/searches.ts's header — this cap
+ * bounds HOW MANY jobs get scored, not WHICH, so a capped run still scores
+ * the first 200 postings in source order rather than the 200 best matches.
+ * The two follow-ups belong together.
  */
 
 export const JOBS_EXCHANGE = "jobs";
@@ -160,6 +277,35 @@ const ATTEMPT_HEADER = "x-attempt";
  * without turning a single message into a wall of log lines; anything
  * past the cap is summarized as a count instead of dropped silently. */
 const SKIPPED_LOG_LIMIT = 20;
+
+/**
+ * `job_match_failures.kind` written for a job this worker linked but
+ * deliberately did not send a `score.job` for, because the per-source cap
+ * bound (see the module doc comment's "THE PER-SOURCE SCORING CAP"
+ * section). Exported so tests — and any future read path that wants to
+ * present "deferred by the spend cap" differently from "scoring genuinely
+ * failed" — can name it instead of retyping the string.
+ *
+ * Distinct from every `kind` `scoreJobWorker`'s `classifyScoringError()`
+ * produces ("auth-failed", "rate-limited", "spend-guard-exceeded", ...) on
+ * purpose: those record a job whose scoring was ATTEMPTED and failed; this
+ * records one that was never attempted at all.
+ */
+export const SCORE_THRESHOLD_CAPPED_KIND = "score-threshold-capped";
+
+/**
+ * How many `job_match_failures` rows go into one INSERT when the cap binds.
+ *
+ * Not tuning for tuning's sake: a single unfiltered source (SmartRecruiters
+ * lists 4,771 postings for ONE company — see `DEFAULT_SCORE_THRESHOLD`'s
+ * doc comment) can leave thousands of jobs past the cap, and each row binds
+ * 6 parameters. Postgres's wire protocol caps a single statement at 65,535
+ * bound parameters, so an unchunked insert of ~11,000 capped jobs would
+ * fail outright — and it would fail on the SUCCESS path, turning a search
+ * that worked into a retried-then-dead-lettered one. 500 rows (3,000
+ * parameters) is far inside the limit with room for the row shape to grow.
+ */
+const CAPPED_FAILURE_INSERT_CHUNK = 500;
 
 export type FetchSourceMessage = {
   searchId: string;
@@ -555,11 +701,129 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
 
   ensureRetryReturnHandler(channel, log);
 
+  /**
+   * Marks this (search, source) pair permanently failed (ticket 4f88339,
+   * design c54b9e0 §4.2). Called immediately before a `nack` to the DLQ on
+   * BOTH terminal paths — non-retryable, and retries-exhausted.
+   *
+   * WHY THIS IS BEST-EFFORT, UNLIKE THE SUCCESS-PATH WRITE BELOW: the
+   * message must dead-letter regardless. Letting a bookkeeping failure
+   * throw here would either lose the nack entirely or hold a doomed
+   * message hostage, and neither is better than degrading to the staleness
+   * backstop (`STALL_AFTER_MS`, routes/searches.ts), which exists for
+   * exactly this residual case. Mirrors `markSearchFailed`'s own
+   * best-effort posture in routes/searches.ts.
+   */
+  async function markSourceFailed(
+    message: FetchSourceMessage,
+    kind: string,
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      await db
+        .update(searchSources)
+        .set({ status: "failed", errorKind: kind, errorMessage, updatedAt: new Date() })
+        .where(
+          and(
+            eq(searchSources.searchId, message.searchId),
+            eq(searchSources.sourceDescriptorId, message.sourceId),
+          ),
+        );
+    } catch (err) {
+      log(
+        `[fetch.source] WARNING: could not mark search_sources failed for search=` +
+          `${message.searchId} source=${message.sourceId} (${err instanceof Error ? err.message : String(err)}) ` +
+          `- the message still dead-letters; this search now depends on the staleness backstop ` +
+          `in GET /searches/:id to stop waiting on it`,
+      );
+    }
+  }
+
+  /**
+   * Records every job this fetch LINKED but deliberately did NOT send a
+   * `score.job` for, because the per-source cap bound (ticket 4f88339
+   * review round 1, F1 — the module doc comment's "THE PER-SOURCE SCORING
+   * CAP" section explains the whole decision).
+   *
+   * NOT best-effort, unlike `markSourceFailed` above, and the asymmetry is
+   * the point. `markSourceFailed` is swallowed because the message must
+   * dead-letter regardless and the staleness backstop covers a lost marker.
+   * This one is on the SUCCESS path, and losing it is not a cosmetic gap:
+   * without these rows the capped jobs sit in `search_results` with no
+   * `job_matches` and no `job_match_failures` row for the search's resume,
+   * which the completion derive counts as outstanding — forever, because
+   * nothing will ever score or fail them. So a failure here throws into the
+   * handler's catch and the message is RETRIED, exactly like the
+   * success-path ledger write below and for the same reason: re-running the
+   * fetch is wasteful but correct, and a stalled search is not.
+   *
+   * Idempotent under redelivery: `ON CONFLICT (resume_id, job_id) DO
+   * NOTHING`, mirroring `scoreJobWorker`'s own insert into this table.
+   */
+  async function recordCappedJobs(
+    message: FetchSourceMessage,
+    cappedJobIds: string[],
+    attempt: number,
+  ): Promise<void> {
+    // The `score.job` body is `{jobId}` and this message's body is
+    // `{searchId, sourceId, criteria}` — neither carries a resumeId, and
+    // `job_match_failures` is keyed by (resume, job). One small lookup,
+    // taken only when the cap actually binds, so the common (under-cap)
+    // path pays nothing for it.
+    const searchRows = await db
+      .select({ resumeId: searches.resumeId })
+      .from(searches)
+      .where(eq(searches.id, message.searchId))
+      .limit(1);
+    const resumeId = searchRows[0]?.resumeId;
+    if (resumeId === undefined) {
+      // Should be impossible: `ingestJobsForSearch` just wrote
+      // `search_results` rows whose `search_id` FK points at this row.
+      // Throwing (rather than silently skipping) sends this down the retry
+      // path and, if it persists, dead-letters with a real message —
+      // silently skipping would leave the capped jobs outstanding forever,
+      // which is the exact hang this function exists to prevent.
+      throw new Error(
+        `fetch.source: no searches row for searchId "${message.searchId}" while recording ` +
+          `${cappedJobIds.length} score-threshold-capped job(s). The search was deleted ` +
+          `mid-fetch, or the FK from search_results is not what it claims to be.`,
+      );
+    }
+
+    const errorMessage =
+      `Not scored: this source linked ${cappedJobIds.length} job(s) beyond the per-source ` +
+      `scoring cap of ${DEFAULT_SCORE_THRESHOLD} (DEFAULT_SCORE_THRESHOLD). Scoring was never ` +
+      `attempted for this job — republish a score.job for it (and delete this row) to score it.`;
+
+    for (let i = 0; i < cappedJobIds.length; i += CAPPED_FAILURE_INSERT_CHUNK) {
+      const chunk = cappedJobIds.slice(i, i + CAPPED_FAILURE_INSERT_CHUNK);
+      await db
+        .insert(jobMatchFailures)
+        .values(
+          chunk.map((jobId) => ({
+            id: randomUUID(),
+            resumeId,
+            jobId,
+            kind: SCORE_THRESHOLD_CAPPED_KIND,
+            errorMessage,
+            attempts: attempt,
+          })),
+        )
+        .onConflictDoNothing({ target: [jobMatchFailures.resumeId, jobMatchFailures.jobId] });
+    }
+  }
+
   return async function handleFetchSourceMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
+    // Hoisted out of the try so the catch below can address the
+    // `search_sources` row by its natural key. Still `undefined` when the
+    // body itself didn't parse — an `InvalidMessageError` names no
+    // (search, source) pair, so there is nothing to mark.
+    let parsed: FetchSourceMessage | undefined;
 
     try {
       const message = parseFetchSourceMessage(msg.content);
+      parsed = message;
 
       const source = sources[message.sourceId];
       if (!source) {
@@ -631,11 +895,26 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         result.jobs,
       );
 
-      // Publish for every job linked to this search, not just the ones
-      // this particular call inserted - see the module doc comment above
-      // for why. The scoring worker is responsible for not double-scoring
-      // a job it's seen a score.job message for before.
-      for (const jobId of linkedJobIds) {
+      // THE PER-SOURCE SCORING CAP (ticket 4f88339 review round 1, F1).
+      // Everything above this line linked EVERY job the source returned —
+      // ingestion is uncapped, exactly as `DEFAULT_SCORE_THRESHOLD`'s own
+      // doc comment promises. What is capped is SPENDING: at most
+      // `DEFAULT_SCORE_THRESHOLD` of them get a `score.job` message, which
+      // is the same constant, applied to the same question, that the CLI
+      // path and `POST /searches/estimate` already use. The slice is a
+      // deterministic prefix of a deterministically-ordered list, so a
+      // redelivery republishes exactly the same set. See the module doc
+      // comment for the full reasoning, including why this is a per-SOURCE
+      // approximation of a per-SEARCH cap and what tightening it would
+      // cost.
+      const toPublishJobIds = linkedJobIds.slice(0, DEFAULT_SCORE_THRESHOLD);
+      const cappedJobIds = linkedJobIds.slice(DEFAULT_SCORE_THRESHOLD);
+
+      // Publish for every job linked to this search (up to the cap), not
+      // just the ones this particular call inserted - see the module doc
+      // comment above for why. The scoring worker is responsible for not
+      // double-scoring a job it's seen a score.job message for before.
+      for (const jobId of toPublishJobIds) {
         const payload: ScoreJobMessage = { jobId };
         channel.publish(
           JOBS_EXCHANGE,
@@ -647,9 +926,65 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           },
         );
       }
-      if (linkedJobIds.length > 0) {
+      if (toPublishJobIds.length > 0) {
         await channel.waitForConfirms();
       }
+
+      // Ordered AFTER the publishes and BEFORE the ledger write below, so
+      // there is never a moment where this source reads `complete` while
+      // its capped jobs still look outstanding. (Even the reverse order
+      // would only delay terminality by one poll rather than produce a
+      // wrong answer — the derive re-runs on every poll — but there is no
+      // reason to take that window.)
+      if (cappedJobIds.length > 0) {
+        await recordCappedJobs(message, cappedJobIds, attempt);
+        log(
+          `[fetch.source] SCORING CAP BOUND: source=${message.sourceId} ` +
+            `search=${message.searchId} linked ${linkedJobIds.length} job(s); published ` +
+            `score.job for the first ${toPublishJobIds.length} (DEFAULT_SCORE_THRESHOLD) and ` +
+            `recorded the remaining ${cappedJobIds.length} as ` +
+            `"${SCORE_THRESHOLD_CAPPED_KIND}" so the search can still reach a terminal state. ` +
+            `Those jobs are ingested and linked — they were not scored, not lost.`,
+        );
+      }
+
+      // SUCCESS-PATH LEDGER WRITE (ticket 4f88339, design c54b9e0 §4.2).
+      // Placed here — after the score.job publishes are confirmed,
+      // immediately before the ack — deliberately:
+      //
+      // (a) NOT swallowed. If this UPDATE throws it falls into the catch
+      //     below and the message is RETRIED. Re-running the whole fetch
+      //     is wasteful but correct (everything downstream is idempotent),
+      //     and the alternative — acking with the row left `pending` — is
+      //     a permanent stall for that search.
+      // (b) As late as possible. The one race this design names rather
+      //     than hides (§6.2) is a worker marking `complete` and then
+      //     dying before its ack: the redelivery re-fetches and could link
+      //     a NEW job to a search a poll has meanwhile reported complete.
+      //     Nothing is lost or double-billed when that happens (the
+      //     results endpoint reads `job_matches` directly), and keeping
+      //     this write adjacent to the ack makes the window microseconds
+      //     wide. The airtight fix is a transactional outbox, rejected as
+      //     disproportionate for a single-user app.
+      //
+      // SET, never incremented: a redelivered message writes the same (or
+      // a superset) `linkedJobCount`, so at-least-once delivery cannot
+      // inflate it.
+      await db
+        .update(searchSources)
+        .set({
+          status: "complete",
+          linkedJobCount: linkedJobIds.length,
+          errorKind: null,
+          errorMessage: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(searchSources.searchId, message.searchId),
+            eq(searchSources.sourceDescriptorId, message.sourceId),
+          ),
+        );
 
       channel.ack(msg);
     } catch (err) {
@@ -661,6 +996,7 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           `[fetch.source] non-retryable error (${kind}) on attempt ${attempt} - ` +
             `dead-lettering immediately without consuming a retry: ${errorMessage}`,
         );
+        if (parsed) await markSourceFailed(parsed, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
@@ -670,9 +1006,15 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           `[fetch.source] attempt ${attempt}/${maxAttempts} failed (${kind}): ${errorMessage} ` +
             `- retries exhausted, dead-lettering`,
         );
+        if (parsed) await markSourceFailed(parsed, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
+
+      // RETRY PATH: no write. The source is still `pending`, which is the
+      // truth — a message riding a backoff tier is legitimately
+      // outstanding, and marking it either way here would be a lie the
+      // completion derive would act on.
 
       const nextAttempt = attempt + 1;
       const desiredDelayMs =

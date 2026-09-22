@@ -51,7 +51,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import { loadEnvFile } from "../load-env.js";
 
 // Safe to call more than once (each test file that also calls this at its
@@ -305,6 +305,47 @@ export interface TestDatabase extends EmptyTestDatabase {
  * generated database name, which helps when eyeballing `\l` output for a
  * leaked database from a hard-killed run.
  */
+export interface PooledTestDatabase {
+  /** A drizzle instance backed by a real connection POOL, not a single
+   * client — so two requests really can be in two transactions at once. */
+  db: NodePgDatabase;
+  /** Closes the pool. Call it in a `finally`, not just on the happy path:
+   * an open pool keeps the process (and the parent database's DROP) alive. */
+  close(): Promise<void>;
+}
+
+/**
+ * A POOL-backed handle on an existing {@link createTestDatabase} database
+ * (ticket 4f88339, adversarial review round 1, F2).
+ *
+ * WHY THIS EXISTS, AND WHY THE DEFAULT ISN'T ENOUGH. {@link createTestDatabase}
+ * hands back `drizzle(client)` over ONE `pg.Client`. A single client is one
+ * session: it cannot hold two transactions at once (a second `BEGIN`
+ * interleaves into the first), and — the part that matters here —
+ * `pg_advisory_xact_lock` is re-entrant WITHIN a session, so a
+ * lock-based concurrency guard trivially "passes" on a single client
+ * whether or not it actually works. A test written against the default
+ * handle therefore cannot distinguish a correct guard from a broken one,
+ * which is exactly the failure a concurrency test exists to catch.
+ * Production runs on a `Pool` (see index.ts), so a genuinely concurrent
+ * test has to as well.
+ *
+ * Deliberately a separate, opt-in helper rather than changing what
+ * `createTestDatabase` returns: every other DB-backed test file wants the
+ * single, strictly-ordered client it already has, and a pool would make
+ * their "insert then immediately select" sequences depend on which
+ * connection they happened to land on.
+ */
+export function createPooledTestDatabase(testDbName: string, max = 8): PooledTestDatabase {
+  const pool = new Pool({ ...connectionConfig(testDbName), max });
+  return {
+    db: drizzle(pool),
+    async close() {
+      await pool.end();
+    },
+  };
+}
+
 export async function createTestDatabase(prefix: string): Promise<TestDatabase> {
   const empty = await createEmptyTestDatabase(prefix);
   try {

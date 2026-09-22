@@ -218,11 +218,12 @@ describe("App tabs (ticket f4a7f07)", () => {
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
     getSearchStatus.mockResolvedValue({
       status: "complete",
-      newlyScored: 1,
-      failed: 0,
-      skipped: 0,
-      costEstimate: makeEstimate().costEstimate,
-      sourceOutcomes: [],
+      scored: 1,
+      permanentlyFailed: 0,
+      linked: 1,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
     });
 
     await submitResume();

@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  jobMatchFailures,
   jobMatches,
   jobs,
   resumes,
@@ -989,5 +990,184 @@ describe("scoreJobWorker recordUsageStats wiring", () => {
     expect(channel.acked).toHaveLength(1);
     expect(channel.nacked).toHaveLength(0);
     expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// job_match_failures — the durable twin of a score.job.dlq entry
+// (ticket 4f88339, design c54b9e0 §4.3).
+//
+// Without these rows a dead-lettered score.job leaves NO relational trace
+// at all (the body is `{jobId}`: no searchId, no resumeId), so the search
+// that linked the job waits forever for a `job_matches` row that is never
+// coming. Every assertion below is about the message being TERMINAL in
+// Postgres, not just terminal in RabbitMQ.
+// ---------------------------------------------------------------------------
+
+describe("scoreJobWorker job_match_failures (ticket 4f88339)", () => {
+  it("writes one row per permanently-failed resumeId when every failure is permanent", async () => {
+    const jobId = await insertJob();
+    const badResumeA = await insertResume("permanent A");
+    const badResumeB = await insertResume("permanent B");
+    await linkJobToResumeViaSearch(jobId, badResumeA);
+    await linkJobToResumeViaSearch(jobId, badResumeB);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockRejectedValue(badRequestError());
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(2);
+    expect(new Set(failures.map((f) => f.resumeId))).toEqual(new Set([badResumeA, badResumeB]));
+    expect(failures.every((f) => f.kind === "bad-request")).toBe(true);
+    expect(failures.every((f) => f.attempts === 1)).toBe(true);
+    // The rows are written BEFORE the message is disposed of, and the
+    // message still dead-letters — a bookkeeping write never changes the
+    // message's fate.
+    expect(channel.nacked).toHaveLength(1);
+  });
+
+  it("writes failure rows on the PARTIAL-success path too — a search waiting on this pair needs the row whether or not a sibling resume scored", async () => {
+    const jobId = await insertJob();
+    const goodResume = await insertResume("good resume");
+    const badResume = await insertResume("bad resume");
+    await linkJobToResumeViaSearch(jobId, goodResume);
+    await linkJobToResumeViaSearch(jobId, badResume);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockImplementation(async (_job, resumeText: string) => {
+      if (resumeText === "good resume") return scoredJob({ matchScore: 90 });
+      throw badRequestError();
+    });
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.acked).toHaveLength(1);
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.resumeId).toBe(badResume);
+    // The resume that DID score gets a job_matches row and no failure row.
+    const matches = await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId));
+    expect(matches.map((m) => m.resumeId)).toEqual([goodResume]);
+  });
+
+  it("on retries exhausted, records EVERY still-failing resumeId — including a permanent failure that never passed through the all-permanent branch", async () => {
+    // The leak this deliberately closes in design §4.3's letter ("one row
+    // per still-RETRYABLE resumeId"): a message carrying one permanent
+    // failure alongside one retryable one never reaches the all-permanent
+    // branch, so on exhaustion the permanent one would dead-letter with no
+    // record and its search would wait on it forever.
+    const jobId = await insertJob();
+    const permanentResume = await insertResume("permanently bad resume");
+    const rateLimitedResume = await insertResume("rate limited resume");
+    await linkJobToResumeViaSearch(jobId, permanentResume);
+    await linkJobToResumeViaSearch(jobId, rateLimitedResume);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockImplementation(async (_job, resumeText: string) => {
+      if (resumeText === "permanently bad resume") throw badRequestError();
+      throw rateLimitError();
+    });
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {}, maxAttempts: 2 });
+
+    await handler(makeMessage({ jobId }, { "x-attempt": 2 }));
+
+    expect(channel.nacked).toHaveLength(1);
+    expect(channel.sentToQueue).toHaveLength(0);
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(new Set(failures.map((f) => f.resumeId))).toEqual(
+      new Set([permanentResume, rateLimitedResume]),
+    );
+    expect(failures.every((f) => f.attempts === 2)).toBe(true);
+    expect(new Set(failures.map((f) => f.kind))).toEqual(new Set(["bad-request", "rate-limited"]));
+  });
+
+  it("writes NOTHING on the retry path — a message still riding a backoff tier is legitimately outstanding", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("retryable resume");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockRejectedValue(rateLimitError());
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {}, maxAttempts: 4 });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.sentToQueue).toHaveLength(1); // scheduled a retry
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(0);
+  });
+
+  it("keeps the FIRST recorded cause on a redelivery (ON CONFLICT DO NOTHING), and never errors on the duplicate", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("permanently bad resume");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    let call = 0;
+    const scoreJob = vi.fn().mockImplementation(async () => {
+      call++;
+      // A different permanent cause the second time around — a manual
+      // replay after the original outage, say.
+      throw call === 1 ? badRequestError() : new MissingResumeTextError("later, different cause");
+    });
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+    await handler(makeMessage({ jobId }));
+
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.kind).toBe("bad-request");
+  });
+
+  it("a job the SPEND GUARD refuses ends up with a spend-guard-exceeded row and dead-letters, rather than holding the message (design §10)", async () => {
+    // The b53c422 interaction the design flagged as needing closure here:
+    // `SpendGuardExceededError` classifies RETRYABLE, so a refused job
+    // rides the retry budget and lands on the retries-exhausted branch.
+    // Without a failure row there, a budget-limited search hangs forever.
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume the guard refuses");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn();
+    const handler = createScoreJobHandler({
+      channel,
+      db,
+      scoreJob,
+      log: () => {},
+      maxAttempts: 1,
+      spendGuard: { tryReserve: () => false },
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(scoreJob).not.toHaveBeenCalled();
+    expect(channel.nacked).toHaveLength(1);
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.kind).toBe("spend-guard-exceeded");
   });
 });

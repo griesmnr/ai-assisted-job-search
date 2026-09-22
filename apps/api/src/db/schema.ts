@@ -146,6 +146,26 @@ export const searches = pgTable("searches", {
     .notNull()
     .references(() => resumes.id),
   searchedAt: timestamp("searched_at").notNull(),
+  /**
+   * Ticket 4f88339 (design c54b9e0 §3.3): when the completion derive in
+   * `GET /searches/:id` first evaluated this search terminal. A MONOTONIC
+   * LATCH AND PURE CACHE, never a gate — it is written exactly once,
+   * `WHERE completed_at IS NULL`, so racing readers converge instead of
+   * fighting. Two things it buys: a real finish time for the UI, and a
+   * one-row fast path that skips the two-query derive on every subsequent
+   * poll of a finished search.
+   *
+   * NULL is not "not finished" — it is "no queue-driven derive has ever
+   * latched this row". Every pre-migration row, every CLI (`runDemoMatch`)
+   * row, and every `POST /searches/estimate` row has `status = 'complete'`
+   * with `completed_at` NULL, and the read path deliberately keeps
+   * answering those the way ticket 59fdc52 made it answer them
+   * (`complete-details-unavailable`): they have no durable per-source or
+   * per-job ledger to derive rich details from. `completed_at IS NOT NULL`
+   * is therefore also the signal that says "this row's details CAN be
+   * rebuilt from Postgres" — see routes/searches.ts's read path.
+   */
+  completedAt: timestamp("completed_at"),
   // Defaults to "running" so the row looks in-flight from the moment
   // runDemoMatch inserts it (before any scoring happens), not after some
   // later step remembers to say so. demo-match.ts's `runDemoMatch` sets
@@ -333,12 +353,149 @@ export const handoffs = pgTable("handoffs", {
   expiresAt: timestamp("expires_at").notNull(),
 });
 
-export const searchSources = pgTable("search_sources", {
-  id: text("id").primaryKey(),
-  searchId: text("search_id")
-    .notNull()
-    .references(() => searches.id),
-  sourceDescriptorId: text("source_descriptor_id")
-    .notNull()
-    .references(() => sourceDescriptors.id),
-});
+/**
+ * Ticket 4f88339 (design c54b9e0 §3.1). One (search, source) pair's
+ * terminal state, as observed by `fetchSourceWorker`.
+ *
+ * - `pending`  — a `fetch.source` message is live for this pair (or was
+ *                published and has not been consumed yet).
+ * - `complete` — the worker finished this source and linked its jobs.
+ * - `failed`   — permanently failed: dead-lettered by the worker, or never
+ *                dispatched at all (`POST /searches` could not publish).
+ *
+ * There is deliberately no `retrying` value: a message riding a retry tier
+ * is still legitimately outstanding, which `pending` already says. Adding
+ * a fourth value would mean the completion derive had to know which of two
+ * non-terminal values also counts as non-terminal.
+ */
+export const searchSourceStatusEnum = pgEnum("search_source_status", [
+  "pending",
+  "complete",
+  "failed",
+]);
+
+/**
+ * One row per source a search covers — and, since ticket 4f88339, the
+ * per-source half of the fan-in ledger that makes "is this search done?"
+ * a terminable question (design c54b9e0 §2/§3.1).
+ *
+ * The count of rows here IS the fetch fan-out width; `status` is what
+ * turns that width into a completion signal. Without it, "every linked job
+ * has been scored" is VACUOUSLY TRUE the instant `POST /searches` returns
+ * (zero `search_results` rows yet), so a brand-new search reads as
+ * complete before it has done anything. See routes/searches.ts's
+ * `sourcesSettled` conjunct, and the test that asserts that specific bug
+ * cannot come back.
+ */
+export const searchSources = pgTable(
+  "search_sources",
+  {
+    id: text("id").primaryKey(),
+    searchId: text("search_id")
+      .notNull()
+      .references(() => searches.id),
+    sourceDescriptorId: text("source_descriptor_id")
+      .notNull()
+      .references(() => sourceDescriptors.id),
+    status: searchSourceStatusEnum("status").notNull().default("pending"),
+    /**
+     * Jobs this source linked to this search on its last completed attempt
+     * (`ingestJobsForSearch`'s `linkedJobIds.length`). NULL until the
+     * source reaches a terminal state.
+     *
+     * SET, never incremented. That is the whole reason this design has no
+     * counters: a redelivered `fetch.source` message re-runs the same
+     * fetch and overwrites this with the same (or a superset) value, so
+     * at-least-once delivery cannot inflate it. An `x += n` here would be
+     * wrong on the second delivery of every message.
+     */
+    linkedJobCount: integer("linked_job_count"),
+    /**
+     * `classify()`'s `kind` from fetchSourceWorker ("rate-limited",
+     * "unknown-source", "source-search-timeout", ...), or
+     * "dispatch-failed" when `POST /searches` could not publish the
+     * message at all. NULL unless `status = 'failed'`.
+     *
+     * This is what makes a dead-lettered source PRODUCT-VISIBLE rather
+     * than merely logged — CLAUDE.md's "the UI shows that source as
+     * unavailable, and the other sources still return". The DLQ keeps the
+     * replayable message; this column keeps the queryable fact.
+     */
+    errorKind: text("error_kind"),
+    errorMessage: text("error_message"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  /**
+   * REQUIRED, not an optimization (design c54b9e0 §3.1): it is what makes
+   * the row addressable by its natural key, so the worker can do an
+   * idempotent `UPDATE ... WHERE search_id = $1 AND source_descriptor_id =
+   * $2` with no id on the wire, and makes a duplicate row impossible.
+   *
+   * Safe to add: `POST /searches`' body schema already enforces
+   * `uniqueItems` on `sourceIds` (routes/searches.ts), and `runDemoMatch`
+   * inserts one row per distinct adapter (matching/pipeline.ts).
+   */
+  (table) => [unique().on(table.searchId, table.sourceDescriptorId)],
+);
+
+/**
+ * "We permanently gave up scoring this (resume, job) pair" — the durable
+ * twin of a `score.job.dlq` entry (ticket 4f88339, design c54b9e0 §3.2).
+ *
+ * WHY THIS TABLE HAS TO EXIST AT ALL: dead-lettering leaves no relational
+ * trace. A `score.job` message that exhausts its retries exists only as a
+ * message in `score.job.dlq`, whose body is `{jobId}` — no searchId, no
+ * resumeId — and reading a queue to find out is destructive. So the
+ * otherwise-free completion predicate ("every job this search linked has a
+ * `job_matches` row for the search's resume") is correct for success and
+ * NON-TERMINATING for failure: a DLQ'd job never gets that row, and the
+ * predicate stays false forever. That is the "waiting forever on a DLQ'd
+ * job" hang this whole design exists to prevent.
+ *
+ * WHY A SEPARATE TABLE AND NOT A NULLABLE `status` ON `job_matches` —
+ * three reasons, the third blocking:
+ *
+ *   1. `job_matches.match_score` and `.rationale` are NOT NULL. A failure
+ *      row forces both nullable, weakening the constraint for every real
+ *      row.
+ *   2. `job_matches` is documented above as a derived cache of real
+ *      ANSWERS — "delete the whole table and a rerun reproduces it". A
+ *      failure is not an answer.
+ *   3. It would silently poison two existing read paths.
+ *      `matching/pipeline.ts`'s `alreadyScoredIds` and
+ *      `scoreJobWorker.ts`'s already-scored check both treat ANY
+ *      `job_matches` row for `(resumeId, jobId)` as "already scored". A
+ *      failure row living there would make both conclude "already scored"
+ *      and NEVER RETRY THE JOB AGAIN, EVER — converting a transient
+ *      outage into permanent data loss.
+ *
+ * Kept out of `job_matches`, this table is ADVISORY FOR COMPLETION ONLY:
+ * it never gates scoring, so a manual republish of a DLQ'd message
+ * re-scores normally, and the retry policy is simply "delete the failure
+ * rows and republish".
+ */
+export const jobMatchFailures = pgTable(
+  "job_match_failures",
+  {
+    id: text("id").primaryKey(),
+    resumeId: text("resume_id")
+      .notNull()
+      .references(() => resumes.id),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    /** `classifyScoringError()`'s `kind` (scoreJobWorker.ts) —
+     * "auth-failed", "not-found", "missing-resume", "rate-limited"
+     * (retries exhausted), "spend-guard-exceeded", ... */
+    kind: text("kind").notNull(),
+    errorMessage: text("error_message").notNull(),
+    /** The `x-attempt` value the message died on. Diagnostic only —
+     * nothing branches on it. */
+    attempts: integer("attempts").notNull(),
+    failedAt: timestamp("failed_at").notNull().defaultNow(),
+  },
+  // Mirrors job_matches' own (resume_id, job_id) key, which is what makes
+  // the completion derive a plain LEFT JOIN against both tables, and makes
+  // the worker's insert an idempotent ON CONFLICT DO NOTHING.
+  (table) => [unique().on(table.resumeId, table.jobId)],
+);
