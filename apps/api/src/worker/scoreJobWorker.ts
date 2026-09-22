@@ -5,6 +5,9 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatches, jobs as jobsTable, resumes, searchResults, searches } from "../db/schema.js";
 import {
+  estimateScoringCost,
+  readUsageStats,
+  recordUsageStats,
   toNormalizedJob,
   type JobDescriptionRow,
   type ScoreJobFn,
@@ -95,27 +98,37 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  * all means a SUSTAINED condition survived that inner retry budget, so this
  * ladder starts at 5s, not fetch.source's 1s).
  *
- * SPEND GUARD - DELIBERATELY NOT BUILT HERE (ticket 4065511 scope, per the
- * PM): `runDemoMatch`'s synchronous CLI path caps how many jobs get scored
- * per run (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`, matching/
- * scoring.ts and matching/pipeline.ts) and requires an explicit opt-in to
- * exceed it. This worker, consuming `score.job` off a queue indefinitely,
- * has NO equivalent ceiling - every message that names a resumeId needing a
- * score results in a real, billed Claude call with nothing capping how many
- * happen per unit time or in total. That is a real, open gap, not an
- * oversight this file is unaware of - it is out of this ticket's scope
- * because this worker is not wired to run against real traffic yet (see the
- * "OUT OF SCOPE" note below), but it must be resolved, or explicitly
- * accepted, before it ever is.
+ * SPEND GUARD (ticket b53c422 - closes the gap ticket 4065511 deliberately
+ * left open, see the two paragraphs this replaces in git history):
+ * `runDemoMatch`'s synchronous CLI path caps how many jobs get scored PER
+ * RUN (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`, matching/scoring.ts
+ * and matching/pipeline.ts) and requires an explicit opt-in to exceed it. A
+ * queue-driven worker consuming `score.job` indefinitely has no equivalent
+ * "one run" to size a threshold against, so this file uses a different
+ * mechanism entirely: `ScoringSpendGuard`, a LIFETIME-PER-PROCESS dollar
+ * ceiling, checked with a real pre-call estimate (`estimateScoringCost`,
+ * matching/usage-cost.ts) before every scoring attempt and reset only by
+ * restarting the process. See `ScoringSpendGuard`'s own doc comment below
+ * for the concrete numbers behind the default ceiling and why this
+ * mechanism was chosen over a rolling time window or a per-message
+ * threshold.
  *
- * NOT WIRED TO RUN (ticket 4065511 scope, per the PM): this file exports
- * `createScoreJobHandler`/`startScoreJobWorker` - the worker module and its
- * entry point - but nothing in this codebase yet calls `startScoreJobWorker`
- * from a running process (no package.json script, no docker-compose service
- * entry). `fetchSourceWorker.ts` has this identical gap today; closing it
- * for BOTH workers at once, alongside switching `routes/searches.ts` to
- * publish `fetch.source` instead of calling `runDemoMatch` synchronously, is
- * a deliberately separate, later ticket in this same epic.
+ * USAGE STATS (ticket b53c422): every batch of successful scores from ONE
+ * message is now recorded via `recordUsageStats` (matching/usage-cost.ts),
+ * mirroring `runDemoMatch`'s own call site in matching/pipeline.ts - see the
+ * `recordUsageStats` call in `createScoreJobHandler` below for why this is
+ * ONE call per message (aggregating every resumeId scored, not one call per
+ * resumeId) and why that grouping is what keeps it safe under this worker's
+ * current single-process, `prefetch(1)` deployment.
+ *
+ * NOW WIRED TO RUN (ticket b53c422): `startScoreJobWorker` is called from a
+ * real long-lived process by `run-score-job-worker.ts` in this same
+ * directory - see that file's own doc comment (and README "Run the queue
+ * workers") for how the real `channel`/`db`/`scoreJob` dependencies are
+ * constructed and the correct (root-relative, NOT `package.json`'s
+ * `worker:score-job` `pnpm --filter` form - see `USAGE_STATS_PATH`'s doc
+ * comment below for why that matters) way to launch it. `fetchSourceWorker.ts`
+ * gets the identical treatment via `run-fetch-source-worker.ts`, same ticket.
  */
 
 /** The message body didn't parse as JSON or didn't match `ScoreJobMessage`.
@@ -134,6 +147,188 @@ export class InvalidMessageError extends Error {}
  * was deleted out from under this message, not a timing race that a retry
  * would resolve. */
 export class UnknownJobError extends Error {}
+
+/** Same real usage-stats file `readUsageStats`/`recordUsageStats` already
+ * read/write for the synchronous CLI path (`demo-match.ts`'s `main()`, via
+ * `runDemoMatch`'s own `usageStatsPath` default in matching/pipeline.ts) and
+ * for `rescore-existing-matches.ts`'s own `USAGE_STATS_PATH` -- a local
+ * copy of the same string literal, not an import, matching this file's own
+ * established "small frozen piece, not reached into" convention (see
+ * `InvalidMessageError`'s doc comment above, and `rescore-existing-
+ * matches.ts`'s doc comment on why it carries its own copy too). Reusing
+ * the SAME path means this worker's spend-guard pre-call estimate, and the
+ * `recordUsageStats` calls below, read from and write to the SAME corpus
+ * every other real scoring path already shares -- exactly the point of
+ * ticket b53c422's `recordUsageStats` wiring: this path's real volume must
+ * feed the same average `estimateScoringCost` everywhere else depends on,
+ * not a second, disconnected figure.
+ *
+ * CWD-RELATIVE, same as `demo-match.ts`/`rescore-existing-matches.ts`'s own
+ * `prep/`-relative paths -- this worker MUST be launched with the repo root
+ * as the working directory (`npx tsx apps/api/src/worker/run-score-job-
+ * worker.ts` from root, README "Run the queue workers"), never via `pnpm
+ * --filter @app/api worker:score-job` (cwd = `apps/api/`). Opus review,
+ * ticket b53c422, F1: launching from the wrong cwd doesn't error -- it
+ * silently writes/reads `apps/api/prep/scoring-usage-stats.json`, the exact
+ * "second, disconnected figure" the paragraph above says this wiring exists
+ * to prevent, and pins the spend guard to the less-conservative bootstrap
+ * cost basis forever (measured is ~20.9% higher per call than bootstrap --
+ * re-review correction: the prior draft of this comment had the direction
+ * inverted, ~17% is how much LOWER bootstrap is than measured, not the
+ * reverse; a guard that never sees real history under-estimates every call
+ * by the ~20.9% figure). */
+export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
+
+/**
+ * `SCORING SPEND GUARD` (ticket b53c422): this worker consumes `score.job`
+ * off a queue indefinitely, with no natural "one run" the way
+ * `runDemoMatch`'s `DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold` assumes
+ * (see this module's own doc comment, "SPEND GUARD"). Three shapes were on
+ * the table (per the ticket): a rolling time-window cap, a lifetime-per-
+ * process cap with restart-to-reset, or a pre-call `estimateScoringCost`
+ * check. This combines the last two: `ScoringSpendGuard` tracks a running
+ * total of PRE-CALL worst-case cost estimates (`estimateScoringCost(...)
+ * .maxCostUsd`, the same genuine, code-enforced-`MAX_OUTPUT_TOKENS` ceiling
+ * `checkSpendCeiling` in rescore-existing-matches.ts already trusts for an
+ * identical purpose) against `ceilingUsd`, for the LIFETIME of this process
+ * -- there is no time-based reset, only a restart, which starts a fresh
+ * `ScoringSpendGuard` instance with `spentUsd` back at 0.
+ *
+ * WHY LIFETIME-PER-PROCESS OVER A ROLLING WINDOW: a rolling window (e.g.
+ * "$X per hour") sounds like it would recover on its own, but it creates a
+ * worse failure mode for the concrete scenario the ticket names -- a bug
+ * publishing `score.job` messages in a tight loop. Under a rolling window,
+ * once the window fills, the SAME message would be endlessly refused,
+ * requeued, and refused again every time its retry backoff elapses,
+ * forever (nothing about this worker's `maxAttempts`/DLQ machinery treats
+ * "the window is still full" as a reason to stop retrying differently from
+ * any other retryable failure -- it would just dead-letter after
+ * `maxAttempts`, discarding real work that would have succeeded once the
+ * window rolled over). A lifetime cap fails louder and more simply: once
+ * tripped, every message genuinely needing a NEW scoring call dead-letters
+ * (see `classifyScoringError`'s `spend-guard-exceeded` case below) after
+ * the normal retry budget, leaving a clear, complete DLQ audit trail an
+ * operator restarts the process and replays -- not a self-healing trickle
+ * that can silently under- or over-recover depending on traffic timing.
+ * "Just restart it" is an explicitly accepted manual safety valve for a
+ * personal, single-operator project (the ticket's own words), which is
+ * exactly what this project is.
+ *
+ * WHY $15 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
+ * this worker's own real numbers, not by analogy to anything else in the
+ * codebase -- `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD`
+ * is $5 (opus review, ticket b53c422, F2: an earlier draft of this comment
+ * claimed the two numbers were the same deliberate ceiling reused across
+ * the codebase; they are not, and never really were -- that file's $5 is
+ * sized for ITS OWN unrelated constraint, an unmeasurable per-resume job
+ * count for a manual CLI rerun, not a lifetime-per-process guard against a
+ * runaway bug in a long-lived worker. Treat the two ceilings as
+ * independent; don't re-derive a link between them from this comment).
+ * Run live in this worktree (2026-09-21) via `estimateScoringCost` against
+ * a synthetic single-job
+ * batch shaped like this codebase's own real, previously-measured figures
+ * (a 4,914-char resume -- the exact length `CACHE_READ_PRICE_MULTIPLIER`'s
+ * doc comment in usage-cost.ts cites for the real `prep/resume.txt` -- and
+ * a 6,000-char job description, `buildJobSuffix`'s own documented cap):
+ *
+ *   - "bootstrap" basis (no `prep/scoring-usage-stats.json` yet -- a fresh
+ *     checkout, this sandbox's own state): `maxCostUsd` for ONE job is
+ *     ~$0.0388, so $15 bounds roughly 387 worst-case scoring attempts
+ *     before tripping.
+ *   - "measured" basis (real historical per-call averages -- reused the
+ *     same 3,874.5 in / 454.2 out tokens/call figures
+ *     `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD` comment
+ *     cites, with no cache history): `maxCostUsd` for ONE job is ~$0.0468,
+ *     so $15 bounds roughly 320 worst-case scoring attempts.
+ *
+ * Either basis lands in the same 300-400 range -- comfortably above
+ * `DEFAULT_SCORE_THRESHOLD` (200, the synchronous CLI path's own per-run
+ * cap) so a single legitimate burst of activity (e.g. one large search
+ * fanning out through this worker) does not itself trip the guard, while
+ * still bounding a genuine runaway-bug's total lifetime exposure to
+ * roughly $15. (Worth noting the criterion actively EXCLUDES
+ * `MAX_ESTIMATED_SPEND_USD`'s $5: that would bound only ~107-129 calls,
+ * below the 200-call floor this paragraph argues for -- another reason the
+ * two ceilings aren't meant to match.) Not a claim that $15 is uniquely
+ * correct -- like `MAX_ESTIMATED_SPEND_USD`, raise
+ * `DEFAULT_LIFETIME_SPEND_CEILING_USD` deliberately, with a real reason, if
+ * it proves too tight in practice.
+ *
+ * Deliberately OVER-attributes, never under: `tryReserve` books the
+ * estimate BEFORE `scoreJob()` is ever called, and never gives it back --
+ * not on a failed call (below its real cost, since nothing was actually
+ * billed), not on a call that comes in cheaper than its worst-case
+ * estimate (the common case, since `maxCostUsd` assumes every call maxes
+ * out `MAX_OUTPUT_TOKENS`). That is the same "conservative, never a silent
+ * underestimate" posture `CostEstimate.maxCostUsd`'s own doc comment
+ * (usage-cost.ts) already commits to; a guard that could under-count a
+ * real call's true cost would defeat the whole point of having one.
+ *
+ * THREAD-SAFETY NOTE: `tryReserve` is a plain synchronous read-then-write
+ * on `spentUsd`, safe only because every call site in this file invokes it
+ * SYNCHRONOUSLY (before the first `await`) inside the `.map()` that builds
+ * `createScoreJobHandler`'s `Promise.all` -- see the call site below for
+ * why that ordering, not this class, is what actually prevents two
+ * concurrent reservations from racing each other within one message or
+ * across messages under `prefetch(1)`.
+ */
+export const DEFAULT_LIFETIME_SPEND_CEILING_USD = 15;
+
+/** The minimal spend-guard surface `createScoreJobHandler` actually calls -
+ * an interface, not the concrete `ScoringSpendGuard` class, for the same
+ * dependency-injection reason `ScoreJobWorkerOptions.scoreJob` is typed as
+ * the `ScoreJobFn` function type rather than a class: a test can hand in a
+ * tiny fake (e.g. "allow once, then always refuse") to hit a refusal
+ * deterministically, without reconstructing real dollar-estimate
+ * arithmetic just to cross a ceiling. `ScoringSpendGuard` below implements
+ * this structurally (TypeScript needs no explicit `implements` for that),
+ * and is what every real caller (`run-score-job-worker.ts`) actually
+ * constructs and passes in. */
+export type SpendGuard = {
+  tryReserve(estimatedCostUsd: number): boolean;
+};
+
+export class ScoringSpendGuard implements SpendGuard {
+  private spentUsd = 0;
+
+  constructor(private readonly ceilingUsd: number = DEFAULT_LIFETIME_SPEND_CEILING_USD) {}
+
+  /** Books `estimatedCostUsd` against the remaining lifetime budget and
+   * returns `true` if doing so keeps the running total at or under
+   * `ceilingUsd`; returns `false` (and books nothing) otherwise. See this
+   * class's own doc comment for why the booking is never reversed. */
+  tryReserve(estimatedCostUsd: number): boolean {
+    if (this.spentUsd + estimatedCostUsd > this.ceilingUsd) return false;
+    this.spentUsd += estimatedCostUsd;
+    return true;
+  }
+
+  /** Total booked so far this process's lifetime -- exposed for logging and
+   * tests, not for any decision this class doesn't already make itself. */
+  get reservedUsd(): number {
+    return this.spentUsd;
+  }
+
+  get ceiling(): number {
+    return this.ceilingUsd;
+  }
+}
+
+/** Thrown internally when `ScoringSpendGuard.tryReserve` refuses a scoring
+ * attempt. Classified retryable (see `classifyScoringError` below) rather
+ * than permanent: the DATA this message names hasn't changed, only THIS
+ * PROCESS's remaining lifetime budget has run out, and a future attempt
+ * (after an operator restarts the process, resetting the guard) could
+ * genuinely still succeed -- unlike `MissingResumeTextError`, where no
+ * restart changes the outcome. In practice a guard that's already tripped
+ * stays tripped for the rest of this process's life, so a retried attempt
+ * within the SAME process will keep failing identically until
+ * `maxAttempts` is exhausted and the message dead-letters -- that bounded
+ * churn (a handful of retries, no real spend, since the guard refuses
+ * before any Claude call) is an accepted cost of reusing the existing
+ * retry/DLQ machinery unchanged rather than adding a special-cased path
+ * for this one failure kind. */
+export class SpendGuardExceededError extends Error {}
 
 /**
  * Reads how long an Anthropic `RateLimitError` asked us to wait, from its
@@ -213,6 +408,13 @@ type ScoringClassification = { retryable: boolean; kind: string };
  * file, below - a resumeId with no `resumes` row) is also permanent: retrying
  * won't make a deleted resume reappear.
  *
+ * `SpendGuardExceededError` (this file, below - `ScoringSpendGuard` refused
+ * a scoring attempt) is classified RETRYABLE, unlike every other permanent
+ * case above - see that class's own doc comment for why: the failure is
+ * process-lifetime-scoped, not data-scoped, so a later attempt (after a
+ * restart) could genuinely still succeed even though no attempt within
+ * THIS process's remaining life ever will.
+ *
  * Anything else - a base `APIError` this list doesn't name specifically
  * (Anthropic could add a new 4xx this SDK version has no subclass for), or a
  * non-Anthropic error entirely (e.g. `makeClaudeScorer`'s own
@@ -226,6 +428,9 @@ type ScoringClassification = { retryable: boolean; kind: string };
 export function classifyScoringError(err: unknown): ScoringClassification {
   if (err instanceof MissingResumeTextError) {
     return { retryable: false, kind: "missing-resume" };
+  }
+  if (err instanceof SpendGuardExceededError) {
+    return { retryable: true, kind: "spend-guard-exceeded" };
   }
   if (err instanceof Anthropic.RateLimitError) {
     return { retryable: true, kind: "rate-limited" };
@@ -372,6 +577,28 @@ export type ScoreJobWorkerOptions = {
   /** Structured-ish logging hook for retry/dead-letter decisions and
    * permanent per-resume failures. Defaults to console.error. */
   log?: (message: string) => void;
+  /** The lifetime-per-process spend ceiling (ticket b53c422) - see
+   * `ScoringSpendGuard`'s own doc comment for the mechanism and the real
+   * numbers behind its default. Defaults to a fresh
+   * `new ScoringSpendGuard()` (i.e. `DEFAULT_LIFETIME_SPEND_CEILING_USD`).
+   * Injectable, not just configurable-by-number, for the same reason
+   * `scoreJob` itself is injected: tests need to force a refusal
+   * deterministically (a guard constructed with a near-zero ceiling, or a
+   * hand-written fake) without depending on real prompt-length arithmetic,
+   * and a real long-lived process needs exactly ONE guard instance shared
+   * across every message it ever handles, not a fresh one per message -
+   * `startScoreJobWorker`'s caller is what owns that one shared instance
+   * (see run-score-job-worker.ts). Typed as the narrow `SpendGuard`
+   * interface, not the concrete `ScoringSpendGuard` class - see that
+   * type's own doc comment for why. */
+  spendGuard?: SpendGuard;
+  /** Path `recordUsageStats` writes real usage to after every message with
+   * at least one successful score, and `estimateScoringCost` reads from to
+   * ground the spend guard's pre-call estimate in real historical
+   * averages when they exist. Defaults to `USAGE_STATS_PATH` (this file,
+   * above) - the SAME file `demo-match.ts`/`rescore-existing-matches.ts`
+   * already share. Overridable so tests never touch the real file. */
+  usageStatsPath?: string;
 };
 
 type ResumeScoreOutcome =
@@ -420,6 +647,8 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
     maxAttempts = 4,
     retryTiers = SCORE_JOB_RETRY_TIERS,
     log = (message: string) => console.error(message),
+    spendGuard = new ScoringSpendGuard(),
+    usageStatsPath = USAGE_STATS_PATH,
   } = options;
 
   ensureRetryReturnHandler(channel, log);
@@ -498,12 +727,33 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         .where(inArray(resumes.id, needsScoreResumeIds));
       const resumeTextById = new Map(resumeRows.map((r) => [r.id, r.resumeText]));
 
+      // Read once per message, not once per resumeId - `readUsageStats` is
+      // a file read, and every resumeId in this message shares the same
+      // historical averages regardless of which resume text it happens to
+      // carry (only the pre-call estimate below varies per resumeId, via
+      // its own resumeText).
+      const usageStats = readUsageStats(usageStatsPath);
+
       // Every resumeId's call is independent - a rate limit on one must
       // never take down a sibling resumeId's successful score. Settled
       // individually (not Promise.all) so a fulfilled call is never thrown
       // away because a DIFFERENT resumeId's call rejected; see this
       // module's own doc comment on how the message's own fate is decided
       // from what's left in `failed` below.
+      //
+      // SPEND GUARD (ticket b53c422): `spendGuard.tryReserve(...)` is
+      // called SYNCHRONOUSLY inside this `.map()` callback, before the
+      // first `await` in either branch below - `.map()` invokes every
+      // callback synchronously to obtain its promise, and an `async`
+      // function's body runs synchronously up to its first `await`. That
+      // means every resumeId in THIS message reserves its estimate against
+      // `spendGuard` in array order, with no interleaving from another
+      // resumeId in this same message or from another message (this
+      // worker runs under `prefetch(1)` by default - see
+      // `startScoreJobWorker` - so no second message's handler begins
+      // before this one's `await Promise.all(...)` below resolves). See
+      // `ScoringSpendGuard`'s own doc comment for why this ordering is
+      // what makes an otherwise-unsynchronized counter safe here.
       const outcomes: ResumeScoreOutcome[] = await Promise.all(
         needsScoreResumeIds.map(async (resumeId): Promise<ResumeScoreOutcome> => {
           const resumeText = resumeTextById.get(resumeId);
@@ -514,6 +764,26 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
             const { retryable, kind } = classifyScoringError(err);
             return { resumeId, status: "failed", retryable, kind, errorMessage: err.message };
           }
+
+          const costEstimate = estimateScoringCost([normalizedJob], resumeText, usageStats);
+          if (!spendGuard.tryReserve(costEstimate.maxCostUsd)) {
+            // Message deliberately doesn't reach into `spendGuard` for its
+            // ceiling/reserved totals - `spendGuard` is the narrow
+            // `SpendGuard` interface (tryReserve only), not the concrete
+            // `ScoringSpendGuard` class, so those aren't guaranteed to
+            // exist on whatever was injected (see `SpendGuard`'s own doc
+            // comment). The estimate that triggered the refusal is real
+            // and always available, which is what actually matters for
+            // debugging a trip.
+            const err = new SpendGuardExceededError(
+              `spend guard refused: this resumeId's worst-case estimate ($${costEstimate.maxCostUsd.toFixed(4)}) ` +
+                `would push this process's lifetime reservation over its ceiling - restart this worker ` +
+                `process to reset the guard`,
+            );
+            const { retryable, kind } = classifyScoringError(err);
+            return { resumeId, status: "failed", retryable, kind, errorMessage: err.message };
+          }
+
           try {
             const scored = await scoreJob(normalizedJob, resumeText);
             return { resumeId, status: "scored", scored };
@@ -557,6 +827,84 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
             })),
           )
           .onConflictDoNothing({ target: [jobMatches.resumeId, jobMatches.jobId] });
+
+        // USAGE STATS (ticket b53c422): ONE aggregated call per MESSAGE,
+        // not one per resumeId - deliberately after the db.insert above
+        // (same "never risk already-billed, already-persisted scores on a
+        // best-effort write" ordering `runDemoMatch`'s own call site uses,
+        // matching/pipeline.ts) and wrapped in try/catch for the identical
+        // reason: a failure here (unwritable usageStatsPath, ENOSPC, ...)
+        // must never take the just-persisted job_matches rows down with
+        // it - the only consequence is the NEXT estimate falling back to
+        // the bootstrap basis.
+        //
+        // CONCURRENCY (ticket b53c422, per the ticket's own question):
+        // `recordUsageStats` is read-modify-write on a plain JSON file, no
+        // locking. Aggregating every resumeId's usage from THIS message
+        // into exactly one call keeps that read-modify-write from ever
+        // racing ITSELF within a message (the risk a naive "call it once
+        // per resumeId" version would have introduced, since the resumeIds
+        // above are scored concurrently via Promise.all). Across MESSAGES,
+        // this is safe today for the identical reason
+        // `resolveResumeIds`'s own already-scored check is safe today -
+        // see this file's module doc comment and scoreJobWorker.ts's
+        // established precedent on that idempotency race: under
+        // `prefetch(1)` (`startScoreJobWorker`'s default) there is at most
+        // one unacked message being handled by this process at a time, so
+        // one message's `recordUsageStats` call always completes (or
+        // fails) before the next message's handler begins - no concurrent
+        // read-modify-write is possible YET. That stops being true the
+        // moment either (a) this process is started with `prefetch > 1`,
+        // or (b) a second worker PROCESS is ever run against the same
+        // `usageStatsPath` (this codebase's own review history already
+        // anticipates that happening eventually) - both would let two
+        // read-modify-write cycles interleave and silently lose one
+        // side's delta (a classic lost update: both read the same prior
+        // total, both compute a new total from it, the second write wins
+        // and the first's contribution vanishes). Not fixed here
+        // (proportionate to this ticket's scope: this worker is deployed
+        // as exactly one process at `prefetch(1)` today, per
+        // run-score-job-worker.ts/package.json) - a real fix (a file
+        // lock, or moving usage stats into Postgres where a transaction
+        // can serialize the update) is real follow-up work for whenever a
+        // second worker instance actually gets deployed, not before.
+        const succeededWithUsage = succeeded.filter(
+          (
+            o,
+          ): o is typeof o & {
+            scored: typeof o.scored & { usage: NonNullable<ScoredJob["usage"]> };
+          } => o.scored.usage !== undefined,
+        );
+        if (succeededWithUsage.length > 0) {
+          try {
+            recordUsageStats(usageStatsPath, {
+              calls: succeededWithUsage.length,
+              totalInputTokens: succeededWithUsage.reduce(
+                (sum, o) => sum + o.scored.usage.inputTokens,
+                0,
+              ),
+              totalOutputTokens: succeededWithUsage.reduce(
+                (sum, o) => sum + o.scored.usage.outputTokens,
+                0,
+              ),
+              totalCacheReadTokens: succeededWithUsage.reduce(
+                (sum, o) => sum + (o.scored.usage.cacheReadTokens ?? 0),
+                0,
+              ),
+              totalCacheCreationTokens: succeededWithUsage.reduce(
+                (sum, o) => sum + (o.scored.usage.cacheCreationTokens ?? 0),
+                0,
+              ),
+            });
+          } catch (err) {
+            log(
+              `[score.job] WARNING: failed to record usage stats to "${usageStatsPath}" - the ` +
+                `${succeededWithUsage.length} score(s) above are already persisted and unaffected; ` +
+                `only the NEXT cost estimate will fall back to the bootstrap basis. ` +
+                `(${err instanceof Error ? err.message : String(err)})`,
+            );
+          }
+        }
       }
 
       const failed = outcomes.filter(

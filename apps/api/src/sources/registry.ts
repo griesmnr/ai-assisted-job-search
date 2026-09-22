@@ -131,3 +131,41 @@ export function buildSourceSelection(sourceIds: string[]): {
 
   return { sources, skipped };
 }
+
+/**
+ * Builds every source this deployment has real credentials for, keyed by
+ * `dataSource` id — the exact shape `FetchSourceWorkerOptions.sources`
+ * (worker/fetchSourceWorker.ts) wants. Ticket b53c422's
+ * `worker/run-fetch-source-worker.ts` entry point is the first caller.
+ *
+ * Reuses `BUILDERS` and the same per-source try/catch
+ * `checkSourceHealth`/`buildSourceSelection` above already use — "one bad
+ * or unconfigured source's `createXSourceFromEnv()` throw can't prevent
+ * the OTHERS from being built" (the identical principle `demo-match.ts`'s
+ * own `main()` applies for the synchronous CLI path, and `CompositeSource`
+ * applies again at request time). A fourth, independently-typed copy of
+ * the same five-source list here — instead of reusing `BUILDERS` — would
+ * drift the moment any of the three existing call sites changed; this
+ * module's own doc comment already states its reason to exist is being
+ * "the one place" every caller shares that list from.
+ *
+ * `onSkip` defaults to a no-op, not a `console.warn`, so importing this
+ * function has no observable side effect by default (this module's other
+ * exports don't log either) — `run-fetch-source-worker.ts` passes a real
+ * logger explicitly.
+ */
+export function buildAllSources(
+  onSkip: (id: Job["dataSource"], error: string) => void = () => {},
+): Partial<Record<string, JobSource>> {
+  const sources: Partial<Record<string, JobSource>> = {};
+  for (const { id } of SOURCE_DESCRIPTORS) {
+    const build = BUILDERS[id];
+    if (!build) continue; // no adapter implemented yet ("wa-state") — not a config error to report
+    try {
+      sources[id] = build();
+    } catch (err) {
+      onSkip(id, err instanceof Error ? err.message : String(err));
+    }
+  }
+  return sources;
+}

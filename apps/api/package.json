@@ -9,6 +9,10 @@
     "predev": "drizzle-kit migrate",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
+    "worker:fetch-source": "tsx watch src/worker/run-fetch-source-worker.ts",
+    "worker:fetch-source:start": "node dist/worker/run-fetch-source-worker.js",
+    "worker:score-job": "tsx watch src/worker/run-score-job-worker.ts",
+    "worker:score-job:start": "node dist/worker/run-score-job-worker.js",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts"
   },

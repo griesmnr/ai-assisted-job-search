@@ -282,6 +282,44 @@ software-engineering roles, scores each new posting against
 `prep/resume.txt`, and persists jobs/resumes/scores to Postgres so a
 second run doesn't re-score anything it already has.
 
+### 6. Run the queue workers
+
+Both workers are long-lived processes, meant to be started manually
+(each in its own terminal, in the same dev-container shell step 4's tests
+and step 5's pipeline already run in) — there is no docker-compose service
+for either (see [Architecture](#architecture) for why the queue exists,
+and the worker source files themselves for the retry/DLQ/idempotency
+design). `RABBITMQ_*`/`POSTGRES_*` must be set (step 1); the scoring
+worker additionally needs `ANTHROPIC_API_KEY`, same as step 5.
+
+```bash
+npx tsx apps/api/src/worker/run-fetch-source-worker.ts   # consumes fetch.source
+npx tsx apps/api/src/worker/run-score-job-worker.ts      # consumes score.job
+```
+
+Run from the repo root, like step 5's `demo-match.ts` above -- **not**
+`pnpm --filter @app/api worker:*`, which runs with `apps/api` as the
+working directory. The scoring worker's usage-stats file
+(`USAGE_STATS_PATH`, `scoreJobWorker.ts`) is a cwd-relative `prep/...`
+path, matching every other `prep/`-touching entry point in this repo
+(`demo-match.ts`, `rescore-existing-matches.ts`) -- running it from
+`apps/api/` instead silently writes to `apps/api/prep/...`, a second,
+disconnected usage-stats file the spend guard's cost estimate never sees
+(opus review, ticket b53c422, F1). The `package.json` `worker:*` scripts
+still exist for the built `:start` form, but the same cwd rule applies to
+THEM too: `pnpm --filter @app/api worker:score-job:start` runs with
+`apps/api/` as cwd exactly like the dev form does and reintroduces the
+identical bug (re-review note, ticket b53c422) -- only invoking
+`node dist/worker/run-score-job-worker.js` directly, from the repo root,
+is safe. Nothing in this repo deploys via `pnpm --filter ...:start` today,
+but don't assume it would be safe if that changes.
+
+The scoring worker enforces a lifetime-per-process spend ceiling
+(`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket
+b53c422) — once tripped, restart the process to reset it. Neither worker
+is exercised by `POST /searches` yet; that queue-publish wiring is a
+separate, later ticket (see `routes/searches.ts`).
+
 ### Verified
 
 ```
