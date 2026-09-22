@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import Anthropic, { type BadRequestError, type RateLimitError } from "@anthropic-ai/sdk";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   jobMatches,
   jobs,
@@ -23,6 +26,9 @@ import {
   parseScoreJobMessage,
   InvalidMessageError,
   MissingResumeTextError,
+  ScoringSpendGuard,
+  SpendGuardExceededError,
+  DEFAULT_LIFETIME_SPEND_CEILING_USD,
 } from "./scoreJobWorker.js";
 
 loadEnvFile();
@@ -176,6 +182,26 @@ function badRequestError(): BadRequestError {
   ) as BadRequestError;
 }
 
+/** `ScoredJob.usage` fixture - `scoredJob()` above deliberately omits this
+ * (matching every OTHER existing test in this file, which never touch the
+ * spend guard/usage-stats wiring), so tests that need it opt in explicitly. */
+function usageFixture(overrides: Partial<NonNullable<ScoredJob["usage"]>> = {}) {
+  return {
+    inputTokens: 1000,
+    outputTokens: 200,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    ...overrides,
+  };
+}
+
+/** A throwaway path under the OS temp dir, unique per call - used so
+ * usage-stats tests below never read or write the real
+ * `prep/scoring-usage-stats.json` this repo's other scoring paths share. */
+function tempUsageStatsPath(): string {
+  return path.join(os.tmpdir(), `score-job-worker-test-usage-stats-${randomUUID()}.json`);
+}
+
 // ---------------------------------------------------------------------------
 
 describe("classifyScoringError", () => {
@@ -228,6 +254,58 @@ describe("classifyScoringError", () => {
       retryable: true,
       kind: "api-error-unknown",
     });
+  });
+
+  // Ticket b53c422: unlike every other permanent failure kind above,
+  // SpendGuardExceededError is classified RETRYABLE - see that class's own
+  // doc comment for why (process-lifetime-scoped, not data-scoped; a
+  // restart genuinely can make a later attempt succeed).
+  it("treats SpendGuardExceededError as retryable, unlike every other permanent failure kind", () => {
+    expect(classifyScoringError(new SpendGuardExceededError("ceiling exceeded"))).toEqual({
+      retryable: true,
+      kind: "spend-guard-exceeded",
+    });
+  });
+});
+
+describe("ScoringSpendGuard", () => {
+  it("defaults to DEFAULT_LIFETIME_SPEND_CEILING_USD and reports it via .ceiling", () => {
+    const guard = new ScoringSpendGuard();
+    expect(guard.ceiling).toBe(DEFAULT_LIFETIME_SPEND_CEILING_USD);
+    expect(guard.reservedUsd).toBe(0);
+  });
+
+  it("allows a reservation strictly under the ceiling and books it", () => {
+    const guard = new ScoringSpendGuard(1.0);
+    expect(guard.tryReserve(0.4)).toBe(true);
+    expect(guard.reservedUsd).toBeCloseTo(0.4);
+  });
+
+  it("allows a reservation that lands exactly ON the ceiling", () => {
+    const guard = new ScoringSpendGuard(1.0);
+    expect(guard.tryReserve(1.0)).toBe(true);
+    expect(guard.reservedUsd).toBeCloseTo(1.0);
+  });
+
+  it("refuses a reservation that would push the running total past the ceiling, and books nothing", () => {
+    const guard = new ScoringSpendGuard(1.0);
+    expect(guard.tryReserve(1.01)).toBe(false);
+    expect(guard.reservedUsd).toBe(0); // nothing booked on refusal
+  });
+
+  it("accumulates across calls and refuses only once the running total would cross the ceiling", () => {
+    const guard = new ScoringSpendGuard(1.0);
+    expect(guard.tryReserve(0.5)).toBe(true);
+    expect(guard.tryReserve(0.5)).toBe(true); // exactly at the ceiling now
+    expect(guard.reservedUsd).toBeCloseTo(1.0);
+    expect(guard.tryReserve(0.01)).toBe(false); // any more tips it over
+    expect(guard.reservedUsd).toBeCloseTo(1.0); // unchanged by the refusal
+
+    // The ceiling never resets on its own (no time-based window) - a
+    // smaller amount that would have fit at the start still doesn't fit
+    // now, because nothing gives budget back short of a new instance
+    // (i.e. a process restart). See this class's own doc comment.
+    expect(guard.tryReserve(0.001)).toBe(false);
   });
 });
 
@@ -613,5 +691,235 @@ describe("scoreJobWorker", () => {
 
     expect(channel.sentToQueue).toHaveLength(1);
     expect(channel.sentToQueue[0]!.queue).toBe(SCORE_JOB_DLQ);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spend guard (ticket b53c422). See ScoringSpendGuard's own doc comment
+// (scoreJobWorker.ts) for the mechanism; these tests exercise it wired
+// through the real handler, not just the class in isolation (covered
+// separately above).
+// ---------------------------------------------------------------------------
+
+describe("scoreJobWorker spend guard", () => {
+  it("refuses a scoring attempt the guard rejects: scoreJob is never called, no job_matches row is written, and the message is retried (not silently scored)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob());
+    const spendGuard = { tryReserve: vi.fn().mockReturnValue(false) };
+    const handler = createScoreJobHandler({ channel, db, scoreJob, spendGuard, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(spendGuard.tryReserve).toHaveBeenCalledTimes(1);
+    expect(scoreJob).not.toHaveBeenCalled(); // refused BEFORE any real call
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(0);
+
+    // spend-guard-exceeded is retryable (see classifyScoringError) -> the
+    // whole message is requeued via a retry tier, original acked, same
+    // path any other retryable failure takes.
+    expect(channel.acked).toHaveLength(1);
+    expect(channel.nacked).toHaveLength(0);
+    expect(channel.sentToQueue).toHaveLength(1);
+    expect(SCORE_JOB_RETRY_TIERS.some((t) => t.queue === channel.sentToQueue[0]!.queue)).toBe(true);
+  });
+
+  it("eventually dead-letters once retries are exhausted if the guard stays tripped for the process's whole life (no self-recovery without a restart)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob());
+    // A real ScoringSpendGuard with a ceiling of 0 - refuses forever, same
+    // as a lifetime guard that was already exhausted before this message
+    // arrived. Demonstrates the REAL class (not just a fake), wired
+    // through the real estimateScoringCost pre-call check inside the
+    // handler, genuinely refuses a real batch.
+    const spendGuard = new ScoringSpendGuard(0);
+    const handler = createScoreJobHandler({
+      channel,
+      db,
+      scoreJob,
+      spendGuard,
+      maxAttempts: 2,
+      log: () => {},
+    });
+
+    await handler(makeMessage({ jobId }));
+    expect(channel.acked).toHaveLength(1);
+    expect(channel.sentToQueue).toHaveLength(1);
+    const headers = channel.sentToQueue[0]!.options.headers as Record<string, unknown>;
+
+    await handler(makeMessage({ jobId }, headers));
+    expect(channel.nacked).toHaveLength(1); // dead-lettered, attempts exhausted
+    expect(channel.nacked[0]!.requeue).toBe(false);
+
+    expect(scoreJob).not.toHaveBeenCalled(); // never once, across either attempt
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(0);
+  });
+
+  it("with a real ScoringSpendGuard at a near-zero ceiling, a real (unmocked) cost estimate for a real job/resume pair is refused - demonstrating the refuse boundary with genuine estimateScoringCost math, not a mocked guard", async () => {
+    const jobId = await insertJob({
+      description: "B".repeat(6000), // a large, realistic posting - see this job's own DEFAULT_LIFETIME_SPEND_CEILING_USD doc comment for why 6,000 chars is used to size the default ceiling
+    });
+    const resumeId = await insertResume("A".repeat(4914)); // matches this codebase's own real prep/resume.txt length (see usage-cost.ts)
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob());
+    // $0.000001 - certainly below ANY real per-job maxCostUsd (measured in
+    // the tens of cents at most - see ScoringSpendGuard's own doc comment).
+    const spendGuard = new ScoringSpendGuard(0.000001);
+    const handler = createScoreJobHandler({ channel, db, scoreJob, spendGuard, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(scoreJob).not.toHaveBeenCalled();
+    expect(channel.sentToQueue).toHaveLength(1); // retried, not silently dropped
+  });
+
+  it("a normal small job/resume pair against the DEFAULT ceiling is allowed through untouched (the allow side of the boundary)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob({ matchScore: 70 }));
+    // No spendGuard passed - exercises createScoreJobHandler's own default
+    // (`new ScoringSpendGuard()`, i.e. DEFAULT_LIFETIME_SPEND_CEILING_USD),
+    // the same default every real deployment gets unless
+    // run-score-job-worker.ts is changed.
+    const handler = createScoreJobHandler({ channel, db, scoreJob, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(scoreJob).toHaveBeenCalledTimes(1);
+    expect(channel.acked).toHaveLength(1);
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordUsageStats wiring (ticket b53c422).
+// ---------------------------------------------------------------------------
+
+describe("scoreJobWorker recordUsageStats wiring", () => {
+  let usageStatsPath: string;
+
+  beforeEach(() => {
+    usageStatsPath = tempUsageStatsPath();
+  });
+
+  afterEach(() => {
+    fs.rmSync(usageStatsPath, { force: true });
+  });
+
+  it("records real usage to usageStatsPath after a successful scoring call", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi
+      .fn()
+      .mockResolvedValue(
+        scoredJob({ usage: usageFixture({ inputTokens: 1234, outputTokens: 321 }) }),
+      );
+    const handler = createScoreJobHandler({ channel, db, scoreJob, usageStatsPath, log: () => {} });
+
+    expect(fs.existsSync(usageStatsPath)).toBe(false);
+    await handler(makeMessage({ jobId }));
+
+    expect(fs.existsSync(usageStatsPath)).toBe(true);
+    const written = JSON.parse(fs.readFileSync(usageStatsPath, "utf8"));
+    expect(written).toMatchObject({ calls: 1, totalInputTokens: 1234, totalOutputTokens: 321 });
+  });
+
+  it("aggregates every resumeId's usage from ONE message into a single write, correctly summed", async () => {
+    const jobId = await insertJob();
+    const resumeA = await insertResume("resume A text");
+    const resumeB = await insertResume("resume B text");
+    await linkJobToResumeViaSearch(jobId, resumeA);
+    await linkJobToResumeViaSearch(jobId, resumeB);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockImplementation(async (_job, resumeText: string) =>
+      scoredJob({
+        usage:
+          resumeText === "resume A text"
+            ? usageFixture({ inputTokens: 100, outputTokens: 10 })
+            : usageFixture({ inputTokens: 200, outputTokens: 20 }),
+      }),
+    );
+    const handler = createScoreJobHandler({ channel, db, scoreJob, usageStatsPath, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    const written = JSON.parse(fs.readFileSync(usageStatsPath, "utf8"));
+    expect(written.calls).toBe(2);
+    expect(written.totalInputTokens).toBe(300);
+    expect(written.totalOutputTokens).toBe(30);
+  });
+
+  it("never writes usageStatsPath when the scorer's ScoredJob carries no usage (a fake/test scorer)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob()); // no usage field
+    const handler = createScoreJobHandler({ channel, db, scoreJob, usageStatsPath, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(fs.existsSync(usageStatsPath)).toBe(false);
+  });
+
+  it("never writes usageStatsPath when every scoring call fails (nothing succeeded)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockRejectedValue(badRequestError());
+    const handler = createScoreJobHandler({ channel, db, scoreJob, usageStatsPath, log: () => {} });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(fs.existsSync(usageStatsPath)).toBe(false);
+  });
+
+  it("a recordUsageStats write failure never blocks the message ack or discards the already-persisted job_matches row (best-effort, matching runDemoMatch's own precedent)", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume();
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob({ usage: usageFixture() }));
+    // A path whose parent directory does not exist - fs.writeFileSync
+    // throws ENOENT, exercising recordUsageStats's own try/catch inside
+    // the handler.
+    const unwritablePath = path.join(
+      os.tmpdir(),
+      `score-job-worker-test-does-not-exist-${randomUUID()}`,
+      "usage-stats.json",
+    );
+    const handler = createScoreJobHandler({
+      channel,
+      db,
+      scoreJob,
+      usageStatsPath: unwritablePath,
+      log: () => {},
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.acked).toHaveLength(1);
+    expect(channel.nacked).toHaveLength(0);
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(1);
   });
 });

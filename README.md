@@ -282,6 +282,27 @@ software-engineering roles, scores each new posting against
 `prep/resume.txt`, and persists jobs/resumes/scores to Postgres so a
 second run doesn't re-score anything it already has.
 
+### 6. Run the queue workers
+
+Both workers are long-lived processes, meant to be started manually
+(each in its own terminal, in the same dev-container shell step 4's tests
+and step 5's pipeline already run in) — there is no docker-compose service
+for either (see [Architecture](#architecture) for why the queue exists,
+and the worker source files themselves for the retry/DLQ/idempotency
+design). `RABBITMQ_*`/`POSTGRES_*` must be set (step 1); the scoring
+worker additionally needs `ANTHROPIC_API_KEY`, same as step 5.
+
+```bash
+pnpm --filter @app/api worker:fetch-source   # consumes fetch.source
+pnpm --filter @app/api worker:score-job      # consumes score.job
+```
+
+The scoring worker enforces a lifetime-per-process spend ceiling
+(`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket
+b53c422) — once tripped, restart the process to reset it. Neither worker
+is exercised by `POST /searches` yet; that queue-publish wiring is a
+separate, later ticket (see `routes/searches.ts`).
+
 ### Verified
 
 ```
