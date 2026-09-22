@@ -5,8 +5,16 @@
  * the worker itself).
  *
  *   npx tsx apps/api/src/worker/run-score-job-worker.ts
- *   # or, via the package.json script (same command):
- *   pnpm --filter @app/api worker:score-job
+ *
+ * Run from the repo root -- NOT `pnpm --filter @app/api worker:score-job`
+ * (opus review, ticket b53c422, F1: that script's cwd is `apps/api/`, and
+ * `USAGE_STATS_PATH` (scoreJobWorker.ts) is a cwd-relative `prep/...` path
+ * like every other `prep/`-touching entry point in this repo -- launching
+ * from the wrong cwd silently reads/writes a second, disconnected
+ * usage-stats file instead of erroring). The `worker:score-job` package.json
+ * script exists for the built `:start` form (`node dist/...`, cwd controlled
+ * by whatever process manager runs it), not as an equivalent way to run this
+ * file directly.
  *
  * Long-lived, same shape as run-fetch-source-worker.ts (see that file's own
  * doc comment for why this process legitimately has nothing left to await

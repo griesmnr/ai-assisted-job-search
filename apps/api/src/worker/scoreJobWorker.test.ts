@@ -19,6 +19,7 @@ import {
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/topology.js";
+import { estimateScoringCost, toNormalizedJob } from "../matching/index.js";
 import type { ScoredJob } from "../matching/scoring.js";
 import {
   classifyScoringError,
@@ -780,6 +781,73 @@ describe("scoreJobWorker spend guard", () => {
 
     expect(scoreJob).not.toHaveBeenCalled();
     expect(channel.sentToQueue).toHaveLength(1); // retried, not silently dropped
+  });
+
+  // Opus review, ticket b53c422, F3: nothing previously tested the ONE
+  // property this whole class exists for -- that spend ACCUMULATES across
+  // separate messages within one process's lifetime, not just within a
+  // single handler() call. Mutation-verified during review: moving the
+  // `new ScoringSpendGuard()` construction from createScoreJobHandler's
+  // options into the per-message handler body (i.e. a fresh guard every
+  // message -> no lifetime tracking at all) left every OTHER spend-guard
+  // test passing, because none of them shared one guard instance across
+  // two separate handler() invocations.
+  it("accumulates spend across separate messages sharing one guard instance -- a second message can be refused purely because of what a PRIOR message already spent", async () => {
+    const resumeText = "resume text"; // matches insertResume()'s own default
+    const normalizedJob = toNormalizedJob({
+      externalId: "ext-baseline",
+      dataSource: SOURCE_ID,
+      title: "Widget Engineer",
+      description: "Build widgets all day.",
+      company: "Widget Co",
+      payType: "salary",
+      commitment: "full-time",
+      locationType: "remote",
+      location: "Remote",
+      linkToApply: "https://example.com/apply",
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    }); // exactly insertJob()'s own default fields, below
+    const singleCallCostUsd = estimateScoringCost(
+      [normalizedJob],
+      resumeText,
+      undefined,
+    ).maxCostUsd;
+
+    // Sized so ONE call's real cost fits comfortably, but TWO calls of
+    // roughly the same size (both messages below use insertJob()'s
+    // identical default fields) cannot both fit.
+    const ceilingUsd = singleCallCostUsd * 1.5;
+    const spendGuard = new ScoringSpendGuard(ceilingUsd);
+
+    const channel = fakeChannel();
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob());
+    const handler = createScoreJobHandler({ channel, db, scoreJob, spendGuard, log: () => {} });
+
+    // Message 1: a real scoring attempt that fits under the ceiling on its
+    // own and books singleCallCostUsd against the SAME guard instance.
+    const jobId1 = await insertJob();
+    const resumeId1 = await insertResume(resumeText);
+    await linkJobToResumeViaSearch(jobId1, resumeId1);
+    await handler(makeMessage({ jobId: jobId1 }));
+
+    expect(scoreJob).toHaveBeenCalledTimes(1);
+    expect(channel.acked).toHaveLength(1);
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId1))).toHaveLength(1);
+    expect(spendGuard.reservedUsd).toBeCloseTo(singleCallCostUsd, 6);
+
+    // Message 2: a DIFFERENT job/resume pair (so this isn't the
+    // already-scored skip, it's a genuine new scoring attempt) of the same
+    // realistic size. Refused purely because message 1 already spent
+    // against the shared guard -- proving the guard's state survives
+    // across handler() calls, not just within one.
+    const jobId2 = await insertJob();
+    const resumeId2 = await insertResume(resumeText);
+    await linkJobToResumeViaSearch(jobId2, resumeId2);
+    await handler(makeMessage({ jobId: jobId2 }));
+
+    expect(scoreJob).toHaveBeenCalledTimes(1); // still just the one call from message 1
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId2))).toHaveLength(0);
+    expect(channel.sentToQueue).toHaveLength(1); // message 2 retried, not silently dropped
   });
 
   it("a normal small job/resume pair against the DEFAULT ceiling is allowed through untouched (the allow side of the boundary)", async () => {

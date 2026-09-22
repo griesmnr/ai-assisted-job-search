@@ -5,15 +5,25 @@
  * first built the worker itself).
  *
  *   npx tsx apps/api/src/worker/run-fetch-source-worker.ts
- *   # or, via the package.json script (same command):
- *   pnpm --filter @app/api worker:fetch-source
+ *
+ * Run from the repo root (README "Run the queue workers"), not `pnpm
+ * --filter @app/api worker:fetch-source` -- this file has no cwd-relative
+ * path of its own, but keeping both workers' documented launch commands
+ * consistent with run-score-job-worker.ts (which DOES have one -- see that
+ * file's doc comment, opus review, ticket b53c422, F1) avoids the same
+ * "these are interchangeable" trap for whoever copies one convention to the
+ * other later.
  *
  * Long-lived, not a one-shot script like demo-match.ts: `startFetchSourceWorker`
  * registers a RabbitMQ consumer and returns immediately (the consumer tag),
- * so this process stays alive for as long as the AMQP connection stays open
- * — there is no work loop to await here, `main()` genuinely finishes after
- * setup and the process keeps running only because Node's event loop still
- * has the open TCP connection to RabbitMQ keeping it non-empty. Meant to be
+ * so this process keeps running because Node's event loop still has the
+ * open TCP connection to RabbitMQ (and the open Postgres connection) keeping
+ * it non-empty — there is no work loop to await here, `main()` genuinely
+ * finishes after setup. NOT a claim that a dropped AMQP connection kills the
+ * process, or even that it's noticed: `setupTopology()` registers no
+ * `'error'`/`'close'` listener anywhere in this codebase (a pre-existing,
+ * project-wide gap, out of scope here) -- a live process consuming nothing
+ * after a connection drop is possible and currently silent. Meant to be
  * started manually in the same dev-container shell `pnpm dev` (apps/api's
  * own `dev` script) already runs in — see the PM correction on ticket
  * b53c422 (git-bug comment b45c36c): no docker-compose service for this,

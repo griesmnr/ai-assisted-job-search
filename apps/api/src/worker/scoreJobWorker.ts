@@ -159,7 +159,19 @@ export class UnknownJobError extends Error {}
  * every other real scoring path already shares -- exactly the point of
  * ticket b53c422's `recordUsageStats` wiring: this path's real volume must
  * feed the same average `estimateScoringCost` everywhere else depends on,
- * not a second, disconnected figure. */
+ * not a second, disconnected figure.
+ *
+ * CWD-RELATIVE, same as `demo-match.ts`/`rescore-existing-matches.ts`'s own
+ * `prep/`-relative paths -- this worker MUST be launched with the repo root
+ * as the working directory (`npx tsx apps/api/src/worker/run-score-job-
+ * worker.ts` from root, README "Run the queue workers"), never via `pnpm
+ * --filter @app/api worker:score-job` (cwd = `apps/api/`). Opus review,
+ * ticket b53c422, F1: launching from the wrong cwd doesn't error -- it
+ * silently writes/reads `apps/api/prep/scoring-usage-stats.json`, the exact
+ * "second, disconnected figure" the paragraph above says this wiring exists
+ * to prevent, and pins the spend guard to the less-conservative bootstrap
+ * cost basis forever (measured is ~17% higher per call; a guard that never
+ * sees real history under-estimates every call by that much). */
 export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
 
 /**
@@ -197,12 +209,18 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * personal, single-operator project (the ticket's own words), which is
  * exactly what this project is.
  *
- * WHY $15 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): reuses the SAME ceiling
- * `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD` already
- * uses for an analogous "genuine worst-case dollar ceiling, checked before
- * spend" purpose in this codebase -- not a new number invented for this
- * file. Sized concretely, not just by analogy: run live in this worktree
- * (2026-09-21) via `estimateScoringCost` against a synthetic single-job
+ * WHY $15 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
+ * this worker's own real numbers, not by analogy to anything else in the
+ * codebase -- `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD`
+ * is $5 (opus review, ticket b53c422, F2: an earlier draft of this comment
+ * claimed the two numbers were the same deliberate ceiling reused across
+ * the codebase; they are not, and never really were -- that file's $5 is
+ * sized for ITS OWN unrelated constraint, an unmeasurable per-resume job
+ * count for a manual CLI rerun, not a lifetime-per-process guard against a
+ * runaway bug in a long-lived worker. Treat the two ceilings as
+ * independent; don't re-derive a link between them from this comment).
+ * Run live in this worktree (2026-09-21) via `estimateScoringCost` against
+ * a synthetic single-job
  * batch shaped like this codebase's own real, previously-measured figures
  * (a 4,914-char resume -- the exact length `CACHE_READ_PRICE_MULTIPLIER`'s
  * doc comment in usage-cost.ts cites for the real `prep/resume.txt` -- and
@@ -222,11 +240,14 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * `DEFAULT_SCORE_THRESHOLD` (200, the synchronous CLI path's own per-run
  * cap) so a single legitimate burst of activity (e.g. one large search
  * fanning out through this worker) does not itself trip the guard, while
- * still bounding a genuine runaway-bug's total lifetime exposure to the
- * SAME $15 this codebase already treats as an acceptable one-off ceiling
- * elsewhere. Not a claim that $15 is uniquely correct -- like
- * `MAX_ESTIMATED_SPEND_USD`, raise `DEFAULT_LIFETIME_SPEND_CEILING_USD`
- * deliberately, with a real reason, if it proves too tight in practice.
+ * still bounding a genuine runaway-bug's total lifetime exposure to
+ * roughly $15. (Worth noting the criterion actively EXCLUDES
+ * `MAX_ESTIMATED_SPEND_USD`'s $5: that would bound only ~107-129 calls,
+ * below the 200-call floor this paragraph argues for -- another reason the
+ * two ceilings aren't meant to match.) Not a claim that $15 is uniquely
+ * correct -- like `MAX_ESTIMATED_SPEND_USD`, raise
+ * `DEFAULT_LIFETIME_SPEND_CEILING_USD` deliberately, with a real reason, if
+ * it proves too tight in practice.
  *
  * Deliberately OVER-attributes, never under: `tryReserve` books the
  * estimate BEFORE `scoreJob()` is ever called, and never gives it back --

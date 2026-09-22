@@ -293,9 +293,22 @@ design). `RABBITMQ_*`/`POSTGRES_*` must be set (step 1); the scoring
 worker additionally needs `ANTHROPIC_API_KEY`, same as step 5.
 
 ```bash
-pnpm --filter @app/api worker:fetch-source   # consumes fetch.source
-pnpm --filter @app/api worker:score-job      # consumes score.job
+npx tsx apps/api/src/worker/run-fetch-source-worker.ts   # consumes fetch.source
+npx tsx apps/api/src/worker/run-score-job-worker.ts      # consumes score.job
 ```
+
+Run from the repo root, like step 5's `demo-match.ts` above -- **not**
+`pnpm --filter @app/api worker:*`, which runs with `apps/api` as the
+working directory. The scoring worker's usage-stats file
+(`USAGE_STATS_PATH`, `scoreJobWorker.ts`) is a cwd-relative `prep/...`
+path, matching every other `prep/`-touching entry point in this repo
+(`demo-match.ts`, `rescore-existing-matches.ts`) -- running it from
+`apps/api/` instead silently writes to `apps/api/prep/...`, a second,
+disconnected usage-stats file the spend guard's cost estimate never sees
+(opus review, ticket b53c422, F1). The `package.json` `worker:*` scripts
+still exist and are fine for `:start` (built, deployed, cwd controlled by
+whatever process manager runs `node dist/...`) -- just don't use the dev
+`pnpm --filter` form here.
 
 The scoring worker enforces a lifetime-per-process spend ceiling
 (`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket
