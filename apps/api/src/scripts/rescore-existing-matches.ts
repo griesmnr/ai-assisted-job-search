@@ -160,7 +160,7 @@ export const REPORT_DIR = "prep";
  * real batch needs a higher ceiling, raise this constant deliberately, with
  * the real job count that justifies it.
  */
-export const MAX_ESTIMATED_SPEND_USD = 15.0;
+export const MAX_ESTIMATED_SPEND_USD = 5.0;
 
 /** How many times a single scoring call is retried after a failure, with
  * exponential backoff, before being reported as failed. Copied from
