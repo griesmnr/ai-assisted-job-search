@@ -153,12 +153,12 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       searchId: "search-abc",
       status: "complete",
       resumeId: "resume-1",
-      newlyScored: 4,
-      failed: 0,
-      skipped: 1,
-      cappedCount: 0,
-      costEstimate: makeEstimate().costEstimate,
-      sourceOutcomes: [],
+      scored: 4,
+      permanentlyFailed: 0,
+      linked: 5,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
     });
 
     render(

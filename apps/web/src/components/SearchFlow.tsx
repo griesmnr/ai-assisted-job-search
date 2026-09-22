@@ -612,23 +612,37 @@ export function SearchFlow({
         <div className="cost-panel done" aria-label="Search finished">
           {phase.result.status === "complete" ? (
             <>
-              <h3>Search complete</h3>
+              <h3>Search complete{phase.result.degraded ? " (with some failures)" : ""}</h3>
+              {/* Ticket 4f88339 (design c54b9e0 §5.3) minimal compile-fix:
+                  the old runDemoMatch-shaped fields (newlyScored/failed/
+                  skipped/costEstimate/sourceOutcomes) don't exist on the
+                  queue-driven response -- this just gets the panel back to
+                  showing correct information against the new
+                  scored/permanentlyFailed/linked/sources shape. Real UI
+                  polish (per-source failure treatment, a proper degraded
+                  badge, etc.) is ticket 2e7ba8a, deliberately not done
+                  here. */}
               <dl>
-                <dt>Newly scored</dt>
-                <dd>{phase.result.newlyScored}</dd>
-                <dt>Failed (will retry next run)</dt>
-                <dd>{phase.result.failed}</dd>
-                <dt>Skipped (already scored)</dt>
-                <dd>{phase.result.skipped}</dd>
-                <dt>This run's probable cost</dt>
-                <dd>${phase.result.costEstimate.probableCostUsd.toFixed(2)}</dd>
-                <dt>This run's max cost</dt>
-                <dd>${phase.result.costEstimate.maxCostUsd.toFixed(2)}</dd>
+                <dt>Scored</dt>
+                <dd>{phase.result.scored}</dd>
+                <dt>Permanently failed</dt>
+                <dd>{phase.result.permanentlyFailed}</dd>
+                <dt>Total jobs linked</dt>
+                <dd>{phase.result.linked}</dd>
               </dl>
-              <SourceOutcomesList
-                sourceOutcomes={phase.result.sourceOutcomes}
-                skippedSources={[]}
-              />
+              {phase.result.sources.length > 0 && (
+                <ul>
+                  {phase.result.sources.map((s) => (
+                    <li key={s.sourceId}>
+                      {s.sourceId}: {s.status}
+                      {s.status === "complete" && s.linkedJobCount !== null
+                        ? ` (${s.linkedJobCount} job${s.linkedJobCount === 1 ? "" : "s"})`
+                        : ""}
+                      {s.status === "failed" && s.errorKind ? ` (${s.errorKind})` : ""}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </>
           ) : (
             <>

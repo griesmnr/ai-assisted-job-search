@@ -315,11 +315,12 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       });
       getSearchStatus.mockResolvedValue({
         status: "complete",
-        newlyScored: 0,
-        failed: 0,
-        skipped: 0,
-        costEstimate: makeEstimate().costEstimate,
-        sourceOutcomes: [],
+        scored: 0,
+        permanentlyFailed: 0,
+        linked: 0,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
       });
 
       await submitResumeAndCompleteASearch();

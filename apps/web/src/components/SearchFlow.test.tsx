@@ -288,12 +288,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "complete",
         searchId: "search-1",
         resumeId: "resume-1",
-        newlyScored: 10,
-        failed: 0,
-        skipped: 0,
-        cappedCount: 0,
-        costEstimate: makeEstimate().costEstimate,
-        sourceOutcomes: [],
+        scored: 10,
+        permanentlyFailed: 0,
+        linked: 10,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
       });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
@@ -375,12 +375,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "complete",
         searchId: "search-1",
         resumeId: "resume-1",
-        newlyScored: 10,
-        failed: 0,
-        skipped: 0,
-        cappedCount: 0,
-        costEstimate: makeEstimate().costEstimate,
-        sourceOutcomes: [],
+        scored: 10,
+        permanentlyFailed: 0,
+        linked: 10,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
       });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
@@ -472,12 +472,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "complete",
         searchId: "search-1",
         resumeId: "resume-1",
-        newlyScored: 1,
-        failed: 0,
-        skipped: 0,
-        cappedCount: 0,
-        costEstimate: makeEstimate().costEstimate,
-        sourceOutcomes: [],
+        scored: 1,
+        permanentlyFailed: 0,
+        linked: 1,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
       })
       // search-2's own poll: resolves normally, scored nothing yet.
       .mockResolvedValue({

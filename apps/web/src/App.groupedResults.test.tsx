@@ -147,21 +147,12 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
     getSearchStatus.mockResolvedValue({
       status: "complete",
-      newlyScored: 2,
-      failed: 0,
-      skipped: 0,
-      costEstimate: {
-        jobCount: 2,
-        estimatedInputTokens: 0,
-        estimatedCacheReadTokens: 0,
-        estimatedCacheCreationTokens: 0,
-        estimatedOutputTokens: 0,
-        estimatedCostUsd: 0,
-        maxCostUsd: 0.1,
-        probableCostUsd: 0.05,
-        basis: "bootstrap",
-      },
-      sourceOutcomes: [],
+      scored: 2,
+      permanentlyFailed: 0,
+      linked: 2,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
     });
 
     await submitResume();
