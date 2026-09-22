@@ -10,7 +10,7 @@ and idempotency explicitly, and the topology exists to make those real
 architecture rather than a demo. Ticket 568cc5f asked for the exchange/
 queue/binding declarations, per-queue dead-letter config, backoff retry,
 and a written explanation of the design — everything except the workers
-that actually consume the queues (568cc5f's own Notes: "Out: the workers
+that actually consume the queues (568cc5f's own Scope: "Out: the workers
 themselves").
 
 The design itself was built and tested in isolation early in the
@@ -31,7 +31,8 @@ others with it. That is exactly what a queue is for, not decoration:
    message per selected source.
 2. **Source workers** (`fetchSourceWorker.ts`) fetch from that source,
    normalize the response into `Job` records, publish one `score.job`
-   message per newly-linked posting.
+   message per posting linked to the search so far (capped per source —
+   see the Idempotency and Consequences sections below).
 3. **Scoring workers** (`scoreJobWorker.ts`) send the resume and job
    description to Claude, persist the match score.
 4. The frontend polls `GET /searches/:id`, whose completion state is
@@ -49,35 +50,51 @@ it — declared idempotently on every `setupTopology()` call
 which is itself an idempotent operation in RabbitMQ.
 
 ```
-                    ┌──────────────┐
-  producers ──────► │  jobs (direct)│
-                    └──────┬───────┘
-             fetch.source  │  score.job
-                    ┌──────▼───────┐         ┌──────────────┐
-                    │ fetch.source │         │  score.job   │
-                    │ (work queue) │         │ (work queue) │
-                    └──────┬───────┘         └──────┬───────┘
-                           │ dead-letters on          │ dead-letters on
-                           │ permanent failure         │ permanent failure
-                    ┌──────▼───────┐         ┌──────▼───────┐
-                    │  jobs.dlx     │◄────────┤  jobs.dlx     │
-                    │  (direct)     │         │  (direct)     │
-                    └──────┬───────┘         └──────┬───────┘
-                    ┌──────▼───────┐         ┌──────▼───────┐
-                    │fetch.source  │         │ score.job    │
-                    │   .dlq       │         │   .dlq       │
-                    └──────────────┘         └──────────────┘
+jobs (direct exchange) — every producer publishes here
+ │
+ ├─ routing key "fetch.source" ──► fetch.source (work queue)
+ │                                    │
+ │                    permanent failure, or an unroutable
+ │                    retry-tier publish (see "Retry", below)
+ │                                    ▼
+ │                              jobs.dlx (direct exchange — ONE, shared)
+ │                                    │  routing key "fetch.source"
+ │                                    ▼
+ │                              fetch.source.dlq
+ │
+ └─ routing key "score.job" ──────► score.job (work queue)
+                                        │
+                        permanent failure, or an unroutable
+                        retry-tier publish (see "Retry", below)
+                                        ▼
+                                  jobs.dlx (the SAME exchange as above)
+                                        │  routing key "score.job"
+                                        ▼
+                                  score.job.dlq
 ```
 
 Each work queue's `deadLetterExchange`/`deadLetterRoutingKey` points back
 at `jobs.dlx` under its own routing key, which is in turn bound to that
-queue's own `.dlq`. A message only reaches its DLQ via an explicit
-`nack(msg, false, false)` from the worker once retries are exhausted, or
-a non-retryable classification decides immediately that retrying is
-pointless (a malformed message body, an unknown source id, a deleted
-resume) — RabbitMQ's own queue-level TTL expiry is never what sends a
-message to a DLQ in this design; it is what returns a message from a
-_retry tier_ back to the real work queue (see below).
+queue's own `.dlq`. RabbitMQ's own queue-level TTL expiry is never what
+sends a message to a DLQ in this design — TTL expiry is what returns a
+message from a _retry tier_ back to the real work queue (see "Retry",
+below). A message reaches its DLQ one of three ways:
+
+1. An explicit `nack(msg, false, false)` once `maxAttempts` retries are
+   exhausted.
+2. A non-retryable classification deciding immediately that retrying is
+   pointless (a malformed message body, an unknown source id, a deleted
+   resume) — same `nack`, on the first attempt.
+3. **A retry publish that comes back unroutable** — the tier queue it
+   was addressed to doesn't exist (deleted, renamed, a topology drift
+   between what the worker expects and what's actually declared).
+   Both work queues publish retries with `mandatory: true`; an
+   unroutable publish fires RabbitMQ's `return` event, and both
+   workers' `return` handlers (`FETCH_SOURCE_DLQ`/`SCORE_JOB_DLQ`,
+   `fetchSourceWorker.ts`/`scoreJobWorker.ts`) republish that bounced
+   message straight into the DLQ rather than losing it silently —
+   `topology.ts`'s own doc comment on `FETCH_SOURCE_DLQ` names this
+   case explicitly ("permanently-failed (or unroutable-retry)").
 
 ## Retry: per-tier queues, not per-message TTL
 
@@ -160,11 +177,16 @@ never resolve. The DLQ keeps the _message_ (inspectable, replayable);
 Postgres keeps the _fact_.
 
 **A test proves a repeatedly-failing message actually reaches the DLQ and
-does not spin forever**, for both queues — `fetchSourceWorker.test.ts`'s
-and `scoreJobWorker.test.ts`'s own "retries exhausted, dead-letters"
-tests drive a handler through its full `maxAttempts` budget against a
-consistently-failing mock and assert the terminal `nack(msg, false,
-false)` with no further retry publish.
+does not spin forever**, for both queues, though the two tests prove it
+differently. `scoreJobWorker.test.ts`'s "retries exhausted,
+dead-letters" test drives a handler through its full `maxAttempts`
+budget against a consistently-failing mock and asserts the terminal
+`nack(msg, false, false)` with no further retry publish.
+`fetchSourceWorker.test.ts`'s equivalent runs against a real, live
+broker (not a mock) and asserts the DLQ's actual message depth reaches 1
+after exactly `maxAttempts` calls, then re-asserts after a quiet period
+that the work queue and every retry tier are empty — a stronger, more
+direct proof for that worker.
 
 ## Idempotency
 
@@ -190,16 +212,24 @@ before it happens:
   never re-spends a real, billed API call on a pair it already scored;
   the constraint (`onConflictDoNothing`) is defense-in-depth for the
   race between that check and the write, not the primary mechanism.
-- **`search_sources`** and **`job_match_failures`** (added by ticket
-  `4f88339` for durable completion tracking): both unique-keyed
-  (`(searchId, sourceDescriptorId)` and `(resumeId, jobId)`
-  respectively) and both written with `SET`, never incremented — a
-  redelivered message writes the same, or a superset, value, so
-  at-least-once delivery cannot inflate anything. This was a deliberate
-  rejection of a counter-based design during that ticket's own design
-  phase (`c54b9e0`): a counter cannot be made idempotent under
-  redelivery without becoming, in effect, the same natural-keyed ledger
-  this topology already uses everywhere else.
+- **`search_sources`** (a bare join table since early in the project;
+  extended by ticket `4f88339` with a `status`/`linkedJobCount`/
+  `errorKind` ledger and its `(searchId, sourceDescriptorId)` unique key
+  for durable completion tracking) is written with `SET`, never
+  incremented — a redelivered message writes the same, or a superset,
+  `linkedJobCount`, so at-least-once delivery cannot inflate it.
+- **`job_match_failures`** (new in ticket `4f88339`, same reason),
+  unique on `(resumeId, jobId)`, is written via
+  `insert(...).onConflictDoNothing(...)` rather than a `SET` — the same
+  no-counter property (a redelivered message tries to insert the
+  identical row and no-ops), just expressed as an idempotent insert
+  instead of an idempotent update, since a failure record either exists
+  or doesn't rather than accumulating a value.
+
+  Both were a deliberate rejection of a counter-based design during
+  ticket `4f88339`'s own design phase (`c54b9e0`): a counter cannot be
+  made idempotent under redelivery without becoming, in effect, the same
+  natural-keyed ledger this topology already uses everywhere else.
 
 ## Consequences
 
@@ -227,9 +257,12 @@ before it happens:
 
 This ADR was written 2026-09-22, after the RabbitMQ epic (`aa75e82`)
 that connected the already-built topology and workers to the live app
-end to end. The topology described here was built and unit-tested in
-isolation well before that epic (tickets `568cc5f`'s own code,
-`4065511`), but this document — its one remaining unmet acceptance
-criterion — was deferred until the design was actually exercised against
-real request flow, not just fixtures, so it could describe the topology
+end to end. The two halves of the topology weren't built on the same
+timeline: the `fetch.source` side (ticket `568cc5f`'s own code) dates to
+2026-08-11–15, well before the epic; the `score.job` retry tiers landed
+2026-09-21, mere hours before the epic that connected everything was
+opened the same day. Either way, this document — the ticket's one
+remaining unmet acceptance criterion — was deferred until the full
+design was actually exercised against real request flow, not just
+fixtures, so it could describe the topology
 as it actually behaves rather than as originally speculated.
