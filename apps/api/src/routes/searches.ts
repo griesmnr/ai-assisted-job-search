@@ -18,20 +18,43 @@
  * written — nothing is published unless the caller asked for this resume
  * against these sources — and one consequence is worth stating plainly,
  * because it is easy to lose: the spend a single `POST /searches` can
- * authorize is now bounded by `scoreJobWorker`'s own lifetime spend guard
- * (`ScoringSpendGuard`, ticket b53c422), not by anything in this file.
- * `runDemoMatch`'s per-run `DEFAULT_SCORE_THRESHOLD` cap of 200 jobs does
- * not apply to the queue path at all: no single place sees a whole
- * queue-driven run, so there is nowhere for a per-run cap to live.
+ * authorize is bounded by things in OTHER files, not by anything in this
+ * one.
+ *
+ * WHAT BOUNDS IT, AMENDED (ticket 4f88339, adversarial review round 1, F1).
+ * An earlier version of this comment said `runDemoMatch`'s per-run
+ * `DEFAULT_SCORE_THRESHOLD` cap of 200 jobs "does not apply to the queue
+ * path at all", on the reasoning that no single place sees a whole
+ * queue-driven run. True about the SEARCH; false as a conclusion, and the
+ * gap was expensive: `POST /searches/estimate` shows the caller a filtered,
+ * `DEFAULT_SCORE_THRESHOLD`-capped number, so a queue path with no cap at
+ * all could spend ~30x what the user was shown and consented to — the exact
+ * defect ticket 59fdc52 review round 2 had already fixed once for the
+ * estimate itself. The cap is now applied where a single place DOES see a
+ * bounded slice of the run: `fetchSourceWorker` publishes at most
+ * `DEFAULT_SCORE_THRESHOLD` `score.job` messages per (search, source) pair.
+ * That is a PER-SOURCE approximation of the CLI's per-SEARCH cap — worst
+ * case `num_sources x 200` rather than the whole unfiltered pool — and
+ * fetchSourceWorker.ts's "THE PER-SOURCE SCORING CAP" section documents
+ * exactly why it is not the per-search version and what tightening it would
+ * cost. `scoreJobWorker`'s `ScoringSpendGuard` (a lifetime-per-process
+ * ceiling, ticket b53c422) remains the last-resort backstop underneath it,
+ * not the only one.
  *
  * KNOWN GAP, FLAGGED DELIBERATELY (ticket 4f88339 — needs its own
  * follow-up ticket, do not assume it is handled somewhere else): the
  * QUALITY FILTER below (`compileFilter`) is a LOCAL, post-fetch filter
  * that `runDemoMatch` applied between fetching and scoring. The queue path
  * has no equivalent — `fetchSourceWorker` ingests everything a source
- * returns and publishes a `score.job` for every linked job — so the
- * filter currently only takes effect on `POST /searches/estimate` (still
- * synchronous) and the CLI. Design c54b9e0, which this ticket implements,
+ * returns and publishes a `score.job` for the first
+ * `DEFAULT_SCORE_THRESHOLD` linked jobs IN SOURCE ORDER — so the filter
+ * currently only takes effect on `POST /searches/estimate` (still
+ * synchronous) and the CLI. Note how this interacts with the per-source
+ * cap added in review round 1 (see above): the cap bounds HOW MANY jobs a
+ * run scores, not WHICH, so a capped queue-driven run scores the first 200
+ * postings a source happened to return rather than the 200 most relevant.
+ * That makes closing this gap more valuable, not less — the two follow-ups
+ * belong in one ticket. Design c54b9e0, which this ticket implements,
  * does not address it. Carrying the caller's filter criteria on the
  * `fetch.source` message and applying it before ingest is the obvious fix,
  * but it needs a real decision about the wire format for the filter's
@@ -87,7 +110,7 @@ import type {
   StartSearchResponse,
 } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { runDemoMatch, type ScoreJobFn } from "../matching/index.js";
 import {
@@ -212,6 +235,35 @@ function buildFetchCriteria(criteria: SearchCriteria | undefined): SourceFetchCr
     return { keywords: titlePhrases };
   }
   return {};
+}
+
+/**
+ * "Is there a search for this resume that still counts as live?" — the
+ * `searches`-row half of the in-flight guard (design c54b9e0 §4.4).
+ *
+ * Extracted (ticket 4f88339 review round 1, F2) because the guard is now
+ * evaluated TWICE per request against exactly the same predicate: once as a
+ * cheap pre-check outside the transaction, and once inside the
+ * advisory-locked transaction where it is actually enforced. Two hand-
+ * written copies of a four-clause predicate would drift, and a drift here
+ * is silent — the two layers would simply disagree about what "live" means
+ * and the guard would develop a hole nobody could see by reading either
+ * copy.
+ *
+ * Each clause carries its own weight (see the call site's comment for the
+ * full story): `status = 'running'` is what keeps a `POST /searches/estimate`
+ * row — which `runDemoMatch` marks `complete` — from wedging the resume;
+ * `completed_at IS NULL` respects the completion latch; and the
+ * `searched_at` window is what stops one stalled search from 409-ing a
+ * resume forever.
+ */
+function liveSearchPredicate(resumeId: string) {
+  return and(
+    eq(searchesTable.resumeId, resumeId),
+    eq(searchesTable.status, "running"),
+    isNull(searchesTable.completedAt),
+    gt(searchesTable.searchedAt, new Date(Date.now() - STALL_AFTER_MS)),
+  );
 }
 
 function tempOutputPath(searchId: string): string {
@@ -663,6 +715,16 @@ export function registerSearchRoutes(
       // query. Guards per resumeId, not globally: two DIFFERENT resumes
       // searching at once is fine and unrelated.
       //
+      // THIS BLOCK IS THE PRE-CHECK, NOT THE GUARD (ticket 4f88339 review
+      // round 1, F2). It is what runs the DERIVE — the expensive,
+      // two-query "has this search actually finished?" question, which
+      // must not run while holding a lock — and what answers the common,
+      // uncontended case without paying for a transaction at all. The
+      // atomic check-and-insert that actually makes the guard hold under
+      // concurrency is the advisory-locked transaction further down; read
+      // its comment before changing anything here, because the two halves
+      // are one mechanism.
+      //
       // The `searched_at` window is what stops one stalled search from
       // 409-ing a resume forever, which is the exact class of bug ticket
       // 59fdc52 review round 3 F2 found in the in-memory version.
@@ -679,17 +741,18 @@ export function registerSearchRoutes(
       const liveRows = await db
         .select({ id: searchesTable.id })
         .from(searchesTable)
-        .where(
-          and(
-            eq(searchesTable.resumeId, resumeId),
-            eq(searchesTable.status, "running"),
-            isNull(searchesTable.completedAt),
-            gt(searchesTable.searchedAt, new Date(Date.now() - STALL_AFTER_MS)),
-          ),
-        )
+        .where(liveSearchPredicate(resumeId))
         .orderBy(desc(searchesTable.searchedAt))
         .limit(1);
       const liveSearchId = liveRows[0]?.id;
+      // Set only when the pre-check found a live-looking row and PROVED it
+      // terminal. The guarded re-check inside the transaction below has no
+      // derive of its own (see its comment for why), so it has to be told
+      // which row this request already adjudicated — otherwise a
+      // best-effort `latchTerminal` that failed would leave a genuinely
+      // finished search 409-ing this request, a regression on today's
+      // behaviour.
+      let settledSearchId: string | undefined;
       if (liveSearchId !== undefined) {
         const derived = await deriveSearchState(liveSearchId);
         if (!derived.isTerminal) {
@@ -701,6 +764,7 @@ export function registerSearchRoutes(
         // It finished and nobody has polled it since. Latch it now rather
         // than leaving a terminal row looking live to the next request.
         await latchTerminal(liveSearchId, terminalStatusFor(derived));
+        settledSearchId = liveSearchId;
       }
 
       // Idempotent and cheap (3 rows, ON CONFLICT DO NOTHING) — see
@@ -708,6 +772,11 @@ export function registerSearchRoutes(
       // reason: `search_sources.source_descriptor_id` has an FK to
       // `source_descriptors`, which would reject the insert below on a
       // database that has never run a search.
+      //
+      // Deliberately OUTSIDE the guarded transaction below: it is unrelated
+      // to this resume, and doing it while holding the advisory lock would
+      // make every concurrent request for the same resume wait on it for no
+      // reason.
       await seedSourceDescriptors(db);
 
       const searchId = randomUUID();
@@ -727,7 +796,78 @@ export function registerSearchRoutes(
       // One transaction, so a search row can never exist without its
       // source rows (which would make it permanently, vacuously
       // "complete": no pending sources, no linked jobs).
-      await db.transaction(async (tx) => {
+      //
+      // AND — ticket 4f88339, adversarial review round 1, F2 — this
+      // transaction is now also where the IN-FLIGHT GUARD IS ACTUALLY
+      // ENFORCED. The check above is a fast pre-check, not the guard: it is
+      // one `await` and the insert is another, with a real gap in between,
+      // so two concurrent `POST /searches` for the same resume both passed
+      // the SELECT (neither can see the other's uncommitted INSERT), both
+      // got 202, both created a `searches` row, and both fanned out a full
+      // set of `fetch.source` messages — double the spend the caller
+      // authorized. The review reproduced this against a live `buildApp`
+      // with `Promise.all`. It is the same double-click defect ticket
+      // 59fdc52 review round 3 F2 fixed for the old in-memory `Map`
+      // version, reintroduced by making the guard durable without making it
+      // atomic.
+      //
+      // `pg_advisory_xact_lock` serializes the re-check and the insert per
+      // resume: the second request BLOCKS inside its own transaction until
+      // the first commits, then re-reads and sees the committed row. The
+      // lock is transaction-scoped, so it is released by COMMIT or ROLLBACK
+      // with nothing to leak — no unlock call to forget, no stuck lock if
+      // this handler throws.
+      //
+      // WHY A LOCK AND NOT A PARTIAL UNIQUE INDEX on
+      // `searches (resume_id) WHERE status = 'running' AND completed_at IS
+      // NULL`, which was the other candidate: that index would be WRONG for
+      // this schema, in three separate ways this route already depends on.
+      // (1) A stalled search stays `running` with `completed_at` NULL
+      // forever — the staleness window (`STALL_AFTER_MS`) exists precisely
+      // so such a row stops blocking — but the index has no notion of
+      // `searched_at` and would reject the replacement search outright,
+      // permanently wedging that resume. That is the exact bug 59fdc52
+      // round 3 F2 fixed. (2) `runDemoMatch` (the CLI, and
+      // `POST /searches/estimate`) inserts a `running` row and only later
+      // sets it `complete`, so two concurrent estimates for one resume
+      // would start 500-ing on a constraint violation. (3) It constrains a
+      // condition the app treats as advisory, whereas the lock constrains
+      // the CODE PATH, which is what actually needed serializing.
+      //
+      // `hashtext` is an internal-but-long-stable Postgres function
+      // returning int4; collisions between two different resumeIds are
+      // possible and cost only brief serialization between two unrelated
+      // searches — never a wrong answer, since the re-check inside the lock
+      // filters on `resume_id` itself.
+      const conflictingSearchId = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${resumeId}))`);
+
+        // The re-check is PURE SQL — deliberately no `deriveSearchState`
+        // here, for two reasons. First, correctness: a row that a
+        // concurrent racer committed microseconds ago is always
+        // `running`/unlatched/fresh and always has pending sources, so
+        // there is nothing for a derive to discover; and any row that was
+        // ALREADY terminal was found, derived and latched by the pre-check
+        // above (or is named by `settledSearchId`). Second, and more
+        // important: `deriveSearchState` runs on `db`, which would check
+        // out a SECOND pooled connection while this transaction holds the
+        // lock — under enough concurrent requests for one resume, every
+        // connection in the pool ends up blocked on the lock and the holder
+        // deadlocks waiting for a connection that will never free. Nothing
+        // inside this transaction may touch `db`.
+        const racerRows = await tx
+          .select({ id: searchesTable.id })
+          .from(searchesTable)
+          .where(
+            settledSearchId === undefined
+              ? liveSearchPredicate(resumeId)
+              : and(liveSearchPredicate(resumeId), ne(searchesTable.id, settledSearchId)),
+          )
+          .orderBy(desc(searchesTable.searchedAt))
+          .limit(1);
+        const racerId = racerRows[0]?.id;
+        if (racerId !== undefined) return racerId;
+
         await tx
           .insert(searchesTable)
           .values({ id: searchId, resumeId, searchedAt: new Date(), status: "running" });
@@ -739,7 +879,18 @@ export function registerSearchRoutes(
             status: "pending" as const,
           })),
         );
+        return undefined;
       });
+
+      if (conflictingSearchId !== undefined) {
+        // Same shape and same status code as the pre-check's 409 — a
+        // caller can never tell (and has no reason to care) which of the
+        // two layers refused it.
+        return reply.code(409).send({
+          error: `A search is already running for this resume.`,
+          searchId: conflictingSearchId,
+        });
+      }
 
       const fetchCriteria = buildFetchCriteria(criteria);
       const messages: FetchSourceMessage[] = resolved.sources.map((source) => ({

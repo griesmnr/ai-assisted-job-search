@@ -15,13 +15,14 @@ import {
   searchSources,
   searches as searchesTable,
 } from "../db/schema.js";
-import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { createPooledTestDatabase, createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { DEFAULT_SCORE_THRESHOLD, type ScoreJobFn, type ScoredJob } from "../matching/index.js";
 import { loadEnvFile } from "../load-env.js";
 import { STALL_AFTER_MS } from "./searches.js";
 import type { DispatchFailure, PublishFetchSourceFn } from "../queue/publisher.js";
 import {
   createFetchSourceHandler,
+  SCORE_THRESHOLD_CAPPED_KIND,
   type FetchSourceMessage,
   type ScoreJobMessage,
 } from "../worker/fetchSourceWorker.js";
@@ -1749,6 +1750,240 @@ describe("fetch-level criteria reaches the source's own search() (ticket d1fc9e2
 
     expect(recorder.received).toHaveLength(1);
     expect(recorder.received[0]).toEqual({});
+  });
+});
+
+describe("the per-source scoring cap (ticket 4f88339 review round 1, F1)", () => {
+  it("publishes at most DEFAULT_SCORE_THRESHOLD score.job messages per source, and the search STILL reaches a terminal state instead of hanging on the jobs it capped", async () => {
+    // THE DEFECT THIS PINS. `POST /searches/estimate` prices a run that is
+    // both filtered and capped at DEFAULT_SCORE_THRESHOLD; the queue path
+    // published a score.job for EVERY job a source returned, so a real
+    // search could spend ~30x the number the user consented to (the same
+    // arithmetic ticket 59fdc52 review round 2 fixed for the estimate).
+    //
+    // The second half of this test is the part most likely to be missed,
+    // and it is the reason the fix could not simply slice the publish
+    // loop: ingestion happens BEFORE the cap, so the capped jobs have real
+    // `search_results` rows. A job with a search_results row, no
+    // job_matches row and no job_match_failures row is OUTSTANDING to the
+    // completion derive — forever, since nothing will ever score or fail
+    // it. Capping the publishes without accounting for those jobs would
+    // trade a money bug for a search that never completes, which is worse.
+    const overCap = DEFAULT_SCORE_THRESHOLD + 3;
+    const jobs = Array.from({ length: overCap }, (_, i) =>
+      matchingJob(`scorecap-${i}-${randomUUID()}`),
+    );
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(jobs) } });
+    await rig.runFetch(publisher.published[0]!);
+    const scoreJobs = rig.takeScoreJobs();
+
+    // THE BOUND ITSELF: 203 jobs linked, exactly 200 score.job messages.
+    expect(scoreJobs).toHaveLength(DEFAULT_SCORE_THRESHOLD);
+
+    // INGESTION IS NOT CAPPED — every job the source returned is linked,
+    // exactly as DEFAULT_SCORE_THRESHOLD's own doc comment promises, and
+    // the ledger reports the TRUE link count rather than the capped one
+    // (the completion derive depends on that number meaning what it says).
+    const linked = await db
+      .select({ jobId: searchResults.jobId })
+      .from(searchResults)
+      .where(eq(searchResults.searchId, searchId));
+    expect(linked).toHaveLength(overCap);
+    const sourceRows = await db
+      .select()
+      .from(searchSources)
+      .where(eq(searchSources.searchId, searchId));
+    expect(sourceRows[0]?.linkedJobCount).toBe(overCap);
+
+    // The capped remainder is accounted for durably, and it is exactly the
+    // jobs that did NOT get a message — not an overlapping set.
+    const publishedJobIds = new Set(scoreJobs.map((s) => s.jobId));
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(failures).toHaveLength(overCap - DEFAULT_SCORE_THRESHOLD);
+    expect(failures.every((f) => f.kind === SCORE_THRESHOLD_CAPPED_KIND)).toBe(true);
+    expect(failures.some((f) => publishedJobIds.has(f.jobId))).toBe(false);
+
+    // DETERMINISTIC SLICE. The whole file rests on "a redelivery re-runs
+    // the same work and writes the same rows" — a cap that picked a
+    // different 200 on the second delivery would publish up to 400
+    // score.job messages across two attempts and quietly defeat the bound.
+    await rig.runFetch(publisher.published[0]!, { "x-attempt": 2 });
+    const redelivered = rig.takeScoreJobs();
+    expect(redelivered).toHaveLength(DEFAULT_SCORE_THRESHOLD);
+    expect(new Set(redelivered.map((s) => s.jobId))).toEqual(publishedJobIds);
+    // And the capped-job bookkeeping is idempotent too (ON CONFLICT DO
+    // NOTHING), not one extra row per redelivery.
+    const failuresAfterRedelivery = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(failuresAfterRedelivery).toHaveLength(overCap - DEFAULT_SCORE_THRESHOLD);
+
+    // THE SEARCH MUST STILL TERMINATE. Score everything that was actually
+    // published; nothing will ever arrive for the capped jobs.
+    for (const scoreJob of scoreJobs) await rig.runScore(scoreJob);
+
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("complete");
+    expect(body.status).not.toBe("pending");
+    expect(body.scored).toBe(DEFAULT_SCORE_THRESHOLD);
+    expect(body.permanentlyFailed).toBe(overCap - DEFAULT_SCORE_THRESHOLD);
+    expect(body.linked).toBe(overCap);
+    // Reported honestly as degraded rather than as a clean full run — the
+    // caller is told, in the response, that this search did not score
+    // everything it linked.
+    expect(body.degraded).toBe(true);
+    expect(body.completedAt).toBeDefined();
+
+    // Durably terminal, not just terminal-on-this-poll.
+    const row = await db.select().from(searchesTable).where(eq(searchesTable.id, searchId));
+    expect(row[0]?.status).toBe("complete");
+    expect(row[0]?.completedAt).not.toBeNull();
+  });
+});
+
+describe("the in-flight guard under REAL concurrency (ticket 4f88339 review round 1, F2)", () => {
+  it("two genuinely concurrent POSTs for the same resume: exactly one 202, one 409, one searches row, one fan-out", async () => {
+    // THE DEFECT THIS PINS, and why the existing sequential in-flight test
+    // could not catch it: the guard was a SELECT and then, later, a
+    // separate INSERT. Two requests that both run the SELECT before either
+    // runs its INSERT both see no live search, both get 202, both write a
+    // `searches` row and both fan out a full set of fetch.source messages
+    // — double the spend the caller authorized. The review reproduced
+    // exactly this against a live buildApp. Awaiting the two POSTs one
+    // after the other, as every other test in this file does, never
+    // overlaps the two windows and always passes, fix or no fix.
+    //
+    // TWO THINGS MAKE THIS TEST REAL RATHER THAN THEATRICAL:
+    //   1. `Promise.all`, so both handlers are genuinely in flight at once
+    //      and interleave at every `await`.
+    //   2. A POOL-backed db, not this file's shared single `pg.Client`.
+    //      One client is one session: it cannot hold two transactions at
+    //      once, and pg_advisory_xact_lock is re-entrant within a session,
+    //      so on a single client a broken guard and a correct one are
+    //      indistinguishable. Production runs on a Pool (index.ts); so
+    //      does this test. (Verified against the pre-fix code on this same
+    //      rig: both requests returned 202 and two `searches` rows
+    //      existed.)
+    const pooled = createPooledTestDatabase(testDb.testDbName);
+    try {
+      const publisher = fakePublisher();
+      const app = buildApp({
+        db: pooled.db,
+        inferTitles: async () => [],
+        getScoreJob: makeFakeScorer,
+        resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [
+          matchingJob(`concurrent-${randomUUID()}`),
+        ]),
+        publishFetchSource: publisher.publish,
+      });
+      const resumeId = await createResume(app);
+
+      const payload = { resumeId, sourceIds: [DATA_SOURCE], criteria: {} };
+      const [first, second] = await Promise.all([
+        app.inject({ method: "POST", url: "/searches", payload }),
+        app.inject({ method: "POST", url: "/searches", payload }),
+      ]);
+
+      expect([first.statusCode, second.statusCode].sort()).toEqual([202, 409]);
+
+      const winner = first.statusCode === 202 ? first : second;
+      const loser = first.statusCode === 202 ? second : first;
+      const { searchId: winningSearchId } = winner.json() as { searchId: string };
+
+      // The refusal points at the search that actually won, so the caller
+      // can go poll it — the same contract the sequential 409 has.
+      expect((loser.json() as { searchId: string }).searchId).toBe(winningSearchId);
+
+      // EXACTLY ONE search row, and EXACTLY ONE fan-out. These are the two
+      // assertions that catch the real harm: a duplicated `searches` row is
+      // a duplicated set of fetch.source messages, which is duplicated
+      // fetching and duplicated scoring spend.
+      const rows = await db
+        .select({ id: searchesTable.id })
+        .from(searchesTable)
+        .where(eq(searchesTable.resumeId, resumeId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(winningSearchId);
+      expect(publisher.published).toHaveLength(1);
+      expect(publisher.published[0]?.searchId).toBe(winningSearchId);
+
+      // The loser left nothing behind: no orphan search_sources rows from a
+      // transaction that rolled back or half-committed.
+      const sourceRows = await db
+        .select()
+        .from(searchSources)
+        .where(eq(searchSources.searchId, winningSearchId));
+      expect(sourceRows).toHaveLength(1);
+    } finally {
+      await pooled.close();
+    }
+  });
+
+  it("five concurrent POSTs for the same resume still produce exactly one search (the lock serializes, it does not merely narrow the window)", async () => {
+    // A two-request test can pass by luck on a guard that only shrank the
+    // race window. Five requests against a pool whose size exceeds them
+    // means four of them are genuinely blocked on the advisory lock at
+    // once — which is also the shape that would expose the pool-starvation
+    // deadlock the route's comment warns about, if anything inside that
+    // transaction ever reached for a second connection.
+    const pooled = createPooledTestDatabase(testDb.testDbName, 10);
+    try {
+      const publisher = fakePublisher();
+      const app = buildApp({
+        db: pooled.db,
+        inferTitles: async () => [],
+        getScoreJob: makeFakeScorer,
+        resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [
+          matchingJob(`concurrent5-${randomUUID()}`),
+        ]),
+        publishFetchSource: publisher.publish,
+      });
+      const resumeId = await createResume(app);
+
+      const payload = { resumeId, sourceIds: [DATA_SOURCE], criteria: {} };
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, () => app.inject({ method: "POST", url: "/searches", payload })),
+      );
+
+      const accepted = responses.filter((r) => r.statusCode === 202);
+      const refused = responses.filter((r) => r.statusCode === 409);
+      expect(accepted).toHaveLength(1);
+      expect(refused).toHaveLength(4);
+
+      const rows = await db
+        .select({ id: searchesTable.id })
+        .from(searchesTable)
+        .where(eq(searchesTable.resumeId, resumeId));
+      expect(rows).toHaveLength(1);
+      expect(publisher.published).toHaveLength(1);
+      const { searchId } = accepted[0]!.json() as { searchId: string };
+      for (const response of refused) {
+        expect((response.json() as { searchId: string }).searchId).toBe(searchId);
+      }
+    } finally {
+      await pooled.close();
+    }
   });
 });
 
