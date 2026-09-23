@@ -1,0 +1,184 @@
+[
+  {
+    "uuid": "75ad50c6-778f-42ee-9c63-70d1cd687202",
+    "name": "Account Executive, Broker Channel (Austin & San Antonio)",
+    "department": {
+      "id": "Sales",
+      "label": "Sales"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/75ad50c6-778f-42ee-9c63-70d1cd687202",
+    "workLocation": {
+      "label": "Austin, TX",
+      "id": "Austin, TX"
+    }
+  },
+  {
+    "uuid": "19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "name": "Accounting Manager",
+    "department": {
+      "id": "Finance",
+      "label": "Finance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "workLocation": {
+      "label": "Austin, TX",
+      "id": "Austin, TX"
+    }
+  },
+  {
+    "uuid": "19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "name": "Accounting Manager",
+    "department": {
+      "id": "Finance",
+      "label": "Finance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "workLocation": {
+      "label": "New York, NY",
+      "id": "New York, NY"
+    }
+  },
+  {
+    "uuid": "19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "name": "Accounting Manager",
+    "department": {
+      "id": "Finance",
+      "label": "Finance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "workLocation": {
+      "label": "Seattle, WA",
+      "id": "Seattle, WA"
+    }
+  },
+  {
+    "uuid": "19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "name": "Accounting Manager",
+    "department": {
+      "id": "Finance",
+      "label": "Finance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "workLocation": {
+      "label": "San Francisco, CA",
+      "id": "San Francisco, CA"
+    }
+  },
+  {
+    "uuid": "19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "name": "Accounting Manager",
+    "department": {
+      "id": "Finance",
+      "label": "Finance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/19ae5b34-e7b7-4164-99d4-fc8f84bb37fe",
+    "workLocation": {
+      "label": "Remote (United States)",
+      "id": "Remote (United States)"
+    }
+  },
+  {
+    "uuid": "b16e994c-8511-4210-8d21-d343d5a25641",
+    "name": "Associate Commercial Counsel ",
+    "department": {
+      "id": "Legal & Compliance",
+      "label": "Legal & Compliance"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/b16e994c-8511-4210-8d21-d343d5a25641",
+    "workLocation": {
+      "label": "San Francisco, CA",
+      "id": "San Francisco, CA"
+    }
+  },
+  {
+    "uuid": "00dbe4a0-da1e-4696-8c15-d4724a402c42",
+    "name": "Business Systems Developer",
+    "department": {
+      "id": "Revenue Operations",
+      "label": "Revenue Operations"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/00dbe4a0-da1e-4696-8c15-d4724a402c42",
+    "workLocation": {
+      "label": "Remote (United States)",
+      "id": "Remote (United States)"
+    }
+  },
+  {
+    "uuid": "5b7d6034-da86-443e-a07a-07b37cd20287",
+    "name": "Customer Support Specialist, Payroll Integrations",
+    "department": {
+      "id": "Customer Support",
+      "label": "Customer Support"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/5b7d6034-da86-443e-a07a-07b37cd20287",
+    "workLocation": {
+      "label": "Remote (Montana, US)",
+      "id": "Remote (Montana, US)"
+    }
+  },
+  {
+    "uuid": "5b7d6034-da86-443e-a07a-07b37cd20287",
+    "name": "Customer Support Specialist, Payroll Integrations",
+    "department": {
+      "id": "Customer Support",
+      "label": "Customer Support"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/5b7d6034-da86-443e-a07a-07b37cd20287",
+    "workLocation": {
+      "label": "Remote (Arizona, US)",
+      "id": "Remote (Arizona, US)"
+    }
+  },
+  {
+    "uuid": "88c20f14-ecec-4d0d-8aa9-f82c27d99bc6",
+    "name": "Director of Growth, Emerging Products",
+    "department": {
+      "id": "Marketing",
+      "label": "Marketing"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/88c20f14-ecec-4d0d-8aa9-f82c27d99bc6",
+    "workLocation": {
+      "label": "Hybrid (San Francisco, California, US)",
+      "id": "Hybrid (San Francisco, California, US)"
+    }
+  },
+  {
+    "uuid": "88c20f14-ecec-4d0d-8aa9-f82c27d99bc6",
+    "name": "Director of Growth, Emerging Products",
+    "department": {
+      "id": "Marketing",
+      "label": "Marketing"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/88c20f14-ecec-4d0d-8aa9-f82c27d99bc6",
+    "workLocation": {
+      "label": "Hybrid (New York, New York, US)",
+      "id": "Hybrid (New York, New York, US)"
+    }
+  },
+  {
+    "uuid": "82c13e8f-ae96-4c60-a872-c0ddf9eb0781",
+    "name": "Machine Learning Software Engineer Intern - Winter 2027",
+    "department": {
+      "id": "Engineering",
+      "label": "Engineering"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/82c13e8f-ae96-4c60-a872-c0ddf9eb0781",
+    "workLocation": {
+      "label": "San Francisco, CA",
+      "id": "San Francisco, CA"
+    }
+  },
+  {
+    "uuid": "53cc061e-eaef-49aa-a75b-9a1466eaac27",
+    "name": "Paid Social Growth Analyst, APAC ",
+    "department": {
+      "id": "Marketing",
+      "label": "Marketing"
+    },
+    "url": "https://ats.rippling.com/rippling/jobs/53cc061e-eaef-49aa-a75b-9a1466eaac27",
+    "workLocation": {
+      "label": "Bangalore, India",
+      "id": "Bangalore, India"
+    }
+  }
+]
