@@ -1,0 +1,370 @@
+{
+  "offers": [
+    {
+      "country": "Netherlands",
+      "position": 362,
+      "updated_at": "2026-08-18 11:02:23 UTC",
+      "published_at": "2026-08-18 11:01:14 UTC",
+      "sharing_title": "Senior Software Engineer",
+      "sharing_image": null,
+      "dynamic_fields": [],
+      "mailbox_email": "job.6vwkh@topicsoftwaredevelopment.recruitee.com",
+      "state_name": "Noord-Brabant",
+      "min_hours_per_week": "32",
+      "slug": "senior-software-engineer-20",
+      "cover_image": null,
+      "location": "Eindhoven, Noord-Brabant, Netherlands",
+      "experience_code": "experienced",
+      "max_hours": 40,
+      "department": "Farm-Out Projects",
+      "close_at": null,
+      "city": "Eindhoven",
+      "options_phone": "required",
+      "created_at": "2026-08-18 11:00:53 UTC",
+      "locations_question_type": "multiple_choice",
+      "locations": [
+        {
+          "id": 217549,
+          "name": "Eindhoven",
+          "state": "Noord-Brabant",
+          "country": "Netherlands",
+          "city": "Eindhoven",
+          "translations": {
+            "en": {
+              "name": "Eindhoven",
+              "city": "Eindhoven",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NB",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "translations": {
+        "en": {
+          "description": "<p class=\"MsoNoSpacing\">At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you a seasoned and ambitious&nbsp;Senior Software Engineer&nbsp;with deep expertise in C++, Python, and solving complex technical challenges? As a Senior Engineer, you’ll take ownership of high-quality software solutions, lead architectural decisions, and mentor others while contributing to advanced systems in multidisciplinary environments.</p><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><em>“What I enjoy is the ownership and opportunity you get to grow. Since our team works closely with our clients, you get the luxury of a familial company combined with high-quality high-tech projects. It is the best of both worlds”</em><br></p><p class=\"MsoNoSpacing\">Peter Barna | Software Architect @ TOPIC</p><p class=\"MsoNoSpacing\"><strong>&nbsp;</strong></p><p class=\"MsoNoSpacing\"><strong>What will you do?</strong></p><p class=\"MsoNoSpacing\">As a Senior Software Engineer, you’ll lead the design, implementation, and verification of software components across a wide range of applications, from driver control and algorithm development to UI and human-machine interfaces. You’ll explore innovative solution approaches, ensure code quality and maintainability, and collaborate with internal and external stakeholders. By sharing your expertise and mentoring junior engineers, you’ll help drive technical excellence and elevate our software standards.</p><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>Your responsibilities</strong></p><ul><li><p class=\"MsoNoSpacing\">Design, implement, and verify new subsystems, modules, and components</p></li><li><p class=\"MsoNoSpacing\">Write efficient and maintainable code (C++, C, Python) for various features such as driver control software, human-machine interfaces, algorithm implementation, and/or UI application development</p></li><li><p class=\"MsoNoSpacing\">Explore different solution approaches to achieve the best results</p></li><li><p class=\"MsoNoSpacing\">Share your expertise to elevate the team, quality, and processes</p></li><li><p class=\"MsoNoSpacing\">Collaborate with internal and external stakeholders in an international, multidisciplinary, and agile environment</p></li><li><p class=\"MsoNoSpacing\">Review code and mentor (junior) engineers</p></li></ul>",
+          "title": "Senior Software Engineer",
+          "highlight": "<p>Technically challenging projects, personal development, teamwork, software design &amp; development, innovation, high-tech, permanent contract, hybrid working.</p>",
+          "requirements": "<p class=\"MsoNoSpacing\"><strong>What do we offer you?</strong></p><p class=\"MsoNoSpacing\"><u>This will make you smarter:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Strategic projects in complex high-tech environments</p></li><li><p class=\"MsoNoSpacing\">Collaborate with other senior engineers and domain experts</p></li><li><p class=\"MsoNoSpacing\">Access to advanced training through our TOPIC Academy</p></li><li><p class=\"MsoNoSpacing\">Contribute to and lead tech events and knowledge sessions</p></li></ul><p class=\"MsoNoSpacing\" style=\"min-height: 1.7em;\"></p><p class=\"MsoNoSpacing\"><u>This will make you better:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Permanent contract</p></li><li><p class=\"MsoNoSpacing\">An all-in benefits package €57.000 - €76.000, including 13th month, mobility, pension, extra holidays)</p></li><li><p class=\"MsoNoSpacing\">26 vacation days (option to buy extra), pension scheme, relocation support</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><u>This will keep you healthy:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Good work-life balance, flexible hours, and hybrid working</p></li><li><p class=\"MsoNoSpacing\">Inspiring office with daily fresh fruit and a gym</p></li><li><p class=\"MsoNoSpacing\">Home office support for an inspiring work-from-home setup&nbsp;</p></li><li><p class=\"MsoNoSpacing\">Regular fun, social, and sports events</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>What do you bring?</strong></p><ul><li><p class=\"MsoNoSpacing\">A Bachelor's or Master's degree in Computer Science, Embedded Systems, or a related technical field</p></li><li><p class=\"MsoNoSpacing\">At least 5 years of experience in software development with C++, C, and Python in the high-tech domain</p></li><li><p class=\"MsoNoSpacing\">Experience with O.O., UML, Unit testing, Agile and design principles</p></li><li><p class=\"MsoNoSpacing\">You are a team player, solution-oriented, and proactive</p></li><li><p class=\"MsoNoSpacing\">Motivation to continuously improve yourself and develop new skills</p></li><li><p class=\"MsoNoSpacing\">A good command of English, and preferably Dutch</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>Our organization</strong></p><p class=\"MsoNoSpacing\">Since 1996 we have been developing (embedded) systems that are essential for products manufactured by renowned high-tech companies around the world.&nbsp; Our projects involve edge to cloud solutions; from PCB design and FPGA to low level embedded software and application software for UI, Web, Mobile and cloud. We are well known for our high level of knowledge and expertise and are proud to be a Premier Embedded Computing Partner of AMD; technology leader in the field of System-on-Chips and FPGAs.&nbsp;</p><p class=\"MsoNoSpacing\"><strong>&nbsp;</strong></p><p class=\"MsoNoSpacing\"><strong>Diversity &amp; Inclusion</strong></p><p class=\"MsoNoSpacing\">At TOPIC, we believe that true innovation happens when people with different backgrounds, ideas, and perspectives come together. Every talent counts, and every voice matters. Diversity strengthens our creativity, and inclusion ensures that everyone feels welcome and valued. We are building a culture where everyone has the space to contribute and be themselves.</p><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "locations_question": "What is your preferred work location?",
+          "sharing_description": "At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you a seasoned and ambitious Senior Software Engineer with deep expertise in C++, Python, and",
+          "sharing_title": "Senior Software Engineer"
+        }
+      },
+      "open_questions": [],
+      "requirements": "<p class=\"MsoNoSpacing\"><strong>What do we offer you?</strong></p><p class=\"MsoNoSpacing\"><u>This will make you smarter:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Strategic projects in complex high-tech environments</p></li><li><p class=\"MsoNoSpacing\">Collaborate with other senior engineers and domain experts</p></li><li><p class=\"MsoNoSpacing\">Access to advanced training through our TOPIC Academy</p></li><li><p class=\"MsoNoSpacing\">Contribute to and lead tech events and knowledge sessions</p></li></ul><p class=\"MsoNoSpacing\" style=\"min-height: 1.7em;\"></p><p class=\"MsoNoSpacing\"><u>This will make you better:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Permanent contract</p></li><li><p class=\"MsoNoSpacing\">An all-in benefits package €57.000 - €76.000, including 13th month, mobility, pension, extra holidays)</p></li><li><p class=\"MsoNoSpacing\">26 vacation days (option to buy extra), pension scheme, relocation support</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><u>This will keep you healthy:&nbsp;</u></p><ul><li><p class=\"MsoNoSpacing\">Good work-life balance, flexible hours, and hybrid working</p></li><li><p class=\"MsoNoSpacing\">Inspiring office with daily fresh fruit and a gym</p></li><li><p class=\"MsoNoSpacing\">Home office support for an inspiring work-from-home setup&nbsp;</p></li><li><p class=\"MsoNoSpacing\">Regular fun, social, and sports events</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>What do you bring?</strong></p><ul><li><p class=\"MsoNoSpacing\">A Bachelor's or Master's degree in Computer Science, Embedded Systems, or a related technical field</p></li><li><p class=\"MsoNoSpacing\">At least 5 years of experience in software development with C++, C, and Python in the high-tech domain</p></li><li><p class=\"MsoNoSpacing\">Experience with O.O., UML, Unit testing, Agile and design principles</p></li><li><p class=\"MsoNoSpacing\">You are a team player, solution-oriented, and proactive</p></li><li><p class=\"MsoNoSpacing\">Motivation to continuously improve yourself and develop new skills</p></li><li><p class=\"MsoNoSpacing\">A good command of English, and preferably Dutch</p></li></ul><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>Our organization</strong></p><p class=\"MsoNoSpacing\">Since 1996 we have been developing (embedded) systems that are essential for products manufactured by renowned high-tech companies around the world.&nbsp; Our projects involve edge to cloud solutions; from PCB design and FPGA to low level embedded software and application software for UI, Web, Mobile and cloud. We are well known for our high level of knowledge and expertise and are proud to be a Premier Embedded Computing Partner of AMD; technology leader in the field of System-on-Chips and FPGAs.&nbsp;</p><p class=\"MsoNoSpacing\"><strong>&nbsp;</strong></p><p class=\"MsoNoSpacing\"><strong>Diversity &amp; Inclusion</strong></p><p class=\"MsoNoSpacing\">At TOPIC, we believe that true innovation happens when people with different backgrounds, ideas, and perspectives come together. Every talent counts, and every voice matters. Diversity strengthens our creativity, and inclusion ensures that everyone feels welcome and valued. We are building a culture where everyone has the space to contribute and be themselves.</p><p style=\"min-height: 1.7em;\"></p>",
+      "options_title": "off",
+      "highlight": "<p>Technically challenging projects, personal development, teamwork, software design &amp; development, innovation, high-tech, permanent contract, hybrid working.</p>",
+      "locations_question": "What is your preferred work location?",
+      "employment_type_code": "fulltime_permanent",
+      "country_code": "NL",
+      "postal_code": null,
+      "careers_apply_url": "https://werkenbijtopic.nl/o/senior-software-engineer-20/c/new",
+      "title": "Senior Software Engineer",
+      "careers_url": "https://werkenbijtopic.nl/o/senior-software-engineer-20",
+      "max_hours_per_week": "40",
+      "description": "<p class=\"MsoNoSpacing\">At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you a seasoned and ambitious&nbsp;Senior Software Engineer&nbsp;with deep expertise in C++, Python, and solving complex technical challenges? As a Senior Engineer, you’ll take ownership of high-quality software solutions, lead architectural decisions, and mentor others while contributing to advanced systems in multidisciplinary environments.</p><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><em>“What I enjoy is the ownership and opportunity you get to grow. Since our team works closely with our clients, you get the luxury of a familial company combined with high-quality high-tech projects. It is the best of both worlds”</em><br></p><p class=\"MsoNoSpacing\">Peter Barna | Software Architect @ TOPIC</p><p class=\"MsoNoSpacing\"><strong>&nbsp;</strong></p><p class=\"MsoNoSpacing\"><strong>What will you do?</strong></p><p class=\"MsoNoSpacing\">As a Senior Software Engineer, you’ll lead the design, implementation, and verification of software components across a wide range of applications, from driver control and algorithm development to UI and human-machine interfaces. You’ll explore innovative solution approaches, ensure code quality and maintainability, and collaborate with internal and external stakeholders. By sharing your expertise and mentoring junior engineers, you’ll help drive technical excellence and elevate our software standards.</p><p class=\"MsoNoSpacing\">&nbsp;</p><p class=\"MsoNoSpacing\"><strong>Your responsibilities</strong></p><ul><li><p class=\"MsoNoSpacing\">Design, implement, and verify new subsystems, modules, and components</p></li><li><p class=\"MsoNoSpacing\">Write efficient and maintainable code (C++, C, Python) for various features such as driver control software, human-machine interfaces, algorithm implementation, and/or UI application development</p></li><li><p class=\"MsoNoSpacing\">Explore different solution approaches to achieve the best results</p></li><li><p class=\"MsoNoSpacing\">Share your expertise to elevate the team, quality, and processes</p></li><li><p class=\"MsoNoSpacing\">Collaborate with internal and external stakeholders in an international, multidisciplinary, and agile environment</p></li><li><p class=\"MsoNoSpacing\">Review code and mentor (junior) engineers</p></li></ul>",
+      "locations_question_required": true,
+      "options_photo": "off",
+      "company_name": "Topic Software Development",
+      "options_salutation": "off",
+      "remote": false,
+      "sharing_description": "At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you a seasoned and ambitious Senior Software Engineer with deep expertise in C++, Python, and",
+      "location_question_visible": false,
+      "id": 2713866,
+      "hybrid": true,
+      "category_code": "internet",
+      "guid": "6vwkh",
+      "options_cv": "required",
+      "on_site": false,
+      "education_code": "bachelor_degree",
+      "state_code": "NB",
+      "status": "published",
+      "min_hours": 32,
+      "options_cover_letter": "optional",
+      "tags": [],
+      "salary": {
+        "max": "76000",
+        "min": "57000",
+        "period": "year",
+        "currency": "EUR"
+      }
+    },
+    {
+      "country": "Netherlands",
+      "position": 359,
+      "updated_at": "2026-08-04 16:47:42 UTC",
+      "published_at": "2026-06-08 12:54:17 UTC",
+      "sharing_title": "Software Development Engineer in Test (SDET)",
+      "sharing_image": null,
+      "dynamic_fields": [],
+      "mailbox_email": "job.9uae3@topicsoftwaredevelopment.recruitee.com",
+      "state_name": "Noord-Brabant",
+      "min_hours_per_week": "32",
+      "slug": "software-development-engineer-in-test-sdet",
+      "cover_image": null,
+      "location": "Best, Noord-Brabant, Netherlands",
+      "experience_code": "experienced",
+      "max_hours": 40,
+      "department": "Consultancy",
+      "close_at": null,
+      "city": "Best",
+      "options_phone": "optional",
+      "created_at": "2026-06-08 12:53:29 UTC",
+      "locations_question_type": "multiple_choice",
+      "locations": [
+        {
+          "id": 238537,
+          "name": "Best",
+          "state": "Noord-Brabant",
+          "country": "Netherlands",
+          "city": "Best",
+          "translations": {
+            "en": {
+              "name": "Best",
+              "city": "Best",
+              "postal_code": "5681 RJ",
+              "street": "Materiaalweg 4",
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NB",
+          "postal_code": "5681 RJ",
+          "street": "Materiaalweg 4",
+          "note": null
+        }
+      ],
+      "translations": {
+        "en": {
+          "description": "<p style=\"text-align:start;\">At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you the driven and ambitious Software Development Engineer in Test (SDET)<strong> </strong>who enjoys writing production-quality code to automate testing of complex embedded systems that we are looking for?</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><em>“TOPIC is unique because it combines cutting-edge technology with a strong culture of collaboration and knowledge sharing. It offers the opportunity to work on impactful, real-world projects in an environment that supports both personal and professional growth.\"</em></p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\">Bohdan Dovbysh I Test Automation Engineer</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>What will you do as a Software Development Engineer in Test (SDET)?</strong></p><p style=\"text-align:start;\">As an Software Development Engineer in Test, you operate at the intersection of software development and quality engineering. You design and build high-quality test infrastructure and automation in the same way developers build production systems. With your strong programming skills in C++and/or Python, you ensure software is testable, scalable, and reliable by design. You work closely with software engineers on complex high-tech systems, contributing directly to codebases, test architecture, and continuous integration pipelines. Rather than only validating software, you actively shape how it is built and verified.</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Your responsibilities as a Software Development Engineer in Test (SDET):</strong></p><ul><li><p>Design, develop, and maintain test frameworks and automation tooling using C++ and/or Python</p></li><li><p>Contribute to production code and testability improvements in collaboration with software engineers</p></li><li><p>Develop automated tests across multiple levels (unit, integration, system) as part of the development process</p></li><li><p>Build and optimize CI/CD pipelines and test infrastructure to enable fast and reliable feedback</p></li><li><p>Analyze complex systems and failures, and trace issues to root cause in code</p></li><li><p>Drive testability, observability, and quality-by-design principles within development teams</p></li><li><p>Work on high-tech systems (embedded / hardware-software integration / distributed systems) with real-world impact</p></li><li><p>Take ownership of technical decisions around test architecture and tooling</p></li><li><p>Continuously improve automation strategy with a strong focus on engineering scalability and maintainability</p></li></ul>",
+          "title": "Software Development Engineer in Test (SDET)",
+          "highlight": "<p>Software quality, test automation, multidisciplinary environment, Sparring partner &amp; advisor.</p>",
+          "requirements": "<p style=\"text-align:start;\"><strong>What do we offer you?</strong></p><p style=\"text-align:start;\"><u>This will make you </u><strong><u>smarter:</u></strong></p><ul><li><p>Challenging and interesting projects in different domains</p></li><li><p>Benefit from the expertise of your technical buddy and more than 100 smart colleagues</p></li><li><p>Focus on guiding and coaching on personal development to achieve your ambitions</p></li><li><p>Annual study budget and customized training program within our TOPIC Academy</p></li><li><p>Tech events and knowledge sessions</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><u>This will make you </u><strong><u>better:</u></strong></p><ul><li><p>Permanent contract</p></li><li><p>An all-in employment package between €57,000 and €76.000 (including net expense allowance, mobility package, 13th-month bonus, and holiday allowance). Final salary is based on relevant work experience and level of expertise</p></li><li><p>26 vacation days (opportunity to buy extra days), pension scheme and relocation budget (when you relocate to the Netherlands)</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><u>This will keep you </u><strong><u>healthy:</u></strong></p><ul><li><p>A good work-life balance, flexible working hours and hybrid way of working</p></li><li><p>An inspiring office environment with daily fresh fruit and a gym</p></li><li><p>The home office support package will turn your “home office” into an inspiring environment</p></li><li><p>Lots of fun during events like celebrations, sport activities and the weekly Friday afternoon drinks</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>What do you bring as a Software Development Engineer in Test (SDET)?</strong></p><ul><li><p>A Bachelor's or Master's degree in Computer Science, Embedded Systems or similar</p></li><li><p>5 years of work experience in the high‑tech domain</p></li><li><p>Experience with programming in Python, C++ and/or C# and familiar with applying OO principles.</p></li><li><p>Hands‑on experience with test automation</p></li><li><p>Preferably experience with the ROBOT Framework and methodologies such as TDD, BDD, keyword‑driven testing, data‑driven testing, model‑based testing, and property‑based testing</p></li><li><p>You are a team player, solution-oriented, and proactive</p></li><li><p>A good command of English, and preferably Dutch language</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Our organization</strong></p><p style=\"text-align:start;\">Since 1996 we have been developing (embedded) systems that are essential for products manufactured by renowned high-tech companies around the world. Our projects involve edge to cloud solutions; from PCB design and FPGA to low level embedded software and application software for UI, Web, Mobile and cloud. We are well known for our high level of knowledge and expertise and are proud to be a Premier Adaptive Computing Partner of AMD; technology leader in the field of System-on-Chips and FPGAs.</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Diversity &amp; Inclusion</strong></p><p style=\"text-align:start;\">At TOPIC, we believe that true innovation happens when people with different backgrounds, ideas, and perspectives come together. Every talent counts, and every voice matters. Diversity strengthens our creativity, and inclusion ensures that everyone feels welcome and valued. We build a culture where everyone has the space to contribute and be themselves.</p>",
+          "sharing_image": null,
+          "locations_question": "What is your preferred work location?",
+          "sharing_description": "At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you the driven and ambitious Software Development Engineer in Test (SDET) who enjoys writing ",
+          "sharing_title": "Software Development Engineer in Test (SDET)"
+        }
+      },
+      "open_questions": [
+        {
+          "id": 1120802,
+          "position": 1,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What degree do you have?",
+          "kind": "multi_choice",
+          "translations": {
+            "en": {
+              "body": "What degree do you have?"
+            }
+          },
+          "open_question_options": [
+            {
+              "id": 1383055,
+              "position": 0,
+              "body": "Bachelors",
+              "translations": {
+                "en": {
+                  "body": "Bachelors"
+                }
+              }
+            },
+            {
+              "id": 1383056,
+              "position": 1,
+              "body": "Masters",
+              "translations": {
+                "en": {
+                  "body": "Masters"
+                }
+              }
+            },
+            {
+              "id": 1383057,
+              "position": 2,
+              "body": "Other",
+              "translations": {
+                "en": {
+                  "body": "Other"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 1120791,
+          "position": 2,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What is your place of residence?",
+          "kind": "string",
+          "translations": {
+            "en": {
+              "body": "What is your place of residence?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1120815,
+          "position": 3,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "Are you willing to relocate?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you willing to relocate?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1120803,
+          "position": 4,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What nationality do you have?",
+          "kind": "string",
+          "translations": {
+            "en": {
+              "body": "What nationality do you have?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1120794,
+          "position": 5,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "Do you have a Visa / Work permit for the Netherlands?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Do you have a Visa / Work permit for the Netherlands?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1120792,
+          "position": 6,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What is your date of birth?",
+          "kind": "string",
+          "translations": {
+            "en": {
+              "body": "What is your date of birth?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1120818,
+          "position": 7,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What’s the reason to apply and what are you looking for in a new job?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "What’s the reason to apply and what are you looking for in a new job?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 1125831,
+          "position": 8,
+          "options": {
+            "length": 120
+          },
+          "required": true,
+          "body": "What is your salary expectation?",
+          "kind": "string",
+          "translations": {
+            "en": {
+              "body": "What is your salary expectation?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "requirements": "<p style=\"text-align:start;\"><strong>What do we offer you?</strong></p><p style=\"text-align:start;\"><u>This will make you </u><strong><u>smarter:</u></strong></p><ul><li><p>Challenging and interesting projects in different domains</p></li><li><p>Benefit from the expertise of your technical buddy and more than 100 smart colleagues</p></li><li><p>Focus on guiding and coaching on personal development to achieve your ambitions</p></li><li><p>Annual study budget and customized training program within our TOPIC Academy</p></li><li><p>Tech events and knowledge sessions</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><u>This will make you </u><strong><u>better:</u></strong></p><ul><li><p>Permanent contract</p></li><li><p>An all-in employment package between €57,000 and €76.000 (including net expense allowance, mobility package, 13th-month bonus, and holiday allowance). Final salary is based on relevant work experience and level of expertise</p></li><li><p>26 vacation days (opportunity to buy extra days), pension scheme and relocation budget (when you relocate to the Netherlands)</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><u>This will keep you </u><strong><u>healthy:</u></strong></p><ul><li><p>A good work-life balance, flexible working hours and hybrid way of working</p></li><li><p>An inspiring office environment with daily fresh fruit and a gym</p></li><li><p>The home office support package will turn your “home office” into an inspiring environment</p></li><li><p>Lots of fun during events like celebrations, sport activities and the weekly Friday afternoon drinks</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>What do you bring as a Software Development Engineer in Test (SDET)?</strong></p><ul><li><p>A Bachelor's or Master's degree in Computer Science, Embedded Systems or similar</p></li><li><p>5 years of work experience in the high‑tech domain</p></li><li><p>Experience with programming in Python, C++ and/or C# and familiar with applying OO principles.</p></li><li><p>Hands‑on experience with test automation</p></li><li><p>Preferably experience with the ROBOT Framework and methodologies such as TDD, BDD, keyword‑driven testing, data‑driven testing, model‑based testing, and property‑based testing</p></li><li><p>You are a team player, solution-oriented, and proactive</p></li><li><p>A good command of English, and preferably Dutch language</p></li></ul><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Our organization</strong></p><p style=\"text-align:start;\">Since 1996 we have been developing (embedded) systems that are essential for products manufactured by renowned high-tech companies around the world. Our projects involve edge to cloud solutions; from PCB design and FPGA to low level embedded software and application software for UI, Web, Mobile and cloud. We are well known for our high level of knowledge and expertise and are proud to be a Premier Adaptive Computing Partner of AMD; technology leader in the field of System-on-Chips and FPGAs.</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Diversity &amp; Inclusion</strong></p><p style=\"text-align:start;\">At TOPIC, we believe that true innovation happens when people with different backgrounds, ideas, and perspectives come together. Every talent counts, and every voice matters. Diversity strengthens our creativity, and inclusion ensures that everyone feels welcome and valued. We build a culture where everyone has the space to contribute and be themselves.</p>",
+      "options_title": "off",
+      "highlight": "<p>Software quality, test automation, multidisciplinary environment, Sparring partner &amp; advisor.</p>",
+      "locations_question": "What is your preferred work location?",
+      "employment_type_code": "fulltime_permanent",
+      "country_code": "NL",
+      "postal_code": "5681 RJ",
+      "careers_apply_url": "https://werkenbijtopic.nl/o/software-development-engineer-in-test-sdet/c/new",
+      "title": "Software Development Engineer in Test (SDET)",
+      "careers_url": "https://werkenbijtopic.nl/o/software-development-engineer-in-test-sdet",
+      "max_hours_per_week": "40",
+      "description": "<p style=\"text-align:start;\">At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you the driven and ambitious Software Development Engineer in Test (SDET)<strong> </strong>who enjoys writing production-quality code to automate testing of complex embedded systems that we are looking for?</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><em>“TOPIC is unique because it combines cutting-edge technology with a strong culture of collaboration and knowledge sharing. It offers the opportunity to work on impactful, real-world projects in an environment that supports both personal and professional growth.\"</em></p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\">Bohdan Dovbysh I Test Automation Engineer</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>What will you do as a Software Development Engineer in Test (SDET)?</strong></p><p style=\"text-align:start;\">As an Software Development Engineer in Test, you operate at the intersection of software development and quality engineering. You design and build high-quality test infrastructure and automation in the same way developers build production systems. With your strong programming skills in C++and/or Python, you ensure software is testable, scalable, and reliable by design. You work closely with software engineers on complex high-tech systems, contributing directly to codebases, test architecture, and continuous integration pipelines. Rather than only validating software, you actively shape how it is built and verified.</p><p style=\"text-align:start;min-height: 1.7em;\"></p><p style=\"text-align:start;\"><strong>Your responsibilities as a Software Development Engineer in Test (SDET):</strong></p><ul><li><p>Design, develop, and maintain test frameworks and automation tooling using C++ and/or Python</p></li><li><p>Contribute to production code and testability improvements in collaboration with software engineers</p></li><li><p>Develop automated tests across multiple levels (unit, integration, system) as part of the development process</p></li><li><p>Build and optimize CI/CD pipelines and test infrastructure to enable fast and reliable feedback</p></li><li><p>Analyze complex systems and failures, and trace issues to root cause in code</p></li><li><p>Drive testability, observability, and quality-by-design principles within development teams</p></li><li><p>Work on high-tech systems (embedded / hardware-software integration / distributed systems) with real-world impact</p></li><li><p>Take ownership of technical decisions around test architecture and tooling</p></li><li><p>Continuously improve automation strategy with a strong focus on engineering scalability and maintainability</p></li></ul>",
+      "locations_question_required": true,
+      "options_photo": "optional",
+      "company_name": "Topic Software Development",
+      "options_salutation": "off",
+      "remote": false,
+      "sharing_description": "At TOPIC, we work every day on high-tech innovations to make the world smarter, healthier, and better. Are you the driven and ambitious Software Development Engineer in Test (SDET) who enjoys writing ",
+      "location_question_visible": false,
+      "id": 2632276,
+      "hybrid": true,
+      "category_code": "information_technology",
+      "guid": "9uae3",
+      "options_cv": "optional",
+      "on_site": false,
+      "education_code": "bachelor_degree",
+      "state_code": "NB",
+      "status": "published",
+      "min_hours": 32,
+      "options_cover_letter": "optional",
+      "tags": [
+        "Architecture",
+        "BDD",
+        "C++",
+        "OOP",
+        "Object Oriented Programming (OOP)",
+        "Python",
+        "ROBOT",
+        "Senior",
+        "Strategy",
+        "Test Architecture",
+        "Test Automation",
+        "Test Designer",
+        "c"
+      ],
+      "salary": {
+        "max": "85000",
+        "min": "61000",
+        "period": "year",
+        "currency": "EUR"
+      }
+    }
+  ]
+}
