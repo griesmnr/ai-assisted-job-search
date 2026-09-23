@@ -839,6 +839,13 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     expect(screen.queryByText(/matched but weren't scored/)).not.toBeInTheDocument();
+    // Re-review (ticket 2e7ba8a, opus round 2): the <dl> entry sharing this
+    // same `> 0` guard had no negative coverage of its own -- mutating it
+    // to `>= 0` passed the whole suite even after the fix above, since a
+    // "Deferred this run (over the cap): 0" row is cosmetic, not an
+    // alarming sentence, so the string-matching assertion above never
+    // reached it.
+    expect(screen.queryByText("Deferred this run (over the cap)")).not.toBeInTheDocument();
   });
 
   // Opus review (ticket 2e7ba8a, F2): the headline claim -- and the whole
