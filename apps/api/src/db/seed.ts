@@ -60,6 +60,9 @@ const SOURCE_DESCRIPTOR_NAMES: Record<Job["dataSource"], string> = {
   lever: "Lever",
   ashby: "Ashby",
   smartrecruiters: "SmartRecruiters",
+  workable: "Workable",
+  recruitee: "Recruitee",
+  rippling: "Rippling",
 };
 
 export const SOURCE_DESCRIPTORS: ReadonlyArray<{ id: Job["dataSource"]; displayName: string }> = (

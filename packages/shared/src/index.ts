@@ -22,7 +22,16 @@ export const MATCH_SCORE_FLOOR = 55;
 export type Job = {
   id: string;
   externalId: string;
-  dataSource: "usajobs" | "wa-state" | "greenhouse" | "lever" | "ashby" | "smartrecruiters";
+  dataSource:
+    | "usajobs"
+    | "wa-state"
+    | "greenhouse"
+    | "lever"
+    | "ashby"
+    | "smartrecruiters"
+    | "workable"
+    | "recruitee"
+    | "rippling";
   title: string;
   description: string;
   company: string;
