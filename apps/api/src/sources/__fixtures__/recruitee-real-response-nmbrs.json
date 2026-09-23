@@ -1,0 +1,1084 @@
+{
+  "offers": [
+    {
+      "translations": {
+        "en": {
+          "description": "<p><span style=\"color:#5a5f72\">Nmbrs is looking for a Machine Learning Engineer to join our Lisbon team. Ready to leverage your ML expertise in a fast-growing payroll tech company? In this role, you'll drive the development of data-driven models that bring our ambition of a 100% Self-Driving Payroll a bit closer to reality. Working as the ML specialist within a dedicated AI-focused engineering team. Ready to transform complex data into insights that shape real business decisions?</span></p><h4></h4><p><strong><span style=\"color:#000000\">Time to grow. Time to thrive.</span></strong></p><p><span style=\"color:#5a5f72\">We are Nmbrs. We build smart business software that removes unnecessary complexity for SMEs and the professionals who support them. Nmbrs brings together four established product organisations—Payroll, Accounting, Invoicing and Reporting—with teams across the Netherlands, Sweden and Portugal.</span></p><p><span style=\"color:#5a5f72\">We are one brand with a shared ambition, while continuing to work from the expertise and strengths of our individual organisations. We join forces where it makes sense, while keeping teams, expertise and decision-making close together.</span></p><p><span style=\"color:#5a5f72\">For this role, you’ll join </span><strong><span style=\"color:#5a5f72\">Nmbrs Payroll </span></strong><span style=\"color:#5a5f72\">in </span><strong><span style=\"color:#5a5f72\">Lisbon,</span></strong><span style=\"color:#5a5f72\"> working closely with the colleagues in your local team while being part of the wider Nmbrs organisation.</span></p><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#000000\">Your role</span></strong></h3><p><span style=\"color:#5a5f72\">As a ML Engineer, you’ll play a pivotal part in building advanced machine learning solutions. Ranging from salary benchmarking and predictive analytics to anomaly detection, all leveraging our extensive payroll data. Your work will help drive Nmbrs toward our vision of a </span><strong><span style=\"color:#5a5f72\">self-driving payroll</span></strong><span style=\"color:#5a5f72\"> application.</span></p><h3></h3>",
+          "title": "Machine Learning Engineer",
+          "highlight": null,
+          "requirements": "<h3><strong>Your impact</strong></h3><ul><li><p><span style=\"color:#5a5f72\">Drive the development of data-driven models (from salary benchmarking to anomaly detection) that bring Nmbrs Payroll closer to a 100% Self-Driving Payroll.</span></p></li><li><p><span style=\"color:#5a5f72\">Design and build supervised and unsupervised models (regression, classification, Random Forest, Gradient Boosting, Neural Networks) to solve real payroll problems.</span></p></li><li><p><span style=\"color:#5a5f72\">Turn raw payroll data into clean, well-engineered features that make your models accurate and reliable, using tools like Pandas and NumPy.</span></p></li><li><p><span style=\"color:#5a5f72\">Query and manipulate large volumes of data in SQL Server to fuel model development and analysis.</span></p></li><li><p><span style=\"color:#5a5f72\">Build and maintain scalable Python APIs (e.g., FastAPI) to deploy your models into production and integrate them into the wider product.</span></p></li><li><p><span style=\"color:#5a5f72\">Deploy and maintain ML models in cloud environments, ensuring they keep performing reliably as data and business needs evolve.</span></p></li><li><p><span style=\"color:#5a5f72\">Build and maintain automated ML pipelines that keep data flowing and models retraining with minimal manual intervention.</span></p></li><li><p><span style=\"color:#5a5f72\">Implement MLOps best practices, including CI/CD pipelines in Azure, so models can be shipped, monitored, and improved continuously.</span></p><p style=\"min-height: 1.7em;\"></p></li></ul><h3><strong><span style=\"color:#000000\">You bring</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">Degree in Computer science, Data science, Mathematics or any engineering related field.</span></p></li><li><p><span style=\"color:#5a5f72\">Experience building and maintaining scalable Python APIs (e.g., FastAPI) to deploy ML models into production.</span></p></li><li><p><span style=\"color:#5a5f72\">Experience implementing MLOps best practices, including CI/CD pipelines for ML models in Azure.</span></p></li><li><p><span style=\"color:#5a5f72\">Comfortable working independently, you'll be the only ML specialist on the team, so you're used to owning your work end to end.</span></p></li><li><p><span style=\"color:#5a5f72\">Fluency in English.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#121317\">We offer</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">A salary range of </span><strong><span style=\"color:#5a5f72\">3000€ to 4500€ gross per month</span></strong><span style=\"color:#5a5f72\"> (excluding holiday allowance), depending on your experience.</span></p></li><li><p><span style=\"color:#5a5f72\">Health insurance.</span></p></li><li><p><span style=\"color:#5a5f72\">Nmbrs is a flat organization where you get the </span><strong><span style=\"color:#5a5f72\">freedom and responsibility</span></strong><span style=\"color:#5a5f72\"> to do what you’re good at and make an impact in a flexible, agile working environment.</span></p></li><li><p><span style=\"color:#5a5f72\">A personal coach who supports your personal and professional growth, plus an annual </span><strong><span style=\"color:#5a5f72\">training budget.</span></strong></p></li><li><p><span style=\"color:#5a5f72\">A healthy work-life balance: at Nmbrs, full-time means a </span><strong><span style=\"color:#5a5f72\">4-day workweek</span></strong><span style=\"color:#5a5f72\">, giving you an extra day for what matters most to you.</span></p></li><li><p><strong><span style=\"color:#5a5f72\">Hybrid working.</span></strong></p></li><li><p><span style=\"color:#5a5f72\">As part of Visma, you get access to a wide range of </span><strong><span style=\"color:#5a5f72\">development opportunities</span></strong><span style=\"color:#5a5f72\">, including training, events and professional networks.</span></p></li><li><p><span style=\"color:#5a5f72\">The opportunity to spend up to 4 months on an </span><strong><span style=\"color:#5a5f72\">exchange</span></strong><span style=\"color:#5a5f72\"> in our Amsterdam office.</span></p></li><li><p><span style=\"color:#5a5f72\">A </span><strong><span style=\"color:#5a5f72\">pet-friendly workplace, </span></strong><span style=\"color:#5a5f72\">feel free to bring your four-legged friend along.</span></p><p class=\"MsoNormal\" style=\"min-height: 1.7em;\"></p></li></ul><h3><strong>Application process</strong></h3><ol><li><p><span style=\"color:#5a5f72\">Equalture assessment – You start with a series of neuroscience-based games via Equalture.</span></p></li><li><p><span style=\"color:#5a5f72\">Cultural interview – An online conversation with one or two of our recruiters to get to know each other and see if there's a good cultural match.</span></p></li><li><p><span style=\"color:#5a5f72\">Technical challenge.</span></p></li><li><p><span style=\"color:#5a5f72\">Technical interview – You'll meet two colleagues from your team who will dive deeper into your knowledge, experience, and approach.</span></p></li><li><p><span style=\"color:#5a5f72\">Final interview – A last conversation with our Tech Lead about the role, your ambitions, and what a potential collaboration could look like.</span></p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Machine Learning Engineer",
+          "sharing_description": "Nmbrs is looking for a Machine Learning Engineer to join our Lisbon team. Ready to leverage your ML expertise in a fast-growing payroll tech company? In this role, you'll drive the development of data",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-09-17 14:32:22 UTC",
+      "country": "Portugal",
+      "position": 322,
+      "updated_at": "2026-09-22 08:12:44 UTC",
+      "location_question_visible": false,
+      "city": "Lisboa",
+      "locations": [
+        {
+          "id": 71030,
+          "name": "Lisboa",
+          "state": "Lisboa",
+          "country": "Portugal",
+          "city": "Lisboa",
+          "translations": {
+            "en": {
+              "name": "Lisboa",
+              "city": "Lisboa",
+              "postal_code": "1200-275",
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "PT",
+          "state_code": "11",
+          "postal_code": "1200-275",
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "11",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": null,
+      "postal_code": "1200-275",
+      "careers_url": "https://nmbrs.recruitee.com/o/machine-learning-engineer",
+      "guid": "ttalv",
+      "mailbox_email": "job.ttalv@nmbrs.recruitee.com",
+      "location": "Lisboa, Lisboa, Portugal",
+      "state_name": "Lisboa",
+      "title": "Machine Learning Engineer",
+      "sharing_description": "Nmbrs is looking for a Machine Learning Engineer to join our Lisbon team. Ready to leverage your ML expertise in a fast-growing payroll tech company? In this role, you'll drive the development of data",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": null
+      },
+      "min_hours": null,
+      "slug": "machine-learning-engineer",
+      "options_title": "off",
+      "min_hours_per_week": null,
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "information_technology",
+      "open_questions": [
+        {
+          "id": 4382269,
+          "position": 1,
+          "options": {},
+          "required": true,
+          "body": "Due to our hybrid work model, we're only considering candidates based in the Lisbon area. Are you located within 50km of Lisbon?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Due to our hybrid work model, we're only considering candidates based in the Lisbon area. Are you located within 50km of Lisbon?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4382270,
+          "position": 2,
+          "options": {},
+          "required": false,
+          "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": null,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/machine-learning-engineer/c/new",
+      "country_code": "PT",
+      "department": null,
+      "education_code": "bachelor_degree",
+      "highlight": null,
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p><span style=\"color:#5a5f72\">Nmbrs is looking for a Machine Learning Engineer to join our Lisbon team. Ready to leverage your ML expertise in a fast-growing payroll tech company? In this role, you'll drive the development of data-driven models that bring our ambition of a 100% Self-Driving Payroll a bit closer to reality. Working as the ML specialist within a dedicated AI-focused engineering team. Ready to transform complex data into insights that shape real business decisions?</span></p><h4></h4><p><strong><span style=\"color:#000000\">Time to grow. Time to thrive.</span></strong></p><p><span style=\"color:#5a5f72\">We are Nmbrs. We build smart business software that removes unnecessary complexity for SMEs and the professionals who support them. Nmbrs brings together four established product organisations—Payroll, Accounting, Invoicing and Reporting—with teams across the Netherlands, Sweden and Portugal.</span></p><p><span style=\"color:#5a5f72\">We are one brand with a shared ambition, while continuing to work from the expertise and strengths of our individual organisations. We join forces where it makes sense, while keeping teams, expertise and decision-making close together.</span></p><p><span style=\"color:#5a5f72\">For this role, you’ll join </span><strong><span style=\"color:#5a5f72\">Nmbrs Payroll </span></strong><span style=\"color:#5a5f72\">in </span><strong><span style=\"color:#5a5f72\">Lisbon,</span></strong><span style=\"color:#5a5f72\"> working closely with the colleagues in your local team while being part of the wider Nmbrs organisation.</span></p><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#000000\">Your role</span></strong></h3><p><span style=\"color:#5a5f72\">As a ML Engineer, you’ll play a pivotal part in building advanced machine learning solutions. Ranging from salary benchmarking and predictive analytics to anomaly detection, all leveraging our extensive payroll data. Your work will help drive Nmbrs toward our vision of a </span><strong><span style=\"color:#5a5f72\">self-driving payroll</span></strong><span style=\"color:#5a5f72\"> application.</span></p><h3></h3>",
+      "options_cv": "required",
+      "experience_code": "mid_level",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h3><strong>Your impact</strong></h3><ul><li><p><span style=\"color:#5a5f72\">Drive the development of data-driven models (from salary benchmarking to anomaly detection) that bring Nmbrs Payroll closer to a 100% Self-Driving Payroll.</span></p></li><li><p><span style=\"color:#5a5f72\">Design and build supervised and unsupervised models (regression, classification, Random Forest, Gradient Boosting, Neural Networks) to solve real payroll problems.</span></p></li><li><p><span style=\"color:#5a5f72\">Turn raw payroll data into clean, well-engineered features that make your models accurate and reliable, using tools like Pandas and NumPy.</span></p></li><li><p><span style=\"color:#5a5f72\">Query and manipulate large volumes of data in SQL Server to fuel model development and analysis.</span></p></li><li><p><span style=\"color:#5a5f72\">Build and maintain scalable Python APIs (e.g., FastAPI) to deploy your models into production and integrate them into the wider product.</span></p></li><li><p><span style=\"color:#5a5f72\">Deploy and maintain ML models in cloud environments, ensuring they keep performing reliably as data and business needs evolve.</span></p></li><li><p><span style=\"color:#5a5f72\">Build and maintain automated ML pipelines that keep data flowing and models retraining with minimal manual intervention.</span></p></li><li><p><span style=\"color:#5a5f72\">Implement MLOps best practices, including CI/CD pipelines in Azure, so models can be shipped, monitored, and improved continuously.</span></p><p style=\"min-height: 1.7em;\"></p></li></ul><h3><strong><span style=\"color:#000000\">You bring</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">Degree in Computer science, Data science, Mathematics or any engineering related field.</span></p></li><li><p><span style=\"color:#5a5f72\">Experience building and maintaining scalable Python APIs (e.g., FastAPI) to deploy ML models into production.</span></p></li><li><p><span style=\"color:#5a5f72\">Experience implementing MLOps best practices, including CI/CD pipelines for ML models in Azure.</span></p></li><li><p><span style=\"color:#5a5f72\">Comfortable working independently, you'll be the only ML specialist on the team, so you're used to owning your work end to end.</span></p></li><li><p><span style=\"color:#5a5f72\">Fluency in English.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#121317\">We offer</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">A salary range of </span><strong><span style=\"color:#5a5f72\">3000€ to 4500€ gross per month</span></strong><span style=\"color:#5a5f72\"> (excluding holiday allowance), depending on your experience.</span></p></li><li><p><span style=\"color:#5a5f72\">Health insurance.</span></p></li><li><p><span style=\"color:#5a5f72\">Nmbrs is a flat organization where you get the </span><strong><span style=\"color:#5a5f72\">freedom and responsibility</span></strong><span style=\"color:#5a5f72\"> to do what you’re good at and make an impact in a flexible, agile working environment.</span></p></li><li><p><span style=\"color:#5a5f72\">A personal coach who supports your personal and professional growth, plus an annual </span><strong><span style=\"color:#5a5f72\">training budget.</span></strong></p></li><li><p><span style=\"color:#5a5f72\">A healthy work-life balance: at Nmbrs, full-time means a </span><strong><span style=\"color:#5a5f72\">4-day workweek</span></strong><span style=\"color:#5a5f72\">, giving you an extra day for what matters most to you.</span></p></li><li><p><strong><span style=\"color:#5a5f72\">Hybrid working.</span></strong></p></li><li><p><span style=\"color:#5a5f72\">As part of Visma, you get access to a wide range of </span><strong><span style=\"color:#5a5f72\">development opportunities</span></strong><span style=\"color:#5a5f72\">, including training, events and professional networks.</span></p></li><li><p><span style=\"color:#5a5f72\">The opportunity to spend up to 4 months on an </span><strong><span style=\"color:#5a5f72\">exchange</span></strong><span style=\"color:#5a5f72\"> in our Amsterdam office.</span></p></li><li><p><span style=\"color:#5a5f72\">A </span><strong><span style=\"color:#5a5f72\">pet-friendly workplace, </span></strong><span style=\"color:#5a5f72\">feel free to bring your four-legged friend along.</span></p><p class=\"MsoNormal\" style=\"min-height: 1.7em;\"></p></li></ul><h3><strong>Application process</strong></h3><ol><li><p><span style=\"color:#5a5f72\">Equalture assessment – You start with a series of neuroscience-based games via Equalture.</span></p></li><li><p><span style=\"color:#5a5f72\">Cultural interview – An online conversation with one or two of our recruiters to get to know each other and see if there's a good cultural match.</span></p></li><li><p><span style=\"color:#5a5f72\">Technical challenge.</span></p></li><li><p><span style=\"color:#5a5f72\">Technical interview – You'll meet two colleagues from your team who will dive deeper into your knowledge, experience, and approach.</span></p></li><li><p><span style=\"color:#5a5f72\">Final interview – A last conversation with our Tech Lead about the role, your ambitions, and what a potential collaboration could look like.</span></p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+      "published_at": "2026-09-17 15:34:42 UTC",
+      "sharing_title": "Machine Learning Engineer",
+      "locations_question_required": true,
+      "id": 2749972,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "en": {
+          "description": "<p class=\"isSelectedEnd\">Als <strong>Product Designer bij Nmbrs</strong> zorg je ervoor dat onze software niet alleen goed werkt, maar ook logisch aanvoelt en er verzorgd uitziet. Met jouw sterke visuele blik en kennis van UX vertaal je gebruikersbehoeften naar heldere, intuïtieve ontwerpen. Samen met developers, Product Owners en collega’s in marketing en sales werk je aan een consistente gebruikerservaring en visuele identiteit. Daarbij kijk je continu naar mogelijkheden om ons designproces en onze producten slimmer te maken, onder andere met AI.</p><p style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en met onze collega’s in Portugal, en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Product Designer</strong> ben je verantwoordelijk voor het ontwerpen van gebruiksvriendelijke en visueel sterke interfaces voor ons facturatie- en administratieproduct. Je vertaalt UX-inzichten en feedback van gebruikers naar ontwerpen waar ondernemers en accountants direct mee uit de voeten kunnen.</p><p class=\"isSelectedEnd\">Je werkt binnen een multidisciplinair productteam met developers, Product Owners en collega’s in Portugal. Het team werkt volgens Scrum, in sprints van twee weken. Je schuift aan bij planningen, denkt mee over nieuwe features en toetst je ontwerpen voortdurend aan echte gebruikersbehoeften. Daarnaast werk je nauw samen met marketing en sales om onze visuele identiteit over verschillende kanalen heen te bewaken.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p><strong>User interfaces ontwerpen</strong> voor ons product, in nauwe samenwerking met developers en Product Owners.</p></li><li><p><strong>UX-inzichten en gebruikersfeedback</strong> vertalen naar heldere, intuïtieve en visueel sterke ontwerpen en actief meedenken over verbeteringen in de gebruikerservaring.</p></li><li><p>Onze <strong>brand guidelines en huisstijl</strong> bewaken en verder ontwikkelen, zodat Nmbrs overal herkenbaar en consistent wordt gepresenteerd.</p></li><li><p>Visuele uitingen maken voor marketing en sales, zoals landingspagina’s, socialmediacontent en campagnebeelden, en daarbij de <strong>merkconsistentie</strong> over verschillende kanalen bewaken.</p></li><li><p>Onderzoeken hoe <strong>AI-tools</strong> je designworkflow slimmer en sneller kunnen maken en meedenken over hoe AI een waardevolle plek kan krijgen in onze producten.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat <strong>onze software eenvoudig, intuïtief en prettig te gebruiken is</strong>. Je combineert een sterk gevoel voor visueel design met inzicht in wat gebruikers nodig hebben, zodat nieuwe features niet alleen technisch goed werken, maar ook logisch aanvoelen en er verzorgd uitzien.</p><p class=\"isSelectedEnd\">Wanneer het productteam bijvoorbeeld aan een nieuwe feature werkt, vertaal jij gebruikersinzichten en feedback naar een ontwerp waarmee developers gericht aan de slag kunnen. Door tijdens het proces nauw samen te werken en je ontwerpen te toetsen aan gebruikersbehoeften, help je het team keuzes te maken die de gebruikerservaring daadwerkelijk verbeteren.</p><p>Daarnaast draag je bij aan een <strong>herkenbaar en consistent Nmbrs-merk</strong>. Van de interface van ons product tot een landingspagina of campagnebeeld: jouw werk helpt ervoor te zorgen dat onze visuele identiteit overal klopt. Met jouw nieuwsgierigheid naar AI help je bovendien nieuwe mogelijkheden ontdekken om zowel ons designproces als onze producten slimmer te maken.</p><p style=\"min-height: 1.7em;\"></p>",
+          "title": "Product Designer",
+          "highlight": null,
+          "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je bent een ervaren <strong>Product Designer</strong> met een sterk visueel oog en een goed begrip van gebruikersgericht ontwerpen. Je hebt aandacht voor kleur, typografie, compositie en detail en weet dit te vertalen naar ontwerpen die zowel functioneel als visueel sterk zijn.</p><ul><li><p>Je hebt een afgeronde opleiding richting <strong>IMD, CMD</strong> of een grafische opleiding en minimaal <strong>5 jaar werkervaring in product design, UI/UX design of een vergelijkbare rol</strong>.</p></li><li><p>Je hebt aantoonbare ervaring met het ontwerpen van user interfaces, bijvoorbeeld in <strong>Figma</strong> of vergelijkbare tools, en hebt affiniteit met UX-principes en gebruikersgericht ontwerpen.</p></li><li><p>Je hebt een uitstekend oog voor <strong>kleur, typografie en compositie</strong> en een sterk gevoel voor visuele identiteit en merkconsistentie.</p></li><li><p>Je bent communicatief sterk, werkt zelfstandig en schakelt gemakkelijk tussen het productteam, marketing en sales, waarbij je actief de <strong>samenwerking</strong> opzoekt.</p></li><li><p>Je hebt een sterke <strong>AI-mindset</strong>: je bent nieuwsgierig naar AI-tools en ziet kansen om hiermee je werk en onze producten slimmer te maken.</p></li></ul><p class=\"isSelectedEnd\">Bij je sollicitatie ontvangen we graag een <strong>portfolio</strong> waarin je visuele werk en ontwerpvaardigheden goed tot hun recht komen.</p><p class=\"isSelectedEnd\">Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p>Een brutosalaris tussen <strong>€3.400 en €5.000 per maand</strong> op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring;</p></li><li><p>Een aantrekkelijke <strong>bonusregeling</strong> bij een contract voor onbepaalde tijd;</p></li><li><p><strong>28 vakantiedagen</strong> per jaar bij een fulltime dienstverband;</p></li><li><p>Vier keer per jaar een ontmoeting met onze <strong>Portugese collega’s</strong>, in Portugal of Nederland;</p></li><li><p>Leuke <strong>teamuitjes</strong> en toffe (target)trips;</p></li><li><p>Uitdagend werk met veel ruimte voor <strong>eigen inbreng</strong>;</p></li><li><p>Een hecht team met een sterk wij-gevoel en gezellige vrijdagmiddagborrels, inclusief onze maandelijkse <strong>SnackVrijdag</strong>;</p></li><li><p>Een inspirerende werkplek in <strong>Eersel</strong>, met de mogelijkheid om hybride te werken (maximaal twee dagen per week vanuit huis);</p></li><li><p>Volop ruimte voor <strong>persoonlijke ontwikkeling</strong>;</p></li><li><p>Een vitaliteitsregeling van <strong>€25 netto per maand</strong> en extra voordelen via <strong>a.s.r. Vitality</strong>;</p></li><li><p>Een pensioenregeling met <strong>10% werkgeversbijdrage</strong>.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Sollicitatieprocedure</h2><ol><li><p><strong>Kennismaking met de recruiter</strong> – Je start met een online gesprek van ongeveer 30 minuten met een van onze recruiters. We leren elkaar beter kennen, bespreken de rol en zijn benieuwd naar jouw ervaring en wat je zoekt in een volgende stap.</p></li><li><p><strong>Design challenge</strong> – Je ontvangt een designopdracht die je thuis kunt uitwerken. Zo krijgen we een beter beeld van hoe je een designvraagstuk benadert en welke keuzes je maakt.</p></li><li><p><strong>Casepresentatie &amp; technisch interview</strong> – Je komt langs op ons kantoor in Eersel en presenteert je design challenge aan twee collega’s uit het Product team. We bespreken je ontwerpkeuzes en gaan dieper in op je ervaring, werkwijze en visie op product design.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol>",
+          "sharing_image": null,
+          "sharing_title": "Product Designer",
+          "sharing_description": "Als Product Designer bij Nmbrs zorg je ervoor dat onze software niet alleen goed werkt, maar ook logisch aanvoelt en er verzorgd uitziet. Met jouw sterke visuele blik en kennis van UX vertaal je gebru",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-08-31 11:58:44 UTC",
+      "country": "Netherlands",
+      "position": 321,
+      "updated_at": "2026-09-21 13:42:54 UTC",
+      "location_question_visible": false,
+      "city": "Eersel",
+      "locations": [
+        {
+          "id": 295771,
+          "name": "Eersel",
+          "state": "Noord-Brabant",
+          "country": "Netherlands",
+          "city": "Eersel",
+          "translations": {
+            "en": {
+              "name": "Eersel",
+              "city": "Eersel",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NB",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NB",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": null,
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/product-designer-3",
+      "guid": "b9w7b",
+      "mailbox_email": "job.b9w7b@nmbrs.recruitee.com",
+      "location": "Eersel, Noord-Brabant, Netherlands",
+      "state_name": "Noord-Brabant",
+      "title": "Product Designer",
+      "sharing_description": "Als Product Designer bij Nmbrs zorg je ervoor dat onze software niet alleen goed werkt, maar ook logisch aanvoelt en er verzorgd uitziet. Met jouw sterke visuele blik en kennis van UX vertaal je gebru",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": null
+      },
+      "min_hours": null,
+      "slug": "product-designer-3",
+      "options_title": "off",
+      "min_hours_per_week": null,
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "design",
+      "open_questions": [
+        {
+          "id": 4383351,
+          "position": 1,
+          "options": {},
+          "required": true,
+          "body": "Are you currently based within a reasonable commuting distance of our Eersel office?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you currently based within a reasonable commuting distance of our Eersel office?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": null,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/product-designer-3/c/new",
+      "country_code": "NL",
+      "department": "Product",
+      "education_code": "bachelor_degree",
+      "highlight": null,
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p class=\"isSelectedEnd\">Als <strong>Product Designer bij Nmbrs</strong> zorg je ervoor dat onze software niet alleen goed werkt, maar ook logisch aanvoelt en er verzorgd uitziet. Met jouw sterke visuele blik en kennis van UX vertaal je gebruikersbehoeften naar heldere, intuïtieve ontwerpen. Samen met developers, Product Owners en collega’s in marketing en sales werk je aan een consistente gebruikerservaring en visuele identiteit. Daarbij kijk je continu naar mogelijkheden om ons designproces en onze producten slimmer te maken, onder andere met AI.</p><p style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en met onze collega’s in Portugal, en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Product Designer</strong> ben je verantwoordelijk voor het ontwerpen van gebruiksvriendelijke en visueel sterke interfaces voor ons facturatie- en administratieproduct. Je vertaalt UX-inzichten en feedback van gebruikers naar ontwerpen waar ondernemers en accountants direct mee uit de voeten kunnen.</p><p class=\"isSelectedEnd\">Je werkt binnen een multidisciplinair productteam met developers, Product Owners en collega’s in Portugal. Het team werkt volgens Scrum, in sprints van twee weken. Je schuift aan bij planningen, denkt mee over nieuwe features en toetst je ontwerpen voortdurend aan echte gebruikersbehoeften. Daarnaast werk je nauw samen met marketing en sales om onze visuele identiteit over verschillende kanalen heen te bewaken.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p><strong>User interfaces ontwerpen</strong> voor ons product, in nauwe samenwerking met developers en Product Owners.</p></li><li><p><strong>UX-inzichten en gebruikersfeedback</strong> vertalen naar heldere, intuïtieve en visueel sterke ontwerpen en actief meedenken over verbeteringen in de gebruikerservaring.</p></li><li><p>Onze <strong>brand guidelines en huisstijl</strong> bewaken en verder ontwikkelen, zodat Nmbrs overal herkenbaar en consistent wordt gepresenteerd.</p></li><li><p>Visuele uitingen maken voor marketing en sales, zoals landingspagina’s, socialmediacontent en campagnebeelden, en daarbij de <strong>merkconsistentie</strong> over verschillende kanalen bewaken.</p></li><li><p>Onderzoeken hoe <strong>AI-tools</strong> je designworkflow slimmer en sneller kunnen maken en meedenken over hoe AI een waardevolle plek kan krijgen in onze producten.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat <strong>onze software eenvoudig, intuïtief en prettig te gebruiken is</strong>. Je combineert een sterk gevoel voor visueel design met inzicht in wat gebruikers nodig hebben, zodat nieuwe features niet alleen technisch goed werken, maar ook logisch aanvoelen en er verzorgd uitzien.</p><p class=\"isSelectedEnd\">Wanneer het productteam bijvoorbeeld aan een nieuwe feature werkt, vertaal jij gebruikersinzichten en feedback naar een ontwerp waarmee developers gericht aan de slag kunnen. Door tijdens het proces nauw samen te werken en je ontwerpen te toetsen aan gebruikersbehoeften, help je het team keuzes te maken die de gebruikerservaring daadwerkelijk verbeteren.</p><p>Daarnaast draag je bij aan een <strong>herkenbaar en consistent Nmbrs-merk</strong>. Van de interface van ons product tot een landingspagina of campagnebeeld: jouw werk helpt ervoor te zorgen dat onze visuele identiteit overal klopt. Met jouw nieuwsgierigheid naar AI help je bovendien nieuwe mogelijkheden ontdekken om zowel ons designproces als onze producten slimmer te maken.</p><p style=\"min-height: 1.7em;\"></p>",
+      "options_cv": "required",
+      "experience_code": "mid_level",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je bent een ervaren <strong>Product Designer</strong> met een sterk visueel oog en een goed begrip van gebruikersgericht ontwerpen. Je hebt aandacht voor kleur, typografie, compositie en detail en weet dit te vertalen naar ontwerpen die zowel functioneel als visueel sterk zijn.</p><ul><li><p>Je hebt een afgeronde opleiding richting <strong>IMD, CMD</strong> of een grafische opleiding en minimaal <strong>5 jaar werkervaring in product design, UI/UX design of een vergelijkbare rol</strong>.</p></li><li><p>Je hebt aantoonbare ervaring met het ontwerpen van user interfaces, bijvoorbeeld in <strong>Figma</strong> of vergelijkbare tools, en hebt affiniteit met UX-principes en gebruikersgericht ontwerpen.</p></li><li><p>Je hebt een uitstekend oog voor <strong>kleur, typografie en compositie</strong> en een sterk gevoel voor visuele identiteit en merkconsistentie.</p></li><li><p>Je bent communicatief sterk, werkt zelfstandig en schakelt gemakkelijk tussen het productteam, marketing en sales, waarbij je actief de <strong>samenwerking</strong> opzoekt.</p></li><li><p>Je hebt een sterke <strong>AI-mindset</strong>: je bent nieuwsgierig naar AI-tools en ziet kansen om hiermee je werk en onze producten slimmer te maken.</p></li></ul><p class=\"isSelectedEnd\">Bij je sollicitatie ontvangen we graag een <strong>portfolio</strong> waarin je visuele werk en ontwerpvaardigheden goed tot hun recht komen.</p><p class=\"isSelectedEnd\">Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p>Een brutosalaris tussen <strong>€3.400 en €5.000 per maand</strong> op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring;</p></li><li><p>Een aantrekkelijke <strong>bonusregeling</strong> bij een contract voor onbepaalde tijd;</p></li><li><p><strong>28 vakantiedagen</strong> per jaar bij een fulltime dienstverband;</p></li><li><p>Vier keer per jaar een ontmoeting met onze <strong>Portugese collega’s</strong>, in Portugal of Nederland;</p></li><li><p>Leuke <strong>teamuitjes</strong> en toffe (target)trips;</p></li><li><p>Uitdagend werk met veel ruimte voor <strong>eigen inbreng</strong>;</p></li><li><p>Een hecht team met een sterk wij-gevoel en gezellige vrijdagmiddagborrels, inclusief onze maandelijkse <strong>SnackVrijdag</strong>;</p></li><li><p>Een inspirerende werkplek in <strong>Eersel</strong>, met de mogelijkheid om hybride te werken (maximaal twee dagen per week vanuit huis);</p></li><li><p>Volop ruimte voor <strong>persoonlijke ontwikkeling</strong>;</p></li><li><p>Een vitaliteitsregeling van <strong>€25 netto per maand</strong> en extra voordelen via <strong>a.s.r. Vitality</strong>;</p></li><li><p>Een pensioenregeling met <strong>10% werkgeversbijdrage</strong>.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Sollicitatieprocedure</h2><ol><li><p><strong>Kennismaking met de recruiter</strong> – Je start met een online gesprek van ongeveer 30 minuten met een van onze recruiters. We leren elkaar beter kennen, bespreken de rol en zijn benieuwd naar jouw ervaring en wat je zoekt in een volgende stap.</p></li><li><p><strong>Design challenge</strong> – Je ontvangt een designopdracht die je thuis kunt uitwerken. Zo krijgen we een beter beeld van hoe je een designvraagstuk benadert en welke keuzes je maakt.</p></li><li><p><strong>Casepresentatie &amp; technisch interview</strong> – Je komt langs op ons kantoor in Eersel en presenteert je design challenge aan twee collega’s uit het Product team. We bespreken je ontwerpkeuzes en gaan dieper in op je ervaring, werkwijze en visie op product design.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol>",
+      "published_at": "2026-08-31 12:04:10 UTC",
+      "sharing_title": "Product Designer",
+      "locations_question_required": true,
+      "id": 2727516,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "nl": {
+          "description": "<h1>Product Owner</h1><p class=\"isSelectedEnd\">Als <strong>Product Owner</strong> bij Nmbrs verbind je productvisie, gebruikersbehoeften en techniek. Je zorgt ervoor dat ons productteam de juiste prioriteiten stelt en werkt aan oplossingen die ondernemers en accountants écht verder helpen. Met jouw ervaring binnen productontwikkeling beweeg je moeiteloos tussen UX, business en techniek. Samen met developers, designers, testers en stakeholders werk je aan de verdere ontwikkeling van ons product en onderzoek je hoe onder andere AI kan bijdragen aan meer waarde voor onze gebruikers.</p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en met onze collega’s in Portugal, en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Product Owner</strong> ben jij de spil tussen het productteam, stakeholders en gebruikers. Je zorgt ervoor dat iedereen dezelfde richting op kijkt: van de productvisie en roadmap op hoofdlijnen tot de concrete user stories die het ontwikkelteam oppakt.</p><p class=\"isSelectedEnd\">Ons multidisciplinaire productteam bestaat uit developers, designers en testers in Nederland en Portugal en werkt volgens Scrum, met sprints van twee weken. Je werkt nauw met hen samen tijdens onder andere sprintplanning, refinement en sprint reviews. AI speelt daarbij een steeds grotere rol: zowel als kans binnen ons product als hulpmiddel in de manier waarop we werken.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Samen met het productteam de <strong>productvisie en roadmap</strong> bepalen en bewaken en zorgen dat deze aansluiten op de doelen van Nmbrs Invoicing.</p></li><li><p>Klantfeedback, marktinzichten en data vertalen naar een <strong>scherp geprioriteerde backlog</strong> en features en verbeteringen prioriteren op basis van impact voor de gebruiker.</p></li><li><p>Schakelen tussen <strong>UX, business en techniek</strong> om tot de juiste productkeuzes te komen en deze te vertalen naar concrete, uitvoerbare user stories.</p></li><li><p>Nauw samenwerken met developers, designers, testers en stakeholders tijdens <strong>sprintplanning, refinement en sprint reviews</strong>.</p></li><li><p>Signaleren waar <strong>AI</strong> ons product en onze gebruikers verder kan helpen en AI-tools inzetten om bijvoorbeeld data sneller te analyseren, ideeën te verkennen en processen te versnellen.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat ons productteam zich richt op <strong>wat de meeste waarde oplevert voor onze gebruikers en onze organisatie</strong>. Je brengt verschillende perspectieven samen en vertaalt gebruikersbehoeften, data en bedrijfsdoelstellingen naar duidelijke keuzes voor het product.</p><p class=\"isSelectedEnd\">Wanneer er bijvoorbeeld meerdere wensen, verbeteringen en nieuwe features op de backlog staan, help jij bepalen wat als eerste aandacht verdient. Je onderbouwt die keuzes met data en de verwachte impact voor gebruikers, zodat het team gericht kan werken aan verbeteringen die er echt toe doen.</p><p>Daarnaast help je ons vooruitkijken. Je signaleert ontwikkelingen in de markt en onderzoekt hoe nieuwe mogelijkheden, waaronder AI, ons product en onze manier van werken kunnen verbeteren. Zo draag je niet alleen bij aan wat we vandaag bouwen, maar ook aan de verdere ontwikkeling van Nmbrs Invoicing.</p><p style=\"min-height: 1.7em;\"></p>",
+          "title": "Product Owner",
+          "highlight": null,
+          "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je bent een ervaren Product Owner die gemakkelijk schakelt tussen het grote geheel en de details die nodig zijn om een developmentteam vooruit te helpen. Je verbindt verschillende disciplines en stakeholders, maakt onderbouwde keuzes en voelt je thuis in een snel veranderende SaaS-omgeving.</p><ul><li><p>Je hebt <strong>3–5 jaar ervaring als Product Owner</strong>, bij voorkeur binnen een SaaS-omgeving.</p></li><li><p>Je beweegt je moeiteloos in de driehoek <strong>UX, business en techniek</strong> en hebt sterke communicatieve vaardigheden om verschillende teams en stakeholders te verbinden.</p></li><li><p>Je kunt uitzoomen en het grote plaatje zien, maar ook concreet prioriteren en keuzes maken op detailniveau. Je gebruikt daarbij <strong>data</strong> om je beslissingen te onderbouwen.</p></li><li><p>Je hebt ervaring met <strong>Scrum/Agile werken</strong> en tools zoals <strong>Jira</strong> of vergelijkbare tools.</p></li><li><p>Je weet hoe je <strong>AI-tools</strong> slim kunt inzetten, bijvoorbeeld om data sneller te analyseren, backlogs te verrijken, ideeën te verkennen of processen te versnellen.</p></li></ul><p class=\"isSelectedEnd\"><em>Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</em></p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p>Een brutosalaris tussen <strong>€4.000 en €5.500 per maand</strong> op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring;</p></li><li><p>Een aantrekkelijke <strong>bonusregeling</strong> bij een contract voor onbepaalde tijd, waarbij je tot <strong>150% van je bruto maandsalaris</strong> kunt verdienen;</p></li><li><p><strong>28 vakantiedagen</strong> per jaar bij een fulltime dienstverband;</p></li><li><p><strong>Van digitaal naar dichtbij:</strong> vier keer per jaar ontmoet je je Portugese collega’s, twee keer in <strong>Porto</strong> en twee keer in Nederland;</p></li><li><p>Leuke <strong>teamuitjes</strong> en toffe <strong>targettrips naar het buitenland</strong>;</p></li><li><p>Uitdagend werk in een <strong>snel veranderende omgeving</strong> met veel ruimte voor eigen inbreng;</p></li><li><p>Een hecht en gezellig team met een <strong>sterk wij-gevoel</strong> en een goede werksfeer. We lunchen samen en spreken de weekendplannen door tijdens onze vrijdagmiddagborrel, inclusief een maandelijkse SnackVrijdag;</p></li><li><p>Een <strong>inspirerende werkplek in Eersel</strong>, met de mogelijkheid om hybride te werken, waarbij je maximaal twee dagen per week vanuit huis werkt;</p></li><li><p>Ruimte voor <strong>persoonlijke ontwikkeling</strong>;</p></li><li><p>Een vitaliteitsregeling van <strong>€25 netto per maand</strong> en extra voordelen via <strong>a.s.r. Vitality</strong>;</p></li><li><p>Een <strong>pensioenregeling met 10% werkgeversbijdrage</strong>.</p></li></ul><h2></h2><p><em>Let op: op dit moment kunnen wij geen relocatie-ondersteuning bieden. We moedigen daarom sollicitaties aan van kandidaten die binnen een straal van 50 km van ons kantoor in Eersel wonen.</em></p>",
+          "sharing_image": null,
+          "sharing_title": "Product Owner",
+          "sharing_description": "Product OwnerAls Product Owner bij Nmbrs verbind je productvisie, gebruikersbehoeften en techniek. Je zorgt ervoor dat ons productteam de juiste prioriteiten stelt en werkt aan oplossingen die onderne",
+          "locations_question": "Welke werklocatie heeft je voorkeur?"
+        }
+      },
+      "created_at": "2026-08-31 11:53:07 UTC",
+      "country": "Netherlands",
+      "position": 320,
+      "updated_at": "2026-09-17 10:13:17 UTC",
+      "location_question_visible": false,
+      "city": "Eersel",
+      "locations": [
+        {
+          "id": 295771,
+          "name": "Eersel",
+          "state": "Noord-Brabant",
+          "country": "Nederland",
+          "city": "Eersel",
+          "translations": {
+            "nl": {
+              "name": "Eersel",
+              "city": "Eersel",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NB",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NB",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": null,
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/product-owner-5",
+      "guid": "1776a",
+      "mailbox_email": "job.1776a@nmbrs.recruitee.com",
+      "location": "Eersel, Noord-Brabant, Netherlands",
+      "state_name": "Noord-Brabant",
+      "title": "Product Owner",
+      "sharing_description": "Product OwnerAls Product Owner bij Nmbrs verbind je productvisie, gebruikersbehoeften en techniek. Je zorgt ervoor dat ons productteam de juiste prioriteiten stelt en werkt aan oplossingen die onderne",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": null
+      },
+      "min_hours": null,
+      "slug": "product-owner-5",
+      "options_title": "off",
+      "min_hours_per_week": null,
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "engineering",
+      "open_questions": [],
+      "max_hours": null,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/product-owner-5/c/new",
+      "country_code": "NL",
+      "department": "Product",
+      "education_code": "bachelor_degree",
+      "highlight": null,
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<h1>Product Owner</h1><p class=\"isSelectedEnd\">Als <strong>Product Owner</strong> bij Nmbrs verbind je productvisie, gebruikersbehoeften en techniek. Je zorgt ervoor dat ons productteam de juiste prioriteiten stelt en werkt aan oplossingen die ondernemers en accountants écht verder helpen. Met jouw ervaring binnen productontwikkeling beweeg je moeiteloos tussen UX, business en techniek. Samen met developers, designers, testers en stakeholders werk je aan de verdere ontwikkeling van ons product en onderzoek je hoe onder andere AI kan bijdragen aan meer waarde voor onze gebruikers.</p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en met onze collega’s in Portugal, en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Product Owner</strong> ben jij de spil tussen het productteam, stakeholders en gebruikers. Je zorgt ervoor dat iedereen dezelfde richting op kijkt: van de productvisie en roadmap op hoofdlijnen tot de concrete user stories die het ontwikkelteam oppakt.</p><p class=\"isSelectedEnd\">Ons multidisciplinaire productteam bestaat uit developers, designers en testers in Nederland en Portugal en werkt volgens Scrum, met sprints van twee weken. Je werkt nauw met hen samen tijdens onder andere sprintplanning, refinement en sprint reviews. AI speelt daarbij een steeds grotere rol: zowel als kans binnen ons product als hulpmiddel in de manier waarop we werken.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Samen met het productteam de <strong>productvisie en roadmap</strong> bepalen en bewaken en zorgen dat deze aansluiten op de doelen van Nmbrs Invoicing.</p></li><li><p>Klantfeedback, marktinzichten en data vertalen naar een <strong>scherp geprioriteerde backlog</strong> en features en verbeteringen prioriteren op basis van impact voor de gebruiker.</p></li><li><p>Schakelen tussen <strong>UX, business en techniek</strong> om tot de juiste productkeuzes te komen en deze te vertalen naar concrete, uitvoerbare user stories.</p></li><li><p>Nauw samenwerken met developers, designers, testers en stakeholders tijdens <strong>sprintplanning, refinement en sprint reviews</strong>.</p></li><li><p>Signaleren waar <strong>AI</strong> ons product en onze gebruikers verder kan helpen en AI-tools inzetten om bijvoorbeeld data sneller te analyseren, ideeën te verkennen en processen te versnellen.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat ons productteam zich richt op <strong>wat de meeste waarde oplevert voor onze gebruikers en onze organisatie</strong>. Je brengt verschillende perspectieven samen en vertaalt gebruikersbehoeften, data en bedrijfsdoelstellingen naar duidelijke keuzes voor het product.</p><p class=\"isSelectedEnd\">Wanneer er bijvoorbeeld meerdere wensen, verbeteringen en nieuwe features op de backlog staan, help jij bepalen wat als eerste aandacht verdient. Je onderbouwt die keuzes met data en de verwachte impact voor gebruikers, zodat het team gericht kan werken aan verbeteringen die er echt toe doen.</p><p>Daarnaast help je ons vooruitkijken. Je signaleert ontwikkelingen in de markt en onderzoekt hoe nieuwe mogelijkheden, waaronder AI, ons product en onze manier van werken kunnen verbeteren. Zo draag je niet alleen bij aan wat we vandaag bouwen, maar ook aan de verdere ontwikkeling van Nmbrs Invoicing.</p><p style=\"min-height: 1.7em;\"></p>",
+      "options_cv": "required",
+      "experience_code": "mid_level",
+      "locations_question": "Welke werklocatie heeft je voorkeur?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je bent een ervaren Product Owner die gemakkelijk schakelt tussen het grote geheel en de details die nodig zijn om een developmentteam vooruit te helpen. Je verbindt verschillende disciplines en stakeholders, maakt onderbouwde keuzes en voelt je thuis in een snel veranderende SaaS-omgeving.</p><ul><li><p>Je hebt <strong>3–5 jaar ervaring als Product Owner</strong>, bij voorkeur binnen een SaaS-omgeving.</p></li><li><p>Je beweegt je moeiteloos in de driehoek <strong>UX, business en techniek</strong> en hebt sterke communicatieve vaardigheden om verschillende teams en stakeholders te verbinden.</p></li><li><p>Je kunt uitzoomen en het grote plaatje zien, maar ook concreet prioriteren en keuzes maken op detailniveau. Je gebruikt daarbij <strong>data</strong> om je beslissingen te onderbouwen.</p></li><li><p>Je hebt ervaring met <strong>Scrum/Agile werken</strong> en tools zoals <strong>Jira</strong> of vergelijkbare tools.</p></li><li><p>Je weet hoe je <strong>AI-tools</strong> slim kunt inzetten, bijvoorbeeld om data sneller te analyseren, backlogs te verrijken, ideeën te verkennen of processen te versnellen.</p></li></ul><p class=\"isSelectedEnd\"><em>Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</em></p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p>Een brutosalaris tussen <strong>€4.000 en €5.500 per maand</strong> op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring;</p></li><li><p>Een aantrekkelijke <strong>bonusregeling</strong> bij een contract voor onbepaalde tijd, waarbij je tot <strong>150% van je bruto maandsalaris</strong> kunt verdienen;</p></li><li><p><strong>28 vakantiedagen</strong> per jaar bij een fulltime dienstverband;</p></li><li><p><strong>Van digitaal naar dichtbij:</strong> vier keer per jaar ontmoet je je Portugese collega’s, twee keer in <strong>Porto</strong> en twee keer in Nederland;</p></li><li><p>Leuke <strong>teamuitjes</strong> en toffe <strong>targettrips naar het buitenland</strong>;</p></li><li><p>Uitdagend werk in een <strong>snel veranderende omgeving</strong> met veel ruimte voor eigen inbreng;</p></li><li><p>Een hecht en gezellig team met een <strong>sterk wij-gevoel</strong> en een goede werksfeer. We lunchen samen en spreken de weekendplannen door tijdens onze vrijdagmiddagborrel, inclusief een maandelijkse SnackVrijdag;</p></li><li><p>Een <strong>inspirerende werkplek in Eersel</strong>, met de mogelijkheid om hybride te werken, waarbij je maximaal twee dagen per week vanuit huis werkt;</p></li><li><p>Ruimte voor <strong>persoonlijke ontwikkeling</strong>;</p></li><li><p>Een vitaliteitsregeling van <strong>€25 netto per maand</strong> en extra voordelen via <strong>a.s.r. Vitality</strong>;</p></li><li><p>Een <strong>pensioenregeling met 10% werkgeversbijdrage</strong>.</p></li></ul><h2></h2><p><em>Let op: op dit moment kunnen wij geen relocatie-ondersteuning bieden. We moedigen daarom sollicitaties aan van kandidaten die binnen een straal van 50 km van ons kantoor in Eersel wonen.</em></p>",
+      "published_at": "2026-08-31 11:56:10 UTC",
+      "sharing_title": "Product Owner",
+      "locations_question_required": true,
+      "id": 2727511,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "nl": {
+          "description": "<p class=\"isSelectedEnd\">Als <strong>Customer Care Specialist</strong> bij Nmbrs Invoicing (voorheen: WeFact) help je dagelijks ondernemers en accountants écht verder met slimme oplossingen. Je combineert intensief klantcontact met meedenken, verbeteren en samenwerken met collega’s. Met jouw kennis van onze gebruikers zorg je ervoor dat zij Nmbrs&nbsp;Invoicing optimaal kunnen inzetten. Samen met het Customer Care team werk je aan tevreden gebruikers én een steeds beter product. Daarbij kijk je verder dan de vraag van vandaag en denk je actief mee over hoe onze service en software kunnen verbeteren.</p><p style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Customer Care Specialist</strong> ben je het eerste aanspreekpunt voor onze gebruikers. Je helpt ondernemers en accountants met uiteenlopende vragen over Nmbrs Invoicing en denkt actief mee over hoe zij het pakket het beste kunnen inzetten. Dat doe je via telefoon, e-mail en schermdeling.</p><p class=\"isSelectedEnd\">Je helpt niet alleen bij het oplossen van vragen, maar begeleidt nieuwe gebruikers ook bij het inrichten van Nmbrs Invoicing. Daarnaast werk je samen met je collega’s aan een efficiënte werkwijze en deel je wensen, feedback en eventuele problemen met onze technische collega’s en het developmentteam.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Ondernemers en accountants helpen met uiteenlopende vragen over Nmbrs&nbsp;Invoicing via telefoon, e-mail en schermdeling.</p></li><li><p>Nieuwe gebruikers begeleiden bij het inrichten van Nmbrs&nbsp;Invoicing en hen helpen om een vliegende start te maken.</p></li><li><p>Actief meedenken over hoe gebruikers Nmbrs&nbsp;Invoicing het beste kunnen inzetten en snel tot een passende oplossing komen.</p></li><li><p>Helpartikelen, video’s en tours door het pakket schrijven en verbeteren, zodat gebruikers informatie makkelijker zelf kunnen vinden en vragen beter door onze AI-chatbot kunnen worden beantwoord.</p></li><li><p>Wensen en feedback van gebruikers verzamelen, verbetervoorstellen doen en deze delen met het developmentteam.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat <strong>ondernemers en accountants snel en goed verder kunnen met Nmbrs&nbsp;Invoicing</strong>. Je verplaatst je in de situatie van de gebruiker, denkt mee over de beste oplossing en zorgt ervoor dat onze support een service blijft waar klanten blij van worden.</p><p class=\"isSelectedEnd\">Wanneer je bijvoorbeeld een probleem signaleert in het product, schakel je met je technische collega’s zodat zij ermee aan de slag kunnen. Zodra het probleem is opgelost, kun jij de gebruiker snel verder helpen. Tegelijkertijd gebruik je vragen uit klantcontact om onze helpartikelen en andere ondersteuning te verbeteren, zodat toekomstige gebruikers nog makkelijker zelf een antwoord kunnen vinden.</p><p class=\"isSelectedEnd\">Daarnaast help je Nmbrs&nbsp;Invoicing continu verbeteren door wensen, feedback en inzichten van gebruikers te delen met het developmentteam. Zo heeft het dagelijkse contact dat je met klanten hebt ook direct invloed op de ontwikkeling van ons product en onze dienstverlening.</p>",
+          "title": "Customer Care Specialist",
+          "highlight": null,
+          "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je hebt ervaring binnen <strong>customer support of klantcontact</strong> en krijgt energie van het helpen van (toekomstige) klanten. Je kunt je goed verplaatsen in de situatie van een gebruiker, communiceert duidelijk en denkt proactief in oplossingen.</p><ul><li><p>Je hebt ervaring binnen customer support of klantcontact.</p></li><li><p>Je hebt sterke mondelinge en schriftelijke communicatieve vaardigheden.</p></li><li><p>Je kunt je goed verplaatsen in gebruikers en denkt graag mee over passende oplossingen.</p></li><li><p>Je hebt een proactieve houding en vindt het leuk om in een snel veranderende omgeving te werken.</p></li><li><p>Je hebt hbo werk- en denkniveau en bent beschikbaar voor <strong>28–40 uur per week</strong>.</p></li></ul><p class=\"isSelectedEnd\">Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p><strong>Salaris:</strong> €3.400–€4.100 bruto per maand op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring.</p></li><li><p><strong>Bonus:</strong> Een aantrekkelijke bonusregeling bij een contract voor onbepaalde tijd, waarbij je tot <strong>150% van je bruto maandsalaris</strong> kunt verdienen.</p></li><li><p><strong>Vrije tijd:</strong> 28 vakantiedagen per jaar bij een fulltime dienstverband.</p></li><li><p><strong>Pensioen:</strong> Een pensioenregeling met <strong>10% werkgeversbijdrage</strong>.</p></li><li><p><strong>Welzijn:</strong> Een <strong>vitaliteitsregeling</strong> van €25 netto per maand en extra voordelen via a.s.r. Vitality.</p></li><li><p><strong>Ontwikkeling:</strong> Veel ruimte voor persoonlijke ontwikkeling. Als onderdeel van Visma krijg je daarnaast toegang tot ontwikkelingsmogelijkheden zoals specifieke trainingen, evenementen en professionele netwerken.</p></li><li><p><strong>Overig:</strong> Een inspirerende werkplek in Eersel, een hecht en gezellig team met een sterk wij-gevoel, gezamenlijke lunches, vrijdagmiddagborrels en een maandelijkse SnackVrijdag. Daarnaast organiseren we teamuitjes en targettrips naar het buitenland.</p></li></ul>",
+          "sharing_image": null,
+          "sharing_title": "Customer Care Specialist",
+          "sharing_description": "Als Customer Care Specialist bij Nmbrs Invoicing (voorheen: WeFact) help je dagelijks ondernemers en accountants écht verder met slimme oplossingen. Je combineert intensief klantcontact met meedenken,",
+          "locations_question": "Welke werklocatie heeft je voorkeur?"
+        }
+      },
+      "created_at": "2026-08-31 09:13:57 UTC",
+      "country": "Netherlands",
+      "position": 319,
+      "updated_at": "2026-09-23 12:05:47 UTC",
+      "location_question_visible": false,
+      "city": "Eersel",
+      "locations": [
+        {
+          "id": 295771,
+          "name": "Eersel",
+          "state": "Noord-Brabant",
+          "country": "Nederland",
+          "city": "Eersel",
+          "translations": {
+            "nl": {
+              "name": "Eersel",
+              "city": "Eersel",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NB",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NB",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": null,
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/customer-care-specialist",
+      "guid": "g2yy6",
+      "mailbox_email": "job.g2yy6@nmbrs.recruitee.com",
+      "location": "Eersel, Noord-Brabant, Netherlands",
+      "state_name": "Noord-Brabant",
+      "title": "Customer Care Specialist",
+      "sharing_description": "Als Customer Care Specialist bij Nmbrs Invoicing (voorheen: WeFact) help je dagelijks ondernemers en accountants écht verder met slimme oplossingen. Je combineert intensief klantcontact met meedenken,",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": null
+      },
+      "min_hours": null,
+      "slug": "customer-care-specialist",
+      "options_title": "off",
+      "min_hours_per_week": null,
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "customer_service",
+      "open_questions": [
+        {
+          "id": 4338678,
+          "position": 1,
+          "options": {},
+          "required": false,
+          "body": "Are you fluent (native, or near-native level) in Dutch?",
+          "kind": "boolean",
+          "translations": {
+            "nl": {
+              "body": "Are you fluent (native, or near-native level) in Dutch?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": null,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/customer-care-specialist/c/new",
+      "country_code": "NL",
+      "department": "Support",
+      "education_code": "bachelor_degree",
+      "highlight": null,
+      "on_site": true,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p class=\"isSelectedEnd\">Als <strong>Customer Care Specialist</strong> bij Nmbrs Invoicing (voorheen: WeFact) help je dagelijks ondernemers en accountants écht verder met slimme oplossingen. Je combineert intensief klantcontact met meedenken, verbeteren en samenwerken met collega’s. Met jouw kennis van onze gebruikers zorg je ervoor dat zij Nmbrs&nbsp;Invoicing optimaal kunnen inzetten. Samen met het Customer Care team werk je aan tevreden gebruikers én een steeds beter product. Daarbij kijk je verder dan de vraag van vandaag en denk je actief mee over hoe onze service en software kunnen verbeteren.</p><p style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Invoicing</strong> in <strong>Eersel</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h2>Jouw rol</h2><p class=\"isSelectedEnd\">Als <strong>Customer Care Specialist</strong> ben je het eerste aanspreekpunt voor onze gebruikers. Je helpt ondernemers en accountants met uiteenlopende vragen over Nmbrs Invoicing en denkt actief mee over hoe zij het pakket het beste kunnen inzetten. Dat doe je via telefoon, e-mail en schermdeling.</p><p class=\"isSelectedEnd\">Je helpt niet alleen bij het oplossen van vragen, maar begeleidt nieuwe gebruikers ook bij het inrichten van Nmbrs Invoicing. Daarnaast werk je samen met je collega’s aan een efficiënte werkwijze en deel je wensen, feedback en eventuele problemen met onze technische collega’s en het developmentteam.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Ondernemers en accountants helpen met uiteenlopende vragen over Nmbrs&nbsp;Invoicing via telefoon, e-mail en schermdeling.</p></li><li><p>Nieuwe gebruikers begeleiden bij het inrichten van Nmbrs&nbsp;Invoicing en hen helpen om een vliegende start te maken.</p></li><li><p>Actief meedenken over hoe gebruikers Nmbrs&nbsp;Invoicing het beste kunnen inzetten en snel tot een passende oplossing komen.</p></li><li><p>Helpartikelen, video’s en tours door het pakket schrijven en verbeteren, zodat gebruikers informatie makkelijker zelf kunnen vinden en vragen beter door onze AI-chatbot kunnen worden beantwoord.</p></li><li><p>Wensen en feedback van gebruikers verzamelen, verbetervoorstellen doen en deze delen met het developmentteam.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h2>Jouw impact</h2><p class=\"isSelectedEnd\">Met jouw werk zorg je ervoor dat <strong>ondernemers en accountants snel en goed verder kunnen met Nmbrs&nbsp;Invoicing</strong>. Je verplaatst je in de situatie van de gebruiker, denkt mee over de beste oplossing en zorgt ervoor dat onze support een service blijft waar klanten blij van worden.</p><p class=\"isSelectedEnd\">Wanneer je bijvoorbeeld een probleem signaleert in het product, schakel je met je technische collega’s zodat zij ermee aan de slag kunnen. Zodra het probleem is opgelost, kun jij de gebruiker snel verder helpen. Tegelijkertijd gebruik je vragen uit klantcontact om onze helpartikelen en andere ondersteuning te verbeteren, zodat toekomstige gebruikers nog makkelijker zelf een antwoord kunnen vinden.</p><p class=\"isSelectedEnd\">Daarnaast help je Nmbrs&nbsp;Invoicing continu verbeteren door wensen, feedback en inzichten van gebruikers te delen met het developmentteam. Zo heeft het dagelijkse contact dat je met klanten hebt ook direct invloed op de ontwikkeling van ons product en onze dienstverlening.</p>",
+      "options_cv": "required",
+      "experience_code": "mid_level",
+      "locations_question": "Welke werklocatie heeft je voorkeur?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h2>Jouw profiel</h2><p class=\"isSelectedEnd\">Je hebt ervaring binnen <strong>customer support of klantcontact</strong> en krijgt energie van het helpen van (toekomstige) klanten. Je kunt je goed verplaatsen in de situatie van een gebruiker, communiceert duidelijk en denkt proactief in oplossingen.</p><ul><li><p>Je hebt ervaring binnen customer support of klantcontact.</p></li><li><p>Je hebt sterke mondelinge en schriftelijke communicatieve vaardigheden.</p></li><li><p>Je kunt je goed verplaatsen in gebruikers en denkt graag mee over passende oplossingen.</p></li><li><p>Je hebt een proactieve houding en vindt het leuk om in een snel veranderende omgeving te werken.</p></li><li><p>Je hebt hbo werk- en denkniveau en bent beschikbaar voor <strong>28–40 uur per week</strong>.</p></li></ul><p class=\"isSelectedEnd\">Je hoeft niet ieder denkbaar vakje af te vinken. Herken je jezelf in de rol en denk je dat je impact kunt maken? Dan horen we graag van je.</p><p style=\"min-height: 1.7em;\"></p><h2>Dit bieden wij</h2><ul><li><p><strong>Salaris:</strong> €3.400–€4.100 bruto per maand op basis van een fulltime werkweek, afhankelijk van je kennis en ervaring.</p></li><li><p><strong>Bonus:</strong> Een aantrekkelijke bonusregeling bij een contract voor onbepaalde tijd, waarbij je tot <strong>150% van je bruto maandsalaris</strong> kunt verdienen.</p></li><li><p><strong>Vrije tijd:</strong> 28 vakantiedagen per jaar bij een fulltime dienstverband.</p></li><li><p><strong>Pensioen:</strong> Een pensioenregeling met <strong>10% werkgeversbijdrage</strong>.</p></li><li><p><strong>Welzijn:</strong> Een <strong>vitaliteitsregeling</strong> van €25 netto per maand en extra voordelen via a.s.r. Vitality.</p></li><li><p><strong>Ontwikkeling:</strong> Veel ruimte voor persoonlijke ontwikkeling. Als onderdeel van Visma krijg je daarnaast toegang tot ontwikkelingsmogelijkheden zoals specifieke trainingen, evenementen en professionele netwerken.</p></li><li><p><strong>Overig:</strong> Een inspirerende werkplek in Eersel, een hecht en gezellig team met een sterk wij-gevoel, gezamenlijke lunches, vrijdagmiddagborrels en een maandelijkse SnackVrijdag. Daarnaast organiseren we teamuitjes en targettrips naar het buitenland.</p></li></ul>",
+      "published_at": "2026-08-31 12:58:13 UTC",
+      "sharing_title": "Customer Care Specialist",
+      "locations_question_required": true,
+      "id": 2727162,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": false,
+      "tags": []
+    },
+    {
+      "translations": {
+        "en": {
+          "description": "<p><span style=\"color:#5a5f72\">Nmbrs is looking for a </span><strong><span style=\"color:#5a5f72\">Senior Information Security Officer</span></strong><span style=\"color:#5a5f72\"> to join our team in our Amsterdam office. As we scale across the Nmbrs suite of entities, keeping our systems and customer data secure is critical to maintaining trust, and you'll be at the center of making that happen, shaping our security posture end to end.</span></p><p style=\"min-height: 1.7em;\"></p><p><strong><span style=\"color:#000000\">Time to grow. Time to thrive.</span></strong></p><p><span style=\"color:#5a5f72\">We are Nmbrs. We build smart business software that removes unnecessary complexity for SMEs and the professionals who support them. Nmbrs brings together four established product organisations—Payroll, Accounting, Invoicing and Reporting—with teams across the Netherlands, Sweden and Portugal.</span></p><p><span style=\"color:#5a5f72\">We are one brand with a shared ambition, while continuing to work from the expertise and strengths of our individual organisations. We join forces where it makes sense, while keeping teams, expertise and decision-making close together.</span></p><p><span style=\"color:#5a5f72\">For this role, you’ll join </span><strong><span style=\"color:#5a5f72\">Nmbrs Payroll </span></strong><span style=\"color:#5a5f72\">in </span><strong><span style=\"color:#5a5f72\">Amsterdam</span></strong><span style=\"color:#5a5f72\">, working closely with the colleagues in your local team while being part of the wider Nmbrs organisation.</span></p><p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#000000\">Your role</span></strong></h3><p><span style=\"color:#5a5f72\">As Information Security Officer, you protect Nmbrs' digital data and systems from cyber threats, breaches and data loss. You build and maintain the security rules that keep us safe, run risk assessments, close system weaknesses, and make sure the company stays on the right side of data and security law. You own operational and technical security end to end: policies and standards, incident response, vulnerability management, security awareness, and compliance with security regulation. You'll work closely with the DPO and with security liaisons across the Nmbrs suite entities.</span></p>",
+          "title": "Information Security Officer",
+          "highlight": null,
+          "requirements": "<h3>Your impact</h3><ul><li><p><span style=\"color:#000000\">Own the ISMS, keep the ISO 27001 certification and ISAE3402 audit current, ensure compliance with the Visma Security Program and track regulatory drivers such as NIS2and GDPR that affect Nmbrs' security posture.</span></p></li><li><p><span style=\"color:#000000\">Develop and maintain security policies and standards, run risk assessments, and verify that control measures are actually effective in practice.</span></p></li><li><p><span style=\"color:#000000\">Help shape our security architecture and access management approach, and make sure security is considered early in how squads build and ship software.</span></p></li><li><p><span style=\"color:#000000\">Plan audits, coordinate evidence collection, act as the main contact for auditors, and follow up on findings until closure.</span></p></li><li><p><span style=\"color:#000000\">Stay hands-on with firewalls, cloud security and system logs, and drive vulnerability management with the squads.</span></p></li><li><p><span style=\"color:#000000\">Investigate and mitigate security incidents and data breaches, and turn lessons learned into concrete improvements.</span></p></li><li><p><span style=\"color:#000000\">Set clear guidelines for safe computer, network and AI use, build a security-aware culture across the organization, from phishing to onboarding/offboarding processes, and be the go-to person for security questions.</span></p></li><li><p><span style=\"color:#000000\">Assess the security of vendors and new tools before onboarding, and answer customer security questionnaires.</span></p></li><li><p><span style=\"color:#000000\">Translate technical risks and threat trends into language non-technical colleagues and the leadership team can act on.</span></p></li></ul><h3></h3><h3><strong><span style=\"color:#000000\">You bring</span></strong></h3><ul><li><p><span style=\"color:#000000\">A bachelor's degree in Computer Science, Cybersecurity, or a related field.</span></p></li><li><p><span style=\"color:#000000\">A recognized security credential such as ISO 27001 Lead Implementer/Auditor, CISSP, or CISM - or a clear willingness to obtain one.</span></p></li><li><p><span style=\"color:#000000\">Broad experience across the security spectrum: technical (cloud, network, systems) as well as governance, risk, audits and compliance.</span></p></li><li><p><span style=\"color:#000000\">Comfortable working hands-on with firewalls, cloud environments and system/audit logs when needed.</span></p></li><li><p><span style=\"color:#000000\">The ability to explain technical risk clearly to non-technical colleagues and leadership.</span></p></li></ul><p><strong><span style=\"color:#000000\">Nice to have:</span></strong></p><ul><li><p><span style=\"color:#000000\">Fluency in Dutch.</span></p></li><li><p><span style=\"color:#000000\">Experience working in a SaaS environment.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#121317\">We offer</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">A salary range of </span><strong><span style=\"color:#5a5f72\">€5.700 to €7.000 gross per month</span></strong><span style=\"color:#5a5f72\"> (excluding holiday allowance), depending on your experience;</span></p></li><li><p><span style=\"color:#5a5f72\">Nmbrs is a flat organization where you get the </span><strong><span style=\"color:#5a5f72\">freedom and responsibility</span></strong><span style=\"color:#5a5f72\"> to do what you’re good at and make an impact in a flexible, agile working environment;</span></p></li><li><p><span style=\"color:#5a5f72\">A fully covered </span><strong><span style=\"color:#5a5f72\">pension plan</span></strong><span style=\"color:#5a5f72\"> with a </span><strong><span style=\"color:#5a5f72\">15% employer contribution</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">A personal coach who supports your personal and professional growth, plus an annual </span><strong><span style=\"color:#5a5f72\">training budget</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">A healthy work-life balance: at Nmbrs, full-time means a </span><strong><span style=\"color:#5a5f72\">4-day workweek</span></strong><span style=\"color:#5a5f72\">, giving you an extra day for what matters most to you;</span></p></li><li><p><strong><span style=\"color:#5a5f72\">Hybrid working</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">As part of Visma, you get access to a wide range of </span><strong><span style=\"color:#5a5f72\">development opportunities</span></strong><span style=\"color:#5a5f72\">, including training, events and professional networks;</span></p></li><li><p><span style=\"color:#5a5f72\">The opportunity to spend up to 4 months on an </span><strong><span style=\"color:#5a5f72\">exchange</span></strong><span style=\"color:#5a5f72\"> at one of our international offices;</span></p></li><li><p><span style=\"color:#5a5f72\">A spacious and bright office close to Amsterdam Sloterdijk station, with elevator access to all floors;</span></p></li><li><p><span style=\"color:#5a5f72\">A </span><strong><span style=\"color:#5a5f72\">pet-friendly workplace</span></strong><span style=\"color:#5a5f72\"> — feel free to bring your four-legged friend along.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Application process</h3><ol><li><p>Equalture assessment – You start with a series of neuroscience-based games via Equalture.</p></li><li><p>Cultural interview – An online conversation with one or two of our recruiters to get to know each other and see if there's a good cultural match.</p></li><li><p>Technical interview – You'll come to our office in Amsterdam and meet two colleagues who will dive deeper into your knowledge, experience, and approach.</p></li><li><p>Final interview – A last conversation with our COO about the role, your ambitions, and what a potential collaboration could look like.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Information Security Officer",
+          "sharing_description": "Nmbrs is looking for a Senior Information Security Officer to join our team in our Amsterdam office. As we scale across the Nmbrs suite of entities, keeping our systems and customer data secure is cri",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-08-25 13:23:41 UTC",
+      "country": "Netherlands",
+      "position": 318,
+      "updated_at": "2026-09-22 08:14:32 UTC",
+      "location_question_visible": false,
+      "city": "Amsterdam",
+      "locations": [
+        {
+          "id": 71049,
+          "name": "Amsterdam",
+          "state": "Noord-Holland",
+          "country": "Netherlands",
+          "city": "Amsterdam",
+          "translations": {
+            "en": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NH",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NH",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": null,
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/information-security-officer",
+      "guid": "4hs3y",
+      "mailbox_email": "job.4hs3y@nmbrs.recruitee.com",
+      "location": "Amsterdam, Noord-Holland, Netherlands",
+      "state_name": "Noord-Holland",
+      "title": "Information Security Officer",
+      "sharing_description": "Nmbrs is looking for a Senior Information Security Officer to join our team in our Amsterdam office. As we scale across the Nmbrs suite of entities, keeping our systems and customer data secure is cri",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": null,
+        "currency": null
+      },
+      "min_hours": null,
+      "slug": "information-security-officer",
+      "options_title": "off",
+      "min_hours_per_week": null,
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "information_technology",
+      "open_questions": [
+        {
+          "id": 4328456,
+          "position": 1,
+          "options": {},
+          "required": false,
+          "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4328459,
+          "position": 2,
+          "options": {},
+          "required": true,
+          "body": "Do you live in, or within 50 km of Amsterdam?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Do you live in, or within 50 km of Amsterdam?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": null,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/information-security-officer/c/new",
+      "country_code": "NL",
+      "department": null,
+      "education_code": "bachelor_degree",
+      "highlight": null,
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p><span style=\"color:#5a5f72\">Nmbrs is looking for a </span><strong><span style=\"color:#5a5f72\">Senior Information Security Officer</span></strong><span style=\"color:#5a5f72\"> to join our team in our Amsterdam office. As we scale across the Nmbrs suite of entities, keeping our systems and customer data secure is critical to maintaining trust, and you'll be at the center of making that happen, shaping our security posture end to end.</span></p><p style=\"min-height: 1.7em;\"></p><p><strong><span style=\"color:#000000\">Time to grow. Time to thrive.</span></strong></p><p><span style=\"color:#5a5f72\">We are Nmbrs. We build smart business software that removes unnecessary complexity for SMEs and the professionals who support them. Nmbrs brings together four established product organisations—Payroll, Accounting, Invoicing and Reporting—with teams across the Netherlands, Sweden and Portugal.</span></p><p><span style=\"color:#5a5f72\">We are one brand with a shared ambition, while continuing to work from the expertise and strengths of our individual organisations. We join forces where it makes sense, while keeping teams, expertise and decision-making close together.</span></p><p><span style=\"color:#5a5f72\">For this role, you’ll join </span><strong><span style=\"color:#5a5f72\">Nmbrs Payroll </span></strong><span style=\"color:#5a5f72\">in </span><strong><span style=\"color:#5a5f72\">Amsterdam</span></strong><span style=\"color:#5a5f72\">, working closely with the colleagues in your local team while being part of the wider Nmbrs organisation.</span></p><p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#000000\">Your role</span></strong></h3><p><span style=\"color:#5a5f72\">As Information Security Officer, you protect Nmbrs' digital data and systems from cyber threats, breaches and data loss. You build and maintain the security rules that keep us safe, run risk assessments, close system weaknesses, and make sure the company stays on the right side of data and security law. You own operational and technical security end to end: policies and standards, incident response, vulnerability management, security awareness, and compliance with security regulation. You'll work closely with the DPO and with security liaisons across the Nmbrs suite entities.</span></p>",
+      "options_cv": "required",
+      "experience_code": "experienced",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h3>Your impact</h3><ul><li><p><span style=\"color:#000000\">Own the ISMS, keep the ISO 27001 certification and ISAE3402 audit current, ensure compliance with the Visma Security Program and track regulatory drivers such as NIS2and GDPR that affect Nmbrs' security posture.</span></p></li><li><p><span style=\"color:#000000\">Develop and maintain security policies and standards, run risk assessments, and verify that control measures are actually effective in practice.</span></p></li><li><p><span style=\"color:#000000\">Help shape our security architecture and access management approach, and make sure security is considered early in how squads build and ship software.</span></p></li><li><p><span style=\"color:#000000\">Plan audits, coordinate evidence collection, act as the main contact for auditors, and follow up on findings until closure.</span></p></li><li><p><span style=\"color:#000000\">Stay hands-on with firewalls, cloud security and system logs, and drive vulnerability management with the squads.</span></p></li><li><p><span style=\"color:#000000\">Investigate and mitigate security incidents and data breaches, and turn lessons learned into concrete improvements.</span></p></li><li><p><span style=\"color:#000000\">Set clear guidelines for safe computer, network and AI use, build a security-aware culture across the organization, from phishing to onboarding/offboarding processes, and be the go-to person for security questions.</span></p></li><li><p><span style=\"color:#000000\">Assess the security of vendors and new tools before onboarding, and answer customer security questionnaires.</span></p></li><li><p><span style=\"color:#000000\">Translate technical risks and threat trends into language non-technical colleagues and the leadership team can act on.</span></p></li></ul><h3></h3><h3><strong><span style=\"color:#000000\">You bring</span></strong></h3><ul><li><p><span style=\"color:#000000\">A bachelor's degree in Computer Science, Cybersecurity, or a related field.</span></p></li><li><p><span style=\"color:#000000\">A recognized security credential such as ISO 27001 Lead Implementer/Auditor, CISSP, or CISM - or a clear willingness to obtain one.</span></p></li><li><p><span style=\"color:#000000\">Broad experience across the security spectrum: technical (cloud, network, systems) as well as governance, risk, audits and compliance.</span></p></li><li><p><span style=\"color:#000000\">Comfortable working hands-on with firewalls, cloud environments and system/audit logs when needed.</span></p></li><li><p><span style=\"color:#000000\">The ability to explain technical risk clearly to non-technical colleagues and leadership.</span></p></li></ul><p><strong><span style=\"color:#000000\">Nice to have:</span></strong></p><ul><li><p><span style=\"color:#000000\">Fluency in Dutch.</span></p></li><li><p><span style=\"color:#000000\">Experience working in a SaaS environment.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3><strong><span style=\"color:#121317\">We offer</span></strong></h3><ul><li><p><span style=\"color:#5a5f72\">A salary range of </span><strong><span style=\"color:#5a5f72\">€5.700 to €7.000 gross per month</span></strong><span style=\"color:#5a5f72\"> (excluding holiday allowance), depending on your experience;</span></p></li><li><p><span style=\"color:#5a5f72\">Nmbrs is a flat organization where you get the </span><strong><span style=\"color:#5a5f72\">freedom and responsibility</span></strong><span style=\"color:#5a5f72\"> to do what you’re good at and make an impact in a flexible, agile working environment;</span></p></li><li><p><span style=\"color:#5a5f72\">A fully covered </span><strong><span style=\"color:#5a5f72\">pension plan</span></strong><span style=\"color:#5a5f72\"> with a </span><strong><span style=\"color:#5a5f72\">15% employer contribution</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">A personal coach who supports your personal and professional growth, plus an annual </span><strong><span style=\"color:#5a5f72\">training budget</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">A healthy work-life balance: at Nmbrs, full-time means a </span><strong><span style=\"color:#5a5f72\">4-day workweek</span></strong><span style=\"color:#5a5f72\">, giving you an extra day for what matters most to you;</span></p></li><li><p><strong><span style=\"color:#5a5f72\">Hybrid working</span></strong><span style=\"color:#5a5f72\">;</span></p></li><li><p><span style=\"color:#5a5f72\">As part of Visma, you get access to a wide range of </span><strong><span style=\"color:#5a5f72\">development opportunities</span></strong><span style=\"color:#5a5f72\">, including training, events and professional networks;</span></p></li><li><p><span style=\"color:#5a5f72\">The opportunity to spend up to 4 months on an </span><strong><span style=\"color:#5a5f72\">exchange</span></strong><span style=\"color:#5a5f72\"> at one of our international offices;</span></p></li><li><p><span style=\"color:#5a5f72\">A spacious and bright office close to Amsterdam Sloterdijk station, with elevator access to all floors;</span></p></li><li><p><span style=\"color:#5a5f72\">A </span><strong><span style=\"color:#5a5f72\">pet-friendly workplace</span></strong><span style=\"color:#5a5f72\"> — feel free to bring your four-legged friend along.</span></p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Application process</h3><ol><li><p>Equalture assessment – You start with a series of neuroscience-based games via Equalture.</p></li><li><p>Cultural interview – An online conversation with one or two of our recruiters to get to know each other and see if there's a good cultural match.</p></li><li><p>Technical interview – You'll come to our office in Amsterdam and meet two colleagues who will dive deeper into your knowledge, experience, and approach.</p></li><li><p>Final interview – A last conversation with our COO about the role, your ambitions, and what a potential collaboration could look like.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+      "published_at": "2026-08-25 13:42:17 UTC",
+      "sharing_title": "Information Security Officer",
+      "locations_question_required": true,
+      "id": 2721844,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "en": {
+          "description": "<p>We zijn op zoek naar een gedreven Content Marketeer die ons marketingteam komt versterken. Bij Nmbrs Payroll vertellen we het verhaal van slimme HR- en payroll software aan accountants, HR-professionals en ondernemers. Van blogs en whitepapers tot landingspagina's en samenwerkingen met contentpartners: jij zorgt dat onze content gevonden wordt, inhoudelijk klopt en converteert.</p><p style=\"min-height: 1.7em;\"></p><p>Je bent nieuwsgierig, schrijft met gemak voor verschillende doelgroepen en denkt net zo makkelijk in zoekwoorden als in een goede header. Je durft te experimenteren, leert snel bij en groeit met ons mee.</p><p style=\"min-height: 1.7em;\"></p><p><strong>Time to grow. Time to thrive.</strong></p><p>Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p>We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p>Voor deze functie ga je werken bij Nmbrs Payroll in Amsterdam. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p>Als Content Marketeer maak je content die onze doelgroepen bereikt en verder helpt. Je werkt samen met collega’s van marketing, sales, creation en product om de juiste content op het juiste moment in te zetten.</p><p>Concreet ga je:</p><ul><li><p>Content bedenken, schrijven en redigeren, van blogs en whitepapers tot landingspagina’s en social posts;</p></li><li><p>Content optimaliseren voor SEO en AEO;</p></li><li><p>Samen met collega’s content afstemmen op de doelgroep en fase van de funnel;</p></li><li><p>Contentresultaten analyseren en experimenteren met nieuwe formats en aanpakken;</p></li><li><p>Samenwerken met contentpartners en AI-tools slim inzetten voor research, creatie en optimalisatie.</p></li></ul>",
+          "title": "Content Marketeer",
+          "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<h3>Jouw impact</h3><p>Met jouw content help je onze doelgroepen sneller de juiste informatie te vinden en versterk je onze zichtbaarheid en expertise. Tegelijk help je ons continu verbeteren door inzichten uit data, experimenten en nieuwe technologie toe te passen.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw profiel</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Minimaal 3 jaar ervaring in marketing, bij voorkeur in een B2B SaaS-omgeving;</p></li><li><p>Ervaring met content creatie en SEO, en een goed gevoel voor wat een tekst laat renderen bij de lezer én bij Google;</p></li><li><p>Sterke stakeholder management vaardigheden: je schakelt gemakkelijk tussen collega's, partners en teams;</p></li><li><p>Uitstekende communicatieve vaardigheden in het Nederlands en Engels;</p></li><li><p>Je werkt gestructureerd, houdt van deadlines en bent in staat om zelfstandig knopen door te hakken.</p></li></ul><p class=\"whitespace-pre-wrap break-words\" style=\"min-height: 1.7em;\"></p><h3>Dit bieden wij</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.600 tot €4.500 per maand</strong> (exclusief vakantiegeld), afhankelijk van je ervaring;</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><h3></h3><p style=\"min-height: 1.7em;\"></p><h3 class=\"PDq2pG_selectionAnchorContainer\">Sollicitatieprocedure</h3><ol><li><p>Equalture assessment – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p>Cultureel interview – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p>Marketingcase – Een thuisopdracht waarin je laat zien hoe jij een realistische marketinguitdaging zou aanpakken.</p></li><li><p>Technisch interview &amp; casepresentatie – Je komt langs op ons kantoor in Amsterdam om je case te presenteren en kennis te maken met twee collega’s uit het marketingteam. We gaan dieper in op je kennis, ervaring en aanpak.</p></li><li><p>Eindgesprek – Een laatste gesprek met onze Commercial Lead over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Content Marketeer",
+          "sharing_description": "We zijn op zoek naar een gedreven Content Marketeer die ons marketingteam komt versterken. Bij Nmbrs Payroll vertellen we het verhaal van slimme HR- en payroll software aan accountants, HR-professiona",
+          "locations_question": "What is your preferred work location?"
+        },
+        "nl": {
+          "description": "<h2>Ben jij onze nieuwe <span style=\"color:#1999E3\">Sales Representative</span>? 🚀<br></h2><p>Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ontdekken waarom een leven zonder Nmbrs eigenlijk niet meer kan. En dat is nog maar het begin - want je bent verantwoordelijk voor het hele proces. <span style=\"color:#5A5F72\">Klaar om het verschil te maken? Begin dan aan dit spannende avontuur met ons!<br><br></span>Bij ons bruist het salesteam van energie én ondernemersgeest. Of je nu starter bent of ervaren pro - hier krijg je alle ruimte om je eigen pad te kiezen. Van het bouwen van je eerste pipeline tot het worden van een strategische sparringpartner voor onze klanten. We geloven in de perfecte mix: keihard knallen én maximaal genieten. Want successen? Die vieren we samen! En het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p><br><br></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/759006231\"></iframe></figure><p><br></p><h2><span style=\"font-size:0.9em\">Over <span style=\"color:#1999E3\">Nmbrs:</span></span></h2><p><span style=\"background-color:#FFFFFF\">Wij zijn een snelgroeiende scale-up die HR &amp; payroll technologie revolutionair maakt. Met 140+ collega's in Amsterdam, Lissabon en Stockholm doen we dingen écht anders. Bij ons geen managers, wel een 4-daagse werkweek én de vrijheid om het verschil te maken. Check snel het filmpje hieronder als je meer wilt weten hoe het is om in een organisatie zonder managers te werken. <br></span></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//www.youtube.com/embed/fKqq8efPjfI\"></iframe></figure><p style=\"min-height: 1.7em;\"></p>",
+          "title": "Sales Representative",
+          "highlight": "<p>Het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<p class=\"whitespace-pre-wrap break-words\"><strong>Waar jij in uitblinkt:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Je eigen sales pipeline runnen van eerste \"hallo\" tot blije klant</p></li><li><p>Onze geweldige HR &amp; payroll tech showen in demo's</p></li><li><p>Deel uitmaken van ons Business of Accountancy Squad (samen met Customer Success Managers, Sales Reps en een Content Marketeer)</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Jij bent onze match als je:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Vloeiend Nederlands &amp; Engels spreekt</p></li><li><p>Een Bachelor diploma en top communicatieve skills hebt</p></li><li><p>Excited bent om sales op de Nmbrs manier te leren</p></li><li><p>Zelfstandig dingen voor elkaar krijgt, maar van teamoverwinningen houdt</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Waarom je het hier geweldig gaat vinden:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>€2800 bruto startsalaris per maand</p></li><li><p>Vrijheid om te werken zoals jij wilt (hybride setup)</p></li><li><p>8% pensioenbijdrage</p></li><li><p>Persoonlijke coach + ontwikkelingsbudget</p></li><li><p>4-daagse werkweek</p></li><li><p>Werken vanuit ons Amsterdam HQ (Sloterdijk) of switchen tussen onze kantoren in Lissabon &amp; Stockholm</p></li><li><p>Maandelijkse fun (denk aan pizza parties &amp; ping pong toernooien)</p></li><li><p>Één episch Summerevent waar alle kantoren samen komen</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><br>Klaar om te bewijzen dat payroll spannend kan zijn? Let's talk! Omdat we bij Nmbrs dol zijn op video's, hier onze meest recente video. Dit is alles wat er in 2024 is gebeurd. </p><p style=\"min-height: 1.7em;\"></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/1040748635\"></iframe></figure><p style=\"min-height: 1.7em;\"></p><h3></h3><p><em>At Nmbrs, we celebrate diversity and promote an inclusive environment where our team members from all backgrounds, ages, genders, or sexual orientations feel equally appreciated. In order to achieve this, we are committed to shaping a hiring process that provides everyone with an equal opportunity to get hired. </em></p><p style=\"text-align:start;\"><em><br>As part of our hiring process, we conduct a criminal background check for all candidates reaching the final stages. This helps us ensure a safe and secure environment for </em>everyone. In<em> order to process your job application, we process your personal data. Please find our privacy policy <a rel=\"noopener\" target=\"_blank\" href=\"https://www.nmbrs.com/privacy\">here</a>.</em></p><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Sales Representative",
+          "sharing_description": "Ben jij onze nieuwe Sales Representative? 🚀Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ont",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-08-18 12:20:35 UTC",
+      "country": "Netherlands",
+      "position": 317,
+      "updated_at": "2026-09-22 12:58:03 UTC",
+      "location_question_visible": false,
+      "city": "Amsterdam",
+      "locations": [
+        {
+          "id": 71049,
+          "name": "Amsterdam",
+          "state": "Noord-Holland",
+          "country": "Netherlands",
+          "city": "Amsterdam",
+          "translations": {
+            "en": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            },
+            "nl": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NH",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NH",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": "32",
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/content-marketeer-2",
+      "guid": "hnnyf",
+      "mailbox_email": "job.hnnyf@nmbrs.recruitee.com",
+      "location": "Amsterdam, Noord-Holland, Netherlands",
+      "state_name": "Noord-Holland",
+      "title": "Content Marketeer",
+      "sharing_description": "We zijn op zoek naar een gedreven Content Marketeer die ons marketingteam komt versterken. Bij Nmbrs Payroll vertellen we het verhaal van slimme HR- en payroll software aan accountants, HR-professiona",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": "month",
+        "currency": "EUR"
+      },
+      "min_hours": 32,
+      "slug": "content-marketeer-2",
+      "options_title": "off",
+      "min_hours_per_week": "32",
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "marketing_pr",
+      "open_questions": [
+        {
+          "id": 4313280,
+          "position": 1,
+          "options": {},
+          "required": false,
+          "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            },
+            "nl": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4313281,
+          "position": 2,
+          "options": {},
+          "required": true,
+          "body": "Are you fluent in Dutch?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you fluent in Dutch?"
+            },
+            "nl": {
+              "body": "Are you fluent in Dutch?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4313282,
+          "position": 3,
+          "options": {},
+          "required": true,
+          "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?"
+            },
+            "nl": {
+              "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4317028,
+          "position": 4,
+          "options": {},
+          "required": true,
+          "body": "How many years of experience do you have in B2B Marketing? ",
+          "kind": "number",
+          "translations": {
+            "en": {
+              "body": "How many years of experience do you have in B2B Marketing? "
+            },
+            "nl": {
+              "body": "How many years of experience do you have in B2B Marketing? "
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": 32,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/content-marketeer-2/c/new",
+      "country_code": "NL",
+      "department": "Marketing",
+      "education_code": "bachelor_degree",
+      "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p>We zijn op zoek naar een gedreven Content Marketeer die ons marketingteam komt versterken. Bij Nmbrs Payroll vertellen we het verhaal van slimme HR- en payroll software aan accountants, HR-professionals en ondernemers. Van blogs en whitepapers tot landingspagina's en samenwerkingen met contentpartners: jij zorgt dat onze content gevonden wordt, inhoudelijk klopt en converteert.</p><p style=\"min-height: 1.7em;\"></p><p>Je bent nieuwsgierig, schrijft met gemak voor verschillende doelgroepen en denkt net zo makkelijk in zoekwoorden als in een goede header. Je durft te experimenteren, leert snel bij en groeit met ons mee.</p><p style=\"min-height: 1.7em;\"></p><p><strong>Time to grow. Time to thrive.</strong></p><p>Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p>We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p>Voor deze functie ga je werken bij Nmbrs Payroll in Amsterdam. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p>Als Content Marketeer maak je content die onze doelgroepen bereikt en verder helpt. Je werkt samen met collega’s van marketing, sales, creation en product om de juiste content op het juiste moment in te zetten.</p><p>Concreet ga je:</p><ul><li><p>Content bedenken, schrijven en redigeren, van blogs en whitepapers tot landingspagina’s en social posts;</p></li><li><p>Content optimaliseren voor SEO en AEO;</p></li><li><p>Samen met collega’s content afstemmen op de doelgroep en fase van de funnel;</p></li><li><p>Contentresultaten analyseren en experimenteren met nieuwe formats en aanpakken;</p></li><li><p>Samenwerken met contentpartners en AI-tools slim inzetten voor research, creatie en optimalisatie.</p></li></ul>",
+      "options_cv": "required",
+      "experience_code": "entry_level",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h3>Jouw impact</h3><p>Met jouw content help je onze doelgroepen sneller de juiste informatie te vinden en versterk je onze zichtbaarheid en expertise. Tegelijk help je ons continu verbeteren door inzichten uit data, experimenten en nieuwe technologie toe te passen.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw profiel</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Minimaal 3 jaar ervaring in marketing, bij voorkeur in een B2B SaaS-omgeving;</p></li><li><p>Ervaring met content creatie en SEO, en een goed gevoel voor wat een tekst laat renderen bij de lezer én bij Google;</p></li><li><p>Sterke stakeholder management vaardigheden: je schakelt gemakkelijk tussen collega's, partners en teams;</p></li><li><p>Uitstekende communicatieve vaardigheden in het Nederlands en Engels;</p></li><li><p>Je werkt gestructureerd, houdt van deadlines en bent in staat om zelfstandig knopen door te hakken.</p></li></ul><p class=\"whitespace-pre-wrap break-words\" style=\"min-height: 1.7em;\"></p><h3>Dit bieden wij</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.600 tot €4.500 per maand</strong> (exclusief vakantiegeld), afhankelijk van je ervaring;</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><h3></h3><p style=\"min-height: 1.7em;\"></p><h3 class=\"PDq2pG_selectionAnchorContainer\">Sollicitatieprocedure</h3><ol><li><p>Equalture assessment – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p>Cultureel interview – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p>Marketingcase – Een thuisopdracht waarin je laat zien hoe jij een realistische marketinguitdaging zou aanpakken.</p></li><li><p>Technisch interview &amp; casepresentatie – Je komt langs op ons kantoor in Amsterdam om je case te presenteren en kennis te maken met twee collega’s uit het marketingteam. We gaan dieper in op je kennis, ervaring en aanpak.</p></li><li><p>Eindgesprek – Een laatste gesprek met onze Commercial Lead over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+      "published_at": "2026-08-19 08:28:26 UTC",
+      "sharing_title": "Content Marketeer",
+      "locations_question_required": true,
+      "id": 2714053,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "en": {
+          "description": "<p>Als Finance Administrator ben jij verantwoordelijk voor het tijdig en accuraat genereren van facturen. Je verzamelt gegevens uit verschillende systemen en verwerkt deze in onze facturatie- en ERP-systemen. Met jouw financiële expertise zorg je voor betrouwbare facturatie, accurate rapportages en een hoge mate van data-integriteit. Samen met het Finance Squad werk je aan een efficiënte en accurate financiële administratie. Daarbij kijk je ook naar mogelijkheden om facturatieprocessen te verbeteren en efficiënter te maken.</p><p style=\"min-height: 1.7em;\"></p><p><strong>Time to grow. Time to thrive.</strong></p><p>Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p>We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p>Voor deze functie ga je werken bij Nmbrs Payroll in Amsterdam. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p>Als Finance Administrator ben je verantwoordelijk voor het volledige facturatieproces. Je maakt facturen aan, verwerkt en valideert deze en zorgt ervoor dat klant- en factuurgegevens actueel en correct zijn.</p><p>Je maakt deel uit van het Finance Squad, een team met diverse achtergronden bestaande uit een Financial Accountant, een Financial Controller en twee Finance Administrators. Je werkt daarnaast samen en stemt af met verschillende stakeholders binnen Nmbrs.</p><p style=\"min-height: 1.7em;\"></p><p>Concreet ga je:</p><ul><li><p>Facturen accuraat en op tijd genereren, verwerken en versturen, waarbij je factuurgegevens verifieert en kwaliteitscontroles uitvoert.</p></li><li><p>Klant- en factuurgegevens up-to-date houden en financiële systemen beheren.</p></li><li><p>Facturatieverschillen efficiënt oplossen en analyses vanuit verschillende rapportages delen met relevante teams.</p></li><li><p>Ondersteunen bij de maandafsluiting op het gebied van facturatie en de naleving van facturatieprocedures en -controles waarborgen.</p></li><li><p>Kansen signaleren om facturatieprocessen en workflows continu te verbeteren en efficiënter te maken.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw impact</h3><p>Met jouw werk draag je bij aan een efficiënte en accurate financiële administratie binnen Nmbrs. Door facturen tijdig en correct te verwerken en gegevens zorgvuldig te valideren, zorg je voor betrouwbare financiële transacties en een hoge mate van data-integriteit.</p><p>Wanneer je bijvoorbeeld facturatieverschillen signaleert en efficiënt oplost, helpt dat om onze omzetrapportages betrouwbaar te houden en zorgt het ervoor dat verschillende teams met de juiste financiële informatie kunnen werken.</p><p>Daarnaast help je het Finance Squad vooruit door kansen voor procesverbetering te signaleren en bij te dragen aan efficiëntere facturatieprocessen.</p><h3></h3>",
+          "title": "Finance Administrator",
+          "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<h3>Jouw profiel</h3><p>Je hebt aantoonbare ervaring met het volledige facturatieproces, van start tot eind, en weet hoe je grote hoeveelheden transacties accuraat verwerkt. Je voelt je thuis in een omgeving waarin je met verschillende systemen en stakeholders werkt en waarin kwaliteit, deadlines en continue verbetering belangrijk zijn.</p><p style=\"min-height: 1.7em;\"></p><ul><li><p>Je hebt ervaring met meerdere systemen, zoals ERP-, CRM-, Billing-, Planning- en Ticketsystemen.</p></li><li><p>Je hebt sterke Excel-vaardigheden, waaronder databeheer, rapportages, formules en lookups.</p></li><li><p>Je hebt ervaring met datavalidatie en kwaliteitscontrole en begrijpt financiële processen en interne controles.</p></li><li><p>Je bent gewend om onder deadlines te werken en spreekt en schrijft vloeiend Nederlands en Engels.</p></li><li><p>Een financiële of boekhoudkundige kwalificatie, ervaring in een tech-omgeving en ervaring met procesverbetering en het documenteren en verbeteren van workflows zijn een pré.</p></li></ul><p style=\"min-height: 1.7em;\"></p><p class=\"whitespace-pre-wrap break-words\" style=\"min-height: 1.7em;\"></p><h3 style=\"text-align:start;\"><strong>Dit bieden wij</strong></h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.200 tot €4.400 per maand</strong> (exclusief vakantiegeld), afhankelijk van je ervaring;</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Sollicitatieprocedure</h3><ol><li><p><strong>Equalture assessment</strong> – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p><strong>Cultureel interview</strong> – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p><strong>Technisch interview</strong> – Je komt langs op ons kantoor in Amsterdam om kennis te maken met twee collega’s uit het Finance team. We gaan dieper in op je kennis, ervaring en aanpak.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek met onze COO over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Finance Administrator",
+          "sharing_description": "Als Finance Administrator ben jij verantwoordelijk voor het tijdig en accuraat genereren van facturen. Je verzamelt gegevens uit verschillende systemen en verwerkt deze in onze facturatie- en ERP-syst",
+          "locations_question": "What is your preferred work location?"
+        },
+        "nl": {
+          "description": "<h2>Ben jij onze nieuwe <span style=\"color:#1999E3\">Sales Representative</span>? 🚀<br></h2><p>Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ontdekken waarom een leven zonder Nmbrs eigenlijk niet meer kan. En dat is nog maar het begin - want je bent verantwoordelijk voor het hele proces. <span style=\"color:#5A5F72\">Klaar om het verschil te maken? Begin dan aan dit spannende avontuur met ons!<br><br></span>Bij ons bruist het salesteam van energie én ondernemersgeest. Of je nu starter bent of ervaren pro - hier krijg je alle ruimte om je eigen pad te kiezen. Van het bouwen van je eerste pipeline tot het worden van een strategische sparringpartner voor onze klanten. We geloven in de perfecte mix: keihard knallen én maximaal genieten. Want successen? Die vieren we samen! En het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p><br><br></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/759006231\"></iframe></figure><p><br></p><h2><span style=\"font-size:0.9em\">Over <span style=\"color:#1999E3\">Nmbrs:</span></span></h2><p><span style=\"background-color:#FFFFFF\">Wij zijn een snelgroeiende scale-up die HR &amp; payroll technologie revolutionair maakt. Met 140+ collega's in Amsterdam, Lissabon en Stockholm doen we dingen écht anders. Bij ons geen managers, wel een 4-daagse werkweek én de vrijheid om het verschil te maken. Check snel het filmpje hieronder als je meer wilt weten hoe het is om in een organisatie zonder managers te werken. <br></span></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//www.youtube.com/embed/fKqq8efPjfI\"></iframe></figure><p style=\"min-height: 1.7em;\"></p>",
+          "title": "Sales Representative (5)",
+          "highlight": "<p>Het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<p class=\"whitespace-pre-wrap break-words\"><strong>Waar jij in uitblinkt:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Je eigen sales pipeline runnen van eerste \"hallo\" tot blije klant</p></li><li><p>Onze geweldige HR &amp; payroll tech showen in demo's</p></li><li><p>Deel uitmaken van ons Business of Accountancy Squad (samen met Customer Success Managers, Sales Reps en een Content Marketeer)</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Jij bent onze match als je:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Vloeiend Nederlands &amp; Engels spreekt</p></li><li><p>Een Bachelor diploma en top communicatieve skills hebt</p></li><li><p>Excited bent om sales op de Nmbrs manier te leren</p></li><li><p>Zelfstandig dingen voor elkaar krijgt, maar van teamoverwinningen houdt</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Waarom je het hier geweldig gaat vinden:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>€2800 bruto startsalaris per maand</p></li><li><p>Vrijheid om te werken zoals jij wilt (hybride setup)</p></li><li><p>8% pensioenbijdrage</p></li><li><p>Persoonlijke coach + ontwikkelingsbudget</p></li><li><p>4-daagse werkweek</p></li><li><p>Werken vanuit ons Amsterdam HQ (Sloterdijk) of switchen tussen onze kantoren in Lissabon &amp; Stockholm</p></li><li><p>Maandelijkse fun (denk aan pizza parties &amp; ping pong toernooien)</p></li><li><p>Één episch Summerevent waar alle kantoren samen komen</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><br>Klaar om te bewijzen dat payroll spannend kan zijn? Let's talk! Omdat we bij Nmbrs dol zijn op video's, hier onze meest recente video. Dit is alles wat er in 2024 is gebeurd. </p><p style=\"min-height: 1.7em;\"></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/1040748635\"></iframe></figure><p style=\"min-height: 1.7em;\"></p><h3></h3><p><em>At Nmbrs, we celebrate diversity and promote an inclusive environment where our team members from all backgrounds, ages, genders, or sexual orientations feel equally appreciated. In order to achieve this, we are committed to shaping a hiring process that provides everyone with an equal opportunity to get hired. </em></p><p style=\"text-align:start;\"><em><br>As part of our hiring process, we conduct a criminal background check for all candidates reaching the final stages. This helps us ensure a safe and secure environment for </em>everyone. In<em> order to process your job application, we process your personal data. Please find our privacy policy <a rel=\"noopener\" target=\"_blank\" href=\"https://www.nmbrs.com/privacy\">here</a>.</em></p><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Sales Representative (5)",
+          "sharing_description": "Ben jij onze nieuwe Sales Representative? 🚀Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ont",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-08-04 11:29:54 UTC",
+      "country": "Netherlands",
+      "position": 315,
+      "updated_at": "2026-09-22 12:56:12 UTC",
+      "location_question_visible": false,
+      "city": "Amsterdam",
+      "locations": [
+        {
+          "id": 71049,
+          "name": "Amsterdam",
+          "state": "Noord-Holland",
+          "country": "Netherlands",
+          "city": "Amsterdam",
+          "translations": {
+            "en": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            },
+            "nl": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NH",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NH",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": "32",
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/finance-administrator-1",
+      "guid": "8tyad",
+      "mailbox_email": "job.8tyad@nmbrs.recruitee.com",
+      "location": "Amsterdam, Noord-Holland, Netherlands",
+      "state_name": "Noord-Holland",
+      "title": "Finance Administrator",
+      "sharing_description": "Als Finance Administrator ben jij verantwoordelijk voor het tijdig en accuraat genereren van facturen. Je verzamelt gegevens uit verschillende systemen en verwerkt deze in onze facturatie- en ERP-syst",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": "month",
+        "currency": "EUR"
+      },
+      "min_hours": 32,
+      "slug": "finance-administrator-1",
+      "options_title": "off",
+      "min_hours_per_week": "32",
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "finance",
+      "open_questions": [
+        {
+          "id": 4285675,
+          "position": 1,
+          "options": {},
+          "required": false,
+          "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            },
+            "nl": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4285676,
+          "position": 2,
+          "options": {},
+          "required": true,
+          "body": "Are you fluent in Dutch?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you fluent in Dutch?"
+            },
+            "nl": {
+              "body": "Are you fluent in Dutch?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4285677,
+          "position": 3,
+          "options": {},
+          "required": true,
+          "body": "Are you based in (or within 50 km of) Amsterdam?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you based in (or within 50 km of) Amsterdam?"
+            },
+            "nl": {
+              "body": "Are you based in (or within 50 km of) Amsterdam?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": 32,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/finance-administrator-1/c/new",
+      "country_code": "NL",
+      "department": "Finance",
+      "education_code": "associate_degree",
+      "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p>Als Finance Administrator ben jij verantwoordelijk voor het tijdig en accuraat genereren van facturen. Je verzamelt gegevens uit verschillende systemen en verwerkt deze in onze facturatie- en ERP-systemen. Met jouw financiële expertise zorg je voor betrouwbare facturatie, accurate rapportages en een hoge mate van data-integriteit. Samen met het Finance Squad werk je aan een efficiënte en accurate financiële administratie. Daarbij kijk je ook naar mogelijkheden om facturatieprocessen te verbeteren en efficiënter te maken.</p><p style=\"min-height: 1.7em;\"></p><p><strong>Time to grow. Time to thrive.</strong></p><p>Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p>We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p>Voor deze functie ga je werken bij Nmbrs Payroll in Amsterdam. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p>Als Finance Administrator ben je verantwoordelijk voor het volledige facturatieproces. Je maakt facturen aan, verwerkt en valideert deze en zorgt ervoor dat klant- en factuurgegevens actueel en correct zijn.</p><p>Je maakt deel uit van het Finance Squad, een team met diverse achtergronden bestaande uit een Financial Accountant, een Financial Controller en twee Finance Administrators. Je werkt daarnaast samen en stemt af met verschillende stakeholders binnen Nmbrs.</p><p style=\"min-height: 1.7em;\"></p><p>Concreet ga je:</p><ul><li><p>Facturen accuraat en op tijd genereren, verwerken en versturen, waarbij je factuurgegevens verifieert en kwaliteitscontroles uitvoert.</p></li><li><p>Klant- en factuurgegevens up-to-date houden en financiële systemen beheren.</p></li><li><p>Facturatieverschillen efficiënt oplossen en analyses vanuit verschillende rapportages delen met relevante teams.</p></li><li><p>Ondersteunen bij de maandafsluiting op het gebied van facturatie en de naleving van facturatieprocedures en -controles waarborgen.</p></li><li><p>Kansen signaleren om facturatieprocessen en workflows continu te verbeteren en efficiënter te maken.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw impact</h3><p>Met jouw werk draag je bij aan een efficiënte en accurate financiële administratie binnen Nmbrs. Door facturen tijdig en correct te verwerken en gegevens zorgvuldig te valideren, zorg je voor betrouwbare financiële transacties en een hoge mate van data-integriteit.</p><p>Wanneer je bijvoorbeeld facturatieverschillen signaleert en efficiënt oplost, helpt dat om onze omzetrapportages betrouwbaar te houden en zorgt het ervoor dat verschillende teams met de juiste financiële informatie kunnen werken.</p><p>Daarnaast help je het Finance Squad vooruit door kansen voor procesverbetering te signaleren en bij te dragen aan efficiëntere facturatieprocessen.</p><h3></h3>",
+      "options_cv": "required",
+      "experience_code": "mid_level",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h3>Jouw profiel</h3><p>Je hebt aantoonbare ervaring met het volledige facturatieproces, van start tot eind, en weet hoe je grote hoeveelheden transacties accuraat verwerkt. Je voelt je thuis in een omgeving waarin je met verschillende systemen en stakeholders werkt en waarin kwaliteit, deadlines en continue verbetering belangrijk zijn.</p><p style=\"min-height: 1.7em;\"></p><ul><li><p>Je hebt ervaring met meerdere systemen, zoals ERP-, CRM-, Billing-, Planning- en Ticketsystemen.</p></li><li><p>Je hebt sterke Excel-vaardigheden, waaronder databeheer, rapportages, formules en lookups.</p></li><li><p>Je hebt ervaring met datavalidatie en kwaliteitscontrole en begrijpt financiële processen en interne controles.</p></li><li><p>Je bent gewend om onder deadlines te werken en spreekt en schrijft vloeiend Nederlands en Engels.</p></li><li><p>Een financiële of boekhoudkundige kwalificatie, ervaring in een tech-omgeving en ervaring met procesverbetering en het documenteren en verbeteren van workflows zijn een pré.</p></li></ul><p style=\"min-height: 1.7em;\"></p><p class=\"whitespace-pre-wrap break-words\" style=\"min-height: 1.7em;\"></p><h3 style=\"text-align:start;\"><strong>Dit bieden wij</strong></h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.200 tot €4.400 per maand</strong> (exclusief vakantiegeld), afhankelijk van je ervaring;</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Sollicitatieprocedure</h3><ol><li><p><strong>Equalture assessment</strong> – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p><strong>Cultureel interview</strong> – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p><strong>Technisch interview</strong> – Je komt langs op ons kantoor in Amsterdam om kennis te maken met twee collega’s uit het Finance team. We gaan dieper in op je kennis, ervaring en aanpak.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek met onze COO over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol><p style=\"min-height: 1.7em;\"></p>",
+      "published_at": "2026-08-05 12:05:34 UTC",
+      "sharing_title": "Finance Administrator",
+      "locations_question_required": true,
+      "id": 2699686,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    },
+    {
+      "translations": {
+        "en": {
+          "description": "<p class=\"isSelectedEnd\">Als <strong>Account Executive</strong> bij Nmbrs ben jij de brug tussen potentiële klanten en onze HR &amp; payroll software. Met jouw commerciële drive en communicatieve vaardigheden help je prospects ontdekken wat Nmbrs voor hen kan betekenen en begeleid je hen door het volledige salesproces. Samen met andere Account Executives en Customer Success Managers werk je aan de groei van Nmbrs. Daarbij krijg je de ruimte om verantwoordelijkheid te nemen, initiatief te tonen en sales op jouw manier succesvol te maken.</p><p class=\"isSelectedEnd\" style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Payroll</strong> in <strong>Amsterdam</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p class=\"isSelectedEnd\">Als <strong>Account Executive</strong> ben je verantwoordelijk voor het hele salesproces: van het eerste contact met een prospect tot het verwelkomen van een nieuwe klant. Je bouwt en beheert je eigen sales pipeline en volgt warme leads op die via onze marketingactiviteiten binnenkomen.</p><p class=\"isSelectedEnd\">Je maakt deel uit van onze Business of Accountant Squad, waar je samenwerkt met Customer Success Managers en andere Account Executives.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Je eigen sales pipeline beheren, van het eerste contact tot een nieuwe klant, via telefoon, e-mail en (online) meetings.</p></li><li><p>Warme leads opvolgen en inhoudelijke gesprekken voeren met potentiële klanten.</p></li><li><p>Online en offline kennismakingsgesprekken en demonstraties van onze HR &amp; payroll software verzorgen.</p></li><li><p>Zelfstandig commerciële kansen oppakken en projecten starten en uitvoeren.</p></li><li><p>Samenwerken met Customer Success Managers en andere Account Executives binnen je squad.</p></li></ul><h2></h2>",
+          "title": "Account Executive",
+          "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<h3>Jouw rol</h3><p>Als Account Executive ben je verantwoordelijk voor het hele salesproces, van het eerste contact tot een blije klant. Dit ga je doen:</p><ul><li><p>Je eigen sales pipeline runnen van eerste \"hallo\" tot blije klant (per telefoon, mail en (online) meetings)</p></li><li><p>Het opvolgen van warme leads (we hebben een goed werkende marketingmachine!)</p></li><li><p>(Online) kennismakingen en demonstraties van onze software</p></li><li><p>Deel uitmaken van onze Business of Accountant Squad (samen met Customer Success Managers en andere Account Executives)</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw impact</h3><p>Met jouw commerciële drive en inhoudelijke gesprekken help je potentiële klanten ontdekken wat Nmbrs voor hen kan betekenen. Je krijgt daarbij de ruimte om verantwoordelijkheid te nemen en zelf initiatief te tonen. Dat betekent:</p><ul><li><p>Onze geweldige HR &amp; payroll tech showen in demo's</p></li><li><p>Inhoudelijke gesprekken voeren met potentiële klanten</p></li><li><p>Verantwoordelijkheid nemen en zelfstandig projecten opstarten en uitvoeren</p></li><li><p>Bijdragen aan de groei van Nmbrs door prospects om te zetten in blije klanten</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw profiel</h3><p>Jij bent onze match als je:</p><ul><li><p>Vloeiend Nederlands &amp; Engels spreekt</p></li><li><p>Bij voorkeur ervaring hebt in een commerciële rol binnen SaaS</p></li><li><p>Een HBO/Bachelordiploma en top communicatieve skills hebt</p></li><li><p>Enthousiast bent om sales op de Nmbrs-manier te leren</p></li><li><p>Zelfstandig dingen voor elkaar krijgt, maar van teamoverwinningen houdt</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Dit bieden wij</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.000–€5.000 bruto per maand</strong>, afhankelijk van je ervaring, exclusief 8% vakantiegeld. We werken zonder bonussen of commissies.</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Sollicitatieprocedure</h3><ol><li><p><strong>Equalture assessment</strong> – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p><strong>Cultureel interview</strong> – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p><strong>Technisch interview</strong> – Je komt langs op ons kantoor in Amsterdam om kennis te maken met twee Account Executives. We gaan dieper in op je commerciële ervaring, kennis en aanpak en bespreken hoe jij verschillende situaties in het salesproces zou benaderen.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek met onze Commercial Lead over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol>",
+          "sharing_image": null,
+          "sharing_title": "Account Executive",
+          "sharing_description": "Als Account Executive bij Nmbrs ben jij de brug tussen potentiële klanten en onze HR &amp; payroll software. Met jouw commerciële drive en communicatieve vaardigheden help je prospects ontdekken wat N",
+          "locations_question": "What is your preferred work location?"
+        },
+        "nl": {
+          "description": "<h2>Ben jij onze nieuwe <span style=\"color:#1999E3\">Sales Representative</span>? 🚀<br></h2><p>Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ontdekken waarom een leven zonder Nmbrs eigenlijk niet meer kan. En dat is nog maar het begin - want je bent verantwoordelijk voor het hele proces. <span style=\"color:#5A5F72\">Klaar om het verschil te maken? Begin dan aan dit spannende avontuur met ons!<br><br></span>Bij ons bruist het salesteam van energie én ondernemersgeest. Of je nu starter bent of ervaren pro - hier krijg je alle ruimte om je eigen pad te kiezen. Van het bouwen van je eerste pipeline tot het worden van een strategische sparringpartner voor onze klanten. We geloven in de perfecte mix: keihard knallen én maximaal genieten. Want successen? Die vieren we samen! En het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p><br><br></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/759006231\"></iframe></figure><p><br></p><h2><span style=\"font-size:0.9em\">Over <span style=\"color:#1999E3\">Nmbrs:</span></span></h2><p><span style=\"background-color:#FFFFFF\">Wij zijn een snelgroeiende scale-up die HR &amp; payroll technologie revolutionair maakt. Met 140+ collega's in Amsterdam, Lissabon en Stockholm doen we dingen écht anders. Bij ons geen managers, wel een 4-daagse werkweek én de vrijheid om het verschil te maken. Check snel het filmpje hieronder als je meer wilt weten hoe het is om in een organisatie zonder managers te werken. <br></span></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//www.youtube.com/embed/fKqq8efPjfI\"></iframe></figure><p style=\"min-height: 1.7em;\"></p>",
+          "title": "Sales Representative",
+          "highlight": "<p>Het mooiste? Bij ons geen stoffige processen of micromanagement, maar de vrijheid om het op jouw manier te doen.</p><p style=\"min-height: 1.7em;\"></p>",
+          "requirements": "<p class=\"whitespace-pre-wrap break-words\"><strong>Waar jij in uitblinkt:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Je eigen sales pipeline runnen van eerste \"hallo\" tot blije klant</p></li><li><p>Onze geweldige HR &amp; payroll tech showen in demo's</p></li><li><p>Deel uitmaken van ons Business of Accountancy Squad (samen met Customer Success Managers, Sales Reps en een Content Marketeer)</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Jij bent onze match als je:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Vloeiend Nederlands &amp; Engels spreekt</p></li><li><p>Een Bachelor diploma en top communicatieve skills hebt</p></li><li><p>Excited bent om sales op de Nmbrs manier te leren</p></li><li><p>Zelfstandig dingen voor elkaar krijgt, maar van teamoverwinningen houdt</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><strong>Waarom je het hier geweldig gaat vinden:</strong></p><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>€2800 bruto startsalaris per maand</p></li><li><p>Vrijheid om te werken zoals jij wilt (hybride setup)</p></li><li><p>8% pensioenbijdrage</p></li><li><p>Persoonlijke coach + ontwikkelingsbudget</p></li><li><p>4-daagse werkweek</p></li><li><p>Werken vanuit ons Amsterdam HQ (Sloterdijk) of switchen tussen onze kantoren in Lissabon &amp; Stockholm</p></li><li><p>Maandelijkse fun (denk aan pizza parties &amp; ping pong toernooien)</p></li><li><p>Één episch Summerevent waar alle kantoren samen komen</p></li></ul><p class=\"whitespace-pre-wrap break-words\"><br>Klaar om te bewijzen dat payroll spannend kan zijn? Let's talk! Omdat we bij Nmbrs dol zijn op video's, hier onze meest recente video. Dit is alles wat er in 2024 is gebeurd. </p><p style=\"min-height: 1.7em;\"></p><figure style=\"text-align:center;\"><iframe height=\"281\" width=\"500\" src=\"//player.vimeo.com/video/1040748635\"></iframe></figure><p style=\"min-height: 1.7em;\"></p><h3></h3><p><em>At Nmbrs, we celebrate diversity and promote an inclusive environment where our team members from all backgrounds, ages, genders, or sexual orientations feel equally appreciated. In order to achieve this, we are committed to shaping a hiring process that provides everyone with an equal opportunity to get hired. </em></p><p style=\"text-align:start;\"><em><br>As part of our hiring process, we conduct a criminal background check for all candidates reaching the final stages. This helps us ensure a safe and secure environment for </em>everyone. In<em> order to process your job application, we process your personal data. Please find our privacy policy <a rel=\"noopener\" target=\"_blank\" href=\"https://www.nmbrs.com/privacy\">here</a>.</em></p><p style=\"min-height: 1.7em;\"></p>",
+          "sharing_image": null,
+          "sharing_title": "Sales Representative",
+          "sharing_description": "Ben jij onze nieuwe Sales Representative? 🚀Als Sales Representative bij Nmbrs ben jij dé brug tussen potentiële klanten en onze innovatieve HR &amp; payroll software. Jouw missie? Prospects helpen ont",
+          "locations_question": "What is your preferred work location?"
+        }
+      },
+      "created_at": "2026-06-02 10:06:18 UTC",
+      "country": "Netherlands",
+      "position": 313,
+      "updated_at": "2026-09-22 12:56:56 UTC",
+      "location_question_visible": false,
+      "city": "Amsterdam",
+      "locations": [
+        {
+          "id": 71049,
+          "name": "Amsterdam",
+          "state": "Noord-Holland",
+          "country": "Netherlands",
+          "city": "Amsterdam",
+          "translations": {
+            "en": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            },
+            "nl": {
+              "name": "Amsterdam",
+              "city": "Amsterdam",
+              "postal_code": null,
+              "street": null,
+              "note": null
+            }
+          },
+          "country_code": "NL",
+          "state_code": "NH",
+          "postal_code": null,
+          "street": null,
+          "note": null
+        }
+      ],
+      "cover_image": null,
+      "state_code": "NH",
+      "locations_question_type": "multiple_choice",
+      "max_hours_per_week": "32",
+      "postal_code": null,
+      "careers_url": "https://nmbrs.recruitee.com/o/account-executive-2026",
+      "guid": "vu4w9",
+      "mailbox_email": "job.vu4w9@nmbrs.recruitee.com",
+      "location": "Amsterdam, Noord-Holland, Netherlands",
+      "state_name": "Noord-Holland",
+      "title": "Account Executive",
+      "sharing_description": "Als Account Executive bij Nmbrs ben jij de brug tussen potentiële klanten en onze HR &amp; payroll software. Met jouw commerciële drive en communicatieve vaardigheden help je prospects ontdekken wat N",
+      "salary": {
+        "max": null,
+        "min": null,
+        "period": "month",
+        "currency": "EUR"
+      },
+      "min_hours": 32,
+      "slug": "account-executive-2026",
+      "options_title": "off",
+      "min_hours_per_week": "32",
+      "options_photo": "off",
+      "close_at": null,
+      "category_code": "sales",
+      "open_questions": [
+        {
+          "id": 4165897,
+          "position": 1,
+          "options": {},
+          "required": false,
+          "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?",
+          "kind": "text",
+          "translations": {
+            "en": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            },
+            "nl": {
+              "body": "Hi, great to meet you! We're really looking forward to receiving your application! No cover letter necessary. However, we are very interested to find out what made you enthusiastic about Nmbrs Payroll. Can you name one thing that stood out in the job description (or on our website) and explain why this made you apply?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4165898,
+          "position": 2,
+          "options": {},
+          "required": true,
+          "body": "Are you fluent in Dutch?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you fluent in Dutch?"
+            },
+            "nl": {
+              "body": "Are you fluent in Dutch?"
+            }
+          },
+          "open_question_options": []
+        },
+        {
+          "id": 4165899,
+          "position": 3,
+          "options": {},
+          "required": true,
+          "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?",
+          "kind": "boolean",
+          "translations": {
+            "en": {
+              "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?"
+            },
+            "nl": {
+              "body": "Are you able to commute on a weekly basis to  the office (Amsterdam)?"
+            }
+          },
+          "open_question_options": []
+        }
+      ],
+      "max_hours": 32,
+      "options_phone": "required",
+      "careers_apply_url": "https://nmbrs.recruitee.com/o/account-executive-2026/c/new",
+      "country_code": "NL",
+      "department": "Sales",
+      "education_code": "high_school_coursework",
+      "highlight": "<p style=\"min-height: 1.7em;\"></p><p style=\"min-height: 1.7em;\"></p>",
+      "on_site": false,
+      "sharing_image": null,
+      "options_salutation": "off",
+      "description": "<p class=\"isSelectedEnd\">Als <strong>Account Executive</strong> bij Nmbrs ben jij de brug tussen potentiële klanten en onze HR &amp; payroll software. Met jouw commerciële drive en communicatieve vaardigheden help je prospects ontdekken wat Nmbrs voor hen kan betekenen en begeleid je hen door het volledige salesproces. Samen met andere Account Executives en Customer Success Managers werk je aan de groei van Nmbrs. Daarbij krijg je de ruimte om verantwoordelijkheid te nemen, initiatief te tonen en sales op jouw manier succesvol te maken.</p><p class=\"isSelectedEnd\" style=\"min-height: 1.7em;\"></p><p class=\"isSelectedEnd\"><strong>Time to grow. Time to thrive.</strong></p><p class=\"isSelectedEnd\">Wij zijn Nmbrs. We maken slimme business software die onnodige complexiteit wegneemt voor mkb-ondernemers en de professionals die hen ondersteunen. Nmbrs brengt vier gevestigde productorganisaties samen—Payroll, Accounting, Invoicing en Reporting—met teams in Nederland, Zweden en Portugal.</p><p class=\"isSelectedEnd\">We zijn één merk met een gezamenlijke ambitie, terwijl we blijven werken vanuit de expertise en kracht van onze eigen organisaties. We bundelen onze krachten waar dat logisch is en houden teams, expertise en besluitvorming dicht bij elkaar.</p><p class=\"isSelectedEnd\">Voor deze functie ga je werken bij <strong>Nmbrs Payroll</strong> in <strong>Amsterdam</strong>. Je werkt nauw samen met je directe collega’s op deze locatie en bent tegelijkertijd onderdeel van de bredere Nmbrs-organisatie.</p><p style=\"min-height: 1.7em;\"></p><h3>Jouw rol</h3><p class=\"isSelectedEnd\">Als <strong>Account Executive</strong> ben je verantwoordelijk voor het hele salesproces: van het eerste contact met een prospect tot het verwelkomen van een nieuwe klant. Je bouwt en beheert je eigen sales pipeline en volgt warme leads op die via onze marketingactiviteiten binnenkomen.</p><p class=\"isSelectedEnd\">Je maakt deel uit van onze Business of Accountant Squad, waar je samenwerkt met Customer Success Managers en andere Account Executives.</p><p class=\"isSelectedEnd\">Concreet ga je:</p><ul><li><p>Je eigen sales pipeline beheren, van het eerste contact tot een nieuwe klant, via telefoon, e-mail en (online) meetings.</p></li><li><p>Warme leads opvolgen en inhoudelijke gesprekken voeren met potentiële klanten.</p></li><li><p>Online en offline kennismakingsgesprekken en demonstraties van onze HR &amp; payroll software verzorgen.</p></li><li><p>Zelfstandig commerciële kansen oppakken en projecten starten en uitvoeren.</p></li><li><p>Samenwerken met Customer Success Managers en andere Account Executives binnen je squad.</p></li></ul><h2></h2>",
+      "options_cv": "required",
+      "experience_code": "entry_level",
+      "locations_question": "What is your preferred work location?",
+      "company_name": "Nmbrs BV",
+      "remote": false,
+      "requirements": "<h3>Jouw rol</h3><p>Als Account Executive ben je verantwoordelijk voor het hele salesproces, van het eerste contact tot een blije klant. Dit ga je doen:</p><ul><li><p>Je eigen sales pipeline runnen van eerste \"hallo\" tot blije klant (per telefoon, mail en (online) meetings)</p></li><li><p>Het opvolgen van warme leads (we hebben een goed werkende marketingmachine!)</p></li><li><p>(Online) kennismakingen en demonstraties van onze software</p></li><li><p>Deel uitmaken van onze Business of Accountant Squad (samen met Customer Success Managers en andere Account Executives)</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw impact</h3><p>Met jouw commerciële drive en inhoudelijke gesprekken help je potentiële klanten ontdekken wat Nmbrs voor hen kan betekenen. Je krijgt daarbij de ruimte om verantwoordelijkheid te nemen en zelf initiatief te tonen. Dat betekent:</p><ul><li><p>Onze geweldige HR &amp; payroll tech showen in demo's</p></li><li><p>Inhoudelijke gesprekken voeren met potentiële klanten</p></li><li><p>Verantwoordelijkheid nemen en zelfstandig projecten opstarten en uitvoeren</p></li><li><p>Bijdragen aan de groei van Nmbrs door prospects om te zetten in blije klanten</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Jouw profiel</h3><p>Jij bent onze match als je:</p><ul><li><p>Vloeiend Nederlands &amp; Engels spreekt</p></li><li><p>Bij voorkeur ervaring hebt in een commerciële rol binnen SaaS</p></li><li><p>Een HBO/Bachelordiploma en top communicatieve skills hebt</p></li><li><p>Enthousiast bent om sales op de Nmbrs-manier te leren</p></li><li><p>Zelfstandig dingen voor elkaar krijgt, maar van teamoverwinningen houdt</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Dit bieden wij</h3><ul class=\"[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1 list-disc space-y-1.5 pl-7\"><li><p>Een salarisrange van <strong>€3.000–€5.000 bruto per maand</strong>, afhankelijk van je ervaring, exclusief 8% vakantiegeld. We werken zonder bonussen of commissies.</p></li><li><p>Nmbrs is een platte organisatie waar jij de <strong>vrijheid en verantwoordelijkheid</strong> krijgt om te doen waar je goed in bent en impact te maken in een flexibele, agile werkomgeving;</p></li><li><p>Een volledig gedekt <strong>pensioenplan</strong> met een werkgeversbijdrage <strong>van 15%</strong>;</p></li><li><p>Een personal coach die jou ondersteunt in je persoonlijke en professionele groei, plus een jaarlijks <strong>trainingsbudget</strong>;</p></li><li><p>Een gezonde werk-privébalans: bij ons is fulltime werken een <strong>4-daagse werkweek</strong>, zodat je een dag overhoudt voor wat voor jou belangrijk is;</p></li><li><p><strong>Hybride werken</strong>;</p></li><li><p>Als onderdeel van Visma krijg je toegang tot een breed aanbod aan <strong>ontwikkelmogelijkheden</strong>, waaronder trainingen, events en professionele netwerken,</p></li><li><p>De mogelijkheid om tot 4 maanden op <strong>uitwisseling</strong> te gaan naar een van onze internationale kantoren;</p></li><li><p>Een groot en licht kantoor vlakbij station Sloterdijk, met liftbereikbaarheid op alle verdiepingen;</p></li><li><p>Een <strong>pet-friendly werkplek</strong> — neem je trouwe viervoeter gerust mee.</p></li></ul><p style=\"min-height: 1.7em;\"></p><h3>Sollicitatieprocedure</h3><ol><li><p><strong>Equalture assessment</strong> – Je start met een aantal neurowetenschappelijke games via Equalture.</p></li><li><p><strong>Cultureel interview</strong> – Een online gesprek met één of twee van onze recruiters om elkaar beter te leren kennen en te ontdekken of er een goede culturele match is.</p></li><li><p><strong>Technisch interview</strong> – Je komt langs op ons kantoor in Amsterdam om kennis te maken met twee Account Executives. We gaan dieper in op je commerciële ervaring, kennis en aanpak en bespreken hoe jij verschillende situaties in het salesproces zou benaderen.</p></li><li><p><strong>Eindgesprek</strong> – Een laatste gesprek met onze Commercial Lead over de rol, jouw ambities en hoe een mogelijke samenwerking eruit kan zien.</p></li></ol>",
+      "published_at": "2026-06-02 10:10:25 UTC",
+      "sharing_title": "Account Executive",
+      "locations_question_required": true,
+      "id": 2624634,
+      "dynamic_fields": [],
+      "options_cover_letter": "optional",
+      "employment_type_code": "fulltime_fixed_term",
+      "status": "published",
+      "hybrid": true,
+      "tags": []
+    }
+  ]
+}
