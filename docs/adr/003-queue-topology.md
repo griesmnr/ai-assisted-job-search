@@ -171,7 +171,9 @@ never got a chance to succeed before the guard tripped) dead-letters
 that one job/resume pair without blocking any other job in the same
 search from being scored — and, since the same ticket, is durably
 recorded (`job_match_failures`, one row per permanently-unscoreable
-`(resumeId, jobId)` pair) so the search can still resolve as "complete,
+`(searchId, resumeId, jobId)` triple — per `(resumeId, jobId)` pair
+until ticket `9a53485` re-scoped it, see below) so the search can still
+resolve as "complete,
 with some failures noted" instead of waiting on a message that will
 never resolve. The DLQ keeps the _message_ (inspectable, replayable);
 Postgres keeps the _fact_.
@@ -219,7 +221,7 @@ before it happens:
   incremented — a redelivered message writes the same, or a superset,
   `linkedJobCount`, so at-least-once delivery cannot inflate it.
 - **`job_match_failures`** (new in ticket `4f88339`, same reason),
-  unique on `(resumeId, jobId)`, is written via
+  unique on `(searchId, resumeId, jobId)`, is written via
   `insert(...).onConflictDoNothing(...)` rather than a `SET` — the same
   no-counter property (a redelivered message tries to insert the
   identical row and no-ops), just expressed as an idempotent insert

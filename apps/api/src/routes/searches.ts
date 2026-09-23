@@ -429,11 +429,13 @@ export function registerSearchRoutes(
    * Two small queries, both served by indexes that already exist:
    * `search_sources (search_id, source_descriptor_id)` leads on
    * `search_id`; `search_results (search_id, job_id)` leads on
-   * `search_id`; `job_matches (resume_id, job_id)` and
-   * `job_match_failures (resume_id, job_id)` are direct lookups with
-   * `resume_id` constant from the `searches` row. No new index is needed
-   * for this — worth saying out loud so nobody "optimizes" by adding
-   * redundant ones.
+   * `search_id`; `job_matches (resume_id, job_id)` is a direct lookup with
+   * `resume_id` constant from the `searches` row, and
+   * `job_match_failures (search_id, resume_id, job_id)` (ticket 9a53485)
+   * leads on `search_id`, which is constant for the search being derived —
+   * strictly better served than the `(resume_id, job_id)` key it replaced.
+   * No new index is needed for this — worth saying out loud so nobody
+   * "optimizes" by adding redundant ones.
    */
   async function deriveSearchState(searchId: string): Promise<DerivedSearchState> {
     const sourceRows = await db
@@ -497,9 +499,23 @@ export function registerSearchRoutes(
           eq(jobMatches.resumeId, searchesTable.resumeId),
         ),
       )
+      // SCOPED TO THIS SEARCH (ticket 9a53485). The `searchId` conjunct is
+      // the whole fix: without it this join matched any failure row for the
+      // same (resume, job), so a job an EARLIER search had capped or
+      // permanently failed was already non-outstanding here — counted into
+      // this search's `cappedForBudget`/`permanentlyFailed` and able to
+      // latch it terminal before its own freshly-published `score.job` had
+      // resolved. Both writers stamp `search_id` now; see
+      // `jobMatchFailures`' doc comment in db/schema.ts for the decision.
+      //
+      // `resumeId` stays in the predicate even though `searchId` implies it
+      // (the column is denormalized off `searches.resume_id`): it keeps
+      // this join symmetric with the `job_matches` one above, and the
+      // unique index is on exactly these three columns.
       .leftJoin(
         jobMatchFailures,
         and(
+          eq(jobMatchFailures.searchId, searchResults.searchId),
           eq(jobMatchFailures.jobId, searchResults.jobId),
           eq(jobMatchFailures.resumeId, searchesTable.resumeId),
         ),
@@ -642,9 +658,14 @@ export function registerSearchRoutes(
           eq(jobMatches.resumeId, searchesTable.resumeId),
         ),
       )
+      // Same search-scoped predicate as `deriveSearchState`'s join above
+      // (ticket 9a53485) — these two must agree on what "outstanding"
+      // means, or the stalled branch would enumerate a different set of
+      // jobIds than the count that declared the search stalled.
       .leftJoin(
         jobMatchFailures,
         and(
+          eq(jobMatchFailures.searchId, searchResults.searchId),
           eq(jobMatchFailures.jobId, searchResults.jobId),
           eq(jobMatchFailures.resumeId, searchesTable.resumeId),
         ),

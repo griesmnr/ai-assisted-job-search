@@ -2278,6 +2278,236 @@ describe("capped-for-budget vs genuine scoring failure in GET /searches/:id (tic
   });
 });
 
+// ---------------------------------------------------------------------------
+// `job_match_failures` IS SCOPED TO ITS SEARCH (ticket 9a53485).
+//
+// THE DEFECT THESE PIN, and the exact scenario opus's review of ticket
+// c9c676d reproduced: the table was keyed by (resume_id, job_id) only, so a
+// row written by one search spoke for every LATER search of the same resume.
+// `deriveSearchState` counts a linked job as outstanding only while it has
+// neither a `job_matches` nor a `job_match_failures` row — so a job search A
+// had capped (or permanently failed) was already non-outstanding in search
+// B, even though B had just published its own fresh `score.job` for it. B
+// could therefore latch terminal BEFORE its own scoring attempt resolved,
+// reporting a `cappedForBudget`/`permanentlyFailed` it never incurred
+// ({scored: 0, cappedForBudget: 3, linked: 3} on a search that capped
+// nothing).
+//
+// Both tests below run the real route, the real workers and the real derive
+// twice over ONE resume, and the load-bearing assertion in each is the
+// MID-FLIGHT poll of the second search: `pending`, with zero inherited
+// failures. Before migration 0013 that poll returned a terminal member.
+// ---------------------------------------------------------------------------
+
+describe("job_match_failures is scoped to the search that wrote it (ticket 9a53485)", () => {
+  it("a job CAPPED in one search gets a genuine fresh attempt in a later search for the same resume", async () => {
+    const run = randomUUID();
+    const overCap = DEFAULT_SCORE_THRESHOLD + 3;
+    const board = Array.from({ length: overCap }, (_, i) => matchingJob(`scope-cap-${i}-${run}`));
+    // The three the per-search cap refuses — deterministic, because
+    // `ingestJobsForSearch` preserves board order (see fetchSourceWorker's
+    // "WHY THE SLICE IS DETERMINISTIC" note).
+    const tail = board.slice(DEFAULT_SCORE_THRESHOLD);
+
+    // --- SEARCH 1: over the cap, so `tail` gets capped rows and nothing else.
+    const publisher1 = fakePublisher();
+    const app1 = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher1.publish,
+    });
+    const resumeId = await createResume(app1);
+    const first = await app1.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(first.statusCode).toBe(202);
+    const { searchId: searchId1 } = first.json() as { searchId: string };
+
+    const rig1 = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig1.drain(publisher1.published);
+
+    // Search 1 really did cap exactly the tail, and is terminal — which is
+    // also what lets the second POST through the in-flight guard below.
+    const firstBody = await getStatus(app1, searchId1);
+    expect(firstBody.status).toBe("complete");
+    expect(firstBody.scored).toBe(DEFAULT_SCORE_THRESHOLD);
+    expect(firstBody.cappedForBudget).toBe(3);
+
+    const capped = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(capped).toHaveLength(3);
+    expect(capped.every((f) => f.kind === SCORE_THRESHOLD_CAPPED_KIND)).toBe(true);
+    // The rows name the search that wrote them. This is the column the
+    // whole fix hangs on; before it there was nothing here to assert.
+    expect(capped.every((f) => f.searchId === searchId1)).toBe(true);
+
+    // --- SEARCH 2: same resume, a board of ONLY the three jobs search 1
+    // capped, so it is nowhere near its own (fresh, per-search) budget.
+    const publisher2 = fakePublisher();
+    const app2 = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), tail),
+      publishFetchSource: publisher2.publish,
+    });
+    const second = await app2.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(second.statusCode).toBe(202);
+    const { searchId: searchId2 } = second.json() as { searchId: string };
+    expect(searchId2).not.toBe(searchId1);
+
+    const rig2 = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(tail) } });
+    await rig2.runFetch(publisher2.published[0]!);
+
+    // A fresh attempt was genuinely published for all three — the old row
+    // never gated scoring, so this part was never broken. What was broken
+    // is that the derive stopped waiting for these messages' results.
+    const scoreJobs = rig2.takeScoreJobs();
+    expect(scoreJobs).toHaveLength(3);
+
+    // THE REGRESSION. Polled after the fetch and BEFORE any of those three
+    // score.job messages is handled, search 2 is still genuinely pending on
+    // all three. Keyed by (resume, job), this poll returned `complete` with
+    // cappedForBudget: 3 and scored: 0 — search 1's verdict, on a search
+    // that had capped nothing and was still waiting on its own scores.
+    const midFlight = await getStatus(app2, searchId2);
+    expect(midFlight.status).toBe("pending");
+    expect(midFlight.linked).toBe(3);
+    expect(midFlight.scoredSoFar).toBe(0);
+    expect(midFlight.cappedForBudget).toBe(0);
+    expect(midFlight.permanentlyFailed).toBe(0);
+
+    for (const scoreJob of scoreJobs) await rig2.runScore(scoreJob);
+
+    const secondBody = await getStatus(app2, searchId2);
+    expect(secondBody.status).toBe("complete");
+    expect(secondBody.scored).toBe(3);
+    expect(secondBody.cappedForBudget).toBe(0);
+    expect(secondBody.permanentlyFailed).toBe(0);
+    expect(secondBody.degraded).toBe(false);
+
+    // Scoping took nothing away from search 1: its three rows are still
+    // there, still its own, and search 2 wrote none of its own.
+    const afterBySearch = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(afterBySearch.filter((f) => f.searchId === searchId1)).toHaveLength(3);
+    expect(afterBySearch.filter((f) => f.searchId === searchId2)).toHaveLength(0);
+  });
+
+  it("a job whose scoring PERMANENTLY FAILED in one search gets a fresh attempt in a later search for the same resume", async () => {
+    // The other half of the ticket's scenario: the row `scoreJobWorker`
+    // writes on a dead-letter, rather than the one `fetchSourceWorker`
+    // writes for the cap. Same table, same defect, different writer — and
+    // this is the more damaging one, because a transient outage during
+    // search 1 would permanently suppress the job for every later search
+    // even after the outage was over.
+    const run = randomUUID();
+    const job = matchingJob(`scope-fail-${run}`);
+
+    const publisher1 = fakePublisher();
+    const app1 = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [job]),
+      publishFetchSource: publisher1.publish,
+    });
+    const resumeId = await createResume(app1);
+    const first = await app1.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId: searchId1 } = first.json() as { searchId: string };
+
+    const rig1 = makeQueueRig({
+      sources: { [DATA_SOURCE]: new FakeSource([job]) },
+      // 1: the first failure is already the last attempt, so the
+      // dead-letter (and its failure row) is deterministic.
+      scoreMaxAttempts: 1,
+      scoreJob: async () => {
+        throw new Error("simulated sustained outage");
+      },
+    });
+    await rig1.drain(publisher1.published);
+
+    // The search's only job could not be scored at all, which is the
+    // `failed` terminal member — and it is terminal, so the guard lets the
+    // second POST through.
+    const firstBody = await getStatus(app1, searchId1);
+    expect(firstBody.status).toBe("failed");
+
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.kind).not.toBe(SCORE_THRESHOLD_CAPPED_KIND);
+    expect(failures[0]!.searchId).toBe(searchId1);
+
+    // --- SEARCH 2: same resume, same job, and this time the scorer works.
+    const publisher2 = fakePublisher();
+    const app2 = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [job]),
+      publishFetchSource: publisher2.publish,
+    });
+    const second = await app2.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(second.statusCode).toBe(202);
+    const { searchId: searchId2 } = second.json() as { searchId: string };
+
+    const rig2 = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource([job]) } });
+    await rig2.runFetch(publisher2.published[0]!);
+    const scoreJobs = rig2.takeScoreJobs();
+    expect(scoreJobs).toHaveLength(1);
+
+    // THE REGRESSION. Keyed by (resume, job), this poll inherited search
+    // 1's dead-letter: permanentlyFailed 1, terminal, degraded — decided
+    // before search 2's own score.job had been handled at all.
+    const midFlight = await getStatus(app2, searchId2);
+    expect(midFlight.status).toBe("pending");
+    expect(midFlight.linked).toBe(1);
+    expect(midFlight.permanentlyFailed).toBe(0);
+    expect(midFlight.cappedForBudget).toBe(0);
+
+    for (const scoreJob of scoreJobs) await rig2.runScore(scoreJob);
+
+    const secondBody = await getStatus(app2, searchId2);
+    expect(secondBody.status).toBe("complete");
+    expect(secondBody.scored).toBe(1);
+    expect(secondBody.permanentlyFailed).toBe(0);
+    expect(secondBody.degraded).toBe(false);
+
+    // Still exactly one failure row, still search 1's. The fresh attempt
+    // wrote a `job_matches` row instead, which is what makes the outcome
+    // genuinely different rather than merely re-labelled.
+    const afterFailures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(afterFailures).toHaveLength(1);
+    expect(afterFailures[0]!.searchId).toBe(searchId1);
+  });
+});
+
 describe("the in-flight guard under REAL concurrency (ticket 4f88339 review round 1, F2)", () => {
   it("two genuinely concurrent POSTs for the same resume: exactly one 202, one 409, one searches row, one fan-out", async () => {
     // THE DEFECT THIS PINS, and why the existing sequential in-flight test

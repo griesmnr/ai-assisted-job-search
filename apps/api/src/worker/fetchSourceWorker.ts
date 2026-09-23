@@ -340,7 +340,8 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * bug than the one being fixed: the completion derive
  * (`sourcesSettled && outstanding === 0`, routes/searches.ts) counts a job
  * as outstanding while it has neither a `job_matches` nor a
- * `job_match_failures` row for the search's resume — and a job that was
+ * `job_match_failures` row for the search itself (for the search's resume,
+ * before ticket 9a53485) — and a job that was
  * never sent a `score.job` will never get either, so the search would hang
  * pending FOREVER. Two ways out were available; this takes the one that
  * keeps ingestion honest:
@@ -491,11 +492,12 @@ export const SCORE_THRESHOLD_CAPPED_KIND = "score-threshold-capped";
  * Not tuning for tuning's sake: a single unfiltered source (SmartRecruiters
  * lists 4,771 postings for ONE company — see `DEFAULT_SCORE_THRESHOLD`'s
  * doc comment) can leave thousands of jobs past the cap, and each row binds
- * 6 parameters. Postgres's wire protocol caps a single statement at 65,535
- * bound parameters, so an unchunked insert of ~11,000 capped jobs would
- * fail outright — and it would fail on the SUCCESS path, turning a search
- * that worked into a retried-then-dead-lettered one. 500 rows (3,000
- * parameters) is far inside the limit with room for the row shape to grow.
+ * 7 parameters (6 before ticket 9a53485 added `search_id`). Postgres's wire
+ * protocol caps a single statement at 65,535 bound parameters, so an
+ * unchunked insert of ~9,400 capped jobs would fail outright — and it would
+ * fail on the SUCCESS path, turning a search that worked into a
+ * retried-then-dead-lettered one. 500 rows (3,500 parameters) is far inside
+ * the limit with room for the row shape to grow.
  */
 const CAPPED_FAILURE_INSERT_CHUNK = 500;
 
@@ -1134,15 +1136,20 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
    * dead-letter regardless and the staleness backstop covers a lost marker.
    * This one is on the SUCCESS path, and losing it is not a cosmetic gap:
    * without these rows the capped jobs sit in `search_results` with no
-   * `job_matches` and no `job_match_failures` row for the search's resume,
+   * `job_matches` row for the search's resume and no `job_match_failures`
+   * row for the search itself,
    * which the completion derive counts as outstanding — forever, because
    * nothing will ever score or fail them. So a failure here throws into the
    * handler's catch and the message is RETRIED, exactly like the
    * success-path ledger write below and for the same reason: re-running the
    * fetch is wasteful but correct, and a stalled search is not.
    *
-   * Idempotent under redelivery: `ON CONFLICT (resume_id, job_id) DO
-   * NOTHING`, mirroring `scoreJobWorker`'s own insert into this table.
+   * Idempotent under redelivery: `ON CONFLICT (search_id, resume_id,
+   * job_id) DO NOTHING`, mirroring `scoreJobWorker`'s own insert into this
+   * table. The `search_id` in that key is ticket 9a53485's — before it, a
+   * job this search capped could be a row an EARLIER search had already
+   * written, so this insert silently no-opped and the later search kept the
+   * earlier one's verdict instead of recording its own.
    *
    * Takes `tx`, not `db` (ticket c9c676d): these rows are what make this
    * source's budget claim readable by its siblings ("linked but capped" is
@@ -1159,11 +1166,12 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
     cappedJobIds: string[],
     attempt: number,
   ): Promise<void> {
-    // The `score.job` body is `{jobId}` and this message's body is
-    // `{searchId, sourceId, criteria}` — neither carries a resumeId, and
-    // `job_match_failures` is keyed by (resume, job). One small lookup,
-    // taken only when the cap actually binds, so the common (under-cap)
-    // path pays nothing for it.
+    // This message's body is `{searchId, sourceId, criteria}`: it carries
+    // the searchId `job_match_failures` is keyed by (ticket 9a53485) but no
+    // resumeId, and the table denormalizes the resume so the completion
+    // derive's two LEFT JOINs stay symmetric. One small lookup, taken only
+    // when the cap actually binds, so the common (under-cap) path pays
+    // nothing for it.
     const searchRows = await tx
       .select({ resumeId: searches.resumeId })
       .from(searches)
@@ -1198,6 +1206,7 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         .values(
           chunk.map((jobId) => ({
             id: randomUUID(),
+            searchId: message.searchId,
             resumeId,
             jobId,
             kind: SCORE_THRESHOLD_CAPPED_KIND,
@@ -1205,7 +1214,9 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
             attempts: attempt,
           })),
         )
-        .onConflictDoNothing({ target: [jobMatchFailures.resumeId, jobMatchFailures.jobId] });
+        .onConflictDoNothing({
+          target: [jobMatchFailures.searchId, jobMatchFailures.resumeId, jobMatchFailures.jobId],
+        });
     }
   }
 

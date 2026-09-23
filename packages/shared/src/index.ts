@@ -745,7 +745,11 @@ export type SearchStatusResponse =
        *
        * The jobs are real: ingested, linked, and in `search_results`. They
        * simply have no match score, and a later run (or a hand-replayed
-       * `score.job`) would score them normally. The honest UI sentence is
+       * `score.job`) would score them normally — true of the hand-replay
+       * since ticket 4f88339 (these rows never gated scoring), and true of
+       * a later SEARCH only since ticket 9a53485, which stopped a capped
+       * row written by one search from being read as a verdict on every
+       * later search for the same resume. The honest UI sentence is
        * "42 more jobs matched but weren't scored — this search hit its
        * 200-job budget", not an error.
        *

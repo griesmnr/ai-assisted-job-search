@@ -44,11 +44,15 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  * double-scoring a job it's seen a score.job message for before."). So on
  * `{ jobId }`, this worker:
  *
- *   1. selects every DISTINCT `searches.resume_id` reachable from `jobId`
- *      via `search_results` (see `resolveResumeIds` below) - the query
- *      shape is `SELECT DISTINCT searches.resume_id FROM search_results
- *      JOIN searches ON search_results.search_id = searches.id WHERE
- *      search_results.job_id = $1`;
+ *   1. selects every DISTINCT `(searches.id, searches.resume_id)` reachable
+ *      from `jobId` via `search_results` (see `resolveSearchLinks` below) -
+ *      the query shape is `SELECT DISTINCT searches.id, searches.resume_id
+ *      FROM search_results JOIN searches ON search_results.search_id =
+ *      searches.id WHERE search_results.job_id = $1`. The searchIds are
+ *      carried only for the failure ledger (ticket 9a53485,
+ *      `recordPermanentFailures`); steps 2 and 3 operate on the DISTINCT
+ *      resumeIds behind them, since a score is per (resume, job) and one
+ *      score serves every search for that resume;
  *   2. for each such resumeId, checks whether a `job_matches` row for
  *      `(resumeId, jobId)` already exists and skips it if so - the same
  *      "don't re-pay for an already-scored pair" rule
@@ -633,24 +637,41 @@ type ResumeScoreOutcome =
       retryAfterMs?: number;
     };
 
-/** Every DISTINCT resumeId that has ever searched up `jobId`, via
- * `search_results.job_id -> search_results.search_id -> searches.id ->
+/** One (searchId, resumeId) pair per search that has linked `jobId`. */
+type SearchLink = { searchId: string; resumeId: string };
+
+/** Every search that has ever linked `jobId`, with the resume it is for,
+ * via `search_results.job_id -> search_results.search_id -> searches.id ->
  * searches.resume_id` - see this module's own doc comment for why this
  * relational path (not a `resumeId` on the message itself) is how this
  * worker resolves who to score against. Returns `[]` (not an error) for a
  * jobId with no such link yet - see `handleScoreJobMessage`'s handling of
- * that case: nothing wrong happened, there's just nothing to do yet. */
-async function resolveResumeIds(
+ * that case: nothing wrong happened, there's just nothing to do yet.
+ *
+ * WHY SEARCHES AND NOT JUST RESUMES (ticket 9a53485). Scoring itself is
+ * still per-RESUME: a `job_matches` row is keyed by (resume, job) and one
+ * score serves every search for that resume, so `resumeIdsOf` below
+ * collapses these rows for the scoring loop. But `job_match_failures` is
+ * keyed by (search, resume, job) now, and the failure this worker records
+ * belongs to the searches that are actually waiting on this message - so
+ * the searchIds have to come back too. Same single query either way; the
+ * `DISTINCT` that used to be in the SQL just moved into `resumeIdsOf`. */
+async function resolveSearchLinks(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   jobId: string,
-): Promise<string[]> {
-  const rows = await db
-    .selectDistinct({ resumeId: searches.resumeId })
+): Promise<SearchLink[]> {
+  return db
+    .selectDistinct({ searchId: searches.id, resumeId: searches.resumeId })
     .from(searchResults)
     .innerJoin(searches, eq(searchResults.searchId, searches.id))
     .where(eq(searchResults.jobId, jobId));
-  return rows.map((r) => r.resumeId);
+}
+
+/** The DISTINCT resumeIds behind a set of {@link SearchLink}s - two
+ * searches for the same resume are one scoring job, not two. */
+function resumeIdsOf(links: readonly SearchLink[]): string[] {
+  return [...new Set(links.map((link) => link.resumeId))];
 }
 
 /**
@@ -693,6 +714,28 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
    * more useful one diagnostically (the original error, not the one from a
    * manual replay), and makes a redelivery a no-op rather than an error.
    *
+   * ONE ROW PER (SEARCH, RESUME) PAIR, NOT PER RESUME (ticket 9a53485).
+   * `job_match_failures` is scoped to a search now — see its doc comment in
+   * db/schema.ts for the decision — so a failure that used to write one row
+   * per failed resumeId writes one per SEARCH THAT LINKED THIS JOB for that
+   * resumeId. `links` is the same `resolveSearchLinks` result the scoring
+   * loop above already fetched; no extra query.
+   *
+   * WHICH SEARCHES, EXACTLY: every search that has linked the job at the
+   * moment this message dies. That includes searches already terminal — a
+   * redundant row on a settled search costs nothing and keeps the ledger
+   * total — and, in principle, a SIBLING search with its own `score.job`
+   * still in flight. Two live searches over one resume are already close to
+   * unreachable (`POST /searches`' in-flight guard, routes/searches.ts,
+   * 409s a second one until the first is terminal or has passed
+   * `STALL_AFTER_MS`), and where it does happen it is the pre-existing
+   * at-least-once race, not a new one: the derive prefers a `job_matches`
+   * row over a failure row for the same pair, so if the sibling's own
+   * attempt then succeeds the job reads as `scored`, not failed. What
+   * CANNOT happen any more is the reverse — a search that has not linked
+   * the job yet inheriting this verdict before it ever gets an attempt of
+   * its own, which is the defect ticket 9a53485 fixed.
+   *
    * Best-effort, then nack regardless — never lose a message to a
    * bookkeeping failure. The residual case (row not written AND message
    * dead-lettered) degrades to the staleness backstop in
@@ -701,26 +744,42 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
   async function recordPermanentFailures(
     jobId: string,
     attempt: number,
+    links: readonly SearchLink[],
     failures: ReadonlyArray<{ resumeId: string; kind: string; errorMessage: string }>,
   ): Promise<void> {
     if (failures.length === 0) return;
+    const byResumeId = new Map(failures.map((failure) => [failure.resumeId, failure]));
+    const rows = links.flatMap((link) => {
+      const failure = byResumeId.get(link.resumeId);
+      if (!failure) return [];
+      return [
+        {
+          id: randomUUID(),
+          searchId: link.searchId,
+          resumeId: failure.resumeId,
+          jobId,
+          kind: failure.kind,
+          errorMessage: failure.errorMessage,
+          attempts: attempt,
+        },
+      ];
+    });
+    // NOT reachable without a bug: `links` is read once per message and
+    // every `failures` entry's resumeId came from it, so an empty `rows`
+    // here would mean `failures` was empty too — already returned above.
+    // Kept as a guard because an empty `.values([])` is a SQL error, and a
+    // crash on the dead-letter path would be a much worse way to find out.
+    if (rows.length === 0) return;
     try {
       await db
         .insert(jobMatchFailures)
-        .values(
-          failures.map((failure) => ({
-            id: randomUUID(),
-            resumeId: failure.resumeId,
-            jobId,
-            kind: failure.kind,
-            errorMessage: failure.errorMessage,
-            attempts: attempt,
-          })),
-        )
-        .onConflictDoNothing({ target: [jobMatchFailures.resumeId, jobMatchFailures.jobId] });
+        .values(rows)
+        .onConflictDoNothing({
+          target: [jobMatchFailures.searchId, jobMatchFailures.resumeId, jobMatchFailures.jobId],
+        });
     } catch (err) {
       log(
-        `[score.job] WARNING: could not record ${failures.length} job_match_failures row(s) for ` +
+        `[score.job] WARNING: could not record ${rows.length} job_match_failures row(s) for ` +
           `jobId ${jobId} (${err instanceof Error ? err.message : String(err)}) - the message ` +
           `still dead-letters; any search waiting on this job now depends on the staleness ` +
           `backstop in GET /searches/:id`,
@@ -762,7 +821,12 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
       }
       const normalizedJob = toNormalizedJob(jobRow);
 
-      const resumeIds = await resolveResumeIds(db, message.jobId);
+      // One row per SEARCH that linked this job (ticket 9a53485), not per
+      // resume: scoring is still per-resume (`resumeIds` below collapses
+      // them), but the failure ledger is search-scoped, so the searchIds
+      // have to survive to `recordPermanentFailures`.
+      const links = await resolveSearchLinks(db, message.jobId);
+      const resumeIds = resumeIdsOf(links);
       if (resumeIds.length === 0) {
         // Nothing wrong happened - this job simply has no search_results
         // link yet (or the search it came from was itself since removed).
@@ -921,7 +985,7 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // per resumeId" version would have introduced, since the resumeIds
         // above are scored concurrently via Promise.all). Across MESSAGES,
         // this is safe today for the identical reason
-        // `resolveResumeIds`'s own already-scored check is safe today -
+        // `resolveSearchLinks`'s own already-scored check is safe today -
         // see this file's module doc comment and scoreJobWorker.ts's
         // established precedent on that idempotency race: under
         // `prefetch(1)` (`startScoreJobWorker`'s default) there is at most
@@ -1009,7 +1073,7 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // on both sub-branches, because a search waiting on this pair
         // needs the row whether or not some OTHER resume's score
         // succeeded.
-        await recordPermanentFailures(message.jobId, attempt, failed);
+        await recordPermanentFailures(message.jobId, attempt, links, failed);
         if (succeeded.length > 0) {
           // Partial success: at least one resumeId's score is already
           // persisted, so this message has produced everything it ever
@@ -1074,7 +1138,7 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // row and dead-letters. Without that row, a budget-limited search
         // would hang indefinitely instead of resolving as "complete, N
         // deferred for budget".
-        await recordPermanentFailures(message.jobId, attempt, failed);
+        await recordPermanentFailures(message.jobId, attempt, links, failed);
         channel.nack(msg, false, false);
         return;
       }
