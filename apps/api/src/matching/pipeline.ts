@@ -36,14 +36,18 @@ import {
   recordUsageStats,
 } from "./usage-cost.js";
 
-// See load-env.ts: `process.loadEnvFile()` looks for `.env` relative to the
-// CURRENT WORKING DIRECTORY, not this file's location. That's /workspace
-// when this module is reached via demo-match.ts's own standalone entry
-// point (`npx tsx apps/api/src/demo-match.ts` from the repo root), but
-// `apps/api` when the server starts via `pnpm --filter @app/api dev` or the
-// root `pnpm dev` (pnpm runs a workspace package's scripts with cwd set to
-// that package's directory) -- there is no apps/api/.env, only the root
-// one. In the real dev-container flow this is harmless either way:
+// See load-env.ts: BEFORE ticket 2fd6706, `process.loadEnvFile()` looked
+// for `.env` relative to the CURRENT WORKING DIRECTORY, not this file's
+// location -- meaning `.env` loaded correctly via demo-match.ts's own
+// standalone entry point (cwd /workspace) but silently missed when the
+// server started via `pnpm --filter @app/api dev` or the root `pnpm dev`
+// (cwd apps/api, pnpm runs a workspace package's scripts with cwd set to
+// that package's directory), since there is no apps/api/.env, only the
+// root one. Ticket 2fd6706 fixed loadEnvFile() itself to resolve `.env`
+// from a fixed path (via import.meta.url) instead of process.cwd() -- this
+// call site needed no change, it already just calls the shared function,
+// and now gets the correct file regardless of caller cwd. In the real
+// dev-container flow the cwd-dependence was always harmless either way:
 // docker-compose.yml's `env_file: .env` on the `dev` service already
 // injects every variable into `process.env` before this module loads, so a
 // missing *local* .env here just means there's nothing left to add.
