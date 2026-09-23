@@ -70,6 +70,13 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
   const criteria: SearchCriteria = {};
   if (form.titleChips.length > 0) criteria.titleInclude = form.titleChips;
   if (nearLocations.length > 0) criteria.nearLocations = nearLocations;
+  // Ticket 410e1a2: sent only when it is both checked AND has something to
+  // act on. `expandMetroAreas` alone expands nothing (it widens
+  // `nearLocations` entries, and there are none), so sending it with an
+  // empty location list would put a flag on the wire that cannot change a
+  // single result -- and would show up in the request as if the user had
+  // narrowed something.
+  if (form.expandMetroAreas && nearLocations.length > 0) criteria.expandMetroAreas = true;
   if (form.remoteOk) criteria.remoteOk = true;
   if (form.commitmentIn.length > 0) criteria.commitmentIn = form.commitmentIn;
   return criteria;
@@ -171,6 +178,7 @@ function App() {
   const [criteriaForm, setCriteriaForm] = useState<CriteriaFormState>(
     restored?.criteriaForm ?? {
       nearLocations: "",
+      expandMetroAreas: false,
       remoteOk: false,
       anyLocationOk: false,
       commitmentIn: [],
@@ -700,6 +708,7 @@ function App() {
               <SearchCriteriaForm
                 titleChips={titleChips}
                 nearLocations={criteriaForm.nearLocations}
+                expandMetroAreas={criteriaForm.expandMetroAreas}
                 remoteOk={criteriaForm.remoteOk}
                 anyLocationOk={criteriaForm.anyLocationOk}
                 commitmentIn={criteriaForm.commitmentIn}

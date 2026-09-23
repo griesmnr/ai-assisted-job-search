@@ -33,6 +33,7 @@ const COMMITMENT_OPTIONS: { value: "full-time" | "part-time" | "contract"; label
 export function SearchCriteriaForm({
   titleChips,
   nearLocations,
+  expandMetroAreas,
   remoteOk,
   anyLocationOk,
   commitmentIn,
@@ -42,6 +43,12 @@ export function SearchCriteriaForm({
 }: {
   titleChips: string[];
   nearLocations: string;
+  /** Ticket 410e1a2: the explicit "also count nearby cities in the same
+   * metro area" opt-in. Off by default and deliberately NOT part of the
+   * `hasLocationSignal` check below -- it widens the locations typed above
+   * rather than being a location signal of its own, so checking it with an
+   * empty location box must not unlock the estimate. */
+  expandMetroAreas: boolean;
   remoteOk: boolean;
   /** Ticket b9e6251: the explicit "I'll work anywhere" opt-in -- see this
    * component's own `search-criteria-location-warning` paragraph below for
@@ -67,6 +74,7 @@ export function SearchCriteriaForm({
   onTitleChipsChange: (next: string[]) => void;
   onChange: (next: {
     nearLocations: string;
+    expandMetroAreas: boolean;
     remoteOk: boolean;
     anyLocationOk: boolean;
     commitmentIn: ("full-time" | "part-time" | "contract")[];
@@ -99,12 +107,13 @@ export function SearchCriteriaForm({
   function set(
     patch: Partial<{
       nearLocations: string;
+      expandMetroAreas: boolean;
       remoteOk: boolean;
       anyLocationOk: boolean;
       commitmentIn: ("full-time" | "part-time" | "contract")[];
     }>,
   ) {
-    onChange({ nearLocations, remoteOk, anyLocationOk, commitmentIn, ...patch });
+    onChange({ nearLocations, expandMetroAreas, remoteOk, anyLocationOk, commitmentIn, ...patch });
   }
 
   // Ticket b9e6251: leaving BOTH `nearLocations` and `remoteOk` empty used
@@ -211,6 +220,27 @@ export function SearchCriteriaForm({
             className={hasLocationSignal ? undefined : "search-criteria-input-invalid"}
             aria-invalid={!hasLocationSignal}
           />
+        </label>
+        {/* Ticket 410e1a2. Sits directly under the location box because it
+            only ever modifies what is typed there. Nicole raised both
+            sides of this herself -- some searchers want "Seattle" to mean
+            the metro area, others would be annoyed by an unrequested
+            Kirkland commute -- and settled it as a visible opt-in: "I
+            think it'll just be a check, a checkbox or something like
+            that... I want it given that it meets both users' needs as long
+            as it can be seen." So: off by default, and the label says what
+            it will actually do (names real sibling cities) rather than
+            something vague like "search nearby" that a user cannot predict
+            the effect of. The curated table behind it lives in
+            apps/api/src/sources/metroAreas.ts. */}
+        <label className="search-criteria-checkbox">
+          <input
+            type="checkbox"
+            checked={expandMetroAreas}
+            onChange={(e) => set({ expandMetroAreas: e.target.checked })}
+          />
+          Also include nearby cities in the same metro area — a Seattle search would also match
+          Bellevue, Kirkland, Redmond, Renton, Everett and Tacoma
         </label>
         <label className="search-criteria-checkbox">
           <input

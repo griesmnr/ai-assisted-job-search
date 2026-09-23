@@ -539,6 +539,59 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
   });
 });
 
+describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
+  async function submitAndType(location: string) {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
+    estimateSearch.mockResolvedValue(makeEstimate());
+
+    await submitResume();
+    fireEvent.change(screen.getByLabelText(/Locations you'd commute to/), {
+      target: { value: location },
+    });
+  }
+
+  it("does not send the flag unless the user checks the box — the default stays strict all the way to the wire", async () => {
+    await submitAndType("Seattle");
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    const sent = estimateSearch.mock.calls[0]?.[2];
+    expect(sent).not.toHaveProperty("expandMetroAreas");
+    expect(sent).toMatchObject({ nearLocations: ["Seattle"] });
+  });
+
+  it("sends expandMetroAreas: true once the checkbox is checked", async () => {
+    await submitAndType("Seattle");
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch.mock.calls[0]?.[2]).toMatchObject({
+      nearLocations: ["Seattle"],
+      expandMetroAreas: true,
+    });
+  });
+
+  it("omits the flag when it is checked but there is no location to expand", async () => {
+    // It only ever widens `nearLocations` entries. With none, sending it
+    // would put a flag on the wire that cannot change a single result.
+    await submitAndType("");
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+    fireEvent.click(screen.getByLabelText(/Any location/));
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    expect(estimateSearch.mock.calls[0]?.[2]).not.toHaveProperty("expandMetroAreas");
+  });
+});
+
 // Ticket 09b8e4d, superseded by ticket 8a403ee. 09b8e4d's original design:
 // a separate "click to add" suggestion row, shown only while USAJOBS was
 // selected, deliberately never auto-added ("suggest, don't silently

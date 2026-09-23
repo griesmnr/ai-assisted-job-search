@@ -629,3 +629,198 @@ describe("compileFilter — commitmentIn (ticket 18c9f18)", () => {
     expect(compileFilter(undefined)(jobs).map((j) => j.externalId)).toEqual(["1"]);
   });
 });
+
+/**
+ * Ticket 410e1a2: opt-in metro-area expansion.
+ *
+ * The load-bearing property of this whole feature is the FIRST describe
+ * block: with the flag off or absent, every location result is identical to
+ * what it was before the feature existed. Every pre-existing `nearLocations`
+ * test in this file is left untouched for the same reason -- they are the
+ * real regression suite for "strict stays strict", and they pass unchanged.
+ */
+describe("compileFilter — metro-area expansion is OFF by default (ticket 410e1a2)", () => {
+  // The exact scenario the ticket names, and the baseline the whole feature
+  // depends on: verified true against this code BEFORE the feature was
+  // written.
+  const kirkland = job({ externalId: "1", location: "Kirkland, WA" });
+
+  it("nearLocations ['Seattle'] does NOT match a posting located only in Kirkland, WA", () => {
+    expect(compileFilter({ nearLocations: ["Seattle"] })([kirkland])).toEqual([]);
+  });
+
+  it("an explicit expandMetroAreas: false is identical to omitting it", () => {
+    expect(
+      compileFilter({ nearLocations: ["Seattle"], expandMetroAreas: false })([kirkland]),
+    ).toEqual([]);
+  });
+
+  it("nor does it match the Bellevue-only postings that dominate the real corpus", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Bellevue, WA" }),
+      job({ externalId: "2", company: "B Co", location: "Bellevue, Washington" }),
+      job({ externalId: "3", company: "C Co", location: "Bellevue, WA; Menlo Park, CA" }),
+    ];
+    expect(compileFilter({ nearLocations: ["Seattle"] })(jobs)).toEqual([]);
+  });
+
+  it("still matches a multi-city posting that names Seattle itself — that already worked and must keep working", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Bellevue, Washington; Seattle, Washington" }),
+    ];
+    expect(compileFilter({ nearLocations: ["Seattle"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+    ]);
+  });
+
+  it("the flag alone, with no nearLocations, is not a location restriction of its own", () => {
+    // `expandMetroAreas` widens `nearLocations` entries; with none to widen
+    // it has nothing to do, and must not accidentally become a filter.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Kirkland, WA" }),
+      job({ externalId: "2", company: "B Co", location: "Madrid, Spain" }),
+    ];
+    expect(
+      compileFilter({ expandMetroAreas: true })(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
+  it("the no-criteria default path cannot reach this code at all", () => {
+    expect(compileFilter(undefined)).toBe(filterSoftwareEngineeringJobs);
+  });
+});
+
+describe("compileFilter — metro-area expansion when the caller opts in (ticket 410e1a2)", () => {
+  const withFlag = { nearLocations: ["Seattle"], expandMetroAreas: true };
+
+  it("the same Seattle search DOES match the Kirkland posting once the flag is set", () => {
+    const jobs: NormalizedJob[] = [job({ externalId: "1", location: "Kirkland, WA" })];
+    expect(compileFilter(withFlag)(jobs).map((j) => j.externalId)).toEqual(["1"]);
+  });
+
+  it("matches every real Seattle-metro location spelling in the owner's captured corpus", () => {
+    const jobs: NormalizedJob[] = [
+      "Bellevue, WA",
+      "Bellevue, Washington",
+      "Bellevue, WA, USA",
+      "Bellevue, WA; Menlo Park, CA",
+      "Bellevue, Washington; Chicago, Illinois; New York, New York",
+      "Bellevue, Washington; Seattle, Washington",
+      "Kirkland, WA",
+      "Redmond, WA",
+      "Renton, Washington",
+      "Everett, WA",
+      "Tacoma, WA",
+    ].map((location, i) => job({ externalId: String(i), company: `Co ${i}`, location }));
+    expect(compileFilter(withFlag)(jobs)).toHaveLength(jobs.length);
+  });
+
+  it("does NOT reach into a different metro — the cross-metro false-positive check", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "la", location: "Los Angeles, CA" }),
+      job({ externalId: "burbank", company: "B Co", location: "Burbank, California" }),
+      job({ externalId: "anaheim", company: "C Co", location: "Anaheim, CA" }),
+      job({ externalId: "portland", company: "D Co", location: "Portland, OR" }),
+      job({ externalId: "denver", company: "E Co", location: "Denver, CO" }),
+      job({ externalId: "spokane", company: "F Co", location: "Spokane, WA" }),
+      job({ externalId: "vancouver", company: "G Co", location: "Vancouver, WA" }),
+    ];
+    expect(compileFilter(withFlag)(jobs)).toEqual([]);
+    // ...and symmetrically, an LA search reaches no Seattle-metro city.
+    const seattleSide: NormalizedJob[] = [
+      job({ externalId: "1", location: "Bellevue, WA" }),
+      job({ externalId: "2", company: "B Co", location: "Seattle, WA" }),
+    ];
+    expect(
+      compileFilter({ nearLocations: ["Los Angeles"], expandMetroAreas: true })(seattleSide),
+    ).toEqual([]);
+  });
+
+  it("does not match a same-named city in another state (the guard, end to end)", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Everett, MA" }),
+      job({ externalId: "2", company: "B Co", location: "Kirkland, Quebec, Canada" }),
+    ];
+    expect(compileFilter(withFlag)(jobs)).toEqual([]);
+  });
+
+  it("the second metro works the same way — the pattern generalizes, not a Seattle special case", () => {
+    const jobs: NormalizedJob[] = [
+      // The real captured Match Group posting: located only in West
+      // Hollywood, missed by a strict "Los Angeles" search today.
+      job({
+        externalId: "1",
+        title: "Senior Software Engineer, Machine Learning Infrastructure",
+        company: "Tinder LLC",
+        location: "West Hollywood, California",
+      }),
+      job({ externalId: "2", company: "B Co", location: "Irvine, CA" }),
+    ];
+    const strict = { nearLocations: ["Los Angeles"] };
+    expect(compileFilter(strict)(jobs)).toEqual([]);
+    expect(compileFilter({ ...strict, expandMetroAreas: true })(jobs)).toHaveLength(2);
+  });
+
+  it("leaves a phrase with no metro in the table exactly as strict as before", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Denver, CO" }),
+      job({ externalId: "2", company: "B Co", location: "Boulder, CO" }),
+    ];
+    expect(
+      compileFilter({ nearLocations: ["Denver"], expandMetroAreas: true })(jobs).map(
+        (j) => j.externalId,
+      ),
+    ).toEqual(["1"]);
+  });
+
+  it("composes with the other axes rather than bypassing them", () => {
+    // A Kirkland posting reachable only via expansion is still subject to
+    // titleInclude and commitmentIn -- expansion widens ONE axis, it does
+    // not wave a job through the filter.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Accountant II", location: "Kirkland, WA" }),
+      job({
+        externalId: "2",
+        title: "Software Engineer",
+        company: "B Co",
+        location: "Kirkland, WA",
+        commitment: "part-time",
+      }),
+      job({
+        externalId: "3",
+        title: "Software Engineer",
+        company: "C Co",
+        location: "Kirkland, WA",
+        commitment: "full-time",
+      }),
+    ];
+    expect(
+      compileFilter({
+        ...withFlag,
+        titleInclude: ["software engineer"],
+        commitmentIn: ["full-time"],
+      })(jobs).map((j) => j.externalId),
+    ).toEqual(["3"]);
+  });
+
+  it("expansion is purely additive — every job that passed strict still passes", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", location: "Seattle, WA" }),
+      job({ externalId: "2", company: "B Co", location: "Remote - US", locationType: "remote" }),
+      job({ externalId: "3", company: "C Co", location: "Kirkland, WA" }),
+      job({ externalId: "4", company: "D Co", location: "Austin, TX" }),
+    ];
+    const strict = compileFilter({ nearLocations: ["Seattle"], remoteOk: true })(jobs);
+    const expanded = compileFilter({
+      nearLocations: ["Seattle"],
+      remoteOk: true,
+      expandMetroAreas: true,
+    })(jobs);
+    const ids = (list: NormalizedJob[]) => list.map((j) => j.externalId);
+    expect(ids(strict)).toEqual(["1", "2"]);
+    for (const id of ids(strict)) expect(ids(expanded)).toContain(id);
+    expect(ids(expanded)).toEqual(["1", "2", "3"]);
+  });
+});

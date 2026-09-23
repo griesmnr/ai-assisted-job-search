@@ -2962,6 +2962,74 @@ describe("the quality filter on the queue path (ticket 45ea34c)", () => {
     expect(rig.takeScoreJobs()).toHaveLength(1);
   });
 
+  it("expandMetroAreas survives the whole request path and actually widens what the worker links (ticket 410e1a2)", async () => {
+    // The end-to-end plumbing test for the checkbox. Three places could
+    // silently swallow this flag and each would look like "the checkbox
+    // does nothing": the route's `additionalProperties: false` schema (a
+    // 400, not a silent drop), `parseFilterCriteria` in the worker (which
+    // rebuilds the object field by field, so an unhandled key is gone),
+    // and `compileFilter` itself.
+    const suffix = randomUUID();
+    // Located ONLY in a Seattle-metro sibling city -- the real shape from
+    // the owner's own corpus, where 29 of 200 scored postings look like
+    // this ("Bellevue, WA", Databricks/Robinhood/Okta/Smartsheet).
+    const board = [
+      fakeJob(`qf-metro-${suffix}`, "Staff Software Engineer", {
+        company: "Metro Co",
+        location: "Bellevue, WA",
+        locationType: "onsite",
+      }),
+    ];
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    const criteria = { ...NARROW_CRITERIA, nearLocations: ["Seattle"], expandMetroAreas: true };
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+    expect(publisher.published[0]?.filterCriteria).toEqual(criteria);
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(publisher.published[0]!);
+    expect(await linkedExternalIds(searchId)).toEqual([`qf-metro-${suffix}`]);
+
+    // And the same request WITHOUT the flag links nothing at all -- the
+    // posting is only reachable because the user opted in.
+    const publisher2 = fakePublisher();
+    const app2 = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher2.publish,
+    });
+    const resumeId2 = await createResume(app2);
+    const strict = await app2.inject({
+      method: "POST",
+      url: "/searches",
+      payload: {
+        resumeId: resumeId2,
+        sourceIds: [DATA_SOURCE],
+        criteria: { ...NARROW_CRITERIA, nearLocations: ["Seattle"] },
+      },
+    });
+    const strictSearchId = (strict.json() as { searchId: string }).searchId;
+    const rig2 = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig2.runFetch(publisher2.published[0]!);
+    expect(await linkedExternalIds(strictSearchId)).toEqual([]);
+  });
+
   it("an explicit empty `{}` still means 'filter nothing' on the queue path too — a non-engineering posting is linked and scored", async () => {
     // The third arm of the three-way state, and the one every other test in
     // this file leans on: `{}` is a real criteria object that restricts
@@ -3066,6 +3134,7 @@ describe("the quality filter on the queue path (ticket 45ea34c)", () => {
       "not an object at all",
       { titleInclude: "software engineer" },
       { remoteOk: "yes" },
+      { expandMetroAreas: "yes" },
       { commitmentIn: ["fulltime"] },
     ];
 

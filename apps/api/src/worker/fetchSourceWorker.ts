@@ -885,6 +885,18 @@ function parseFilterCriteria(body: Record<string, unknown>): FilterCriteria | nu
     );
   }
 
+  // Ticket 410e1a2. Parsed here, not just accepted by the route's schema:
+  // this is the LAST hop before `compileFilter`, and a field this function
+  // does not copy into its return value is silently dropped -- the user
+  // would check the box, the request would 200, and the search would run
+  // strict anyway.
+  const expandMetroAreasRaw = criteria.expandMetroAreas;
+  if (expandMetroAreasRaw !== undefined && typeof expandMetroAreasRaw !== "boolean") {
+    throw new InvalidMessageError(
+      'fetch.source message field "filterCriteria.expandMetroAreas" must be a boolean',
+    );
+  }
+
   const commitmentRaw = parseStringArrayField(criteria, "commitmentIn");
   if (commitmentRaw !== undefined) {
     const unknown = commitmentRaw.filter(
@@ -903,6 +915,7 @@ function parseFilterCriteria(body: Record<string, unknown>): FilterCriteria | nu
     ...(titleInclude !== undefined ? { titleInclude } : {}),
     ...(titleExclude !== undefined ? { titleExclude } : {}),
     ...(nearLocations !== undefined ? { nearLocations } : {}),
+    ...(expandMetroAreasRaw !== undefined ? { expandMetroAreas: expandMetroAreasRaw } : {}),
     ...(remoteOkRaw !== undefined ? { remoteOk: remoteOkRaw } : {}),
     ...(commitmentRaw !== undefined
       ? { commitmentIn: commitmentRaw as NonNullable<Job["commitment"]>[] }

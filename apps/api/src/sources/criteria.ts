@@ -43,6 +43,7 @@ import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
 } from "../matching/swe-filter.js";
+import { compileMetroSiblingMatchers } from "./metroAreas.js";
 import { expandTitlePhrase } from "./titleSynonyms.js";
 import type { NormalizedJob } from "./types.js";
 
@@ -100,15 +101,42 @@ function makePhraseMatcher(phrase: string): (haystack: string) => boolean {
  * a phrase with no role word, "c++") expands to `[phrase]` and this
  * collapses to precisely today's single matcher.
  *
- * Title only. `nearLocations` keeps calling `makePhraseMatcher` directly --
- * "Seattle" has no synonyms in this table and a location synonym table is a
- * different problem with a different risk profile (ticket 0298b20 scope:
- * "Out: changing location/commitment matching").
+ * Title only. Locations have their own, separately-gated expansion -- see
+ * `makeLocationMatcher` below and `metroAreas.ts`; the two tables never mix,
+ * because a role-word synonym and a metro sibling are different claims with
+ * different risks.
  */
 function makeTitleMatcher(phrase: string): (haystack: string) => boolean {
   const matchers = expandTitlePhrase(phrase).map(makePhraseMatcher);
   if (matchers.length === 1) return matchers[0];
   return (haystack: string) => matchers.some((m) => m(haystack));
+}
+
+/**
+ * Compiles ONE caller-supplied `nearLocations` phrase (ticket 410e1a2).
+ *
+ * `expandMetroAreas === false` -- the default, and what an omitted flag
+ * means -- returns `makePhraseMatcher(phrase)` and nothing else, i.e. the
+ * exact matcher this line compiled before the ticket existed. STRICT
+ * BEHAVIOR IS NOT "REPRODUCED" HERE, IT IS THE SAME CODE PATH.
+ *
+ * With the flag on, the caller's literal matcher is still compiled and still
+ * tested first; the curated metro table (`metroAreas.ts`, which carries the
+ * full evidence and safety argument) only ever APPENDS sibling-city matchers
+ * after it. So expansion can only widen `nearLocations` -- every posting that
+ * passed with the flag off still passes with it on -- and a phrase naming no
+ * city in the table ("Denver", "EMEA", "") produces no siblings and collapses
+ * back to the single literal matcher.
+ */
+function makeLocationMatcher(
+  phrase: string,
+  expandMetroAreas: boolean,
+): (haystack: string) => boolean {
+  const literal = makePhraseMatcher(phrase);
+  if (!expandMetroAreas) return literal;
+  const siblings = compileMetroSiblingMatchers(phrase);
+  if (siblings.length === 0) return literal;
+  return (haystack: string) => literal(haystack) || siblings.some((m) => m(haystack));
 }
 
 const REMOTE_TEXT = /\bremote\b/i;
@@ -133,7 +161,12 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
  * means no title restriction), then `titleExclude` (ANY match rejects,
  * applied after include), then location (`nearLocations`: ANY match passes
  * regardless of work arrangement; `remoteOk`: a confirmed-remote job passes
- * regardless of location text; neither set means no location restriction),
+ * regardless of location text; neither set means no location restriction;
+ * ticket 410e1a2's `expandMetroAreas` additionally lets each `nearLocations`
+ * phrase match its curated metro siblings -- see `makeLocationMatcher`. That
+ * flag is an ADDITION to `nearLocations`, never a restriction of its own: an
+ * `expandMetroAreas: true` with no `nearLocations` has nothing to expand and
+ * leaves `hasLocationRestriction` exactly as it was),
  * then `commitmentIn` (ticket 18c9f18: a job's `commitment` must be IN the
  * set; empty/omitted means no restriction; a job whose commitment is
  * unknown/undefined is EXCLUDED once this restriction is non-empty -- see
@@ -169,7 +202,10 @@ export function compileFilter(
 
   const includeMatchers = (criteria.titleInclude ?? []).map(makeTitleMatcher);
   const excludeMatchers = (criteria.titleExclude ?? []).map(makeTitleMatcher);
-  const nearMatchers = (criteria.nearLocations ?? []).map(makePhraseMatcher);
+  const expandMetroAreas = criteria.expandMetroAreas ?? false;
+  const nearMatchers = (criteria.nearLocations ?? []).map((phrase) =>
+    makeLocationMatcher(phrase, expandMetroAreas),
+  );
   const remoteOk = criteria.remoteOk ?? false;
   const hasLocationRestriction = nearMatchers.length > 0 || remoteOk;
   const commitmentIn = criteria.commitmentIn ?? [];
