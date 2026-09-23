@@ -10,6 +10,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Job, LevelFit } from "@app/shared";
 import { MATCH_SCORE_FLOOR } from "@app/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -58,6 +59,48 @@ import {
 // this via matching/index.ts — exactly as it did when this whole pipeline
 // and demo-match.ts's CLI tail were one file.
 loadEnvFile();
+
+/**
+ * Ticket 2b93534: the SAME underlying mechanism `load-env.ts`'s
+ * `REPO_ROOT_ENV_PATH` fixes (see that file's doc comment for the full
+ * story), applied here. `usageStatsPath`'s default below used to be the
+ * bare relative string `"prep/scoring-usage-stats.json"`, resolved by
+ * `fs.readFileSync`/`writeFileSync` relative to `process.cwd()` at
+ * read/write time — a real file when this pipeline runs via
+ * `demo-match.ts`'s own CLI entry point (cwd == repo root) but a silent
+ * miss when the long-running API server is started via `pnpm dev` /
+ * `pnpm --filter @app/api dev` / `cd apps/api && pnpm dev` (cwd ==
+ * `apps/api`). `POST /searches/estimate` (routes/searches.ts) never
+ * overrides this option, so every estimate served by a server started the
+ * normal way silently fell back to the less-accurate bootstrap cost basis
+ * instead of real historical per-call averages — no error, no log, just a
+ * quieter, wrong number.
+ *
+ * Fixed the identical way: resolve relative to THIS FILE's own location
+ * via `import.meta.url`, which Node fixes at module-load time regardless
+ * of the caller's cwd, instead of depending on `process.cwd()` at all.
+ * This file lives at `apps/api/src/matching/pipeline.ts`, four directory
+ * levels below the repo root (`matching/` -> `src/` -> `apps/api/` ->
+ * `apps/` -> repo root), hence `../../../../prep/scoring-usage-stats.json`.
+ * Every caller that omits `usageStatsPath` — the CLI (demo-match.ts's
+ * `main()`) and `POST /searches/estimate` alike — now reads/writes the
+ * SAME real file regardless of its own startup cwd; a caller that wants a
+ * different file (every test in demo-match.test.ts and searches.test.ts)
+ * still explicitly overrides it, unaffected by this change.
+ *
+ * OUT OF SCOPE, DELIBERATELY: `scoreJobWorker.ts`'s own `USAGE_STATS_PATH`
+ * constant is a separate, hand-copied instance of the same string literal
+ * (ticket b53c422) that stays cwd-relative on purpose — that ticket fixed
+ * it procedurally (a README instruction: launch from the repo root, not
+ * via `pnpm --filter`), not structurally, and ticket 2b93534's scope
+ * explicitly excludes touching it. Exported (`fileURLToPath`, not the raw
+ * `URL`) so a test can assert the resolved path directly without needing a
+ * real file, a real cwd, or a full `runDemoMatch` run — mirrors
+ * `load-env.test.ts`'s approach for `REPO_ROOT_ENV_PATH`.
+ */
+export const DEFAULT_USAGE_STATS_PATH = fileURLToPath(
+  new URL("../../../../prep/scoring-usage-stats.json", import.meta.url),
+);
 
 export type RankedResult = {
   jobId: string;
@@ -167,9 +210,12 @@ export type RunDemoMatchOptions = {
    * `recordUsageStats`), read back by `estimateScoringCost` so the
    * pre-scoring cost estimate is grounded in this project's own measured
    * history rather than a one-off guess. Defaults to
-   * `"prep/scoring-usage-stats.json"` — deliberately a different file from
-   * `outputPath` (`prep/match-results.json`), which holds ranked results a
-   * user may have already applied from and must never be touched by this.
+   * `DEFAULT_USAGE_STATS_PATH` (ticket 2b93534) — a fixed, `import.meta.url`
+   * -resolved absolute path to `prep/scoring-usage-stats.json` at the repo
+   * root, correct regardless of the caller's `process.cwd()`. Deliberately
+   * a different file from `outputPath` (`prep/match-results.json`), which
+   * holds ranked results a user may have already applied from and must
+   * never be touched by this.
    */
   usageStatsPath?: string;
   outputPath?: string;
@@ -1014,7 +1060,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     excludedForMissingWorkArrangement: excludeMissingArrangementFn = () => [],
     scoreThreshold = DEFAULT_SCORE_THRESHOLD,
     allowAboveThreshold = false,
-    usageStatsPath = "prep/scoring-usage-stats.json",
+    usageStatsPath = DEFAULT_USAGE_STATS_PATH,
     outputPath = "prep/match-results.json",
     log = console.log,
     searchId: providedSearchId,
