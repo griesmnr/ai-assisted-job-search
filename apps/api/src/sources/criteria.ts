@@ -43,6 +43,7 @@ import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
 } from "../matching/swe-filter.js";
+import { expandTitlePhrase } from "./titleSynonyms.js";
 import type { NormalizedJob } from "./types.js";
 
 export type { SearchCriteria };
@@ -87,6 +88,29 @@ function makePhraseMatcher(phrase: string): (haystack: string) => boolean {
   return (haystack: string) => pattern.test(haystack);
 }
 
+/**
+ * Compiles ONE caller-supplied title phrase into a matcher that also accepts
+ * the table-licensed role-word synonyms of that phrase (ticket 0298b20).
+ *
+ * Deliberately a thin wrapper over `makePhraseMatcher` rather than a new
+ * matching primitive: every expanded phrase goes through the exact same
+ * word-boundary compiler as the original, so the `c++` / `.net`
+ * non-word-character handling documented above applies to expansions for
+ * free and cannot drift. A phrase the table does not touch (a single word,
+ * a phrase with no role word, "c++") expands to `[phrase]` and this
+ * collapses to precisely today's single matcher.
+ *
+ * Title only. `nearLocations` keeps calling `makePhraseMatcher` directly --
+ * "Seattle" has no synonyms in this table and a location synonym table is a
+ * different problem with a different risk profile (ticket 0298b20 scope:
+ * "Out: changing location/commitment matching").
+ */
+function makeTitleMatcher(phrase: string): (haystack: string) => boolean {
+  const matchers = expandTitlePhrase(phrase).map(makePhraseMatcher);
+  if (matchers.length === 1) return matchers[0];
+  return (haystack: string) => matchers.some((m) => m(haystack));
+}
+
 const REMOTE_TEXT = /\bremote\b/i;
 
 function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">): boolean {
@@ -117,6 +141,24 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
  * full reasoning on why this one field doesn't follow the
  * unmatched-data-passes-through pattern the location fields use), then the
  * same company|title dedupe `filterSoftwareEngineeringJobs` uses.
+ *
+ * Ticket 0298b20: both title axes go through `makeTitleMatcher`, which adds
+ * curated role-word synonyms (see `titleSynonyms.ts` for the table and the
+ * full safety argument) -- so `titleInclude: ["software engineer"]` also
+ * matches a real "Senior Software Developer" posting.
+ *
+ * BOTH axes, not just include, and that symmetry is load-bearing rather
+ * than incidental: a filter whose include is synonym-aware and whose
+ * exclude is literal is self-contradictory in a way users would experience
+ * as a bug -- searching "software engineer" would surface "Software
+ * Developer" postings that EXCLUDING "software engineer" then failed to
+ * remove. One matching semantics for both, or the filter cannot be reasoned
+ * about. (The risk profiles do differ: a loose include shows one extra row
+ * and costs one extra scoring call, while a loose exclude hides a real job
+ * invisibly -- the same asymmetry ingest/textSimilarity.ts documents for
+ * false merges. That asymmetry is answered by keeping the TABLE
+ * conservative, which is where `titleSynonyms.ts`'s "NOT GROUPED" section
+ * spends its effort, rather than by making the two axes behave differently.)
  */
 export function compileFilter(
   criteria: SearchCriteria | undefined,
@@ -125,8 +167,8 @@ export function compileFilter(
     return filterSoftwareEngineeringJobs;
   }
 
-  const includeMatchers = (criteria.titleInclude ?? []).map(makePhraseMatcher);
-  const excludeMatchers = (criteria.titleExclude ?? []).map(makePhraseMatcher);
+  const includeMatchers = (criteria.titleInclude ?? []).map(makeTitleMatcher);
+  const excludeMatchers = (criteria.titleExclude ?? []).map(makeTitleMatcher);
   const nearMatchers = (criteria.nearLocations ?? []).map(makePhraseMatcher);
   const remoteOk = criteria.remoteOk ?? false;
   const hasLocationRestriction = nearMatchers.length > 0 || remoteOk;
