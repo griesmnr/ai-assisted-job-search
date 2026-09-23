@@ -154,7 +154,7 @@ export function buildSourceSelection(sourceIds: string[]): {
  * the OTHERS from being built" (the identical principle `demo-match.ts`'s
  * own `main()` applies for the synchronous CLI path, and `CompositeSource`
  * applies again at request time). A fourth, independently-typed copy of
- * the same five-source list here — instead of reusing `BUILDERS` — would
+ * the same eight-source list here — instead of reusing `BUILDERS` — would
  * drift the moment any of the three existing call sites changed; this
  * module's own doc comment already states its reason to exist is being
  * "the one place" every caller shares that list from.
