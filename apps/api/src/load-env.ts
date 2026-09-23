@@ -1,11 +1,12 @@
 /**
- * `process.loadEnvFile()` looks for `.env` relative to the CURRENT WORKING
- * DIRECTORY. That's a real file in local dev (`docker-compose.yml`'s `dev`
- * service also injects the same vars via `env_file`, so this is always
- * redundant-but-harmless there) but doesn't exist at all in a fresh git
- * worktree (nothing copies `.env`, a gitignored file, into one) or in CI/
- * production, where real env vars are injected directly and there is no
- * `.env` file anywhere on disk.
+ * BEFORE ticket 2fd6706 (see that ticket's own paragraph below for the
+ * full story): `process.loadEnvFile()` looked for `.env` relative to the
+ * CURRENT WORKING DIRECTORY, not any fixed project location. That's a real
+ * file in local dev (`docker-compose.yml`'s `dev` service also injects the
+ * same vars via `env_file`, so this is always redundant-but-harmless
+ * there) but doesn't exist at all in a fresh git worktree (nothing copies
+ * `.env`, a gitignored file, into one) or in CI/production, where real env
+ * vars are injected directly and there is no `.env` file anywhere on disk.
  *
  * Ticket 2b54470: an unguarded `process.loadEnvFile()` at a file's top
  * level throws ENOENT in exactly those cases -- and for a file imported by

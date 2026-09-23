@@ -292,14 +292,23 @@ That's the whole command — `pnpm dev` (root `package.json`: `pnpm --parallel
 -r --if-present run dev`) starts `apps/api`'s Fastify server
 (`http://localhost:3000`) and `apps/web`'s Vite dev server
 (`http://localhost:5173`) together, in one terminal, each rebuilding on save.
-No cwd caveats: `apps/api/src/load-env.ts`'s `loadEnvFile()` used to resolve
-`.env` relative to `process.cwd()`, which broke this exact command (and
-`pnpm --filter @app/api dev`, and `cd apps/api && pnpm dev`) with `error:
-role "dev" does not exist` — Postgres falling back to the OS username once
-`POSTGRES_USER`/`PASSWORD`/`DB` silently never loaded. Fixed (ticket
-`2fd6706`): it now resolves `.env` from the repo root via
+No `.env`-loading cwd caveat: `apps/api/src/load-env.ts`'s `loadEnvFile()`
+used to resolve `.env` relative to `process.cwd()`, which broke this exact
+command (and `pnpm --filter @app/api dev`, and `cd apps/api && pnpm dev`)
+with `error: role "dev" does not exist` — Postgres falling back to the OS
+username once `POSTGRES_USER`/`PASSWORD`/`DB` silently never loaded. Fixed
+(ticket `2fd6706`): it now resolves `.env` from the repo root via
 `import.meta.url`, independent of the caller's working directory, so any of
-those invocation forms works.
+those invocation forms loads the same `.env` correctly.
+
+That fix is scoped to `.env` loading only — one separate, still-open
+cwd-dependence remains. `POST /searches/estimate`'s pre-search cost figure
+reads `prep/scoring-usage-stats.json` (also cwd-relative, unrelated
+mechanism) to use real historical per-call averages instead of the
+bootstrap estimate; started via `pnpm dev` (cwd `apps/api`), that read
+misses and the estimate silently falls back to the less-accurate bootstrap
+basis. Same underlying issue step 7 below warns about for the scoring
+worker — not yet fixed for the route that reads it at estimate time.
 
 Open `http://localhost:5173` and the app is live against whatever
 Postgres/RabbitMQ instance step 2 started.
@@ -380,7 +389,8 @@ curl -s http://localhost:3000/sources
 curl -s -X POST http://localhost:3000/searches \
   -H 'Content-Type: application/json' \
   -d '{"resumeId": "<resumeId>", "sourceIds": ["greenhouse", "lever"]}'
-# -> { "id": "<searchId>", ... }
+# -> 202, { "searchId": "<searchId>", "status": "pending", "skippedSources": [] }
+# (no top-level "id" field -- it's "searchId")
 
 # 4. Poll for results as the workers fetch, score, and persist
 curl -s http://localhost:3000/searches/<searchId>
