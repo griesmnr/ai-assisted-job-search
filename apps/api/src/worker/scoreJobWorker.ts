@@ -140,7 +140,11 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  * all — the message body is `{jobId}`, with no searchId and no resumeId —
  * and the search that linked the job waits forever for a score that is
  * never coming. See `recordPermanentFailures` below for where the rows are
- * written and why the write is best-effort, and db/schema.ts's
+ * written and why the write is best-effort, and `recordOuterCatchFailures`
+ * for the same write on the handler's OUTER catch (ticket 96fc30d) —
+ * reached by an error the per-resume loop never sees, such as a Postgres
+ * blip during `resolveSearchLinks` or the `job_matches` insert, which used
+ * to dead-letter leaving no trace at all. See db/schema.ts's
  * `jobMatchFailures` for why the failures live in their own table rather
  * than as a status column on `job_matches` (short version: a failure row
  * in `job_matches` would satisfy the already-scored check in step 2 above
@@ -787,11 +791,121 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
     }
   }
 
+  /**
+   * The outer catch's twin of `recordPermanentFailures` (ticket 96fc30d).
+   *
+   * WHY IT EXISTS: `recordPermanentFailures` above covers the failures the
+   * per-resume `Promise.all` loop produces, which is every failure the
+   * handler ANTICIPATES. It does not cover an error thrown OUTSIDE that
+   * loop — a Postgres blip during `resolveSearchLinks`, the `job_matches`
+   * insert itself, or `waitForConfirms` — which lands in the handler's
+   * outer catch. Both of that catch's terminal branches (non-retryable
+   * immediately, and retries exhausted) used to dead-letter with NO
+   * `job_match_failures` row at all, leaving completion state exactly as it
+   * was before the message: no `job_matches` row, no failure row, so
+   * `deriveSearchState`'s `sourcesSettled && outstanding === 0` never
+   * reaches terminal for that job and the search sits `pending` until the
+   * 45-minute `STALL_AFTER_MS` backstop calls it stalled. That is the same
+   * class of gap ticket 4f88339 closed for the loop, just wider.
+   *
+   * BEST-EFFORT AT EVERY STEP, AND NEVER THROWS. This runs on a path that
+   * is already handling an error; a second unhandled error escaping here
+   * would leave the message unacked entirely (see `startScoreJobWorker`'s
+   * safety net, which would then nack it with no row written — strictly
+   * worse than what this function exists to fix). So:
+   *
+   *   - no `jobId` (the body didn't parse — `InvalidMessageError`): there
+   *     is nothing identifiable to record. Give up cleanly.
+   *   - `links` not yet resolved (the error happened at or before
+   *     `resolveSearchLinks`): re-run it here, inside its own try/catch. If
+   *     THAT fails too — the same Postgres outage, most likely — give up
+   *     and log; the staleness backstop is the remaining safety net, which
+   *     is exactly the residual design c54b9e0 §6.5 already accepts.
+   *   - `links` empty: no search is waiting on this job, so there is
+   *     nothing to unblock (the same "nothing to do" case the happy path
+   *     acks on).
+   *
+   * EXCLUDES PAIRS THAT ACTUALLY SCORED. An error can reach the outer catch
+   * AFTER the `job_matches` insert succeeded (a failing `ack`, or a
+   * `waitForConfirms` on a dying channel). A failure row for a pair that
+   * has a real score would be a false statement in the ledger — the derive
+   * already prefers `job_matches` over a failure row for the same pair, so
+   * it would not change any reported number, but it would mislead anyone
+   * reading the table. That lookup is best-effort too: if it fails, fall
+   * through with an empty set and record for every link, because a
+   * redundant row is harmless where a missing one hangs a search.
+   *
+   * KIND: `handler-<kind>` rather than the bare `<kind>` the per-resume
+   * loop writes, so the ledger says WHERE the failure happened. Nothing
+   * branches on `kind` except `SCORE_THRESHOLD_CAPPED_KIND`
+   * (routes/searches.ts's derive), so these count as `permanentlyFailed`
+   * and mark the search degraded — which is the truth.
+   */
+  async function recordOuterCatchFailures(
+    jobId: string | undefined,
+    knownLinks: readonly SearchLink[] | undefined,
+    attempt: number,
+    kind: string,
+    errorMessage: string,
+  ): Promise<void> {
+    if (jobId === undefined) return;
+
+    let links = knownLinks;
+    if (links === undefined) {
+      try {
+        links = await resolveSearchLinks(db, jobId);
+      } catch (err) {
+        log(
+          `[score.job] WARNING: could not resolve the searches waiting on jobId ${jobId} while ` +
+            `dead-lettering it (${err instanceof Error ? err.message : String(err)}) - no ` +
+            `job_match_failures row can be written, so any search waiting on this job now ` +
+            `depends on the staleness backstop in GET /searches/:id`,
+        );
+        return;
+      }
+    }
+    if (links.length === 0) return;
+
+    const resumeIds = resumeIdsOf(links);
+    let alreadyScored = new Set<string>();
+    try {
+      const rows = await db
+        .select({ resumeId: jobMatches.resumeId })
+        .from(jobMatches)
+        .where(and(eq(jobMatches.jobId, jobId), inArray(jobMatches.resumeId, resumeIds)));
+      alreadyScored = new Set(rows.map((r) => r.resumeId));
+    } catch {
+      // Deliberately silent beyond the failure row itself: the recovery is
+      // "record for everything", which is the safe direction.
+    }
+
+    await recordPermanentFailures(
+      jobId,
+      attempt,
+      links,
+      resumeIds
+        .filter((resumeId) => !alreadyScored.has(resumeId))
+        .map((resumeId) => ({
+          resumeId,
+          kind: `handler-${kind}`,
+          errorMessage,
+        })),
+    );
+  }
+
   return async function handleScoreJobMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
+    // Hoisted out of the try purely so the outer catch can see how far the
+    // handler got before it threw: `jobId` is undefined only when the body
+    // itself didn't parse, and `links` is undefined only when the error
+    // happened at or before `resolveSearchLinks`. See
+    // `recordOuterCatchFailures` for what each case means there.
+    let jobId: string | undefined;
+    let links: SearchLink[] | undefined;
 
     try {
       const message = parseScoreJobMessage(msg.content);
+      jobId = message.jobId;
 
       const jobRows = await db
         .select({
@@ -825,7 +939,7 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
       // resume: scoring is still per-resume (`resumeIds` below collapses
       // them), but the failure ledger is search-scoped, so the searchIds
       // have to survive to `recordPermanentFailures`.
-      const links = await resolveSearchLinks(db, message.jobId);
+      links = await resolveSearchLinks(db, message.jobId);
       const resumeIds = resumeIdsOf(links);
       if (resumeIds.length === 0) {
         // Nothing wrong happened - this job simply has no search_results
@@ -1195,6 +1309,13 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
           `[score.job] non-retryable error (${kind}) on attempt ${attempt} - dead-lettering ` +
             `immediately without consuming a retry: ${errorMessage}`,
         );
+        // Terminal: record the failure for every search waiting on this job
+        // before the message disappears into the DLQ (ticket 96fc30d). An
+        // `UnknownJobError` reaches here with a `jobId` but no `links`, so
+        // this re-resolves them; in practice it finds none, because
+        // `search_results.job_id` FKs the `jobs` row that is missing, and
+        // the FK would have had to be cleared before the row could go.
+        await recordOuterCatchFailures(jobId, links, attempt, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
@@ -1204,6 +1325,11 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
           `[score.job] attempt ${attempt}/${maxAttempts} failed (${kind}): ${errorMessage} - ` +
             `retries exhausted, dead-lettering`,
         );
+        // Terminal, same as above: this message is never coming back, so
+        // the searches waiting on it need the durable "will never be done"
+        // record or they wait for the 45-minute staleness backstop instead
+        // of resolving (ticket 96fc30d).
+        await recordOuterCatchFailures(jobId, links, attempt, kind, errorMessage);
         channel.nack(msg, false, false);
         return;
       }
@@ -1215,6 +1341,19 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
           `retrying (attempt ${nextAttempt}) via ${tier.queue} (${tier.delayMs}ms)` +
           (clamped ? ` [CLAMPED]` : ""),
       );
+      // No failure row on THIS branch, deliberately: the message is being
+      // retried, so it is still legitimately outstanding — the same reason
+      // the loop's own retry path writes nothing.
+      //
+      // RESIDUAL (ticket 96fc30d, stated rather than fixed): if this
+      // publish or `waitForConfirms` throws, the error escapes the handler
+      // entirely and `startScoreJobWorker`'s safety net nacks the message
+      // with no failure row. That is not the silent gap this ticket closed,
+      // because the only thing that makes these two calls throw is a
+      // broken/closing channel — in which case the safety net's `nack` does
+      // not reach the broker either, and the broker redelivers the message
+      // to another consumer (or to this one after a reconnect) rather than
+      // dead-lettering it. There is no terminal state to record.
       channel.sendToQueue(tier.queue, msg.content, {
         persistent: true,
         mandatory: true,

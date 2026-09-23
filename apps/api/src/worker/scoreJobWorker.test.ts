@@ -145,11 +145,38 @@ async function insertResume(text = "resume text"): Promise<string> {
 
 /** Creates a `searches` row for `resumeId` and links it to `jobId` via
  * `search_results` - the exact relational path scoreJobWorker.ts's
- * `resolveResumeIds` reads back. */
-async function linkJobToResumeViaSearch(jobId: string, resumeId: string): Promise<void> {
+ * `resolveSearchLinks` reads back. Returns the searchId it created, which
+ * the ticket-96fc30d tests below assert the failure rows are scoped to. */
+async function linkJobToResumeViaSearch(jobId: string, resumeId: string): Promise<string> {
   const searchId = randomUUID();
   await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
   await db.insert(searchResults).values({ id: randomUUID(), searchId, jobId });
+  return searchId;
+}
+
+/**
+ * A `db` that behaves exactly like the real one except for the methods
+ * named in `overrides` - used by the outer-catch tests below to force a
+ * failure OUTSIDE the per-resume scoring loop (a Postgres blip during
+ * `resolveSearchLinks`, which is the handler's only `selectDistinct`, or
+ * during the `job_matches` insert).
+ *
+ * Every non-overridden method is bound to the REAL db, not to the proxy:
+ * drizzle's query builders read `this.session`/`this.dialect` internally,
+ * and leaving `this` as the proxy would route those reads back through this
+ * trap for no reason.
+ */
+function dbFailingOn(overrides: Record<string, (...args: never[]) => unknown>): NodePgDatabase {
+  return new Proxy(db as object, {
+    get(target, prop) {
+      const override = typeof prop === "string" ? overrides[prop] : undefined;
+      if (override) return override;
+      const value = Reflect.get(target, prop, target) as unknown;
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  }) as NodePgDatabase;
 }
 
 function scoredJob(overrides: Partial<ScoredJob> = {}): ScoredJob {
@@ -1169,5 +1196,195 @@ describe("scoreJobWorker job_match_failures (ticket 4f88339)", () => {
       .where(eq(jobMatchFailures.jobId, jobId));
     expect(failures).toHaveLength(1);
     expect(failures[0]!.kind).toBe("spend-guard-exceeded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The OUTER catch (ticket 96fc30d). Everything above exercises failures the
+// per-resume `Promise.all` loop produces. These force an error OUTSIDE it —
+// the class the handler never anticipated — and pin that a terminal
+// dead-letter there still leaves the durable "will never be done" record a
+// waiting search needs, with a real searchId on every row.
+// ---------------------------------------------------------------------------
+
+describe("scoreJobWorker outer-catch job_match_failures (ticket 96fc30d)", () => {
+  it("records a failure row per waiting search when the job_matches insert itself fails and retries are exhausted", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume whose score cannot be persisted");
+    const searchIdA = await linkJobToResumeViaSearch(jobId, resumeId);
+    // A SECOND search for the same resume: scoring is deduped by resumeId,
+    // but the ledger is search-scoped (ticket 9a53485), so both searches
+    // waiting on this job must each get their own row.
+    const searchIdB = await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const failingDb = dbFailingOn({
+      insert: (table: never) => {
+        if (table === jobMatches)
+          throw new Error("simulated Postgres blip on the job_matches insert");
+        return (db.insert as (t: never) => unknown)(table);
+      },
+    });
+    const scoreJob = vi.fn().mockResolvedValue(scoredJob());
+    const handler = createScoreJobHandler({
+      channel,
+      db: failingDb,
+      scoreJob,
+      log: () => {},
+      maxAttempts: 1,
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    // Dead-lettered, and the scoring call really did succeed — the failure
+    // is entirely outside the per-resume loop.
+    expect(scoreJob).toHaveBeenCalledTimes(1);
+    expect(channel.nacked).toHaveLength(1);
+    expect(channel.acked).toHaveLength(0);
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(0);
+
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(2);
+    expect(new Set(failures.map((f) => f.searchId))).toEqual(new Set([searchIdA, searchIdB]));
+    expect(failures.every((f) => f.resumeId === resumeId)).toBe(true);
+    // `handler-` prefixed so the ledger says the failure happened outside
+    // the scoring loop, not inside a Claude call.
+    expect(failures.every((f) => f.kind === "handler-unknown")).toBe(true);
+    expect(failures.every((f) => f.attempts === 1)).toBe(true);
+    expect(failures[0]!.errorMessage).toContain("simulated Postgres blip");
+  });
+
+  it("re-resolves the waiting searches inside the catch when the error happened DURING resolveSearchLinks", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume the link query could not reach");
+    const searchId = await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    // `selectDistinct` is the handler's only use of that builder — it IS
+    // `resolveSearchLinks`. Fail the first call (the handler's own), let the
+    // second (the catch's best-effort re-resolve) through, which is exactly
+    // a transient blip that has since passed.
+    let linkQueries = 0;
+    const failingDb = dbFailingOn({
+      selectDistinct: (...args: never[]) => {
+        linkQueries++;
+        if (linkQueries === 1) throw new Error("simulated transient Postgres blip");
+        return (db.selectDistinct as (...a: never[]) => unknown)(...args);
+      },
+    });
+    const scoreJob = vi.fn();
+    const handler = createScoreJobHandler({
+      channel,
+      db: failingDb,
+      scoreJob,
+      log: () => {},
+      maxAttempts: 1,
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(scoreJob).not.toHaveBeenCalled();
+    expect(linkQueries).toBe(2);
+    expect(channel.nacked).toHaveLength(1);
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.jobId, jobId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.searchId).toBe(searchId);
+    expect(failures[0]!.resumeId).toBe(resumeId);
+    expect(failures[0]!.kind).toBe("handler-unknown");
+  });
+
+  it("gives up cleanly (no second error out of the catch) when the re-resolve fails too, and still dead-letters", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume behind a sustained outage");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const failingDb = dbFailingOn({
+      selectDistinct: () => {
+        throw new Error("Postgres is still down");
+      },
+    });
+    const logs: string[] = [];
+    const handler = createScoreJobHandler({
+      channel,
+      db: failingDb,
+      scoreJob: vi.fn(),
+      log: (m) => logs.push(m),
+      maxAttempts: 1,
+    });
+
+    // The point of the assertion: the handler resolves rather than
+    // rejecting. A throw here would leave the message for
+    // startScoreJobWorker's safety net — a worse outcome than the gap.
+    await expect(handler(makeMessage({ jobId }))).resolves.toBeUndefined();
+
+    expect(channel.nacked).toHaveLength(1);
+    expect(
+      await db.select().from(jobMatchFailures).where(eq(jobMatchFailures.jobId, jobId)),
+    ).toHaveLength(0);
+    // Loudly, not silently: the staleness backstop is now the only net.
+    expect(logs.some((m) => m.includes("staleness backstop"))).toBe(true);
+  });
+
+  it("writes NOTHING on the outer catch's RETRY path — the message is still outstanding", async () => {
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume on a retryable handler error");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    const failingDb = dbFailingOn({
+      selectDistinct: () => {
+        throw new Error("simulated transient Postgres blip");
+      },
+    });
+    const handler = createScoreJobHandler({
+      channel,
+      db: failingDb,
+      scoreJob: vi.fn(),
+      log: () => {},
+      maxAttempts: 4,
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.sentToQueue).toHaveLength(1); // scheduled a retry
+    expect(channel.nacked).toHaveLength(0);
+    expect(
+      await db.select().from(jobMatchFailures).where(eq(jobMatchFailures.jobId, jobId)),
+    ).toHaveLength(0);
+  });
+
+  it("never writes a failure row for a pair that actually scored, even when the message still dead-letters", async () => {
+    // An error can reach the outer catch AFTER job_matches is written — a
+    // failing ack, say. The row would be a false statement in the ledger.
+    const jobId = await insertJob();
+    const resumeId = await insertResume("resume that scored before the ack failed");
+    await linkJobToResumeViaSearch(jobId, resumeId);
+
+    const channel = fakeChannel();
+    channel.ack = () => {
+      throw new Error("channel died between the insert and the ack");
+    };
+    const handler = createScoreJobHandler({
+      channel,
+      db,
+      scoreJob: vi.fn().mockResolvedValue(scoredJob()),
+      log: () => {},
+      maxAttempts: 1,
+    });
+
+    await handler(makeMessage({ jobId }));
+
+    expect(channel.nacked).toHaveLength(1);
+    expect(await db.select().from(jobMatches).where(eq(jobMatches.jobId, jobId))).toHaveLength(1);
+    expect(
+      await db.select().from(jobMatchFailures).where(eq(jobMatchFailures.jobId, jobId)),
+    ).toHaveLength(0);
   });
 });
