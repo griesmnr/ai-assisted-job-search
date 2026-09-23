@@ -688,12 +688,6 @@ export function SearchFlow({
             </p>
           )}
           <SearchSourceStatusList sources={phase.sources} />
-          <p className="cost-caveat">
-            Estimated before this run started: $
-            {phase.estimate.costEstimate.probableCostUsd.toFixed(2)} probable, $
-            {phase.estimate.costEstimate.maxCostUsd.toFixed(2)} max. The job count above updates
-            live; this cost figure doesn't.
-          </p>
         </div>
       )}
 
