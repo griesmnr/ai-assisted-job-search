@@ -149,6 +149,7 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
       status: "complete",
       scored: 2,
       permanentlyFailed: 0,
+      cappedForBudget: 0,
       linked: 2,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",

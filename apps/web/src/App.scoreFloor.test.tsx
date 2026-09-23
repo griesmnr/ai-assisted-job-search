@@ -317,6 +317,7 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
         status: "complete",
         scored: 0,
         permanentlyFailed: 0,
+        cappedForBudget: 0,
         linked: 0,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",

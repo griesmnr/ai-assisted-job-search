@@ -211,7 +211,15 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
   it("happy path: nothing races — confirming Run search fires startSearch with exactly the estimated (captured) selection", async () => {
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
-    getSearchStatus.mockResolvedValue({ status: "pending", scoredSoFar: 0 });
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      scoredSoFar: 0,
+      linked: 0,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [],
+    });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />);
 
@@ -230,7 +238,15 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     estimateSearch.mockResolvedValue(makeEstimate());
     const { promise, resolve } = deferred<{ searchId: string }>();
     startSearch.mockReturnValue(promise);
-    getSearchStatus.mockResolvedValue({ status: "pending", scoredSoFar: 0 });
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      scoredSoFar: 0,
+      linked: 0,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [],
+    });
 
     const { rerender } = render(
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
@@ -275,12 +291,27 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       .mockResolvedValueOnce({
         status: "pending",
         scoredSoFar: 3,
+        // Same as the estimate's jobCount (10) on purpose: this test is
+        // about scoredSoFar climbing, not the denominator, so keeping it
+        // stable at what the estimate already showed avoids conflating the
+        // two. See SearchFlow.persistence.test.tsx for tests specifically
+        // proving `linked` (not the estimate) drives the denominator.
+        linked: 10,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-1",
         resumeId: "resume-1",
       })
       .mockResolvedValueOnce({
         status: "pending",
         scoredSoFar: 7,
+        linked: 10,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-1",
         resumeId: "resume-1",
       })
@@ -290,6 +321,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         resumeId: "resume-1",
         scored: 10,
         permanentlyFailed: 0,
+        cappedForBudget: 0,
         linked: 10,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -356,18 +388,19 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
 
-    const tickA = deferred<{
+    type PendingTick = {
       status: string;
       scoredSoFar: number;
+      linked: number;
+      permanentlyFailed: number;
+      cappedForBudget: number;
+      sourcesSettled: boolean;
+      sources: never[];
       searchId: string;
       resumeId: string;
-    }>();
-    const tickB = deferred<{
-      status: string;
-      scoredSoFar: number;
-      searchId: string;
-      resumeId: string;
-    }>();
+    };
+    const tickA = deferred<PendingTick>();
+    const tickB = deferred<PendingTick>();
     getSearchStatus
       .mockReturnValueOnce(tickA.promise)
       .mockReturnValueOnce(tickB.promise)
@@ -377,6 +410,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         resumeId: "resume-1",
         scored: 10,
         permanentlyFailed: 0,
+        cappedForBudget: 0,
         linked: 10,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -409,6 +443,15 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       tickB.resolve({
         status: "pending",
         scoredSoFar: 7,
+        // Same as the estimate's jobCount (10), deliberately -- this test
+        // is about scoredSoFar's out-of-order protection, not the
+        // denominator (see the `linked`-specific tests in
+        // SearchFlow.persistence.test.tsx).
+        linked: 10,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-1",
         resumeId: "resume-1",
       });
@@ -424,6 +467,11 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       tickA.resolve({
         status: "pending",
         scoredSoFar: 3,
+        linked: 10,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-1",
         resumeId: "resume-1",
       });
@@ -460,6 +508,11 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     const search1TickA = deferred<{
       status: string;
       scoredSoFar: number;
+      linked: number;
+      permanentlyFailed: number;
+      cappedForBudget: number;
+      sourcesSettled: boolean;
+      sources: never[];
       searchId: string;
       resumeId: string;
     }>();
@@ -474,15 +527,24 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         resumeId: "resume-1",
         scored: 1,
         permanentlyFailed: 0,
+        cappedForBudget: 0,
         linked: 1,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
         degraded: false,
       })
-      // search-2's own poll: resolves normally, scored nothing yet.
+      // search-2's own poll: resolves normally, scored nothing yet. `linked`
+      // matches the estimate's jobCount (10) so this test's "0 of 10"
+      // assertions stay about the leak-prevention it exists to prove, not
+      // the denominator (see SearchFlow.persistence.test.tsx for that).
       .mockResolvedValue({
         status: "pending",
         scoredSoFar: 0,
+        linked: 10,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-2",
         resumeId: "resume-1",
       });
@@ -527,6 +589,11 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       search1TickA.resolve({
         status: "pending",
         scoredSoFar: 8,
+        linked: 8,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
         searchId: "search-1",
         resumeId: "resume-1",
       });
@@ -538,6 +605,165 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(screen.queryByText("8 of 10 scored so far.")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
+});
+
+describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", () => {
+  async function runToDone(result: Record<string, unknown>) {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue(result);
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+    // Longer than RTL's 1s default: the first poll tick doesn't fire until
+    // POLL_INTERVAL_MS (2000ms) after "running" is entered, same reasoning
+    // as the other `{ timeout: 4000 }` waits elsewhere in this file.
+    await screen.findByLabelText("Search finished", {}, { timeout: 4000 });
+  }
+
+  // Acceptance criterion: a source dead-lettering must be visible, not
+  // silently dropped — CLAUDE.md's stated DLQ product behavior, finally
+  // reachable end to end through GET /searches/:id's sources[].
+  it("shows a failed source visibly, with its error kind, instead of dropping it silently", async () => {
+    await runToDone({
+      status: "complete",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scored: 2,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      linked: 2,
+      sources: [
+        { sourceId: "greenhouse", status: "complete", linkedJobCount: 2 },
+        {
+          sourceId: "lever",
+          status: "failed",
+          linkedJobCount: null,
+          errorKind: "rate-limited",
+          errorMessage: "429 from lever",
+        },
+      ],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    expect(screen.getByText("lever")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/rate-limited/)).toBeInTheDocument();
+    expect(screen.getByText(/429 from lever/)).toBeInTheDocument();
+    // The healthy source is still shown too — one failure must not swallow
+    // the rest of the list.
+    expect(screen.getByText("greenhouse")).toBeInTheDocument();
+    // "Done" is ambiguous by itself now -- the "greenhouse" source's own
+    // status badge also reads "Done" -- so this checks the actual button
+    // by role rather than by text.
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+  });
+
+  // Acceptance criterion: `degraded: true` must read as a normal completed
+  // result with an honest note, never as an error state.
+  it("a degraded-but-complete search reads as a normal completion, not an error state", async () => {
+    await runToDone({
+      status: "complete",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scored: 7,
+      permanentlyFailed: 3,
+      cappedForBudget: 0,
+      linked: 10,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: true,
+    });
+
+    expect(screen.getByText("Search complete (with some failures)")).toBeInTheDocument();
+    expect(screen.getByText(/3 jobs failed to score/)).toBeInTheDocument();
+    // Never an alert/error panel — this is a finished, usable result.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // Acceptance criterion: `cappedForBudget` gets its own honest, distinct
+  // treatment, never lumped into the degraded/failure messaging — a run
+  // that only hit its budget is fully successful.
+  it("gives cappedForBudget its own honest note on a complete search, not the degraded/failure one", async () => {
+    await runToDone({
+      status: "complete",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scored: 100,
+      permanentlyFailed: 0,
+      cappedForBudget: 42,
+      linked: 142,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    expect(screen.getByText(/42 more jobs matched but weren't scored/)).toBeInTheDocument();
+    // makeEstimate()'s scoreThreshold, above — the honest "why".
+    expect(screen.getByText(/100-job budget/)).toBeInTheDocument();
+    expect(screen.queryByText("Search complete (with some failures)")).not.toBeInTheDocument();
+  });
+
+  // Same field, mid-flight: the "running" panel must show cappedForBudget
+  // live as it climbs, not only once the search finishes.
+  it("shows cappedForBudget live while the search is still running", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scoredSoFar: 4,
+      linked: 12,
+      permanentlyFailed: 0,
+      cappedForBudget: 6,
+      sourcesSettled: false,
+      sources: [],
+    });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    // Longer than RTL's 1s default -- see runToDone's comment above for why.
+    expect(
+      await screen.findByText(/6 jobs already matched but deferred/, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+  });
+
+  // Optional addition (ticket 2e7ba8a's judgment call): `stalledSince` has
+  // no UI treatment anywhere yet, and without one a stuck search looks
+  // identical to an ordinary in-progress one forever.
+  it("surfaces a stalled notice once GET /searches/:id reports stalledSince", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scoredSoFar: 4,
+      linked: 4,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [],
+      stalledSince: "2026-09-20T00:00:00.000Z",
+      outstandingJobIds: ["job-1", "job-2"],
+    });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    // Longer than RTL's 1s default -- see runToDone's comment above for why.
+    expect(await screen.findByText(/stuck since/, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByText(/won't resolve on its own/)).toBeInTheDocument();
+  });
 });
 
 describe("SearchFlow — estimating phase feedback (ticket 541b55b)", () => {
