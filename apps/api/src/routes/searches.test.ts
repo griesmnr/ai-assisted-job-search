@@ -281,19 +281,27 @@ function makeQueueRig(options: {
    * already the last attempt", which is how a permanent dead-letter is
    * forced deterministically. */
   scoreMaxAttempts?: number;
+  /** Defaults to this file's shared single-client `db`. Overridden only by
+   * the per-search-cap concurrency test (ticket c9c676d), which needs a
+   * POOL: the cap's guard is `pg_advisory_xact_lock`, which is re-entrant
+   * within a session, so two fetch handlers sharing one `pg.Client` cannot
+   * tell a working guard from a broken one — the same reason the in-flight
+   * guard's concurrency tests below use `createPooledTestDatabase`. */
+  db?: NodePgDatabase;
 }): QueueRig {
   const channel = fakeChannel();
   const logs: string[] = [];
+  const rigDb = options.db ?? db;
   const fetchHandler = createFetchSourceHandler({
     channel,
-    db,
+    db: rigDb,
     sources: options.sources,
     log: (message) => logs.push(message),
     onHighSkipRate: () => {},
   });
   const scoreHandler = createScoreJobHandler({
     channel,
-    db,
+    db: rigDb,
     scoreJob: options.scoreJob ?? makeFakeScorer(),
     log: () => {},
     usageStatsPath: TEST_USAGE_STATS_PATH,
@@ -331,6 +339,7 @@ type StatusBody = {
   scoredSoFar?: number;
   linked?: number;
   permanentlyFailed?: number;
+  cappedForBudget?: number;
   sourcesSettled?: boolean;
   degraded?: boolean;
   completedAt?: string;
@@ -1762,8 +1771,8 @@ describe("fetch-level criteria reaches the source's own search() (ticket d1fc9e2
   });
 });
 
-describe("the per-source scoring cap (ticket 4f88339 review round 1, F1)", () => {
-  it("publishes at most DEFAULT_SCORE_THRESHOLD score.job messages per source, and the search STILL reaches a terminal state instead of hanging on the jobs it capped", async () => {
+describe("the per-search scoring cap (ticket 4f88339 review round 1 F1; per-SEARCH since ticket c9c676d)", () => {
+  it("publishes at most DEFAULT_SCORE_THRESHOLD score.job messages for a single source, and the search STILL reaches a terminal state instead of hanging on the jobs it capped", async () => {
     // THE DEFECT THIS PINS. `POST /searches/estimate` prices a run that is
     // both filtered and capped at DEFAULT_SCORE_THRESHOLD; the queue path
     // published a score.job for EVERY job a source returned, so a real
@@ -1856,18 +1865,416 @@ describe("the per-source scoring cap (ticket 4f88339 review round 1, F1)", () =>
     expect(body.status).toBe("complete");
     expect(body.status).not.toBe("pending");
     expect(body.scored).toBe(DEFAULT_SCORE_THRESHOLD);
-    expect(body.permanentlyFailed).toBe(overCap - DEFAULT_SCORE_THRESHOLD);
     expect(body.linked).toBe(overCap);
-    // Reported honestly as degraded rather than as a clean full run — the
-    // caller is told, in the response, that this search did not score
-    // everything it linked.
-    expect(body.degraded).toBe(true);
+
+    // THE PRESENTATION SPLIT (ticket c9c676d). This block used to assert
+    // `permanentlyFailed === 3` and `degraded === true` — i.e. a run that
+    // did exactly what its own estimate priced was reported to the caller
+    // as a partially-broken search. Nothing here failed: three jobs were
+    // linked past the budget and deliberately never sent for scoring.
+    expect(body.permanentlyFailed).toBe(0);
+    expect(body.cappedForBudget).toBe(overCap - DEFAULT_SCORE_THRESHOLD);
+    expect(body.degraded).toBe(false);
+    // The partition still accounts for every linked job; only the names of
+    // the buckets changed.
+    expect(body.scored! + body.permanentlyFailed! + body.cappedForBudget!).toBe(body.linked);
     expect(body.completedAt).toBeDefined();
+
+    // The durable claim on the search's budget, which is what makes the cap
+    // per-SEARCH rather than per-source (see fetchSourceWorker's
+    // `adjudicateScoringBudget`).
+    const claims = await db
+      .select({ published: searchSources.publishedJobCount })
+      .from(searchSources)
+      .where(eq(searchSources.searchId, searchId));
+    expect(claims.map((c) => c.published)).toEqual([DEFAULT_SCORE_THRESHOLD]);
 
     // Durably terminal, not just terminal-on-this-poll.
     const row = await db.select().from(searchesTable).where(eq(searchesTable.id, searchId));
     expect(row[0]?.status).toBe("complete");
     expect(row[0]?.completedAt).not.toBeNull();
+  });
+
+  it("THE HEADLINE: three sources sharing one search publish DEFAULT_SCORE_THRESHOLD score.job messages IN TOTAL, not that many EACH", async () => {
+    // THE DEFECT THIS PINS, and why the single-source test above could
+    // never catch it. Ticket 4f88339's cap was per (search, source) pair,
+    // so `POST /searches/estimate` showed one 200-job number while a real
+    // search across N sources could authorize N x 200. With the five
+    // adapters `sources/registry.ts` ships that is 1,000 scored jobs —
+    // ~$22 at the rate the 2026-09-23 live smoke test measured, against a
+    // ~$4.40 estimate, and 1.5x the ENTIRE $15 lifetime-per-process
+    // ScoringSpendGuard, so one broad search could drain the scoring worker
+    // for every later search until an operator restarted it.
+    //
+    // Deliberately sized so NO SINGLE SOURCE EVER HITS ITS OWN OLD CAP:
+    // three sources at 80 jobs each is 240 against a 200-job estimate while
+    // every one of them sits at 40% of 200. That is the shape the old
+    // "filtering shrank the pool, so the per-source cap rarely binds now"
+    // argument could not see, because the overrun never needed the
+    // per-source cap to bind at all.
+    const perSource = 80;
+    const sourceIds = ["usajobs", "greenhouse", "lever"] as const;
+    expect(perSource * sourceIds.length).toBeGreaterThan(DEFAULT_SCORE_THRESHOLD);
+    expect(perSource).toBeLessThan(DEFAULT_SCORE_THRESHOLD);
+
+    const run = randomUUID();
+    const jobsBySource = Object.fromEntries(
+      sourceIds.map((id) => [
+        id,
+        Array.from({ length: perSource }, (_, i) => matchingJob(`persearch-${id}-${i}-${run}`, id)),
+      ]),
+    ) as Record<string, NormalizedJob[]>;
+
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource(jobsBySource),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [...sourceIds], criteria: {} },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+    expect(publisher.published).toHaveLength(sourceIds.length);
+
+    const rig = makeQueueRig({
+      sources: Object.fromEntries(
+        sourceIds.map((id) => [id, new FakeSource(jobsBySource[id]!, id)]),
+      ),
+    });
+    for (const message of publisher.published) await rig.runFetch(message);
+    const scoreJobs = rig.takeScoreJobs();
+
+    // THE BOUND: 240 jobs linked across three sources, exactly 200
+    // `score.job` messages total. Under the per-source cap this was 240.
+    expect(scoreJobs).toHaveLength(DEFAULT_SCORE_THRESHOLD);
+    expect(new Set(scoreJobs.map((s) => s.jobId)).size).toBe(DEFAULT_SCORE_THRESHOLD);
+
+    // INGESTION IS STILL UNCAPPED. The cap bounds SPENDING, never coverage:
+    // every job every source returned is linked and queryable, exactly as
+    // DEFAULT_SCORE_THRESHOLD's own doc comment promises.
+    const linked = await db
+      .select({ jobId: searchResults.jobId })
+      .from(searchResults)
+      .where(eq(searchResults.searchId, searchId));
+    expect(linked).toHaveLength(perSource * sourceIds.length);
+
+    // The claims ledger sums to the budget and no further — this is the
+    // invariant `adjudicateScoringBudget` maintains, read straight out of
+    // Postgres rather than inferred from the message count.
+    const claims = await db
+      .select({
+        sourceId: searchSources.sourceDescriptorId,
+        published: searchSources.publishedJobCount,
+        linkedJobCount: searchSources.linkedJobCount,
+      })
+      .from(searchSources)
+      .where(eq(searchSources.searchId, searchId));
+    expect(claims).toHaveLength(sourceIds.length);
+    expect(claims.reduce((sum, c) => sum + (c.published ?? 0), 0)).toBe(DEFAULT_SCORE_THRESHOLD);
+    // First-come-first-served, not an even split: the first two sources
+    // take 80 each and the third gets the remaining 40. Asserted because it
+    // is a deliberate design choice (an even N-way split would starve a
+    // source that legitimately found 3 jobs), not an accident.
+    expect(claims.map((c) => c.published).sort((a, b) => (b ?? 0) - (a ?? 0))).toEqual([
+      80, 80, 40,
+    ]);
+    // `linked_job_count` keeps meaning what it says — the TRUE number of
+    // jobs that source linked — and is NOT reduced to the published count.
+    expect(claims.every((c) => c.linkedJobCount === perSource)).toBe(true);
+
+    // AND THE SEARCH STILL TERMINATES. The 40 jobs the budget refused have
+    // `job_match_failures` rows, so the completion derive does not wait on
+    // them forever.
+    for (const scoreJob of scoreJobs) await rig.runScore(scoreJob);
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("complete");
+    expect(body.scored).toBe(DEFAULT_SCORE_THRESHOLD);
+    expect(body.cappedForBudget).toBe(perSource * sourceIds.length - DEFAULT_SCORE_THRESHOLD);
+    expect(body.permanentlyFailed).toBe(0);
+    expect(body.degraded).toBe(false);
+  });
+
+  it("a redelivery whose siblings have since spent the budget republishes its OWN prefix rather than un-publishing jobs already in flight", async () => {
+    // THE DEFECT THIS PINS, which only exists because the cap became
+    // per-search. Source A adjudicates first and claims the whole budget.
+    // A NAIVE re-adjudication of A's redelivered message would recompute
+    // "200 minus what my siblings hold" — and if a sibling has since
+    // claimed anything, A's allowance SHRINKS, so A writes capped rows for
+    // jobs it already published and that are already being scored. That
+    // both misreports them and lets the set of jobs a search ever sent for
+    // scoring drift above the budget over its lifetime. `max(previousClaim,
+    // remaining)` in adjudicateScoringBudget is what prevents it; this test
+    // is what would fail if someone "simplified" that max away.
+    const run = randomUUID();
+    const aJobs = Array.from({ length: DEFAULT_SCORE_THRESHOLD }, (_, i) =>
+      matchingJob(`mono-a-${i}-${run}`, "usajobs"),
+    );
+    const bJobs = Array.from({ length: 10 }, (_, i) => matchingJob(`mono-b-${i}-${run}`, "lever"));
+
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource({ usajobs: aJobs, lever: bJobs }),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: ["usajobs", "lever"], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const aMessage = publisher.published.find((m) => m.sourceId === "usajobs")!;
+    const bMessage = publisher.published.find((m) => m.sourceId === "lever")!;
+
+    const rig = makeQueueRig({
+      sources: { usajobs: new FakeSource(aJobs, "usajobs"), lever: new FakeSource(bJobs, "lever") },
+    });
+
+    await rig.runFetch(aMessage);
+    const firstPublish = new Set(rig.takeScoreJobs().map((s) => s.jobId));
+    expect(firstPublish.size).toBe(DEFAULT_SCORE_THRESHOLD);
+
+    // B finds the budget gone and caps all ten of its own jobs.
+    await rig.runFetch(bMessage);
+    expect(rig.takeScoreJobs()).toHaveLength(0);
+
+    // Now A is redelivered (attempt 2). Its own claim is already 200, so it
+    // republishes exactly the same 200 and writes NO capped rows of its own.
+    await rig.runFetch(aMessage, { "x-attempt": 2 });
+    const republished = rig.takeScoreJobs();
+    expect(republished).toHaveLength(DEFAULT_SCORE_THRESHOLD);
+    expect(new Set(republished.map((s) => s.jobId))).toEqual(firstPublish);
+
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    // Exactly B's ten, and not one of A's already-in-flight jobs.
+    expect(failures).toHaveLength(bJobs.length);
+    expect(failures.every((f) => f.kind === SCORE_THRESHOLD_CAPPED_KIND)).toBe(true);
+    expect(failures.some((f) => firstPublish.has(f.jobId))).toBe(false);
+
+    const claims = await db
+      .select({
+        sourceId: searchSources.sourceDescriptorId,
+        published: searchSources.publishedJobCount,
+      })
+      .from(searchSources)
+      .where(eq(searchSources.searchId, searchId));
+    expect(claims.reduce((sum, c) => sum + (c.published ?? 0), 0)).toBe(DEFAULT_SCORE_THRESHOLD);
+    expect(claims.find((c) => c.sourceId === "lever")?.published).toBe(0);
+  });
+
+  it("five sources of one search adjudicating CONCURRENTLY still publish DEFAULT_SCORE_THRESHOLD in total (the advisory lock serializes; it does not merely narrow the window)", async () => {
+    // Same reasoning as the in-flight guard's concurrency tests below, one
+    // layer down. The budget check is a read of every sibling's claim and
+    // then a write of this source's own, with real `await`s in between: two
+    // fetch workers that both read before either writes would both see an
+    // untouched budget and both take it. A POOL is mandatory —
+    // `pg_advisory_xact_lock` is re-entrant within one session, so on this
+    // file's shared single `pg.Client` a broken guard and a correct one are
+    // indistinguishable.
+    //
+    // FIVE sources, not two, and equal job counts on purpose. Verified by
+    // running this test against a build with the `pg_advisory_xact_lock`
+    // line replaced by a no-op query (2026-09-23): two equal sources still
+    // came out 180/20 — correct by scheduling luck, because the read-to-
+    // write window is only a few round trips wide and two handlers stagger
+    // naturally. At five, the unlocked build overruns every time. This is
+    // the count at which the test actually tests something.
+    const sourceIds = ["usajobs", "greenhouse", "lever", "ashby", "smartrecruiters"] as const;
+    const pooled = createPooledTestDatabase(testDb.testDbName, 12);
+    try {
+      const run = randomUUID();
+      const perSource = 60;
+      expect(perSource * sourceIds.length).toBeGreaterThan(DEFAULT_SCORE_THRESHOLD);
+      const jobsBySource = Object.fromEntries(
+        sourceIds.map((id) => [
+          id,
+          Array.from({ length: perSource }, (_, i) => matchingJob(`conc-${id}-${i}-${run}`, id)),
+        ]),
+      ) as Record<string, NormalizedJob[]>;
+
+      const publisher = fakePublisher();
+      const app = buildApp({
+        db: pooled.db,
+        inferTitles: async () => [],
+        getScoreJob: makeFakeScorer,
+        resolveSourceIds: fakeResolverPerSource(jobsBySource),
+        publishFetchSource: publisher.publish,
+      });
+      const resumeId = await createResume(app);
+      const started = await app.inject({
+        method: "POST",
+        url: "/searches",
+        payload: { resumeId, sourceIds: [...sourceIds], criteria: {} },
+      });
+      expect(started.statusCode).toBe(202);
+      const { searchId } = started.json() as { searchId: string };
+      expect(publisher.published).toHaveLength(sourceIds.length);
+
+      const rig = makeQueueRig({
+        db: pooled.db,
+        sources: Object.fromEntries(
+          sourceIds.map((id) => [id, new FakeSource(jobsBySource[id]!, id)]),
+        ),
+      });
+
+      // Genuinely in flight at once, interleaving at every await.
+      await Promise.all(publisher.published.map((message) => rig.runFetch(message)));
+
+      const scoreJobs = rig.takeScoreJobs();
+      expect(scoreJobs).toHaveLength(DEFAULT_SCORE_THRESHOLD);
+      expect(new Set(scoreJobs.map((s) => s.jobId)).size).toBe(DEFAULT_SCORE_THRESHOLD);
+
+      const claims = await pooled.db
+        .select({ published: searchSources.publishedJobCount })
+        .from(searchSources)
+        .where(eq(searchSources.searchId, searchId));
+      expect(claims.reduce((sum, c) => sum + (c.published ?? 0), 0)).toBe(DEFAULT_SCORE_THRESHOLD);
+
+      const failures = await pooled.db
+        .select()
+        .from(jobMatchFailures)
+        .where(eq(jobMatchFailures.resumeId, resumeId));
+      expect(failures).toHaveLength(perSource * sourceIds.length - DEFAULT_SCORE_THRESHOLD);
+      expect(failures.every((f) => f.kind === SCORE_THRESHOLD_CAPPED_KIND)).toBe(true);
+    } finally {
+      await pooled.close();
+    }
+  });
+});
+
+describe("capped-for-budget vs genuine scoring failure in GET /searches/:id (ticket c9c676d)", () => {
+  it("reports the two separately, keeps `degraded` for the genuine failure only, and still partitions `linked`", async () => {
+    // THE DEFECT THIS PINS. `job_match_failures` rows are written for two
+    // unrelated reasons and `deriveSearchState` counted them together, so a
+    // search that merely hit its own cost cap read EXACTLY like one whose
+    // API key had expired: same `permanentlyFailed` number, same
+    // `degraded: true`. The `kind` column has carried the distinction
+    // durably since ticket 4f88339; this is the test that it finally
+    // reaches the caller.
+    //
+    // One search, both causes at once, which is the case a test with only
+    // one cause cannot distinguish: 3 jobs over the budget (capped) AND one
+    // job inside it whose scoring genuinely blows up (dead-lettered).
+    const run = randomUUID();
+    const overCap = DEFAULT_SCORE_THRESHOLD + 3;
+    const jobs = Array.from({ length: overCap }, (_, i) => matchingJob(`mixed-${i}-${run}`));
+    // Inside the budget, so it really is ATTEMPTED and really does fail —
+    // as opposed to the tail, which is never attempted at all.
+    const doomed = jobs[0]!;
+
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    const rig = makeQueueRig({
+      sources: { [DATA_SOURCE]: new FakeSource(jobs) },
+      // 1: the first failure is already the last attempt, so the
+      // dead-letter is deterministic and needs no waiting.
+      scoreMaxAttempts: 1,
+      scoreJob: async (job) => {
+        if (job.externalId === doomed.externalId) throw new Error("simulated sustained outage");
+        return { matchScore: 70, rationale: "ok", strengths: [], gaps: [] };
+      },
+    });
+    await rig.runFetch(publisher.published[0]!);
+    for (const scoreJob of rig.takeScoreJobs()) await rig.runScore(scoreJob);
+
+    // The database really does hold both kinds — if it did not, the split
+    // below would be asserting nothing.
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    const kinds = failures.map((f) => f.kind).sort();
+    expect(kinds.filter((k) => k === SCORE_THRESHOLD_CAPPED_KIND)).toHaveLength(3);
+    expect(kinds.filter((k) => k !== SCORE_THRESHOLD_CAPPED_KIND)).toEqual(["unknown"]);
+
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("complete");
+    expect(body.linked).toBe(overCap);
+    expect(body.scored).toBe(DEFAULT_SCORE_THRESHOLD - 1);
+    // THE SPLIT. One genuine failure, three jobs the budget refused, and
+    // they are not the same number in the response any more.
+    expect(body.permanentlyFailed).toBe(1);
+    expect(body.cappedForBudget).toBe(3);
+    // The partition is still total: nothing fell out of the accounting.
+    expect(body.scored! + body.permanentlyFailed! + body.cappedForBudget!).toBe(body.linked);
+    // `degraded` tracks the genuine failure — which is present here, so it
+    // is true. The companion assertion (capped-only => false) is in the
+    // single-source cap test above; together they pin that `degraded`
+    // follows `permanentlyFailed` and not the total.
+    expect(body.degraded).toBe(true);
+  });
+
+  it("reports the split mid-flight too, not only on the terminal member", async () => {
+    // The `pending` member carries `permanentlyFailed` as well, and one
+    // number must not mean two different things in two members of the same
+    // union. The budget is adjudicated as each source lands, so a poll
+    // taken while a search is still running can already see capped jobs.
+    const run = randomUUID();
+    const overCap = DEFAULT_SCORE_THRESHOLD + 5;
+    const usaJobs = Array.from({ length: overCap }, (_, i) =>
+      matchingJob(`midflight-${i}-${run}`, "usajobs"),
+    );
+    const leverJobs = [matchingJob(`midflight-lever-${run}`, "lever")];
+
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource({ usajobs: usaJobs, lever: leverJobs }),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: ["usajobs", "lever"], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    const rig = makeQueueRig({
+      sources: {
+        usajobs: new FakeSource(usaJobs, "usajobs"),
+        lever: new FakeSource(leverJobs, "lever"),
+      },
+    });
+    // Only the FIRST source runs: the search is genuinely still pending on
+    // the second, and nothing has been scored yet.
+    await rig.runFetch(publisher.published.find((m) => m.sourceId === "usajobs")!);
+
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("pending");
+    expect(body.sourcesSettled).toBe(false);
+    expect(body.scoredSoFar).toBe(0);
+    expect(body.permanentlyFailed).toBe(0);
+    expect(body.cappedForBudget).toBe(overCap - DEFAULT_SCORE_THRESHOLD);
   });
 });
 

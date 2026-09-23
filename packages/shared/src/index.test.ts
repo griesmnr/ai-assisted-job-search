@@ -28,7 +28,13 @@ describe("ping", () => {
  */
 function describeSearchStatus(r: SearchStatusResponse): string {
   if (r.status === "complete") {
-    return `scored ${r.scored} job(s), ${r.permanentlyFailed} permanently failed`;
+    // `cappedForBudget` is read here (ticket c9c676d) for the same reason
+    // every other field on this member is: narrowing on `status` alone has
+    // to reach it, or the union has regressed.
+    return (
+      `scored ${r.scored} job(s), ${r.permanentlyFailed} permanently failed, ` +
+      `${r.cappedForBudget} not scored (budget)`
+    );
   }
   if (r.status === "complete-details-unavailable") {
     return `complete, details unavailable: ${r.note}`;
@@ -50,9 +56,10 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       status: "complete",
       scored: 3,
       permanentlyFailed: 1,
-      linked: 4,
+      cappedForBudget: 2,
+      linked: 6,
       sources: [
-        { sourceId: "usajobs", status: "complete", linkedJobCount: 4 },
+        { sourceId: "usajobs", status: "complete", linkedJobCount: 6 },
         {
           sourceId: "wa-state",
           status: "failed",
@@ -64,7 +71,9 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       completedAt: "2026-09-22T00:00:00.000Z",
       degraded: true,
     };
-    expect(describeSearchStatus(r)).toBe("scored 3 job(s), 1 permanently failed");
+    expect(describeSearchStatus(r)).toBe(
+      "scored 3 job(s), 1 permanently failed, 2 not scored (budget)",
+    );
   });
 
   it("narrows the 'pending' member's own durable progress fields", () => {
@@ -75,6 +84,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       scoredSoFar: 2,
       linked: 5,
       permanentlyFailed: 0,
+      cappedForBudget: 0,
       sourcesSettled: false,
       sources: [{ sourceId: "usajobs", status: "pending", linkedJobCount: null }],
     };
@@ -82,6 +92,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
     // `linked` is the denominator a reloaded page needs — previously not
     // rebuildable from GET /searches/:id at all (ticket 4f88339).
     if (r.status === "pending") expect(r.linked).toBe(5);
+    if (r.status === "pending") expect(r.cappedForBudget).toBe(0);
   });
 
   it("narrows the restart-fallback 'complete-details-unavailable' member separately", () => {

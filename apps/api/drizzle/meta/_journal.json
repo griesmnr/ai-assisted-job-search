@@ -85,6 +85,13 @@
       "when": 1790045265042,
       "tag": "0011_clumsy_quentin_quire",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790130145762,
+      "tag": "0012_lonely_blindfold",
+      "breakpoints": true
     }
   ]
 }

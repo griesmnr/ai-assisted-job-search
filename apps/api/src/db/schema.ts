@@ -411,6 +411,33 @@ export const searchSources = pgTable(
      */
     linkedJobCount: integer("linked_job_count"),
     /**
+     * How much of the SEARCH-WIDE scoring budget this source has claimed —
+     * the number of `score.job` messages `fetchSourceWorker` has published
+     * for this (search, source) pair (ticket c9c676d).
+     *
+     * WHY THIS COLUMN EXISTS AT ALL. Ticket 4f88339 could only afford a
+     * PER-SOURCE cap (`DEFAULT_SCORE_THRESHOLD` publishes per message), so
+     * a search across N sources could authorize `N x 200` scores against a
+     * `POST /searches/estimate` that showed a single 200-job total. The two
+     * mechanisms that ticket rejected for a true per-search cap were a
+     * running counter (not idempotent under at-least-once redelivery) and a
+     * live cross-worker query (racy). This column is neither: it is a
+     * per-source CLAIM that is SET, never incremented — exactly the same
+     * idempotency posture as `linkedJobCount` right above — and the workers
+     * read-then-write it under `pg_advisory_xact_lock(hashtext(search_id))`,
+     * which is what makes the sum across sources safe to act on. See
+     * fetchSourceWorker.ts's "THE PER-SEARCH SCORING CAP" section for the
+     * budget arithmetic and the invariant it maintains.
+     *
+     * NULL means "this source has not adjudicated its share of the budget
+     * yet" and is read as 0 by the arithmetic. That is deliberately
+     * OPTIMISTIC (a source that has ingested but not yet adjudicated is not
+     * pre-reserved anything), and it is safe only because the advisory lock
+     * serializes adjudication: whoever gets the lock first takes what is
+     * left, and its claim is committed before the next source can read.
+     */
+    publishedJobCount: integer("published_job_count"),
+    /**
      * `classify()`'s `kind` from fetchSourceWorker ("rate-limited",
      * "unknown-source", "source-search-timeout", ...), or
      * "dispatch-failed" when `POST /searches` could not publish the
