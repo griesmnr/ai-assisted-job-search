@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("GET /sources", () => {
-  it("lists all six known sources, each reporting configured status from env", async () => {
+  it("lists all nine known sources, each reporting configured status from env", async () => {
     const app = buildApp({
       db: fakeDb,
       inferTitles: async () => [],
@@ -77,10 +77,20 @@ describe("GET /sources", () => {
     const body = response.json() as {
       sources: Array<{ id: string; displayName: string; configured: boolean; error?: string }>;
     };
-    expect(body.sources).toHaveLength(6);
+    expect(body.sources).toHaveLength(9);
     const ids = body.sources.map((s) => s.id).sort();
     expect(ids).toEqual(
-      ["ashby", "greenhouse", "lever", "smartrecruiters", "usajobs", "wa-state"].sort(),
+      [
+        "ashby",
+        "greenhouse",
+        "lever",
+        "recruitee",
+        "rippling",
+        "smartrecruiters",
+        "usajobs",
+        "wa-state",
+        "workable",
+      ].sort(),
     );
 
     // Env vars are set explicitly in beforeEach above, not read from this
@@ -96,5 +106,18 @@ describe("GET /sources", () => {
     const waState = body.sources.find((s) => s.id === "wa-state");
     expect(waState?.configured).toBe(false);
     expect(waState?.error).toBe("no adapter implemented yet");
+
+    // Three newly scaffolded sources should all report as not implemented
+    const workable = body.sources.find((s) => s.id === "workable");
+    expect(workable?.configured).toBe(false);
+    expect(workable?.error).toBe("no adapter implemented yet");
+
+    const recruitee = body.sources.find((s) => s.id === "recruitee");
+    expect(recruitee?.configured).toBe(false);
+    expect(recruitee?.error).toBe("no adapter implemented yet");
+
+    const rippling = body.sources.find((s) => s.id === "rippling");
+    expect(rippling?.configured).toBe(false);
+    expect(rippling?.error).toBe("no adapter implemented yet");
   });
 });
