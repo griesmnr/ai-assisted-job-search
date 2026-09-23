@@ -1345,15 +1345,22 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
       // retried, so it is still legitimately outstanding — the same reason
       // the loop's own retry path writes nothing.
       //
-      // RESIDUAL (ticket 96fc30d, stated rather than fixed): if this
-      // publish or `waitForConfirms` throws, the error escapes the handler
-      // entirely and `startScoreJobWorker`'s safety net nacks the message
-      // with no failure row. That is not the silent gap this ticket closed,
-      // because the only thing that makes these two calls throw is a
-      // broken/closing channel — in which case the safety net's `nack` does
-      // not reach the broker either, and the broker redelivers the message
-      // to another consumer (or to this one after a reconnect) rather than
-      // dead-lettering it. There is no terminal state to record.
+      // RESIDUAL (ticket 96fc30d, stated rather than fixed, out of this
+      // ticket's acceptance criteria): if this publish or `waitForConfirms`
+      // throws, the error escapes the handler entirely and
+      // `startScoreJobWorker`'s safety net nacks the message with no
+      // failure row. In the common case that's still not a silent gap: a
+      // broken/closing channel is what usually makes these two calls throw,
+      // and in that case the safety net's `nack` doesn't reach the broker
+      // either, so the message gets redelivered rather than dead-lettered —
+      // no terminal state to record. Not proven for every amqplib failure
+      // mode, though (fable review, this ticket): a broker-side nack on the
+      // confirmed publish could in principle reject `waitForConfirms()`
+      // while the channel itself stays open, in which case the safety net's
+      // `nack` WOULD reach the broker and this gap would recur. Narrower
+      // than the two branches this ticket closes (design c54b9e0 §6.5
+      // already accepted a version of this residual), not chased further
+      // here.
       channel.sendToQueue(tier.queue, msg.content, {
         persistent: true,
         mandatory: true,
