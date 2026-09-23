@@ -474,7 +474,8 @@ export const searchSources = pgTable(
  * message in `score.job.dlq`, whose body is `{jobId}` — no searchId, no
  * resumeId — and reading a queue to find out is destructive. So the
  * otherwise-free completion predicate ("every job this search linked has a
- * `job_matches` row for the search's resume") is correct for success and
+ * `job_matches` row for the search's resume, and no `job_match_failures`
+ * row of its own") is correct for success and
  * NON-TERMINATING for failure: a DLQ'd job never gets that row, and the
  * predicate stays false forever. That is the "waiting forever on a DLQ'd
  * job" hang this whole design exists to prevent.
@@ -500,11 +501,77 @@ export const searchSources = pgTable(
  * it never gates scoring, so a manual republish of a DLQ'd message
  * re-scores normally, and the retry policy is simply "delete the failure
  * rows and republish".
+ *
+ * SCOPED TO ONE SEARCH, NOT TO A (resume, job) PAIR (ticket 9a53485,
+ * migration 0013). This is the deliberate decision that ticket asked for,
+ * and the alternative — keeping the row resume-wide as a "we already tried
+ * and gave up on this job" cache — was considered and REJECTED. The
+ * reasoning, in the order it matters:
+ *
+ *   1. THE ROW IS A STATEMENT ABOUT AN ATTEMPT, NOT ABOUT A PAIR. Every
+ *      `kind` this table stores is an accident of one moment: "the API key
+ *      was expired", "the retries ran out", "this search's budget was
+ *      already spent when this job was adjudicated". None of those is a
+ *      durable property of the (resume, job) pair — rotate the key, wait
+ *      out the outage, or run a narrower search whose budget has room, and
+ *      the same pair scores fine. A cache keyed on the pair would be
+ *      caching the weather.
+ *   2. IT LATCHED LATER SEARCHES TERMINAL ON AN OLDER SEARCH'S VERDICT.
+ *      `deriveSearchState` (routes/searches.ts) counts a linked job as
+ *      OUTSTANDING only while it has neither a `job_matches` nor a
+ *      `job_match_failures` row. Keyed by (resume, job), a row written by
+ *      search A made the same job non-outstanding in search B — even
+ *      though B had just published its own fresh `score.job` for it — so B
+ *      could latch complete/degraded before its own scoring attempt
+ *      resolved, reporting a `cappedForBudget`/`permanentlyFailed` it never
+ *      incurred. Reproduced directly in opus's review of ticket c9c676d
+ *      ({scored: 0, cappedForBudget: 3, linked: 3} on a search that had
+ *      capped nothing); pinned by the regression test in
+ *      routes/searches.test.ts.
+ *   3. THE BLAST RADIUS WAS GROWING, NOT SHRINKING. c9c676d's per-SEARCH
+ *      scoring cap writes strictly more `SCORE_THRESHOLD_CAPPED_KIND` rows
+ *      than the per-SOURCE cap it replaced (every search that binds the cap
+ *      now, not just some), so every one of those rows was a fresh mine
+ *      under the next search for the same resume.
+ *   4. SCORE REUSE ALREADY LIVES SOMEWHERE ELSE, AND IS UNAFFECTED. The
+ *      thing that legitimately spans searches is a SUCCESS: `job_matches`
+ *      is still keyed by (resume, job), so a second search over an
+ *      already-scored job reuses the score and never pays for it twice.
+ *      Only the give-up rows are per-search. Cost is bounded by the cap,
+ *      which is itself per-search.
+ *
+ * The cost of the decision, stated plainly: a job that genuinely cannot be
+ * scored (a description the model refuses, say) is re-attempted once per
+ * search rather than once ever. That is the intended behaviour — "a later
+ * search gets a genuine fresh attempt" — and it is bounded by
+ * `DEFAULT_SCORE_THRESHOLD` per search, not unbounded.
  */
 export const jobMatchFailures = pgTable(
   "job_match_failures",
   {
     id: text("id").primaryKey(),
+    /**
+     * The search whose attempt this row records (ticket 9a53485). NOT NULL
+     * and FK'd: a row that names no search is exactly the resume-wide row
+     * this column exists to abolish, and the completion derive would have
+     * no way to tell whether it applies to the search it is deriving.
+     *
+     * Every writer has one to hand: `fetchSourceWorker` is handling a
+     * `fetch.source` message that names it, and `scoreJobWorker` — whose
+     * message body is only `{jobId}` — resolves it the same relational way
+     * it already resolves the resumeId, through `search_results`. See
+     * `resolveSearchLinks` there.
+     */
+    searchId: text("search_id")
+      .notNull()
+      .references(() => searches.id),
+    /**
+     * Denormalized: functionally determined by `search_id` via
+     * `searches.resume_id`. Kept anyway, because the completion derive
+     * joins this table on the search's resume and `job_matches` on the same
+     * resume, so the two LEFT JOINs stay symmetric and index-served without
+     * a second hop through `searches`.
+     */
     resumeId: text("resume_id")
       .notNull()
       .references(() => resumes.id),
@@ -521,8 +588,16 @@ export const jobMatchFailures = pgTable(
     attempts: integer("attempts").notNull(),
     failedAt: timestamp("failed_at").notNull().defaultNow(),
   },
-  // Mirrors job_matches' own (resume_id, job_id) key, which is what makes
-  // the completion derive a plain LEFT JOIN against both tables, and makes
-  // the worker's insert an idempotent ON CONFLICT DO NOTHING.
-  (table) => [unique().on(table.resumeId, table.jobId)],
+  // WAS (resume_id, job_id); now (search_id, resume_id, job_id) — ticket
+  // 9a53485, migration 0013. Still what makes the completion derive a plain
+  // LEFT JOIN and both workers' inserts idempotent `ON CONFLICT DO NOTHING`;
+  // the conflict target is now exactly the tuple the derive joins on, so a
+  // redelivery for one search can no longer no-op away another search's row.
+  //
+  // `resume_id` is redundant in the key (search_id determines it) and is
+  // kept in it anyway so the ON CONFLICT target and the join predicate are
+  // the same three columns — the index leads on `search_id`, which is
+  // constant for the search being derived, so the lookup is strictly better
+  // served than the old (resume_id, job_id) one it replaces.
+  (table) => [unique().on(table.searchId, table.resumeId, table.jobId)],
 );
