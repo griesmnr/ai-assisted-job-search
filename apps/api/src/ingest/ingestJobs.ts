@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobs, searchResults } from "../db/schema.js";
 import type { NormalizedJob } from "../sources/types.js";
+import { findCrossSourceDuplicates } from "./crossSourceDuplicates.js";
 
 /**
  * How many `jobs` rows go into one INSERT statement.
@@ -34,9 +35,15 @@ const SEARCH_RESULTS_INSERT_CHUNK = 500;
 
 export type IngestResult = {
   /**
-   * Every job now linked to this search - both jobs inserted by this call
-   * and jobs that already existed from a previous search/source and are
-   * simply being (re-)linked here.
+   * Every job now linked to this search - jobs inserted by this call, jobs
+   * that already existed from a previous search/source and are simply being
+   * (re-)linked here, and (ticket 78d31b7) jobs another source already
+   * contributed that a posting in this batch was found to be a duplicate
+   * of. Distinct: no id appears twice, including across those three cases.
+   *
+   * In batch order, matching `normalizedJobs` after per-externalId
+   * deduplication - `fetchSourceWorker`'s deterministic scoring-budget
+   * slice depends on that.
    */
   linkedJobIds: string[];
   /**
@@ -54,6 +61,36 @@ export type IngestResult = {
  *
  * Idempotency has two independent layers, because a redelivered
  * `fetch.source` message re-runs this whole function from scratch:
+ *
+ * 0. CROSS-SOURCE DUPLICATES (ticket 78d31b7) - an earlier, additional
+ *    check layered IN FRONT of layer 1, not a replacement for it. Before
+ *    inserting anything, `findCrossSourceDuplicates` asks whether some
+ *    posting in this batch is the same real job as a row another source
+ *    already contributed (same company + title + location exactly, plus a
+ *    local description-similarity check - see crossSourceDuplicates.ts for
+ *    the two-gate design and why the first gate is exact rather than
+ *    fuzzy). A posting that matches is NOT inserted: it resolves to the
+ *    EXISTING row's id and flows through the rest of this function exactly
+ *    as an already-present posting does - one `jobs` row instead of two,
+ *    one `search_results` link instead of two, one row in the ranked
+ *    results instead of two, and out of `newlyInsertedJobIds`. Layer 1
+ *    below is untouched and still does all the work for the same-source
+ *    case.
+ *
+ *    WHAT THAT DOES AND DOESN'T GUARANTEE ABOUT SCORING, stated precisely
+ *    because the two callers differ. `runDemoMatch` (matching/pipeline.ts)
+ *    scores over the linked ids, so a merged posting costs exactly one
+ *    Claude call instead of two - the saving is direct there. The queue
+ *    path deliberately publishes `score.job` over `linkedJobIds`, NOT
+ *    `newlyInsertedJobIds` (see fetchSourceWorker.ts's own doc comment on
+ *    why: using the latter silently drops jobs when an attempt is
+ *    retried), so a merged posting does still get a `score.job` message
+ *    from the second source. It is deduped one layer down, by
+ *    `scoreJobWorker`'s already-scored check against `job_matches` - the
+ *    same at-least-once-plus-idempotent-consumer arrangement every other
+ *    re-linked job already relies on. What this layer removes in that path
+ *    is the duplicate ROW and the duplicate RESULT, not the duplicate
+ *    message.
  *
  * 1. `jobs` - upsert via `ON CONFLICT (data_source, external_id) DO
  *    NOTHING`, keyed on the unique constraint already on the table. Two
@@ -103,7 +140,15 @@ export async function ingestJobsForSearch(
   const allExternalIds = uniqueJobs.map((job) => job.externalId);
 
   return db.transaction(async (tx) => {
-    const toInsert = uniqueJobs.map((job) => ({ ...job, id: randomUUID() }));
+    // Layer 0 (ticket 78d31b7). Runs first and inside this same
+    // transaction, so it sees every row committed before this call and
+    // nothing half-written by it. Postings it matches are dropped from the
+    // insert set entirely and resolved to the existing row below.
+    const crossSourceMatches = await findCrossSourceDuplicates(tx, dataSource, uniqueJobs);
+
+    const toInsert = uniqueJobs
+      .filter((job) => !crossSourceMatches.has(job.externalId))
+      .map((job) => ({ ...job, id: randomUUID() }));
 
     const inserted: { id: string; externalId: string }[] = [];
     for (let i = 0; i < toInsert.length; i += JOBS_INSERT_CHUNK) {
@@ -131,16 +176,41 @@ export async function ingestJobsForSearch(
     // possible but not required to satisfy this ticket's acceptance
     // criteria; if a source ever approaches 65,534 postings in one search,
     // this is the next ceiling to chunk.
-    const rows = await tx
-      .select({ id: jobs.id, externalId: jobs.externalId })
-      .from(jobs)
-      .where(and(eq(jobs.dataSource, dataSource), inArray(jobs.externalId, allExternalIds)));
+    //
+    // Scoped to the externalIds actually headed for `jobs` under this
+    // dataSource (ticket 78d31b7): a posting matched as a cross-source
+    // duplicate was never inserted and has no row under THIS source, so
+    // looking it up here would find nothing and trip the throw below.
+    const externalIdsToResolve = allExternalIds.filter((id) => !crossSourceMatches.has(id));
+    const rows =
+      externalIdsToResolve.length === 0
+        ? []
+        : await tx
+            .select({ id: jobs.id, externalId: jobs.externalId })
+            .from(jobs)
+            .where(
+              and(eq(jobs.dataSource, dataSource), inArray(jobs.externalId, externalIdsToResolve)),
+            );
 
     const idByExternalId = new Map(rows.map((row) => [row.externalId, row.id]));
 
     const linkedJobIds: string[] = [];
     const newlyInsertedJobIds: string[] = [];
     for (const externalId of allExternalIds) {
+      const crossSourceMatch = crossSourceMatches.get(externalId);
+      if (crossSourceMatch) {
+        // Same real job, already contributed by another source. Link this
+        // search to THAT row and report nothing new - the identical
+        // treatment an exact (dataSource, externalId) repeat gets, reached
+        // by a different match path. Deliberately not added to
+        // `newlyInsertedJobIds`: this job is not new, and the CLI scoring
+        // path reuses the score already paid for rather than buying a
+        // second one (ticket 6bf2196). See the layer-0 section of this
+        // function's doc comment for exactly what that does and does not
+        // guarantee on the queue path.
+        linkedJobIds.push(crossSourceMatch.existingJobId);
+        continue;
+      }
       const id = idByExternalId.get(externalId);
       if (!id) {
         // Should be impossible: every externalId in this batch was either

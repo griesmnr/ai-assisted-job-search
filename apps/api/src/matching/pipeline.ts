@@ -1204,7 +1204,18 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     else candidatesByDataSource.set(job.dataSource, [job]);
   }
 
-  const linkedJobIds: string[] = [];
+  // DEDUPED ACROSS SOURCES, not just concatenated (ticket 78d31b7). One
+  // call's own `linkedJobIds` is distinct, but since cross-source duplicate
+  // detection landed, a LATER source's call can legitimately return an id
+  // an EARLIER source's call already returned - that is exactly what
+  // "these two postings are the same job" resolves to. Concatenating would
+  // put that id in `linkedJobIds` twice, and everything downstream here
+  // (`needsScoreIds`, `toScoreIds`, the `scoreOne` fan-out) is a plain
+  // filter over this array, so the job would be sent to Claude twice in one
+  // run - paying twice for the duplicate this feature exists to stop. A Set
+  // preserves first-seen order, so the deterministic ordering the capping
+  // logic relies on is unchanged.
+  const linkedJobIdSet = new Set<string>();
   for (const [dataSource, jobsForSource] of candidatesByDataSource) {
     const { linkedJobIds: linked } = await ingestJobsForSearch(
       db,
@@ -1212,8 +1223,9 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       dataSource,
       jobsForSource,
     );
-    linkedJobIds.push(...linked);
+    for (const id of linked) linkedJobIdSet.add(id);
   }
+  const linkedJobIds = [...linkedJobIdSet];
 
   if (linkedJobIds.length === 0) {
     log("No jobs found.");
