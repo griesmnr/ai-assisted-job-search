@@ -259,7 +259,8 @@ function App() {
   // rather than a misleading "(0)".
   const scoredJobCount =
     allResultsState.status === "ready"
-      ? allResultsState.data.results.length + (allResultsState.data.hiddenBelowFloor ?? 0)
+      ? (allResultsState.data.totalMatchingCount ?? allResultsState.data.results.length) +
+        (allResultsState.data.hiddenBelowFloor ?? 0)
       : undefined;
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
