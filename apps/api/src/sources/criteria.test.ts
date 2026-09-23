@@ -337,7 +337,7 @@ describe("compileFilter — role-word synonym expansion (ticket 0298b20)", () =>
   it("NEVER LOSES A MATCH — measured against the real captured titles in __fixtures__ (2026-09-23, 0 losses on 33 probes)", () => {
     // The core safety invariant: expansion only ADDS matchers, so on every
     // phrase the expanded survivor set is a SUPERSET of the literal one.
-    // Verified at full scale during the ticket (all 151 distinct real
+    // Verified at full scale during the ticket (all 68 distinct real
     // titles across the eight source fixtures, 33 probe phrases, zero
     // losses — see titleSynonyms.ts's MEASURED section); pinned here on a
     // representative real-title sample so a future edit that made

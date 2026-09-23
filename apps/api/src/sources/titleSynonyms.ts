@@ -103,11 +103,16 @@
  *    Developer" postings are overwhelmingly software, so this is low-risk
  *    in practice, but it is not prevented by the rule itself.
  *  - An ordinal-suffix qualifier ("engineer ii" -> "developer ii") is the
- *    same shape and hits real civil/mechanical postings ("Developer II" as
- *    a real-estate title).
+ *    same shape and hits real postings using "Developer II" as a
+ *    real-estate title.
  *  - A punctuation or filler-word qualifier ("engineer -", "remote
- *    engineer", "engineer, remote") technically satisfies the rule while
- *    pinning nothing semantic at all.
+ *    engineer", "engineer (remote)" -> "developer (remote)") technically
+ *    satisfies the rule while pinning nothing semantic at all. (Not every
+ *    punctuation variant expands -- "engineer, remote" does NOT, because
+ *    the comma glues onto "engineer," making it a token the table doesn't
+ *    recognize at all, so this isn't a case of the rule firing on nothing;
+ *    it just means whether a given punctuation pattern is a "qualifier" or
+ *    an opaque blob is itself inconsistent and worth knowing.)
  * A stop-list (senior/junior/lead/staff/principal/ii/iii/remote and a
  * handful of others) would only ever be a partial mitigation, since the
  * qualifier space is open-ended (any punctuation counts) -- not attempted
