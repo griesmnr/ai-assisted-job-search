@@ -266,11 +266,12 @@ pnpm lint           # eslint . && prettier --check .
 
 `vitest.config.ts` aliases `@app/shared` to its TypeScript source, so tests
 run against current source without a build step first. 16 test files
-connect to a real Postgres instance — every `db/migration-*.test.ts`, plus
-`db/schema.test.ts`, `db/seed.test.ts`, `db/user-job-statuses.test.ts`,
-`demo-match.test.ts`, `ingest/ingestJobs.test.ts`, every `routes/*.test.ts`,
-`scripts/rescore-existing-matches.test.ts`, and both `worker/*.test.ts`
-files — with `worker/fetchSourceWorker.test.ts` and
+connect to a real Postgres instance — every `db/migration-*.test.ts` except
+`migration-0006.test.ts` (deliberately connection-free, see its own header),
+plus `db/schema.test.ts`, `db/seed.test.ts`, `db/user-job-statuses.test.ts`,
+`demo-match.test.ts`, `ingest/ingestJobs.test.ts`, every `routes/*.test.ts`
+except `sources.test.ts` (uses a fake db), `scripts/rescore-existing-matches.test.ts`,
+and both `worker/*.test.ts` files — with `worker/fetchSourceWorker.test.ts` and
 `worker/scoreJobWorker.test.ts` also needing a real RabbitMQ connection —
 so step 2 has to have happened first. (Stale here before this audit: this
 paragraph still described the pre-epic file count — REST routes,
