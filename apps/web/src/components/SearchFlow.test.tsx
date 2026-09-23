@@ -488,6 +488,109 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
 
+  // Opus review (ticket 2e7ba8a, F3): the test above deliberately holds
+  // `linked` constant at 10 across both ticks, to isolate `scoredSoFar`'s
+  // out-of-order guard from the denominator. That leaves `linked`'s own
+  // `Math.max` guard (mirroring `scoredSoFar`'s) completely unproven —
+  // mutation-verified during review: replacing it with a bare
+  // `result.linked` passed every other test in the suite. This test is the
+  // same out-of-order shape, but diverges `linked`/`cappedForBudget`
+  // instead of `scoredSoFar` to actually exercise that guard.
+  it("an out-of-order (slower, stale) poll response never regresses linked/cappedForBudget backward (ticket 2e7ba8a review, F3)", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+
+    type PendingTick = {
+      status: string;
+      scoredSoFar: number;
+      linked: number;
+      permanentlyFailed: number;
+      cappedForBudget: number;
+      sourcesSettled: boolean;
+      sources: never[];
+      searchId: string;
+      resumeId: string;
+    };
+    const tickA = deferred<PendingTick>();
+    const tickB = deferred<PendingTick>();
+    getSearchStatus
+      .mockReturnValueOnce(tickA.promise)
+      .mockReturnValueOnce(tickB.promise)
+      .mockResolvedValue({
+        status: "complete",
+        searchId: "search-1",
+        resumeId: "resume-1",
+        scored: 15,
+        permanentlyFailed: 0,
+        cappedForBudget: 5,
+        linked: 20,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    await screen.findByLabelText("Search running");
+
+    await waitFor(
+      () => {
+        expect(getSearchStatus).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 5000 },
+    );
+
+    // Resolve the SECOND (later-fired) tick FIRST, simulating it being the
+    // FASTER response — genuinely-progressed, higher linked/capped counts.
+    await act(async () => {
+      tickB.resolve({
+        status: "pending",
+        scoredSoFar: 10,
+        linked: 18,
+        permanentlyFailed: 0,
+        cappedForBudget: 5,
+        sourcesSettled: false,
+        sources: [],
+        searchId: "search-1",
+        resumeId: "resume-1",
+      });
+      await tickB.promise;
+    });
+    await waitFor(() => {
+      expect(screen.getByText("10 of 18 scored so far.")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/5 jobs already matched but deferred/)).toBeInTheDocument();
+
+    // NOW resolve the FIRST (earlier-fired) tick — the SLOWER, now-STALE
+    // response, carrying LOWER linked/capped counts than what's on screen.
+    await act(async () => {
+      tickA.resolve({
+        status: "pending",
+        scoredSoFar: 4,
+        linked: 9,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
+        searchId: "search-1",
+        resumeId: "resume-1",
+      });
+      await tickA.promise;
+    });
+
+    // Must NOT regress — `linked` stays at 18, `cappedForBudget` stays at 5.
+    await waitFor(() => {
+      expect(screen.getByText("10 of 18 scored so far.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("10 of 9 scored so far.")).not.toBeInTheDocument();
+    expect(screen.getByText(/5 jobs already matched but deferred/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Search running")).toBeInTheDocument();
+  }, 15000);
+
   // Review round 2 (F3): the F2 fix (Math.max) alone is not sufficient — a
   // poll from a PREVIOUS, already-finished search can still resolve late and
   // leak its count onto a NEW search's phase, since `prev.kind === "running"`
@@ -656,9 +759,15 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     // The healthy source is still shown too — one failure must not swallow
     // the rest of the list.
     expect(screen.getByText("greenhouse")).toBeInTheDocument();
-    // "Done" is ambiguous by itself now -- the "greenhouse" source's own
-    // status badge also reads "Done" -- so this checks the actual button
-    // by role rather than by text.
+    // Opus review (ticket 2e7ba8a, F4): this comment previously claimed the
+    // "greenhouse" source's own status badge also reads "Done" -- it
+    // doesn't; a complete source's badge reads "Fetched"
+    // (SearchSourceStatusList.tsx's own describeStatus doc comment
+    // explains why "Done" was deliberately avoided there). There is no
+    // actual "Done" collision in this tree. Checking by role instead of
+    // text is still the better practice regardless (it's the real action
+    // button, not incidentally-matching text), so the assertion itself is
+    // kept -- only the stated reason was wrong.
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
   });
 
@@ -705,6 +814,74 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     // makeEstimate()'s scoreThreshold, above — the honest "why".
     expect(screen.getByText(/100-job budget/)).toBeInTheDocument();
     expect(screen.queryByText("Search complete (with some failures)")).not.toBeInTheDocument();
+  });
+
+  // Opus review (ticket 2e7ba8a, F1): the positive test above only proves
+  // the note APPEARS when cappedForBudget > 0 -- it never proved the guard
+  // is `> 0` and not `>= 0`. Mutation-verified during review: flipping the
+  // done-panel guard to `>= 0` passed every other test in the suite, which
+  // would have shipped "0 more jobs matched but weren't scored -- this
+  // search hit its 100-job budget" on every ordinary successful search --
+  // precisely the "don't train the user to read this as a problem"
+  // regression this field's own doc comment exists to prevent.
+  it("shows no capped-for-budget note on an ordinary successful search (cappedForBudget: 0)", async () => {
+    await runToDone({
+      status: "complete",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scored: 10,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      linked: 10,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    expect(screen.queryByText(/matched but weren't scored/)).not.toBeInTheDocument();
+  });
+
+  // Opus review (ticket 2e7ba8a, F2): the headline claim -- and the whole
+  // stated reason SearchSourceStatusList exists as a NEW component rather
+  // than reusing SourceOutcomesList -- is that SearchSourceState can be
+  // "pending" mid-flight, a state SourceOutcome can never reach (an
+  // estimate call is synchronous and always finishes before returning).
+  // Mutation-verified during review: deleting
+  // <SearchSourceStatusList sources={phase.sources} /> from the running
+  // panel entirely passed every other test in the suite -- the "Fetching"
+  // badge and the "Fetched ... jobs linked" detail had zero coverage
+  // anywhere. This test exercises exactly the branch that justifies the
+  // component's existence.
+  it("shows per-source status live in the running panel, including a still-fetching source", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      searchId: "search-1",
+      resumeId: "resume-1",
+      scoredSoFar: 4,
+      linked: 12,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [
+        { sourceId: "greenhouse", status: "complete", linkedJobCount: 12 },
+        { sourceId: "lever", status: "pending", linkedJobCount: null },
+      ],
+    });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    // Longer than RTL's 1s default -- see runToDone's comment above for why.
+    await screen.findByText("lever", {}, { timeout: 4000 });
+    expect(screen.getByText("Fetching")).toBeInTheDocument();
+    expect(screen.getByText(/still fetching/)).toBeInTheDocument();
+    expect(screen.getByText("greenhouse")).toBeInTheDocument();
+    expect(screen.getByText("Fetched")).toBeInTheDocument();
+    expect(screen.getByText(/12 jobs linked/)).toBeInTheDocument();
   });
 
   // Same field, mid-flight: the "running" panel must show cappedForBudget
