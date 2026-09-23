@@ -200,6 +200,277 @@ describe("compileFilter — explicit criteria never silently defaults titleExclu
   });
 });
 
+describe("compileFilter — role-word synonym expansion (ticket 0298b20)", () => {
+  it('titleInclude "software engineer" matches a real "Senior Software Developer" posting — the live miss this ticket exists for (2026-09-23 run, all 8 sources)', () => {
+    // The concrete, live-verified failure: Nicole's title list contained
+    // "software engineer" and not "developer", so a real posting titled
+    // "Senior Software Developer" scored zero matches even though a human
+    // reading the board would call it the same role.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Senior Software Developer", company: "Dev Co" }),
+      job({ externalId: "2", title: "Senior Software Engineer", company: "Eng Co" }),
+      job({ externalId: "3", title: "Accountant II", company: "Books Co" }),
+    ];
+    const filter = compileFilter({ titleInclude: ["software engineer"] });
+    expect(
+      filter(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
+  it("is symmetric — searching the developer phrasing finds the engineer posting too", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Software Engineer", company: "Eng Co" }),
+      job({ externalId: "2", title: "Software Developer", company: "Dev Co" }),
+    ];
+    const filter = compileFilter({ titleInclude: ["software developer"] });
+    expect(
+      filter(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
+  it("generalizes to professions with nothing to do with software — the ticket's actual requirement", () => {
+    // The owner explicitly asked for a mechanism, not her own title list:
+    // "I just hope that that learning gets, like, generically applied
+    // enough that it would happen with other professions as well and not
+    // just me and my own use case."
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Pharmacy Technician", company: "Pharmacy Co" }),
+      job({ externalId: "2", title: "Sales Rep, Midwest", company: "Sales Co" }),
+      job({ externalId: "3", title: "Senior Technical Author", company: "Docs Co" }),
+      job({ externalId: "4", title: "Math Instructor", company: "School Co" }),
+      job({ externalId: "5", title: "Certified Nursing Aide", company: "Clinic Co" }),
+    ];
+    expect(
+      compileFilter({ titleInclude: ["pharmacy tech"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["1"]);
+    expect(
+      compileFilter({ titleInclude: ["sales representative"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["2"]);
+    expect(
+      compileFilter({ titleInclude: ["technical writer"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["3"]);
+    expect(
+      compileFilter({ titleInclude: ["math teacher"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["4"]);
+    expect(
+      compileFilter({ titleInclude: ["nursing assistant"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["5"]);
+  });
+
+  it("NO FALSE POSITIVES across genuinely different roles — a qualified phrase keeps its qualifier through every substitution", () => {
+    // The ticket's explicit safety criterion. "Sales Engineer" is a
+    // pre-sales/solutions role and "Sales Development Representative" is
+    // quota-carrying outbound sales; neither is what someone searching
+    // "software engineer" wants. Expansion cannot reach them because the
+    // qualifier ("software") survives the substitution — the only phrases
+    // tried are "software developer" and "software programmer".
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Sales Engineer", company: "Presales Co" }),
+      job({ externalId: "2", title: "Sales Development Representative", company: "SDR Co" }),
+      job({ externalId: "3", title: "Real Estate Developer", company: "Property Co" }),
+      job({ externalId: "4", title: "Civil Engineer", company: "Bridge Co" }),
+      job({ externalId: "5", title: "Engineering Manager", company: "Mgmt Co" }),
+      job({ externalId: "6", title: "Software Architect", company: "Arch Co" }),
+      job({ externalId: "7", title: "Medical Coder", company: "Billing Co" }),
+      job({ externalId: "8", title: "Software Developer", company: "Dev Co" }),
+    ];
+    // Only the genuinely-same role survives.
+    expect(
+      compileFilter({ titleInclude: ["software engineer"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["8"]);
+    // And the reverse phrasing does not reach the real-estate developer.
+    expect(
+      compileFilter({ titleInclude: ["software developer"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["8"]);
+  });
+
+  it("the qualifier rule: a BARE role word is never expanded, so it cannot drag in other professions", () => {
+    // Without this rule, titleInclude: ["developer"] would expand to
+    // "engineer" and start returning civil/sales/mechanical engineering.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Civil Engineer", company: "Bridge Co" }),
+      job({ externalId: "2", title: "Sales Engineer", company: "Presales Co" }),
+      job({ externalId: "3", title: "Software Developer", company: "Dev Co" }),
+    ];
+    expect(compileFilter({ titleInclude: ["developer"] })(jobs).map((j) => j.externalId)).toEqual([
+      "3",
+    ]);
+    // Symmetrically, a bare "engineer" search does not pick up real-estate
+    // or business "Developer" postings.
+    const engineerJobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Real Estate Developer", company: "Property Co" }),
+      job({ externalId: "2", title: "Civil Engineer", company: "Bridge Co" }),
+    ];
+    expect(
+      compileFilter({ titleInclude: ["engineer"] })(engineerJobs).map((j) => j.externalId),
+    ).toEqual(["2"]);
+  });
+
+  it("NEVER LOSES A MATCH — measured against the real captured titles in __fixtures__ (2026-09-23, 0 losses on 33 probes)", () => {
+    // The core safety invariant: expansion only ADDS matchers, so on every
+    // phrase the expanded survivor set is a SUPERSET of the literal one.
+    // Verified at full scale during the ticket (all 151 distinct real
+    // titles across the eight source fixtures, 33 probe phrases, zero
+    // losses — see titleSynonyms.ts's MEASURED section); pinned here on a
+    // representative real-title sample so a future edit that made
+    // expansion *replace* rather than *add* fails loudly.
+    const realTitles = [
+      "Senior Software Engineer, Infrastructure Foundations",
+      "Backend Software Engineer - Defense",
+      "Staff Software Engineer, Open Source Server",
+      "Software Engineer Internship, Android",
+      "Business Systems Developer",
+      "Civil Engineer (Structural)",
+      "Calibration Engineer - Brake Controls",
+      "Senior Systems Engineer II - Edge Platform & Packaging (On-Prem)",
+      "Principal Cloud Engineer",
+      "Data Engineer",
+      "Machine Learning Engineer",
+      "AI Agent Engineer",
+      "Security Engineer, Cloud",
+      "Sales Representative",
+      "Workshop Sales Representative - Washington DC Area",
+      "Software Development Engineer in Test (SDET)",
+    ];
+    const jobs: NormalizedJob[] = realTitles.map((title, i) =>
+      job({ externalId: String(i), title, company: `Co ${i}` }),
+    );
+    const probes = [
+      "software engineer",
+      "software developer",
+      "systems engineer",
+      "sales representative",
+      "engineer",
+      "developer",
+      "c++",
+      "program analyst",
+    ];
+    // The literal, pre-ticket matcher, reconstructed here exactly as
+    // makePhraseMatcher builds it (including the N5 conditional \b) so this
+    // compares against real old behavior, not an approximation of it.
+    function literalMatcher(phrase: string): (haystack: string) => boolean {
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const left = /^\w/.test(phrase) ? "\\b" : "";
+      const right = /\w$/.test(phrase) ? "\\b" : "";
+      const pattern = new RegExp(`${left}${escaped}${right}`, "i");
+      return (haystack) => pattern.test(haystack);
+    }
+
+    for (const phrase of probes) {
+      const expanded = new Set(
+        compileFilter({ titleInclude: [phrase] })(jobs).map((j) => j.externalId),
+      );
+      const literal = literalMatcher(phrase);
+      for (const j of jobs.filter((candidate) => literal(candidate.title))) {
+        expect(expanded.has(j.externalId), `"${phrase}" lost real title "${j.title}"`).toBe(true);
+      }
+    }
+  });
+
+  it("a bare role word gains NOTHING on real captured titles — the qualifier rule, proven against Civil/Calibration Engineer", () => {
+    // Without the qualifier rule, `titleInclude: ["developer"]` would
+    // expand to "engineer" and sweep in these two genuinely non-software
+    // real postings (both captured in sources/__fixtures__).
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Civil Engineer (Structural)", company: "Civil Co" }),
+      job({ externalId: "2", title: "Calibration Engineer - Brake Controls", company: "Auto Co" }),
+      job({ externalId: "3", title: "Business Systems Developer", company: "Biz Co" }),
+    ];
+    expect(compileFilter({ titleInclude: ["developer"] })(jobs).map((j) => j.externalId)).toEqual([
+      "3",
+    ]);
+    expect(
+      compileFilter({ titleInclude: ["engineer"] })(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
+  it('a QUALIFIED phrase does gain the right real title — "systems engineer" finds "Business Systems Developer"', () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Business Systems Developer", company: "Biz Co" }),
+      job({ externalId: "2", title: "Civil Engineer (Structural)", company: "Civil Co" }),
+    ];
+    expect(
+      compileFilter({ titleInclude: ["systems engineer"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["1"]);
+  });
+
+  it("titleExclude expands too — include and exclude must share one matching semantics or the filter contradicts itself", () => {
+    // If include were synonym-aware and exclude were literal, a caller
+    // could surface "Software Developer" via titleInclude: ["software
+    // engineer"] and then be unable to remove it with the same phrase.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Senior Software Developer", company: "Dev Co" }),
+      job({ externalId: "2", title: "Senior Software Engineer", company: "Eng Co" }),
+      job({ externalId: "3", title: "Senior Data Analyst", company: "Data Co" }),
+    ];
+    const filter = compileFilter({ titleExclude: ["software engineer"] });
+    expect(filter(jobs).map((j) => j.externalId)).toEqual(["3"]);
+  });
+
+  it("expansion runs through makePhraseMatcher unchanged, so it stays word-boundary matching (no new substring looseness)", () => {
+    // "Software Engineering Manager" does not match "software engineer"
+    // (the trailing \b fails against "engineeri"), and expansion must not
+    // change that: "software developer"/"software programmer" don't match
+    // it either.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Software Engineering Manager", company: "Mgmt Co" }),
+      job({ externalId: "2", title: "Software Developers Guild Lead", company: "Guild Co" }),
+      job({ externalId: "3", title: "Software Developer", company: "Dev Co" }),
+    ];
+    expect(
+      compileFilter({ titleInclude: ["software engineer"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["3"]);
+  });
+
+  it("a non-word-character phrase (c++/.net) is untouched by expansion — the N5 boundary fix still holds", () => {
+    // Regression guard for the composition requirement: these phrases have
+    // no table word, expand to themselves, and hit exactly the same
+    // makePhraseMatcher path as before this ticket.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Senior C++ Engineer", company: "Cpp Co" }),
+      job({ externalId: "2", title: "Senior .NET Developer", company: "Dotnet Co" }),
+      job({ externalId: "3", title: "Senior Java Engineer", company: "Java Co" }),
+    ];
+    expect(
+      compileFilter({ titleInclude: ["c++", ".net"] })(jobs)
+        .map((j) => j.externalId)
+        .sort(),
+    ).toEqual(["1", "2"]);
+  });
+
+  it("does not touch nearLocations — location matching stays literal (ticket 0298b20 scope)", () => {
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Software Engineer", location: "Seattle, WA" }),
+      job({
+        externalId: "2",
+        title: "Software Engineer",
+        company: "B Co",
+        location: "Portland, OR",
+      }),
+    ];
+    expect(compileFilter({ nearLocations: ["seattle"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+    ]);
+  });
+
+  it("the no-criteria default path is completely unaffected — expansion is explicit-criteria only", () => {
+    expect(compileFilter(undefined)).toBe(filterSoftwareEngineeringJobs);
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Senior Software Developer", location: "Seattle, WA" }),
+    ];
+    // swe-filter's own SOFTWARE regex has no "developer" alternative, and
+    // this ticket deliberately did not add one — the default path must be
+    // byte-for-byte the CLI's behavior.
+    expect(compileFilter(undefined)(jobs)).toEqual(filterSoftwareEngineeringJobs(jobs));
+  });
+});
+
 describe("compileExcludedForMissingWorkArrangement (ticket 14289ac)", () => {
   // Pins the deliberate undefined-vs-explicit split documented on
   // compileExcludedForMissingWorkArrangement's own doc comment in
