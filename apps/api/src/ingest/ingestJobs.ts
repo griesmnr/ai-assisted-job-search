@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobs, searchResults } from "../db/schema.js";
 import type { NormalizedJob } from "../sources/types.js";
+import { findCrossSourceDuplicates } from "./crossSourceDuplicates.js";
 
 /**
  * How many `jobs` rows go into one INSERT statement.
@@ -32,11 +33,64 @@ const JOBS_INSERT_CHUNK = 500;
  */
 const SEARCH_RESULTS_INSERT_CHUNK = 500;
 
+/**
+ * One cross-source merge that ACTUALLY HAPPENED in this call (ticket
+ * 78d31b7, review F2b) — not a candidate considered, one applied.
+ *
+ * Exists because a merge is, by this feature's own design, silent and
+ * permanent: nothing in the UI says "we collapsed two postings", so a WRONG
+ * merge hides a real opening from the user with no trace. `textSimilarity.
+ * ts` is explicit that the check can be fooled by a heavily-templated
+ * employer (see its threshold doc comment, which measures a realistic pair
+ * that does merge at 0.65). The minimum acceptable answer to "this is
+ * silent and permanent" is that it is at least OBSERVABLE, so both callers
+ * log every one of these. Whether the log is enough, or whether the UI
+ * should eventually surface "also posted on X", is a product decision this
+ * ticket deliberately leaves out of scope.
+ */
+export type CrossSourceMerge = {
+  /** The source being ingested under — the posting that was NOT inserted. */
+  incomingDataSource: string;
+  /** That posting's id within `incomingDataSource`. It has no `jobs.id`,
+   * because no row was created for it; this plus `incomingDataSource` is the
+   * only handle on the posting that was dropped. */
+  incomingExternalId: string;
+  /** The pre-existing `jobs.id` it was merged into. */
+  existingJobId: string;
+  /** Which source had contributed that row. */
+  existingDataSource: string;
+  /** Company and title as the INCOMING posting stated them. Gate 1 is an
+   * exact match after normalization, so the existing row's differ at most in
+   * case and whitespace. */
+  company: string;
+  title: string;
+  /** The measured description similarity that cleared the threshold — the
+   * single number that says how confident the merge was. */
+  similarity: number;
+};
+
+/** A one-line, greppable rendering of a merge, so both callers report it
+ * identically. Names both sides and the score, per review F2b. */
+export function describeCrossSourceMerge(merge: CrossSourceMerge): string {
+  return (
+    `cross-source duplicate merged: "${merge.title}" at "${merge.company}" from ` +
+    `${merge.incomingDataSource}:${merge.incomingExternalId} was NOT inserted — it matched ` +
+    `existing job ${merge.existingJobId} (${merge.existingDataSource}) with ` +
+    `similarity=${merge.similarity.toFixed(3)}. Only the existing row is linked and scored.`
+  );
+}
+
 export type IngestResult = {
   /**
-   * Every job now linked to this search - both jobs inserted by this call
-   * and jobs that already existed from a previous search/source and are
-   * simply being (re-)linked here.
+   * Every job now linked to this search - jobs inserted by this call, jobs
+   * that already existed from a previous search/source and are simply being
+   * (re-)linked here, and (ticket 78d31b7) jobs another source already
+   * contributed that a posting in this batch was found to be a duplicate
+   * of. Distinct: no id appears twice, including across those three cases.
+   *
+   * In batch order, matching `normalizedJobs` after per-externalId
+   * deduplication - `fetchSourceWorker`'s deterministic scoring-budget
+   * slice depends on that.
    */
   linkedJobIds: string[];
   /**
@@ -46,6 +100,13 @@ export type IngestResult = {
    * re-publishing would pay for a duplicate LLM call (ticket 6bf2196).
    */
   newlyInsertedJobIds: string[];
+  /**
+   * Every cross-source merge this call applied, in batch order (ticket
+   * 78d31b7, review F2b). Empty in the overwhelmingly common case — a live
+   * check on 2026-09-23 found zero cross-source collisions across 2,304
+   * jobs. Callers are expected to LOG these; see `CrossSourceMerge`.
+   */
+  crossSourceMerges: CrossSourceMerge[];
 };
 
 /**
@@ -54,6 +115,36 @@ export type IngestResult = {
  *
  * Idempotency has two independent layers, because a redelivered
  * `fetch.source` message re-runs this whole function from scratch:
+ *
+ * 0. CROSS-SOURCE DUPLICATES (ticket 78d31b7) - an earlier, additional
+ *    check layered IN FRONT of layer 1, not a replacement for it. Before
+ *    inserting anything, `findCrossSourceDuplicates` asks whether some
+ *    posting in this batch is the same real job as a row another source
+ *    already contributed (same company + title + location exactly, plus a
+ *    local description-similarity check - see crossSourceDuplicates.ts for
+ *    the two-gate design and why the first gate is exact rather than
+ *    fuzzy). A posting that matches is NOT inserted: it resolves to the
+ *    EXISTING row's id and flows through the rest of this function exactly
+ *    as an already-present posting does - one `jobs` row instead of two,
+ *    one `search_results` link instead of two, one row in the ranked
+ *    results instead of two, and out of `newlyInsertedJobIds`. Layer 1
+ *    below is untouched and still does all the work for the same-source
+ *    case.
+ *
+ *    WHAT THAT DOES AND DOESN'T GUARANTEE ABOUT SCORING, stated precisely
+ *    because the two callers differ. `runDemoMatch` (matching/pipeline.ts)
+ *    scores over the linked ids, so a merged posting costs exactly one
+ *    Claude call instead of two - the saving is direct there. The queue
+ *    path deliberately publishes `score.job` over `linkedJobIds`, NOT
+ *    `newlyInsertedJobIds` (see fetchSourceWorker.ts's own doc comment on
+ *    why: using the latter silently drops jobs when an attempt is
+ *    retried), so a merged posting does still get a `score.job` message
+ *    from the second source. It is deduped one layer down, by
+ *    `scoreJobWorker`'s already-scored check against `job_matches` - the
+ *    same at-least-once-plus-idempotent-consumer arrangement every other
+ *    re-linked job already relies on. What this layer removes in that path
+ *    is the duplicate ROW and the duplicate RESULT, not the duplicate
+ *    message.
  *
  * 1. `jobs` - upsert via `ON CONFLICT (data_source, external_id) DO
  *    NOTHING`, keyed on the unique constraint already on the table. Two
@@ -86,7 +177,7 @@ export async function ingestJobsForSearch(
   normalizedJobs: NormalizedJob[],
 ): Promise<IngestResult> {
   if (normalizedJobs.length === 0) {
-    return { linkedJobIds: [], newlyInsertedJobIds: [] };
+    return { linkedJobIds: [], newlyInsertedJobIds: [], crossSourceMerges: [] };
   }
 
   // Dedupe by externalId within this one batch. A single search response
@@ -103,7 +194,15 @@ export async function ingestJobsForSearch(
   const allExternalIds = uniqueJobs.map((job) => job.externalId);
 
   return db.transaction(async (tx) => {
-    const toInsert = uniqueJobs.map((job) => ({ ...job, id: randomUUID() }));
+    // Layer 0 (ticket 78d31b7). Runs first and inside this same
+    // transaction, so it sees every row committed before this call and
+    // nothing half-written by it. Postings it matches are dropped from the
+    // insert set entirely and resolved to the existing row below.
+    const crossSourceMatches = await findCrossSourceDuplicates(tx, dataSource, uniqueJobs);
+
+    const toInsert = uniqueJobs
+      .filter((job) => !crossSourceMatches.has(job.externalId))
+      .map((job) => ({ ...job, id: randomUUID() }));
 
     const inserted: { id: string; externalId: string }[] = [];
     for (let i = 0; i < toInsert.length; i += JOBS_INSERT_CHUNK) {
@@ -131,16 +230,66 @@ export async function ingestJobsForSearch(
     // possible but not required to satisfy this ticket's acceptance
     // criteria; if a source ever approaches 65,534 postings in one search,
     // this is the next ceiling to chunk.
-    const rows = await tx
-      .select({ id: jobs.id, externalId: jobs.externalId })
-      .from(jobs)
-      .where(and(eq(jobs.dataSource, dataSource), inArray(jobs.externalId, allExternalIds)));
+    //
+    // Scoped to the externalIds actually headed for `jobs` under this
+    // dataSource (ticket 78d31b7). AN OPTIMIZATION, NOT A CORRECTNESS
+    // REQUIREMENT — an earlier version of this comment claimed the filter
+    // was load-bearing ("looking it up here would find nothing and trip the
+    // throw below"), and the adversarial review checked: it isn't. The loop
+    // below `continue`s on a cross-source match BEFORE it ever consults
+    // `idByExternalId`, so a merged externalId is never looked up and can
+    // never reach the throw. Removing the filter leaves every targeted test
+    // passing. What it buys is real but modest: fewer bound parameters and
+    // no wasted index probes for postings we already know have no row under
+    // this source. Keep it; just don't mistake it for the thing that makes
+    // the merge path correct.
+    const externalIdsToResolve = allExternalIds.filter((id) => !crossSourceMatches.has(id));
+    const rows =
+      externalIdsToResolve.length === 0
+        ? []
+        : await tx
+            .select({ id: jobs.id, externalId: jobs.externalId })
+            .from(jobs)
+            .where(
+              and(eq(jobs.dataSource, dataSource), inArray(jobs.externalId, externalIdsToResolve)),
+            );
 
     const idByExternalId = new Map(rows.map((row) => [row.externalId, row.id]));
 
     const linkedJobIds: string[] = [];
     const newlyInsertedJobIds: string[] = [];
+    const crossSourceMerges: CrossSourceMerge[] = [];
     for (const externalId of allExternalIds) {
+      const crossSourceMatch = crossSourceMatches.get(externalId);
+      if (crossSourceMatch) {
+        // Same real job, already contributed by another source. Link this
+        // search to THAT row and report nothing new - the identical
+        // treatment an exact (dataSource, externalId) repeat gets, reached
+        // by a different match path. Deliberately not added to
+        // `newlyInsertedJobIds`: this job is not new, and the CLI scoring
+        // path reuses the score already paid for rather than buying a
+        // second one (ticket 6bf2196). See the layer-0 section of this
+        // function's doc comment for exactly what that does and does not
+        // guarantee on the queue path.
+        linkedJobIds.push(crossSourceMatch.existingJobId);
+        // Reported back so the caller can log it (review F2b). Recorded
+        // HERE, at the point the merge is actually applied, rather than
+        // from `crossSourceMatches` wholesale — those are findings, these
+        // are the ones that changed what got written.
+        const merged = byExternalId.get(externalId);
+        if (merged) {
+          crossSourceMerges.push({
+            incomingDataSource: dataSource,
+            incomingExternalId: externalId,
+            existingJobId: crossSourceMatch.existingJobId,
+            existingDataSource: crossSourceMatch.existingDataSource,
+            company: merged.company,
+            title: merged.title,
+            similarity: crossSourceMatch.similarity,
+          });
+        }
+        continue;
+      }
       const id = idByExternalId.get(externalId);
       if (!id) {
         // Should be impossible: every externalId in this batch was either
@@ -177,6 +326,6 @@ export async function ingestJobsForSearch(
         .onConflictDoNothing({ target: [searchResults.searchId, searchResults.jobId] });
     }
 
-    return { linkedJobIds, newlyInsertedJobIds };
+    return { linkedJobIds, newlyInsertedJobIds, crossSourceMerges };
   });
 }
