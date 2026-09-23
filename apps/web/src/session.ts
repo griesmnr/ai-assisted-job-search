@@ -92,16 +92,29 @@ export type PersistedAppState = {
  * The money-relevant half: a `POST /searches` that has already been paid
  * for and is still scoring server-side. `searchId` alone is enough to
  * reconnect (`GET /searches/:id`), but the `estimate` is stored alongside
- * it because the "Search running..." panel renders the pre-run cost
- * figures and the "N of M scored" denominator from it, and `GET
- * /searches/:id`'s `"pending"` member carries only `scoredSoFar` — there
- * is no way to rebuild those numbers from the server after a reload.
- * `startedAt` keeps the elapsed timer honest across the reload.
+ * it because the "Search running..." panel renders the pre-run COST
+ * figures (probable/max USD) from it, and there is no way to rebuild
+ * those specifically from the server after a reload — `POST
+ * /searches/estimate` is a synchronous, money-priced call the app must
+ * not silently re-fire on every mount. `startedAt` keeps the elapsed timer
+ * honest across the reload.
  *
- * `scoredSoFar` is deliberately NOT persisted: the restore path polls
- * immediately on mount, so the real count lands within one round trip, and
- * leaving it out means the record is written once per run rather than
- * re-serialized on every 2s poll tick.
+ * UPDATED, ticket 2e7ba8a: the "N of M scored" denominator used to be
+ * read from this persisted `estimate.costEstimate.jobCount` too, for the
+ * same "nothing else has it" reason above — `GET /searches/:id`'s
+ * `"pending"` member used to carry only `scoredSoFar`. It now also carries
+ * `linked`, a DB-backed, durably-growing count re-derivable on every poll
+ * (ticket c9c676d), so the denominator no longer needs to survive in
+ * storage at all: SearchFlow.tsx's "running" panel reads it straight off
+ * the live poll response, same as `scoredSoFar`. `estimate` staying in
+ * this record is now solely about the cost figures and (via
+ * `scoreThreshold`) the budget-cap wording — not the denominator.
+ *
+ * `scoredSoFar` (and, by the same reasoning since ticket 2e7ba8a, `linked`
+ * and the rest of the live per-poll fields) is deliberately NOT persisted:
+ * the restore path polls immediately on mount, so the real values land
+ * within one round trip, and leaving them out means the record is written
+ * once per run rather than re-serialized on every 2s poll tick.
  */
 export type PersistedActiveSearch = {
   searchId: string;

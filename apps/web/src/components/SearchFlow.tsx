@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { EstimateSearchResponse, SearchCriteria, SearchStatusResponse } from "@app/shared";
+import type {
+  EstimateSearchResponse,
+  SearchCriteria,
+  SearchSourceState,
+  SearchStatusResponse,
+} from "@app/shared";
 import { estimateSearch, getSearchStatus, startSearch } from "../api/client";
 import { clearActiveSearchFor, readActiveSearch, writeActiveSearch } from "../session";
 import { SourceOutcomesList } from "./SourceOutcomesList";
+import { SearchSourceStatusList } from "./SearchSourceStatusList";
 
 /** `criteria` is a small plain object of primitives/string arrays (see
  * @app/shared's `SearchCriteria`) -- JSON.stringify is a correct,
@@ -65,6 +71,37 @@ type Phase =
       // `"running"` is entered and is updated on every poll tick — see
       // `poll()` below.
       scoredSoFar: number;
+      /** Ticket 2e7ba8a: the durable "of M" denominator, sourced from
+       * `GET /searches/:id`'s `linked` field rather than the pre-run
+       * estimate's `costEstimate.jobCount` (see the removed F4 comment,
+       * now on the render site below, and session.ts's updated doc comment
+       * for why this — unlike `scoredSoFar` — now SURVIVES a reload:
+       * `linked` is a DB-backed count, re-derivable on every poll, not a
+       * value that only ever lived in this component's memory).
+       * `undefined` until the first poll response lands — a freshly
+       * started run has no poll data yet (the poll interval's first tick
+       * doesn't fire for POLL_INTERVAL_MS), while a restored run polls
+       * immediately on mount and fills this within one round trip either
+       * way. The render below falls back to the estimate's `jobCount` only
+       * for that brief window. */
+      linked: number | undefined;
+      /** Ticket 2e7ba8a / c9c676d: live, growing count of jobs already
+       * deferred over this search's scoring budget. Not a failure — see
+       * `cappedForBudget`'s doc comment on `SearchStatusResponse` — so it
+       * gets its own honest note below, never folded into an error/failure
+       * treatment. */
+      cappedForBudget: number;
+      /** Ticket 2e7ba8a: per-source status, live. Lets the running panel
+       * show a source going `"failed"` (dead-lettered) WHILE the search is
+       * still going, not just after it finishes. */
+      sources: SearchSourceState[];
+      /** Ticket 2e7ba8a: set only once `GET /searches/:id` reports the
+       * search has been stuck past the staleness window (see
+       * `SearchStatusResponse.pending.stalledSince`'s doc comment) — an
+       * operator-replay situation this component cannot fix on its own,
+       * surfaced so the run doesn't just look like an ordinary spinner
+       * forever with no indication anything is wrong. */
+      stalledSince: string | undefined;
     }
   | { kind: "done"; estimate: EstimateSearchResponse; result: SearchStatusResponse }
   | { kind: "error"; message: string };
@@ -172,6 +209,16 @@ export function SearchFlow({
       resumeId: record.resumeId,
       startedAt: record.startedAt,
       scoredSoFar: 0,
+      // Ticket 2e7ba8a: none of these ride along in `record` (unlike
+      // `scoredSoFar`, `linked`/`cappedForBudget`/`sources` are durable
+      // server state, not something worth re-serializing to storage on
+      // every poll tick — see `PersistedActiveSearch`'s doc comment) — the
+      // mount effect below polls immediately, so the real values replace
+      // these within one round trip, same as `scoredSoFar`.
+      linked: undefined,
+      cappedForBudget: 0,
+      sources: [],
+      stalledSince: undefined,
     };
   });
   const pollRef = useRef<number | undefined>(undefined);
@@ -338,6 +385,10 @@ export function SearchFlow({
       // nothing more accurate available without a new API field.
       startedAt: Date.now(),
       scoredSoFar: 0,
+      linked: undefined,
+      cappedForBudget: 0,
+      sources: [],
+      stalledSince: undefined,
     });
     if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => void poll(searchId, estimate), POLL_INTERVAL_MS);
@@ -464,7 +515,20 @@ export function SearchFlow({
         // truth for that run.
         setPhase((prev) =>
           prev.kind === "running" && prev.searchId === searchId
-            ? { ...prev, scoredSoFar: Math.max(prev.scoredSoFar, result.scoredSoFar) }
+            ? {
+                ...prev,
+                scoredSoFar: Math.max(prev.scoredSoFar, result.scoredSoFar),
+                // Ticket 2e7ba8a: same out-of-order-poll protection as
+                // `scoredSoFar` above — `linked` only ever grows within one
+                // run (fetch workers link jobs, never unlink them), so a
+                // late-resolving, now-stale tick must not regress it either.
+                // `?? 0` on the LEFT side only, for the brief pre-first-poll
+                // window where `prev.linked` is still `undefined`.
+                linked: Math.max(prev.linked ?? 0, result.linked),
+                cappedForBudget: Math.max(prev.cappedForBudget, result.cappedForBudget),
+                sources: result.sources,
+                stalledSince: result.stalledSince,
+              }
             : prev,
         );
         return;
@@ -589,16 +653,41 @@ export function SearchFlow({
         <div className="cost-panel running" aria-label="Search running">
           <h3>Search running...</h3>
           <ElapsedTimer startedAt={phase.startedAt} />
-          {/* F4 (review round, ticket 1998875): `jobCount` (the "of M") is
-              fixed at ESTIMATE time, but the real run re-fetches sources —
-              more or fewer postings can appear before confirm, so this can
-              legitimately read e.g. "12 of 10" or stall below M. Low
-              frequency, no money at risk. Deliberately NOT clamped: clamping
-              `scoredSoFar` to `jobCount` would hide that real divergence
-              instead of just displaying it. */}
+          {/* Ticket 2e7ba8a: the "of M" denominator is now the live,
+              durable `linked` count from GET /searches/:id (falling back to
+              the pre-run estimate's `jobCount` only for the brief window
+              before the first poll response lands — see the `Phase` type's
+              `linked` doc comment above). Previously this read
+              `phase.estimate.costEstimate.jobCount` for the whole run,
+              which F4 (review round, ticket 1998875) already noted could
+              read e.g. "12 of 10" once the real run re-fetched sources and
+              found more or fewer postings than the estimate had. That
+              divergence is still visible here, same as before — `linked`
+              is just as capable of legitimately exceeding or falling short
+              of the estimate — but it is now the REAL count, not a
+              snapshot, and it is what makes F4's other implication (this
+              number surviving a page reload) actually true: see
+              SearchFlow.persistence.test.tsx and session.ts's updated doc
+              comment. Deliberately NOT clamped, same reasoning as before:
+              clamping would hide real divergence instead of displaying it. */}
           <p>
-            {phase.scoredSoFar} of {phase.estimate.costEstimate.jobCount} scored so far.
+            {phase.scoredSoFar} of {phase.linked ?? phase.estimate.costEstimate.jobCount} scored so
+            far.
           </p>
+          {phase.cappedForBudget > 0 && (
+            <p className="capped-for-budget-note">
+              {phase.cappedForBudget} job{phase.cappedForBudget === 1 ? "" : "s"} already matched
+              but deferred, not scored — this search has hit its {phase.estimate.scoreThreshold}
+              -job budget. Nothing went wrong; this can keep climbing as more sources land.
+            </p>
+          )}
+          {phase.stalledSince && (
+            <p className="search-stalled-note" role="alert">
+              This search has been stuck since {new Date(phase.stalledSince).toLocaleString()} and
+              won't resolve on its own — it needs to be replayed from the dead-letter queue.
+            </p>
+          )}
+          <SearchSourceStatusList sources={phase.sources} />
           <p className="cost-caveat">
             Estimated before this run started: $
             {phase.estimate.costEstimate.probableCostUsd.toFixed(2)} probable, $
@@ -612,37 +701,63 @@ export function SearchFlow({
         <div className="cost-panel done" aria-label="Search finished">
           {phase.result.status === "complete" ? (
             <>
+              {/* Ticket 2e7ba8a: real polish on top of ticket 4f88339's
+                  minimal compile-fix (commit b39550a) -- that fix got the
+                  panel back to reading the real queue-driven fields
+                  (scored/permanentlyFailed/linked/sources) with a plain
+                  inline listing; this replaces it with per-source status
+                  badges (SearchSourceStatusList, below), an honest
+                  `degraded` note instead of just a heading suffix, and
+                  `cappedForBudget`'s own distinct, non-error treatment. */}
               <h3>Search complete{phase.result.degraded ? " (with some failures)" : ""}</h3>
-              {/* Ticket 4f88339 (design c54b9e0 §5.3) minimal compile-fix:
-                  the old runDemoMatch-shaped fields (newlyScored/failed/
-                  skipped/costEstimate/sourceOutcomes) don't exist on the
-                  queue-driven response -- this just gets the panel back to
-                  showing correct information against the new
-                  scored/permanentlyFailed/linked/sources shape. Real UI
-                  polish (per-source failure treatment, a proper degraded
-                  badge, etc.) is ticket 2e7ba8a, deliberately not done
-                  here. */}
+              {/* `degraded` means `permanentlyFailed > 0` ONLY (see that
+                  field's doc comment on SearchStatusResponse) -- a genuine
+                  fault, but still a FINISHED, USABLE result, not an error
+                  state. This reads as a normal completion with an honest
+                  note about what went wrong, never as an alert/error panel
+                  (no `role="alert"`, no red styling) -- the per-source list
+                  below already carries the `errorKind`/`errorMessage` detail
+                  for any source that dead-lettered, so this note stays a
+                  short summary rather than repeating that detail. */}
+              {phase.result.degraded && (
+                <p className="search-degraded-note" role="status">
+                  {phase.result.permanentlyFailed} job
+                  {phase.result.permanentlyFailed === 1 ? "" : "s"} failed to score — retries were
+                  exhausted or something else went wrong partway through. The rest of this search's
+                  results are unaffected and ready below.
+                </p>
+              )}
               <dl>
                 <dt>Scored</dt>
                 <dd>{phase.result.scored}</dd>
                 <dt>Permanently failed</dt>
                 <dd>{phase.result.permanentlyFailed}</dd>
+                {phase.result.cappedForBudget > 0 && (
+                  <>
+                    <dt>Deferred this run (over the cap)</dt>
+                    <dd>{phase.result.cappedForBudget}</dd>
+                  </>
+                )}
                 <dt>Total jobs linked</dt>
                 <dd>{phase.result.linked}</dd>
               </dl>
-              {phase.result.sources.length > 0 && (
-                <ul>
-                  {phase.result.sources.map((s) => (
-                    <li key={s.sourceId}>
-                      {s.sourceId}: {s.status}
-                      {s.status === "complete" && s.linkedJobCount !== null
-                        ? ` (${s.linkedJobCount} job${s.linkedJobCount === 1 ? "" : "s"})`
-                        : ""}
-                      {s.status === "failed" && s.errorKind ? ` (${s.errorKind})` : ""}
-                    </li>
-                  ))}
-                </ul>
+              {/* `cappedForBudget` gets its OWN honest note, deliberately
+                  separate from the `degraded` note above -- see that
+                  field's doc comment on SearchStatusResponse: hitting the
+                  budget is "nothing went wrong", a fully successful run of
+                  exactly the size the user was quoted and authorized before
+                  confirming, not a fault to apologize for. Folding it into
+                  the failure/degraded messaging would train the user to
+                  read THIS note as a problem too. */}
+              {phase.result.cappedForBudget > 0 && (
+                <p className="capped-for-budget-note">
+                  {phase.result.cappedForBudget} more job
+                  {phase.result.cappedForBudget === 1 ? "" : "s"} matched but weren't scored — this
+                  search hit its {phase.estimate.scoreThreshold}-job budget. Nothing went wrong:
+                  those jobs are saved and would score normally on a later run.
+                </p>
               )}
+              <SearchSourceStatusList sources={phase.result.sources} />
             </>
           ) : (
             <>

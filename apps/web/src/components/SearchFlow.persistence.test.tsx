@@ -93,6 +93,11 @@ async function runASearch(resumeId = "resume-1") {
     status: "pending",
     resumeId,
     scoredSoFar: 0,
+    linked: 0,
+    permanentlyFailed: 0,
+    cappedForBudget: 0,
+    sourcesSettled: false,
+    sources: [],
   });
   const view = render(
     <SearchFlow resumeId={resumeId} sourceIds={["a"]} onSearchComplete={() => {}} />,
@@ -114,8 +119,10 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       estimate: EstimateSearchResponse;
     };
     expect(record.resumeId).toBe("resume-1");
-    // The estimate rides along because the running panel's cost figures and
-    // its "of M" denominator cannot be rebuilt from GET /searches/:id.
+    // The estimate still rides along, but (ticket 2e7ba8a) ONLY for the
+    // running panel's pre-run cost figures / budget wording now -- the "of
+    // M" denominator no longer depends on this surviving a reload at all,
+    // see the "reload -> durable denominator" test below.
     expect(record.estimate.costEstimate.jobCount).toBe(10);
     expect(typeof record.startedAt).toBe("number");
   });
@@ -132,6 +139,17 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       status: "pending",
       resumeId: "resume-1",
       scoredSoFar: 6,
+      // Ticket 2e7ba8a: deliberately DIFFERENT from the persisted
+      // estimate's `costEstimate.jobCount` (10, see `makeEstimate` above).
+      // If the denominator were still coming from the persisted estimate
+      // (the old, now-fixed behavior), this would render "6 of 10" — the
+      // assertion below proves it instead comes from THIS poll response's
+      // durable `linked` field.
+      linked: 8,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [],
     });
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
@@ -143,7 +161,60 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.queryByRole("button", { name: "Estimate search cost" })).not.toBeInTheDocument();
 
     await waitFor(() => expect(getSearchStatus).toHaveBeenCalledWith("search-abc"));
-    expect(await screen.findByText("6 of 10 scored so far.")).toBeInTheDocument();
+    expect(await screen.findByText("6 of 8 scored so far.")).toBeInTheDocument();
+  });
+
+  // Ticket 2e7ba8a's own bonus-fix proof: before this ticket, the "of M"
+  // denominator lived ONLY in the persisted `estimate` (see the record test
+  // above and session.ts's updated doc comment) — there was no way to
+  // rebuild it from the server, so a reload's denominator was necessarily
+  // whatever the estimate had said before the run even started, never a
+  // fresher number. Now `linked` is a durable, DB-backed count that grows
+  // as sources land, independent of anything this tab remembers — this
+  // test proves that by polling TWICE after the reload and watching the
+  // denominator itself climb, which the old estimate-derived denominator
+  // could never do (the estimate is a fixed snapshot, written once).
+  it("the reload-survived denominator is genuinely live, not just a one-time restore (ticket 2e7ba8a)", async () => {
+    const { unmount } = await runASearch();
+    unmount();
+    getSearchStatus.mockClear();
+
+    getSearchStatus
+      .mockResolvedValueOnce({
+        searchId: "search-abc",
+        status: "pending",
+        resumeId: "resume-1",
+        scoredSoFar: 2,
+        linked: 4,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
+      })
+      .mockResolvedValue({
+        searchId: "search-abc",
+        status: "pending",
+        resumeId: "resume-1",
+        scoredSoFar: 5,
+        // A THIRD source has since finished fetching and linked more jobs
+        // — `linked` growing on its own, independent of the persisted
+        // estimate's fixed `jobCount` (10).
+        linked: 13,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    expect(await screen.findByText("2 of 4 scored so far.")).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByText("5 of 13 scored so far.")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
   });
 
   it("finishes a restored run normally: reports completion and drops the record", async () => {
@@ -155,6 +226,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       resumeId: "resume-1",
       scored: 4,
       permanentlyFailed: 0,
+      cappedForBudget: 0,
       linked: 5,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",
@@ -249,6 +321,11 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       status: "pending",
       resumeId: "resume-1",
       scoredSoFar: 3,
+      linked: 3,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      sourcesSettled: false,
+      sources: [],
     });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);

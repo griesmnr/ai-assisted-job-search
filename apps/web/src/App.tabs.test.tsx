@@ -220,6 +220,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       status: "complete",
       scored: 1,
       permanentlyFailed: 0,
+      cappedForBudget: 0,
       linked: 1,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",
