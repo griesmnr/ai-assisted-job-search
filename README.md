@@ -15,70 +15,73 @@ commit, not a projection.
 
 ## What it does, today
 
-All of this currently runs end to end as a single script
-(`apps/api/src/demo-match.ts`), not through the queue-driven architecture
-diagrammed below — that part is still being built. See
-[Current state](#current-state) for exactly what's real.
+The real path today runs end to end through the queue-driven architecture
+diagrammed below: the React frontend calls the Fastify REST API, which
+publishes to RabbitMQ, and two long-lived worker processes fetch/normalize/
+filter postings and score them against a resume via Claude.
+`apps/api/src/demo-match.ts` is a separate, CLI-only entry point into the
+same underlying pipeline (`apps/api/src/matching/pipeline.ts`) — useful for
+running a search from a terminal without starting the queue workers, not
+the only way to run this any more. See [Current state](#current-state) for
+exactly what's real.
 
-- Four job-board APIs (Greenhouse, Lever, Ashby, SmartRecruiters), covering
-  several dozen configured employers, searched in one pass.
+- Five job-board sources (USAJOBS, Greenhouse, Lever, Ashby,
+  SmartRecruiters), covering a U.S. federal-jobs API and several dozen
+  configured ATS employers, selectable per search via source toggles.
 - Postings are normalized into one `Job` shape, filtered down to
-  software-engineering roles in a target location, deduplicated, and scored
-  against a resume by Claude — each score comes back as a 0-100 number plus
-  a rationale, strengths, and gaps, not free text.
+  software-engineering roles matching a caller's criteria, deduplicated, and
+  scored against a resume by Claude — each score comes back as a 0-100
+  number plus a rationale, strengths, gaps, and a separate leveling-fit
+  judgment, not free text.
 - Jobs, resumes, and match scores are persisted, so re-running a search
-  never re-pays for a score it already has.
+  never re-pays for a score it already has; a user's saved/applied/
+  dismissed status on a job is tracked too.
 
 ## Current state
 
-Built and tested:
+Built, tested, and what `POST /searches` actually runs in production today:
 
-- Four source adapters (Greenhouse, Lever, Ashby, SmartRecruiters), each
-  with its own idiosyncrasies handled — see
-  [Source adapters](#source-adapters).
-- A Postgres schema (Drizzle) with idempotent upserts on jobs, resumes, and
-  match scores.
+- Five source adapters (USAJOBS, Greenhouse, Lever, Ashby,
+  SmartRecruiters) behind one `JobSource` interface, each with its own
+  idiosyncrasies handled — see [Source adapters](#source-adapters).
+- A Postgres schema (Drizzle) with idempotent upserts on jobs, resumes,
+  match scores, and per-search scoring-failure records.
 - A RabbitMQ topology with per-queue dead-letter exchanges and a
   tiered-backoff retry path (see
   [Retries, dead letters, and idempotency](#retries-dead-letters-and-idempotency)),
-  plus a `fetch.source` worker that consumes it.
-- An end-to-end vertical slice (`demo-match.ts`) that runs the real
-  pipeline — search, filter, score, persist — against live APIs and a real
-  Anthropic account.
+  plus `fetch.source` and `score.job` workers that consume it as real,
+  long-lived processes (`apps/api/src/worker/`) — not just designed, both
+  running end to end against real search traffic.
+- A full REST API (`apps/api/src/routes/`) — resumes, sources, starting and
+  polling a search, per-job status, and the resume-tailoring-app handoff —
+  see [Running it locally](#running-it-locally) for the exact routes this
+  README exercises.
+- A React frontend (`apps/web`) — source toggles, resume input with
+  AI-suggested title chips, a search-criteria form, a polling results view,
+  per-job status controls, and the "Optimize Resume" handoff.
+- The shortlist-truncation bug this section used to describe as open (a
+  fixed `slice(0, 12)` silently dropping most of the ranked list once the
+  candidate pool grew) is fixed: every survivor is a scoring candidate, a
+  shared per-search cap (`DEFAULT_SCORE_THRESHOLD = 200`) bounds spend
+  instead of coverage, and when it binds it's reported, never silent — see
+  [What "adversarial review" actually catches](#what-adversarial-review-actually-catches).
 
-Not built yet:
+Known limitation:
 
-- **The REST API has no routes.** `apps/api/src/index.ts` builds a bare
-  Fastify instance; `POST /searches` and `GET /searches/:id/results` don't
-  exist yet.
-- **The frontend is not built.** `apps/web` is a placeholder scaffold — no
-  source toggles, no resume input, no results list.
-- **There is no `score.job` worker.** The RabbitMQ topology and the
-  `fetch.source` worker are real, but scoring currently happens
-  synchronously inside `demo-match.ts`, not as a queue consumer. The queue
-  path for scoring is designed (see the diagram below) but not implemented.
-- **The ranked list you'd get today is missing real candidates.** Widening
-  the funnel from 4 employers to dozens (across four sources) took the pool
-  of matching postings from 13 survivors to 166 (about 13x) — and changed
-  the actual output by nothing, because the shortlist takes the first 12
-  survivors in source-iteration order rather than the best 12. Filed as an
-  open bug, not hidden — see
-  [What "adversarial review" actually catches](#what-adversarial-review-actually-catches)
-  for the details.
-- **A fifth adapter (USAJOBS) exists but isn't wired in.** It's fully
-  built and tested against recorded fixtures, but the current search only
-  configures the four ATS sources above.
+- **A sixth seeded source, Washington state's own job board (`wa-state`),
+  has no adapter yet.** It shows up everywhere as "no adapter implemented"
+  rather than a misconfiguration — see `apps/api/src/sources/registry.ts`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    UI["React frontend\n(not built yet)"] -->|"POST /searches"| API["Fastify API\n(no routes yet)"]
+    UI["React frontend"] -->|"POST /searches"| API["Fastify API"]
     API -->|"1 fetch.source msg\nper selected source"| FQ["fetch.source queue"]
-    FQ --> FW["fetch.source worker\n(built)"]
-    FW -->|normalize + upsert| DB[(Postgres)]
-    FW -->|"1 score.job msg\nper new job"| SQ["score.job queue"]
-    SQ --> SW["score.job worker\n(not built yet)"]
+    FQ --> FW["fetch.source worker"]
+    FW -->|filter + normalize + upsert| DB[(Postgres)]
+    FW -->|"1 score.job msg\nper newly-linked job\n(budget permitting)"| SQ["score.job queue"]
+    SQ --> SW["score.job worker"]
     SW -->|resume + description| Claude["Claude\n(match score)"]
     Claude --> SW
     SW --> DB
@@ -87,15 +90,18 @@ flowchart LR
 
 Two work queues, `fetch.source` and `score.job`, each with its own
 dead-letter exchange. A search publishes one `fetch.source` message per
-selected job source; each source that successfully ingests a job publishes
-one `score.job` message for it. The `fetch.source` side of this — topology,
-worker, retry, DLQ — is built. The `score.job` worker is designed but not
-implemented; today, scoring happens synchronously inside `demo-match.ts`
-instead of through the queue.
+selected job source; each source that successfully ingests a job (subject
+to the search's criteria filter and a shared per-search scoring cap)
+publishes one `score.job` message for it. Both sides of this — topology,
+workers, retry, DLQ — are built and run as real, long-lived processes; this
+is the actual path `POST /searches` uses today, not a design still being
+wired in. `apps/api/src/demo-match.ts` runs the same underlying pipeline
+synchronously instead, for local iteration without the queue workers
+running.
 
 ### Why a queue, not a direct fan-out
 
-A search hits four independent job-board APIs that are unequal and
+A search can hit up to five independent job-board APIs that are unequal and
 unreliable in different ways: one rate-limits, one 404s a mistyped board
 name, one returns HTTP 200 with zero results for both a real employer with
 no openings and a nonexistent one (see
@@ -142,8 +148,12 @@ after the fact.
 ## Source adapters
 
 Every adapter implements the same `JobSource` interface
-(`search(criteria) -> { jobs, skipped }`) but the four APIs behind it
-disagree about almost everything else.
+(`search(criteria) -> { jobs, skipped }`) but the four ATS APIs in this
+table disagree about almost everything else. USAJOBS is a fifth adapter
+behind the same interface — its access method, auth, and terms are covered
+in [ADR 001](docs/adr/001-job-sources.md) instead of here, since it's a
+government API with different characteristics than an ATS vendor's, not
+the same shape of "awkward."
 
 | Source              | What makes it awkward                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -186,8 +196,10 @@ materially wrong. A few examples, verifiable in the git history:
 - Widening the search funnel from 545 postings to 11,609 across two
   tickets changed the ranked list a user actually sees by nothing, because
   a fixed `slice(0, 12)` took the first twelve survivors in source order
-  rather than the best twelve — filed as an open bug, not silently
-  shipped (`cc793ee`, ticket `16c824a`).
+  rather than the best twelve — filed as a bug rather than silently shipped
+  (`cc793ee`, ticket `16c824a`), and since fixed: every survivor is now a
+  scoring candidate, bounded by a reported per-search cap instead of a
+  silent truncation (see [Current state](#current-state)).
 
 The recurring lesson: **make broken look different from empty.** That's
 why every adapter reports a per-token/per-board `skipRate` distinct from a
@@ -204,8 +216,11 @@ never look identical to a complete one.
   with Node 22) makes the `pnpm` command resolve to the pinned version.
 - Docker Desktop, for Postgres and RabbitMQ.
 - An Anthropic API key — not needed for `pnpm install`, migrations, or
-  `pnpm test`/`pnpm lint`, but required before step 5
-  (`demo-match.ts`); see that step for why it can't be skipped silently.
+  `pnpm test`/`pnpm lint`, but required before step 5 (`demo-match.ts`; see
+  that step for why it can't be skipped silently), and again for step 7's
+  scoring worker and for real (non-`estimateOnly`) `POST /searches` calls
+  in step 6 — the same key, just two different processes that each need
+  it in their own environment.
 
 ### 1. Enable pnpm and configure environment
 
@@ -250,12 +265,18 @@ pnpm lint           # eslint . && prettier --check .
 ```
 
 `vitest.config.ts` aliases `@app/shared` to its TypeScript source, so tests
-run against current source without a build step first. Six test files
-connect to a real Postgres instance (`db/schema.test.ts`, `db/seed.test.ts`,
-`db/migration-0004.test.ts`, `ingest/ingestJobs.test.ts`,
-`demo-match.test.ts`, `worker/fetchSourceWorker.test.ts` — the last of
-those also needs a real RabbitMQ connection), so step 2 has to have
-happened first.
+run against current source without a build step first. 16 test files
+connect to a real Postgres instance — every `db/migration-*.test.ts` except
+`migration-0006.test.ts` (deliberately connection-free, see its own header),
+plus `db/schema.test.ts`, `db/seed.test.ts`, `db/user-job-statuses.test.ts`,
+`demo-match.test.ts`, `ingest/ingestJobs.test.ts`, every `routes/*.test.ts`
+except `sources.test.ts` (uses a fake db), `scripts/rescore-existing-matches.test.ts`,
+and both `worker/*.test.ts` files — with `worker/fetchSourceWorker.test.ts` and
+`worker/scoreJobWorker.test.ts` also needing a real RabbitMQ connection —
+so step 2 has to have happened first. (Stale here before this audit: this
+paragraph still described the pre-epic file count — REST routes,
+`scoreJobWorker`, and most of the migration tests were added by the same
+work this whole README was rewritten to reflect, ticket 7472002.)
 
 ### 5. Run the end-to-end pipeline
 
@@ -419,19 +440,28 @@ $ pnpm test
 
  RUN  v4.1.10
 
- Test Files  20 passed (20)
-      Tests  297 passed (297)
-   Duration  7.31s (transform 1.99s, setup 0ms, import 7.64s, tests 7.44s, environment 1ms)
+ Test Files  1 failed | 53 passed (54)
+      Tests  948 passed | 19 skipped (967)
+   Duration  43.08s (transform 4.07s, setup 0ms, import 51.85s, tests 87.24s, environment 71.55s)
 ```
+
+The one failing file is `worker/fetchSourceWorker.test.ts`; its 19 tests
+show as "skipped" above because its top-level `beforeAll` throws before any
+of them run. In a normal clone, following steps 1-2 (`.env` populated,
+`docker compose up -d` for Postgres + RabbitMQ), it passes along with
+everything else — this specific run was captured from an environment
+without `RABBITMQ_DEFAULT_USER`/`_PASS`/`_HOST`/`_PORT` set, which fails
+before it ever tries to reach a broker. Every other file, including every
+other queue/worker/route test, passes regardless.
 
 ## Project layout
 
 ```
 apps/
-  api/     Fastify backend — source adapters, RabbitMQ worker, Drizzle schema/migrations
-  web/     React + Vite frontend (placeholder scaffold, not the real app)
+  api/     Fastify backend — REST routes, source adapters, RabbitMQ workers, Drizzle schema/migrations
+  web/     React + Vite frontend — resume input, source toggles, and the polling results view
 packages/
-  shared/  Domain types (Job, Resume, JobMatch, Search, SourceDescriptor) used by both apps
+  shared/  Domain types and the full REST wire contract (Job, Resume, SearchStatusResponse, ...) used by both apps
 ```
 
 Deliberately **not** Next.js: a separate frontend and backend force a real
