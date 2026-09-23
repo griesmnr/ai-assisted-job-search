@@ -403,3 +403,15 @@ Convert everything above into:
 - start-dev.sh
 
 so setup becomes reproducible.
+
+---
+
+# Update (documentation audit, ticket 7472002)
+
+This file is a log of the setup process as it originally happened, kept
+as-is above rather than rewritten. For the current, accurate picture: the
+"Pending"/"Future Work" items above are both done — Claude Code is
+installed and this session is running on it, and `Dockerfile`,
+`docker-compose.yml`, and `start-dev.sh` all now exist at the repo root
+(ticket 69608fc built them; whether they actually work end to end is that
+ticket's own open follow-up, not yet re-verified as of this note).
