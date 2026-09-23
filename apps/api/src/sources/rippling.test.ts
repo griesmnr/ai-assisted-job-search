@@ -257,6 +257,51 @@ describe("RipplingSource — a real board's list yields the right number of jobs
       postingCount: 8,
     });
   });
+
+  it("dedupes by uuid, not by name — two DISTINCT postings that happen to share a title stay two jobs (opus review, ticket a14e3e7)", async () => {
+    // Regression for a real gap the review found: mutating the dedup key
+    // from `row.uuid` to `row.name` still passed every other test here,
+    // because the 8 distinct uuids in listFixture happen to have 8
+    // distinct names too. On the live `rippling` board itself, 8 titles
+    // are each shared by 2-3 genuinely different uuids today (e.g.
+    // "Senior Staff Software Engineer" x3) -- a name-keyed dedup would
+    // silently collapse those into one job apiece. This constructs that
+    // exact shape: two rows, identical `name`, different `uuid`, each
+    // with its own real detail fixture, and asserts both survive.
+    const sharedTitle = "Senior Staff Software Engineer";
+    const twinListFixture = [
+      {
+        uuid: "75ad50c6-778f-42ee-9c63-70d1cd687202",
+        name: sharedTitle,
+        department: { id: "Engineering", label: "Engineering" },
+        url: "https://ats.rippling.com/rippling/jobs/75ad50c6-778f-42ee-9c63-70d1cd687202",
+        workLocation: { label: "Austin, TX", id: "Austin, TX" },
+      },
+      {
+        uuid: "00dbe4a0-da1e-4696-8c15-d4724a402c42",
+        name: sharedTitle,
+        department: { id: "Engineering", label: "Engineering" },
+        url: "https://ats.rippling.com/rippling/jobs/00dbe4a0-da1e-4696-8c15-d4724a402c42",
+        workLocation: { label: "Remote", id: "Remote" },
+      },
+    ];
+    const fetchImpl = makeFetch({ lists: { rippling: () => jsonResponse(twinListFixture) } });
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({});
+
+    expect(result.jobs).toHaveLength(2);
+    const externalIds = result.jobs.map((j) => j.externalId).sort();
+    expect(externalIds).toEqual(
+      ["75ad50c6-778f-42ee-9c63-70d1cd687202", "00dbe4a0-da1e-4696-8c15-d4724a402c42"].sort(),
+    );
+    // Title comes from each posting's own detail fetch, not the list row's
+    // `name` (see the two real, DIFFERENT detail fixtures reused above) --
+    // the point of this test is the count/distinctness by uuid, not title
+    // equality, so assert distinctness rather than the (irrelevant, and
+    // here actually different) title value.
+    expect(new Set(result.jobs.map((j) => j.title)).size).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -50,8 +50,9 @@ import {
 // separate array elements sharing the identical `uuid`. Verified live
 // against the real `rippling` board: 612 raw rows, only 328 DISTINCT
 // `uuid`s (`python3` dedup check, 2026-09-23) — 123 jobs appear more than
-// once, one ("Accounting Manager") appears 5 times, one other job appears
-// 20 times. `__fixtures__/rippling-real-response-rippling-list.json`
+// once: 7 (including "Accounting Manager") appear 5 times each, and 2
+// appear 20 times each (re-verified during opus review, same date).
+// `__fixtures__/rippling-real-response-rippling-list.json`
 // deliberately keeps all 5 rows for the Accounting Manager job (uuid
 // `19ae5b34-...`) so this is exercised against real data, not asserted
 // against a hand-built fixture. Failing to dedupe by `uuid` here would not
