@@ -24,7 +24,8 @@ import {
 // ticket 7bbc47e) as the way to get full job descriptions rather than
 // summaries. Everything below was verified live 2026-09-23 against eight
 // real accounts (rokt, seeq, tetrascience, workmotion, suade, dispel,
-// oktopayments, valsoft-corp — 414 real postings total) plus dozens of
+// oktopayments, valsoft-corp — 413 real raw postings total, re-verified
+// during opus review, same date) plus dozens of
 // guessed subdomains used only to map out behavior before writing any
 // mapping, per the standing instruction not to repeat USAJOBS' mistake of
 // inventing fixtures/mappings from assumptions. Trimmed real fixtures are
@@ -79,18 +80,22 @@ import {
 // `categories.allLocations`, Ashby's `secondaryLocations` — one job object,
 // an array of extra locations). Workable instead duplicates the WHOLE job
 // object once per location it's open to, varying only `country`/`city`/
-// `state` and the (always single-entry) `locations` array, while
+// `state` and the `locations` array (usually single-entry per row, but not
+// always — see the Valsoft "Managing Director" example a few paragraphs
+// down, one row whose OWN `locations` array has four entries), while
 // `shortcode` (and `url`/`title`/`description`/every other field) stays
-// identical across the copies. Verified live 2026-09-23 across all 414 real
-// postings from the eight configured accounts: 463 raw entries collapse to
-// 351 unique `shortcode`s (workmotion, tetrascience, and valsoft-corp all
-// have real examples; rokt/seeq/suade/dispel/oktopayments happened to have
-// none in this snapshot). A real example, TetraScience's "Chief of Staff to
+// identical across the copies. Verified live 2026-09-23 across all 413 raw
+// postings from the eight configured accounts: they collapse to 298 unique
+// `shortcode`s across 53 duplicate-shortcode groups (seeq, tetrascience,
+// workmotion, and valsoft-corp all have real examples; rokt/suade/dispel/
+// oktopayments happened to have none in this snapshot -- re-verified during
+// opus review, same date, exact same numbers). A real example, TetraScience's
+// "Chief of Staff to
 // the CEO" (shortcode 996AE60304): one raw entry has
 // `{city: "Boston", state: "Massachusetts"}`, a second has
 // `{city: "Cambridge", state: ""}` — same title, same (byte-identical)
 // description, same `url`. Checked every field on every duplicate-shortcode
-// group in the 414-posting sample: `title`, `description`,
+// group in the 413-posting sample: `title`, `description`,
 // `employment_type`, `telecommuting`, `department`, `url`, `published_on`,
 // and `created_at` were identical within every group, zero exceptions — only
 // the location fields vary. Trimmed real proof of this exact shape (three
@@ -128,7 +133,7 @@ import {
 // `<strong>`, ...) directly, and real ordinary HTML entities (`&amp;` for a
 // literal "&" in body text — e.g. real Valsoft posting "1st Line Service
 // Desk Agent": "...UK, Australia &amp; the US") — confirmed across the
-// 414-posting sample. `htmlToPlainText(raw, { doubleEncoded: false })` (the
+// 413-posting sample. `htmlToPlainText(raw, { doubleEncoded: false })` (the
 // default) is the correct pipeline, same call shape as Lever/Ashby.
 //
 // ---------------------------------------------------------------------------
@@ -151,7 +156,7 @@ import {
 //
 // Unlike Ashby's three-value `workplaceType` enum, every job object here
 // carries exactly one boolean, `telecommuting` — confirmed by enumerating
-// every key on every posting in the 414-posting sample (`title`,
+// every key on every posting in the 413-posting sample (`title`,
 // `shortcode`, `code`, `employment_type`, `telecommuting`, `department`,
 // `url`, `shortlink`, `application_url`, `published_on`, `created_at`,
 // `country`, `city`, `state`, `education`, `experience`, `function`,
@@ -175,7 +180,7 @@ import {
 // values; no compensation field exists anywhere
 // ---------------------------------------------------------------------------
 //
-// Across the 414-posting sample: `employment_type` values observed are
+// Across the 413-posting sample: `employment_type` values observed are
 // `"Full-time"` (386), `""` (empty string, 61), `"Contract"` (10), a literal
 // JSON `null` (4), `"Part-time"` (1), and `"Temporary"` (1).
 // `"Temporary"` has no unambiguous mapping onto `commitment`'s three values
@@ -190,7 +195,7 @@ import {
 // FINDING 7 — `application_url` (the direct apply-form link) over `url`
 // ---------------------------------------------------------------------------
 //
-// `url` and `shortlink` are identical on every posting checked (414/414);
+// `url` and `shortlink` are identical on every posting checked (413/413);
 // `application_url` is always exactly `${url}/apply`. `application_url` is
 // preferred for `linkToApply`, matching Ashby's precedent of preferring the
 // direct application-form link (`applyUrl`) over the posting's description
@@ -476,11 +481,18 @@ type WorkableJob = {
   country?: string;
   city?: string;
   state?: string;
-  /** Always single-entry on every real record checked — one entry per raw
-   * `jobs[]` row, not a multi-location array the way Lever's
-   * `allLocations`/Ashby's `secondaryLocations` are. See Finding 2 for how
-   * multi-location postings actually show up here instead (row
-   * duplication, not a longer array). */
+  /** USUALLY single-entry, but not always — corrected during opus review
+   * (ticket 7bbc47e), which found a real counterexample this comment
+   * previously denied: valsoft-corp shortcode 746829EC0E ("Managing
+   * Director") is ONE raw `jobs[]` row whose own `locations` array has
+   * FOUR entries (Germany/Switzerland/France/Austria). So Workable has
+   * TWO independent multi-location mechanisms, not one: row duplication
+   * (Finding 2, the common case) AND a genuinely multi-entry `locations`
+   * array on a single row (rare, but real). `locationEntriesFor`/
+   * `mergedLocations` already handle both correctly — they read this
+   * field as a real array and union every entry, never assume length 1 —
+   * this doc comment was simply wrong about the data shape, not the code
+   * wrong about handling it. */
   locations?: WorkableLocation[];
   description?: string;
 };

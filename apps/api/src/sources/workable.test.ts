@@ -15,7 +15,12 @@ import { WorkableSource, createWorkableSourceFromEnv } from "./workable.js";
 // groups plus one ordinary single-location control), and
 // __fixtures__/workable-real-response-sylvera-empty.json (a real, verbatim
 // zero-postings response — HTTP 200, `jobs: []`, a genuinely quiet real
-// employer). See workable.ts's top-of-file comment for how these were
+// employer), and __fixtures__/workable-real-response-valsoft-managing-
+// director-trimmed.json (one real raw posting, shortcode 746829EC0E, whose
+// OWN `locations` array has four entries — the second, rarer multi-location
+// mechanism opus review found this ticket's original doc comment wrongly
+// denied existed; see workable.ts's Finding 2 for the full correction).
+// See workable.ts's top-of-file comment for how these were
 // captured (2026-09-23) and what was cross-checked before any mapping was
 // written.
 //
@@ -35,6 +40,9 @@ function loadFixture(name: string): WorkableFixture {
 const dispelFixture = loadFixture("workable-real-response-dispel.json");
 const tetrascienceFixture = loadFixture("workable-real-response-tetrascience-trimmed.json");
 const sylveraFixture = loadFixture("workable-real-response-sylvera-empty.json");
+const valsoftManagingDirectorFixture = loadFixture(
+  "workable-real-response-valsoft-managing-director-trimmed.json",
+);
 
 if (dispelFixture.jobs.length !== 2) {
   throw new Error(
@@ -49,6 +57,17 @@ if (tetrascienceFixture.jobs.length !== 6) {
 if (sylveraFixture.jobs.length !== 0) {
   throw new Error(
     `expected the sylvera fixture (a real, legitimate empty account) to have 0 postings, got ${sylveraFixture.jobs.length}`,
+  );
+}
+if (valsoftManagingDirectorFixture.jobs.length !== 1) {
+  throw new Error(
+    `expected the valsoft-managing-director fixture to have exactly 1 RAW posting (whose own ` +
+      `locations array has 4 entries), got ${valsoftManagingDirectorFixture.jobs.length}`,
+  );
+}
+if ((valsoftManagingDirectorFixture.jobs[0].locations as unknown[]).length !== 4) {
+  throw new Error(
+    "expected the valsoft-managing-director fixture's one posting to have 4 locations[] entries",
   );
 }
 
@@ -328,6 +347,25 @@ describe("WorkableSource — Finding 2: shortcode duplication for multi-location
     expect(skipped).toHaveLength(0);
     expect(jobs).toHaveLength(2);
     expect(jobs.map((j) => j.externalId).sort()).toEqual(["SC0000001", "SC0000002"]);
+  });
+
+  it("also handles the RARER multi-location mechanism: a single raw entry whose OWN locations array has multiple entries, not just row duplication (opus review, ticket 7bbc47e — real Valsoft 'Managing Director' posting, shortcode 746829EC0E)", async () => {
+    const fetchImpl = fetchBySubdomain({
+      "valsoft-corp": () => jsonResponse(valsoftManagingDirectorFixture),
+    });
+    const source = makeSource(fetchImpl, ["valsoft-corp"]);
+
+    const { jobs, skipped } = await source.search({});
+
+    expect(skipped).toHaveLength(0);
+    // One raw posting in, one job out — this isn't row duplication to
+    // collapse, just a single entry whose own `locations` array must be
+    // read in full rather than assumed to have exactly one item.
+    expect(jobs).toHaveLength(1);
+    const job = findJob(jobs, "746829EC0E");
+    for (const country of ["Germany", "Switzerland", "France", "Austria"]) {
+      expect(job.location).toContain(country);
+    }
   });
 });
 
