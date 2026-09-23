@@ -1,0 +1,1 @@
+ALTER TABLE "search_sources" ADD COLUMN "published_job_count" integer;

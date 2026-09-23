@@ -625,18 +625,30 @@ export type SearchSourceState = {
  *   resume) rather than an in-process increment. `linked` is the
  *   denominator that count is "of" — durable for the first time, which is
  *   what a reloaded page needs to rebuild a progress bar.
- * - `"complete"` — nothing is outstanding. `scored` + `permanentlyFailed`
- *   account for every one of the `linked` jobs. `degraded` is exactly
- *   `permanentlyFailed > 0`: a job that could not be scored is a
- *   REPORTABLE OUTCOME, not a blocker (one unscorable posting out of 180
- *   must never hide the other 179 — CLAUDE.md's DLQ philosophy applied one
- *   level down from sources to jobs). There is deliberately no
+ * - `"complete"` — nothing is outstanding. `scored` + `permanentlyFailed` +
+ *   `cappedForBudget` account for every one of the `linked` jobs.
+ *   `degraded` is exactly `permanentlyFailed > 0`: a job that could not be
+ *   scored is a REPORTABLE OUTCOME, not a blocker (one unscorable posting
+ *   out of 180 must never hide the other 179 — CLAUDE.md's DLQ philosophy
+ *   applied one level down from sources to jobs). There is deliberately no
  *   "mostly failed" middle state: real counts plus `degraded` let the UI
  *   decide how loud to be, which is the right place for that decision.
  *   `costEstimate` is NOT on this member any more — it was a
  *   `RunDemoMatchResult` field with no queue-driven analogue (no single
  *   run computes one) and no durable home. `POST /searches/estimate` still
  *   returns it, unchanged; that is where it belongs.
+ *
+ *   THREE-WAY, NOT TWO-WAY (ticket c9c676d). `permanentlyFailed` used to
+ *   be the whole non-`scored` remainder, which conflated two outcomes the
+ *   database has always distinguished (`job_match_failures.kind`) and a
+ *   user would never: a job whose scoring was ATTEMPTED and permanently
+ *   failed (expired key, retired model, retries exhausted) versus one that
+ *   was deliberately NEVER ATTEMPTED because the search hit the scoring
+ *   budget `POST /searches/estimate` priced up front. "We ran out of budget
+ *   for these" is not "these are broken", and reporting a budget-bounded
+ *   run as `degraded` told the user something had gone wrong when nothing
+ *   had. `permanentlyFailed` is now GENUINE FAILURES ONLY and
+ *   `cappedForBudget` carries the rest.
  * - `"failed"` — either the search could not be dispatched at all (no
  *   source's `fetch.source` message could be published), or TOTAL SCORING
  *   FAILURE: every linked job permanently failed and none was scored.
@@ -675,9 +687,19 @@ export type SearchStatusResponse =
       /** Jobs this search has linked SO FAR (it grows while sources are
        * still fetching). The denominator `scoredSoFar` is "of". */
       linked: number;
-      /** Linked jobs that will never be scored — a `score.job` message
-       * that exhausted its retries or failed permanently. */
+      /** Linked jobs whose scoring was ATTEMPTED and will never succeed —
+       * a `score.job` message that exhausted its retries or failed
+       * permanently. Narrowed by ticket c9c676d: budget-capped jobs used to
+       * be counted here too and are now `cappedForBudget`. */
       permanentlyFailed: number;
+      /** Linked jobs the fetch worker deliberately never sent for scoring,
+       * because this search had already spent its shared scoring budget
+       * (`DEFAULT_SCORE_THRESHOLD`, the same number
+       * `POST /searches/estimate` prices). Not a failure: the jobs are
+       * ingested, linked and queryable, they just have no match score.
+       * Already non-zero mid-flight, because the fetch worker adjudicates
+       * the budget as each source lands rather than at the end. */
+      cappedForBudget: number;
       /** False while any source is still `pending`. This is what keeps
        * "every linked job is scored" from reading as TRUE for a search
        * with zero linked jobs — a brand-new search is `pending`, never
@@ -702,16 +724,55 @@ export type SearchStatusResponse =
       resumeId: string;
       /** Linked jobs with a score for this search's resume. */
       scored: number;
-      /** Linked jobs that permanently failed scoring. */
+      /**
+       * Linked jobs whose scoring was ATTEMPTED and permanently failed —
+       * retries exhausted, an expired API key, a retired model id, an
+       * exhausted spend guard. Something went wrong.
+       *
+       * NARROWED BY TICKET c9c676d. This used to be every non-`scored`
+       * linked job, budget-capped ones included; those are now
+       * `cappedForBudget`. A consumer that wants the old "everything that
+       * has no score" number is `permanentlyFailed + cappedForBudget`, but
+       * it almost certainly wants to say something different about each.
+       */
       permanentlyFailed: number;
-      /** Jobs this search linked. `scored + permanentlyFailed === linked`. */
+      /**
+       * Linked jobs the fetch worker deliberately never SENT for scoring,
+       * because this search had already spent its shared scoring budget of
+       * `DEFAULT_SCORE_THRESHOLD` jobs across all its sources — the same
+       * number `POST /searches/estimate` priced and the caller authorized.
+       * Nothing went wrong.
+       *
+       * The jobs are real: ingested, linked, and in `search_results`. They
+       * simply have no match score, and a later run (or a hand-replayed
+       * `score.job`) would score them normally. The honest UI sentence is
+       * "42 more jobs matched but weren't scored — this search hit its
+       * 200-job budget", not an error.
+       *
+       * Durably distinguished in the database by
+       * `job_match_failures.kind = "score-threshold-capped"` since ticket
+       * 4f88339; surfaced here since ticket c9c676d.
+       */
+      cappedForBudget: number;
+      /** Jobs this search linked.
+       * `scored + permanentlyFailed + cappedForBudget === linked`. */
       linked: number;
       sources: SearchSourceState[];
       /** ISO timestamp of the first read that observed this search
        * terminal (schema.ts's `searches.completedAt`). */
       completedAt: string;
-      /** `permanentlyFailed > 0` — finished, but not everything could be
-       * scored. */
+      /**
+       * `permanentlyFailed > 0` — finished, but something actually went
+       * wrong while scoring.
+       *
+       * DELIBERATELY NOT `cappedForBudget > 0` (ticket c9c676d). A run that
+       * only hit its budget is a fully successful run of exactly the size
+       * the user was quoted before starting it; flagging it `degraded`
+       * would train the user to ignore the flag on the searches where it
+       * means something real. The budget is a product decision the caller
+       * already consented to, not a fault. Show `cappedForBudget` plainly
+       * and keep this boolean for faults.
+       */
       degraded: boolean;
     }
   | {
