@@ -534,13 +534,33 @@ function buildDescription(item: RecruiteeOffer): string {
 // replacement" shape as Ashby's `itemLocations`.
 // ---------------------------------------------------------------------------
 
-function formatLocationEntry(entry: RecruiteeLocationEntry): string | undefined {
+// Returns EVERY usable string this one entry contributes, not just one --
+// opus review (ticket d258b0a) found a real bunq posting where `name`
+// ("Istanbul", plain ASCII) and the city/state/country string
+// ("İstanbul, İstanbul, Türkiye", Turkish dotted capital İ) describe the
+// SAME location but are different strings for search purposes:
+// 'İstanbul'.toLowerCase() is "i̇stanbul" (i + a combining dot, U+0307),
+// which does not contain the plain ASCII substring "istanbul" a user would
+// actually type. Picking only the city/state/country form (the prior
+// behavior) silently made 9 of 18 real bunq postings unreachable by an
+// "Istanbul" search. Returning both when they genuinely differ keeps the
+// same "union, not replacement" discipline `itemLocations` already applies
+// one level up, applied here too instead of stopping short at this one
+// field.
+function formatLocationEntry(entry: RecruiteeLocationEntry): string[] {
   const parts = [entry.city, entry.state, entry.country]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim());
-  if (parts.length > 0) return parts.join(", ");
+  const joined = parts.length > 0 ? parts.join(", ") : undefined;
   const name = entry.name?.trim();
-  return name && name.length > 0 ? name : undefined;
+  const hasName = name && name.length > 0;
+
+  if (joined && hasName) {
+    return joined === name ? [joined] : [joined, name];
+  }
+  if (joined) return [joined];
+  if (hasName) return [name];
+  return [];
 }
 
 function itemLocations(item: RecruiteeOffer): string[] {
@@ -552,7 +572,7 @@ function itemLocations(item: RecruiteeOffer): string[] {
     // the type level -- guard the type, not just nullishness, same
     // discipline as Ashby's `validSecondaryLocations`.
     .filter((entry): entry is RecruiteeLocationEntry => typeof entry === "object" && entry !== null)
-    .map(formatLocationEntry)
+    .flatMap(formatLocationEntry)
     .filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 
   const combined = primary ? [primary, ...secondary] : secondary;

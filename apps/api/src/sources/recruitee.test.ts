@@ -329,10 +329,15 @@ describe("RecruiteeSource — mapping against real captured responses", () => {
 
     // Real fixture: location "Amsterdam, Noord-Holland, Netherlands",
     // locations names Amsterdam, İstanbul, AND Sofia — two of the three
-    // never appear in `location` itself.
+    // never appear in `location` itself. Each locations[] entry ALSO
+    // contributes its own plain `name` alongside the fuller
+    // city/state/country string (opus review, ticket d258b0a) — e.g.
+    // "Istanbul" (ASCII) alongside "İstanbul, İstanbul, Türkiye" (Turkish
+    // dotted İ), since the two are different strings for search purposes.
     const reporting = findJob(jobs, 2642872);
     expect(reporting.location).toBe(
-      "Amsterdam, Noord-Holland, Netherlands; İstanbul, İstanbul, Türkiye; Sofia, Sofia (stolitsa), Bulgaria",
+      "Amsterdam, Noord-Holland, Netherlands; Amsterdam; İstanbul, İstanbul, Türkiye; " +
+        "Istanbul; Sofia, Sofia (stolitsa), Bulgaria; Sofia",
     );
   });
 
@@ -351,6 +356,27 @@ describe("RecruiteeSource — mapping against real captured responses", () => {
     // Both 2642872 (Amsterdam/İstanbul/Sofia) and 2745937 (İstanbul/Sofia)
     // have a real Sofia entry in `locations[]`.
     expect(jobs.map((j) => j.externalId).sort()).toEqual(["2642872", "2745937"].sort());
+  });
+
+  it("location filtering matches the plain-ASCII 'Istanbul' even though the derived city/state/country string uses the Turkish dotted İ (opus review, ticket d258b0a)", async () => {
+    // Real postings 2642872 and 2745937 both have a locations[] entry with
+    // city="İstanbul" (Turkish dotted capital İ) AND name="Istanbul" (plain
+    // ASCII, the field a user's free-text search actually matches against).
+    // 'İstanbul'.toLowerCase() is "i̇stanbul" (i + a combining dot, U+0307),
+    // which does not contain the ASCII substring "istanbul" -- before this
+    // fix, formatLocationEntry kept only the city/state/country string and
+    // discarded `name` whenever city/state/country existed, so an ASCII
+    // "Istanbul" search silently found neither posting.
+    const fetchImpl = fetchByCompany({ bunq: () => jsonResponse(bunqFixture) });
+    const source = makeSource(fetchImpl, ["bunq"]);
+
+    const { jobs, skipped } = await source.search({ location: "Istanbul" });
+
+    expect(skipped).toHaveLength(0);
+    // Three real bunq postings have an İstanbul locations[] entry: 2642872
+    // (Reporting Expert), 2745937 (Fraud Operations Analyst), and 2071367
+    // (KYC Analyst — its locations[] name is literally "Istanbul", ASCII).
+    expect(jobs.map((j) => j.externalId).sort()).toEqual(["2071367", "2642872", "2745937"].sort());
   });
 
   it("location filtering matches the singular location's non-place display text ('Remote job') with no locations[] equivalent", async () => {
