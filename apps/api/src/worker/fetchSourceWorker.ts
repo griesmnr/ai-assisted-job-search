@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import type { Job, SearchCriteria as FilterCriteria } from "@app/shared";
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatchFailures, searchSources, searches } from "../db/schema.js";
 import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
 import { DEFAULT_SCORE_THRESHOLD } from "../matching/index.js";
+import { compileFilter } from "../sources/criteria.js";
 import {
   RateLimitedError,
   SourceError,
@@ -23,9 +25,13 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  *
  * Message shapes (JSON bodies on the "jobs" exchange):
  *
- *   fetch.source: { searchId: string; sourceId: string; criteria: SearchCriteria }
+ *   fetch.source: { searchId: string; sourceId: string; criteria: SearchCriteria;
+ *                   filterCriteria?: @app/shared SearchCriteria | null }
  *     - sourceId is a Job["dataSource"] value ("usajobs", "wa-state", ...)
  *       and is how this worker dispatches to the right adapter.
+ *     - `criteria` and `filterCriteria` are two DIFFERENT types that happen
+ *       to share a name — see `FetchSourceMessage` below, which spells out
+ *       why both are on the wire and why conflating them loses information.
  *
  *   score.job: { jobId: string }
  *     - one per job linked to this search, capped at
@@ -249,11 +255,73 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * not "these are broken"). Distinguishing the two in the response means a
  * new field on `SearchStatusResponse` and a frontend change, both out of
  * scope for a fix round; `kind` on the row already carries the distinction
- * durably for whoever picks that up. Related and also still open: the
- * QUALITY FILTER gap documented in routes/searches.ts's header — this cap
- * bounds HOW MANY jobs get scored, not WHICH, so a capped run still scores
- * the first 200 postings in source order rather than the 200 best matches.
- * The two follow-ups belong together.
+ * durably for whoever picks that up. (Still open, ticket c9c676d.)
+ *
+ * THE QUALITY FILTER (ticket 45ea34c — read this before moving the
+ * `compileFilter` call in the handler).
+ *
+ * WHAT WENT WRONG WITHOUT IT. None of the five source adapters does
+ * meaningful server-side title/location filtering (routes/searches.ts's own
+ * header: "every one of these adapters has no (or only partial) server-side
+ * query support"), so until this ticket the user's stated criteria took
+ * effect ONLY on the synchronous paths — the CLI's `runDemoMatch`, which
+ * applies `compileFilter(criteria)` between fetching and scoring, and
+ * `POST /searches/estimate`, which shares that path. The queue path had no
+ * equivalent: it ingested every posting a source returned and published
+ * `score.job` for the first `DEFAULT_SCORE_THRESHOLD` of them IN RAW BOARD
+ * ORDER. Confirmed live 2026-09-23 (git-bug 45ea34c): a search for
+ * titleInclude ["Staff Software Engineer"] / nearLocations ["Seattle, WA"]
+ * — estimated at 1 job — linked all 6,418 Greenhouse postings and scored
+ * 200 mostly-unrelated roles (Account Executive, sales, ...). The cap
+ * bounds HOW MANY jobs a run scores; this filter is what decides WHICH.
+ *
+ * WHERE IT IS APPLIED, AND WHY THERE. On `result.jobs`, BEFORE
+ * `ingestJobsForSearch` — the exact position `runDemoMatch` uses (its
+ * `filter(found)` runs before its own ingest loop), so the two paths agree
+ * on what a search contains, not merely on what it scores. Consequences,
+ * stated plainly because they are load-bearing:
+ *
+ *   - `search_results` and `search_sources.linkedJobCount` only ever hold
+ *     jobs that actually match the user's criteria. That is the CLI's
+ *     established meaning of those rows, and matching it is the whole point.
+ *   - This is NOT in tension with `DEFAULT_SCORE_THRESHOLD`'s "ingestion has
+ *     no truncation-by-order cap at all" contract (matching/scoring.ts), and
+ *     the distinction matters: that contract forbids dropping jobs by
+ *     ARBITRARY POSITION in board order — which is exactly what the "NOT
+ *     chosen: cap before ingest" option under the cap section above would
+ *     have done. Dropping jobs the caller's own criteria reject is not
+ *     truncation; it is the criteria doing their job, and the CLI has always
+ *     done it at this point.
+ *   - Filtering AFTER ingest was considered and rejected: a job that fails
+ *     the user's filter was never part of this search, so recording it as a
+ *     `search_results` row and then a `job_match_failures` row would invent a
+ *     "failure" category for something that never failed, and un-ingesting an
+ *     already-published row is a materially worse data-integrity story than
+ *     never creating one.
+ *   - The cap now applies to an already-relevant pool rather than a whole raw
+ *     board, so it should rarely bind on a normal search at all.
+ *
+ * ONE KNOWN DIFFERENCE FROM THE CLI, deliberate and structural: `compileFilter`
+ * also dedupes on `${company}|${title}`. `runDemoMatch` filters the UNION of
+ * every source's jobs, so its dedupe collapses a cross-posted opening across
+ * sources; this worker sees exactly one source per message, so its dedupe is
+ * PER SOURCE. Making it per-search would need cross-worker coordination for
+ * the same reasons a per-search scoring cap does (see the cap section above).
+ * Duplicates across sources were already deduped one layer down anyway —
+ * `ingestJobsForSearch` upserts on (dataSource, externalId) — this only means
+ * the same role cross-posted to two boards can still be linked twice.
+ *
+ * `compileExcludedForMissingWorkArrangement` (sources/criteria.ts) is
+ * deliberately NOT computed here. It is pure telemetry feeding
+ * `SourceOutcome.excludedForMissingWorkArrangement`, and the queue path has no
+ * `SourceOutcome`: its durable read contract is `SearchSourceState`, which
+ * @app/shared's own doc comment says is deliberately thinner ("no
+ * boardCoverage, no skipRate, no survivedFilter ... persisting the richer
+ * per-source telemetry is real follow-up work, deliberately not smuggled in
+ * here"). Computing it would produce a number with nowhere to go, and for any
+ * EXPLICIT criteria it is identically zero by construction (that function
+ * returns `() => []` for anything but `undefined`). If the richer per-source
+ * telemetry is ever persisted, this is the line it gets computed on.
  */
 
 export const JOBS_EXCHANGE = "jobs";
@@ -310,7 +378,57 @@ const CAPPED_FAILURE_INSERT_CHUNK = 500;
 export type FetchSourceMessage = {
   searchId: string;
   sourceId: string;
+  /**
+   * FETCH-level criteria: `sources/types.ts`'s `SearchCriteria`
+   * (`keyword`/`keywords`/`location`), handed straight to
+   * `source.search()`. This is a QUERY HINT for the source's own API, and
+   * an imprecise one — most adapters act on little or none of it (see that
+   * type's own doc comments). It is NOT, and never was, sufficient to
+   * enforce what the user asked for.
+   */
   criteria: SearchCriteria;
+  /**
+   * LOCAL, post-fetch filter criteria: `@app/shared`'s `SearchCriteria`
+   * (`titleInclude`/`titleExclude`/`nearLocations`/`remoteOk`/
+   * `commitmentIn`), compiled by `compileFilter` (sources/criteria.ts) and
+   * applied to `result.jobs` before ingestion. Ticket 45ea34c.
+   *
+   * SEPARATE FROM `criteria` ABOVE ON PURPOSE. The two are different types
+   * that share a name, and they answer different questions: `criteria` asks
+   * a source to narrow its own result set (best-effort, mostly ignored),
+   * while this decides which postings are actually part of this search.
+   * `routes/searches.ts`'s `buildFetchCriteria` narrows the rich shape down
+   * to `{ keywords: [...] }` for the adapter call — `titleExclude`,
+   * `nearLocations`, `remoteOk` and `commitmentIn` do not survive that
+   * translation — so reusing one field for both would silently throw away
+   * exactly the information `compileFilter` needs.
+   *
+   * THE WIRE FORMAT FOR `compileFilter`'S THREE-WAY STATE (the decision
+   * ticket 45ea34c's scope asked for, made explicit rather than implied):
+   *
+   *   - an OBJECT -> `compileFilter(thatObject)`. An explicit `{}` is a real
+   *     if maximally permissive criteria object (no title/location/commitment
+   *     restriction, company|title dedupe only) — identical to what
+   *     `POST /searches/estimate` does with an explicit `{}` body.
+   *   - `null` -> `compileFilter(undefined)`, i.e. the CLI DEFAULT filter
+   *     (`filterSoftwareEngineeringJobs`). `null`, not "field omitted",
+   *     because JSON.stringify DROPS an `undefined`-valued key, so "the
+   *     caller supplied no criteria" and "the publisher predates this field"
+   *     would otherwise be the same bytes on the wire and could not be told
+   *     apart. `routes/searches.ts` therefore sends an explicit `null` when
+   *     the request body has no `criteria`.
+   *   - ABSENT -> no filtering at all, plus a loud log line naming the
+   *     message. Reachable only from a publisher that predates this field or
+   *     hand-rolls a message (the route always sets it), and the two
+   *     candidate meanings for absence are both wrong in a way worth
+   *     avoiding: silently applying the CLI's opinionated software-engineering
+   *     filter would change what an old message means without anyone asking,
+   *     and rejecting the message outright would dead-letter work that is
+   *     otherwise perfectly valid. Passing it through unfiltered and SAYING SO
+   *     is the one option that neither invents intent nor destroys the
+   *     message.
+   */
+  filterCriteria?: FilterCriteria | null;
 };
 
 export type ScoreJobMessage = {
@@ -531,6 +649,104 @@ function defaultOnHighSkipRate(info: HighSkipRateInfo): void {
   );
 }
 
+/** The closed set `Job["commitment"]` allows. Duplicated here (three
+ * literals) rather than exported from @app/shared because it is a TYPE
+ * there, with no runtime value to import — and a validator has to compare
+ * against real strings. */
+const COMMITMENT_VALUES: ReadonlyArray<NonNullable<Job["commitment"]>> = [
+  "full-time",
+  "part-time",
+  "contract",
+];
+
+function parseStringArrayField(
+  criteria: Record<string, unknown>,
+  field: string,
+): string[] | undefined {
+  const raw = criteria[field];
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) {
+    throw new InvalidMessageError(
+      `fetch.source message field "filterCriteria.${field}" must be an array of strings`,
+    );
+  }
+  return raw as string[];
+}
+
+/**
+ * Validates and normalizes `FetchSourceMessage.filterCriteria`. See that
+ * field's doc comment for what each of the three return values means
+ * (`undefined` = absent, `null` = CLI default, an object = explicit
+ * criteria).
+ *
+ * Rebuilds the object field by field rather than casting the parsed body,
+ * so a malformed payload becomes an `InvalidMessageError` — which
+ * `classify()` already treats as non-retryable, dead-lettering with a real
+ * message — instead of reaching `compileFilter` and throwing something
+ * unclassified from inside `makePhraseMatcher` (`.map` on a non-array,
+ * `.replace` on a number) on every redelivery. Unknown keys are dropped,
+ * not rejected: a newer publisher adding a field must not dead-letter every
+ * message a not-yet-redeployed worker sees.
+ *
+ * Deliberately validates TYPES ONLY, not semantics. An empty-string phrase,
+ * for instance, is passed through untouched even though `compileFilter`
+ * turns it into a match-everything matcher — because `POST /searches/estimate`
+ * passes the request body's criteria to the very same `compileFilter`
+ * without trimming or rejecting it either, and "identical filtering to the
+ * estimate" (this ticket's first acceptance criterion) means identical
+ * including the warts. `commitmentIn` is the one exception, and only
+ * because its failure mode is silent and total: an unrecognized value there
+ * makes a non-empty restriction that NOTHING can satisfy, so every posting
+ * is excluded and the search legitimately returns nothing with no error
+ * anywhere. Worth a loud rejection.
+ */
+function parseFilterCriteria(body: Record<string, unknown>): FilterCriteria | null | undefined {
+  const raw = body.filterCriteria;
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new InvalidMessageError(
+      'fetch.source message field "filterCriteria" must be an object, null, or absent',
+    );
+  }
+
+  const criteria = raw as Record<string, unknown>;
+  const titleInclude = parseStringArrayField(criteria, "titleInclude");
+  const titleExclude = parseStringArrayField(criteria, "titleExclude");
+  const nearLocations = parseStringArrayField(criteria, "nearLocations");
+
+  const remoteOkRaw = criteria.remoteOk;
+  if (remoteOkRaw !== undefined && typeof remoteOkRaw !== "boolean") {
+    throw new InvalidMessageError(
+      'fetch.source message field "filterCriteria.remoteOk" must be a boolean',
+    );
+  }
+
+  const commitmentRaw = parseStringArrayField(criteria, "commitmentIn");
+  if (commitmentRaw !== undefined) {
+    const unknown = commitmentRaw.filter(
+      (value) => !(COMMITMENT_VALUES as readonly string[]).includes(value),
+    );
+    if (unknown.length > 0) {
+      throw new InvalidMessageError(
+        `fetch.source message field "filterCriteria.commitmentIn" has unrecognized value(s) ` +
+          `${unknown.map((v) => JSON.stringify(v)).join(", ")} - allowed: ` +
+          `${COMMITMENT_VALUES.join(", ")}`,
+      );
+    }
+  }
+
+  return {
+    ...(titleInclude !== undefined ? { titleInclude } : {}),
+    ...(titleExclude !== undefined ? { titleExclude } : {}),
+    ...(nearLocations !== undefined ? { nearLocations } : {}),
+    ...(remoteOkRaw !== undefined ? { remoteOk: remoteOkRaw } : {}),
+    ...(commitmentRaw !== undefined
+      ? { commitmentIn: commitmentRaw as NonNullable<Job["commitment"]>[] }
+      : {}),
+  };
+}
+
 export function parseFetchSourceMessage(content: Buffer): FetchSourceMessage {
   let parsed: unknown;
   try {
@@ -555,10 +771,16 @@ export function parseFetchSourceMessage(content: Buffer): FetchSourceMessage {
     throw new InvalidMessageError('fetch.source message missing object field "criteria"');
   }
 
+  const filterCriteria = parseFilterCriteria(body);
+
   return {
     searchId: body.searchId,
     sourceId: body.sourceId,
     criteria: body.criteria as SearchCriteria,
+    // Spread, not `filterCriteria: filterCriteria`: the ABSENT case has to
+    // stay absent (`"filterCriteria" in message === false`), because that
+    // is what the handler below distinguishes from an explicit `null`.
+    ...(filterCriteria !== undefined ? { filterCriteria } : {}),
   };
 }
 
@@ -888,17 +1110,53 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         });
       }
 
+      // THE QUALITY FILTER (ticket 45ea34c). Applied to `result.jobs`
+      // BEFORE ingestion, which is exactly where `runDemoMatch` applies it
+      // (`filter(found)`, matching/pipeline.ts) and therefore where
+      // `POST /searches/estimate` applies it too. See the module doc
+      // comment's "THE QUALITY FILTER" section for why this point and not
+      // post-ingest, and `FetchSourceMessage.filterCriteria` for the wire
+      // format's three-way state.
+      let jobsToIngest = result.jobs;
+      if (message.filterCriteria === undefined) {
+        log(
+          `[fetch.source] NO FILTER CRITERIA ON MESSAGE: source=${message.sourceId} ` +
+            `search=${message.searchId} - this message carries no "filterCriteria" field at all, ` +
+            `so all ${result.jobs.length} posting(s) this source returned are being ingested and ` +
+            `scored unfiltered. A message published by POST /searches always carries the field ` +
+            `(explicitly null when the caller supplied no criteria); this one did not, so it came ` +
+            `from a publisher that predates ticket 45ea34c or hand-rolled the body.`,
+        );
+      } else {
+        // `null` means "the caller supplied no criteria", which
+        // `compileFilter(undefined)` turns into the CLI default filter -
+        // the same three-way mapping POST /searches/estimate gets by
+        // passing an absent request-body field straight through.
+        jobsToIngest = compileFilter(message.filterCriteria ?? undefined)(result.jobs);
+        const removed = result.jobs.length - jobsToIngest.length;
+        if (removed > 0) {
+          log(
+            `[fetch.source] quality filter: source=${message.sourceId} ` +
+              `search=${message.searchId} kept ${jobsToIngest.length} of ${result.jobs.length} ` +
+              `posting(s) (${removed} did not match this search's criteria and are neither ` +
+              `linked nor scored).`,
+          );
+        }
+      }
+
       const { linkedJobIds } = await ingestJobsForSearch(
         db,
         message.searchId,
         message.sourceId,
-        result.jobs,
+        jobsToIngest,
       );
 
       // THE PER-SOURCE SCORING CAP (ticket 4f88339 review round 1, F1).
-      // Everything above this line linked EVERY job the source returned —
-      // ingestion is uncapped, exactly as `DEFAULT_SCORE_THRESHOLD`'s own
-      // doc comment promises. What is capped is SPENDING: at most
+      // Everything above this line linked EVERY job that MATCHED THIS
+      // SEARCH'S CRITERIA (ticket 45ea34c) — ingestion is still uncapped in
+      // the sense `DEFAULT_SCORE_THRESHOLD`'s own doc comment promises:
+      // nothing is dropped by its position in board order. What is capped
+      // is SPENDING: at most
       // `DEFAULT_SCORE_THRESHOLD` of them get a `score.job` message, which
       // is the same constant, applied to the same question, that the CLI
       // path and `POST /searches/estimate` already use. The slice is a

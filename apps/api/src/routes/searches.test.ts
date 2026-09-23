@@ -11,6 +11,7 @@ import { buildApp } from "../index.js";
 import {
   jobMatchFailures,
   jobMatches,
+  jobs as jobsTable,
   searchResults,
   searchSources,
   searches as searchesTable,
@@ -264,6 +265,12 @@ type QueueRig = {
   /** Fetch every message, then score every job it produced. */
   drain(messages: readonly FetchSourceMessage[]): Promise<void>;
   channel: FakeChannel;
+  /** Everything the FETCH worker wrote to its `log` hook. Captured rather
+   * than swallowed (ticket 45ea34c) so a test can assert on a warning the
+   * worker is supposed to emit loudly — an unfiltered message, say — which
+   * is otherwise indistinguishable from the worker silently doing the same
+   * thing. Still silent on stdout, exactly as `log: () => {}` was. */
+  logs: string[];
 };
 
 function makeQueueRig(options: {
@@ -276,11 +283,12 @@ function makeQueueRig(options: {
   scoreMaxAttempts?: number;
 }): QueueRig {
   const channel = fakeChannel();
+  const logs: string[] = [];
   const fetchHandler = createFetchSourceHandler({
     channel,
     db,
     sources: options.sources,
-    log: () => {},
+    log: (message) => logs.push(message),
     onHighSkipRate: () => {},
   });
   const scoreHandler = createScoreJobHandler({
@@ -295,6 +303,7 @@ function makeQueueRig(options: {
 
   const rig: QueueRig = {
     channel,
+    logs,
     async runFetch(message, headers = {}) {
       await fetchHandler(consumeMessage(message, headers));
     },
@@ -1987,6 +1996,357 @@ describe("the in-flight guard under REAL concurrency (ticket 4f88339 review roun
   });
 });
 
+// ---------------------------------------------------------------------------
+// THE QUALITY FILTER ON THE QUEUE PATH (ticket 45ea34c).
+//
+// The defect these pin, confirmed live 2026-09-23: a real search for
+// titleInclude ["Staff Software Engineer"] / nearLocations ["Seattle, WA"]
+// — which `POST /searches/estimate` correctly priced at 1 job — ran through
+// the queue and ignored that criteria completely, linking all 6,418
+// Greenhouse postings and scoring the first 200 IN RAW BOARD ORDER (Account
+// Executive, sales, ...). The criteria never reached the worker: the
+// `fetch.source` message carried only `buildFetchCriteria`'s narrowed
+// title-keyword hint for the adapter's own query.
+//
+// `compileFilter` itself is unit-tested in sources/criteria.test.ts, and the
+// CLI default's regexes in matching/swe-filter.test.ts. These are
+// deliberately NOT that: they drive the real route, the real publisher
+// payload, and the real `fetchSourceWorker` handler over a source returning
+// a MIX of matching and non-matching postings, with the matching ones LAST
+// in board order so a "first N in whatever the board returned" regression
+// cannot pass.
+// ---------------------------------------------------------------------------
+
+/** Board order for the headline test: three postings that miss the criteria
+ * for three different reasons, then the two that actually match. Distinct
+ * companies throughout, so `compileFilter`'s `company|title` dedupe never
+ * gets to explain a result on its own. */
+function mixedBoard(suffix: string): NormalizedJob[] {
+  return [
+    // Right city, wrong role — the exact shape the live run scored 200 of.
+    fakeJob(`qf-miss-title-${suffix}`, "Account Executive, Commercial", {
+      company: "Sales Co",
+      location: "Seattle, WA",
+      locationType: "onsite",
+    }),
+    // Right role, wrong city — and `remoteOk: false`, so nothing rescues it.
+    fakeJob(`qf-miss-location-${suffix}`, "Staff Software Engineer", {
+      company: "Austin Co",
+      location: "Austin, TX",
+      locationType: "onsite",
+    }),
+    // Wrong on both counts, and remote — proving `remoteOk: false` really
+    // does mean "a confirmed-remote posting is not automatically in".
+    fakeJob(`qf-miss-both-${suffix}`, "Accountant II", {
+      company: "Books Co",
+      location: "Remote - US",
+      locationType: "remote",
+    }),
+    fakeJob(`qf-hit-exact-${suffix}`, "Staff Software Engineer", {
+      company: "Hit Co One",
+      location: "Seattle, WA",
+      locationType: "onsite",
+    }),
+    // Title match by word-boundary substring, location match inside a
+    // longer string — both are things `compileFilter` is supposed to allow.
+    fakeJob(`qf-hit-suffixed-${suffix}`, "Staff Software Engineer, Platform", {
+      company: "Hit Co Two",
+      location: "Seattle, WA (hybrid)",
+      locationType: "hybrid",
+    }),
+  ];
+}
+
+const NARROW_CRITERIA = {
+  titleInclude: ["Staff Software Engineer"],
+  nearLocations: ["Seattle, WA"],
+  remoteOk: false,
+};
+
+describe("the quality filter on the queue path (ticket 45ea34c)", () => {
+  async function linkedExternalIds(searchId: string): Promise<string[]> {
+    const rows = await db
+      .select({ externalId: jobsTable.externalId })
+      .from(searchResults)
+      .innerJoin(jobsTable, eq(searchResults.jobId, jobsTable.id))
+      .where(eq(searchResults.searchId, searchId));
+    return rows.map((r) => r.externalId).sort();
+  }
+
+  it("a narrow search links and scores ONLY the postings matching its criteria, not the ones the board happened to return first", async () => {
+    const suffix = randomUUID();
+    const board = mixedBoard(suffix);
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: NARROW_CRITERIA },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+
+    // 1. The criteria are ON THE WIRE, whole — not reduced to the adapter's
+    //    title-keyword hint, which is what left the worker with nothing to
+    //    filter on.
+    expect(publisher.published).toHaveLength(1);
+    expect(publisher.published[0]?.filterCriteria).toEqual(NARROW_CRITERIA);
+    expect(publisher.published[0]?.criteria).toEqual({
+      keywords: ["Staff Software Engineer"],
+    });
+
+    // 2. The worker applies them BEFORE ingesting: the three misses never
+    //    become `search_results` rows at all, mirroring the CLI path.
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(publisher.published[0]!);
+
+    expect(await linkedExternalIds(searchId)).toEqual([
+      `qf-hit-exact-${suffix}`,
+      `qf-hit-suffixed-${suffix}`,
+    ]);
+
+    // 3. And only those two are paid to be scored.
+    const scoreJobs = rig.takeScoreJobs();
+    expect(scoreJobs).toHaveLength(2);
+
+    // 4. The ledger agrees — `linkedJobCount` counts matches, not the board.
+    const sourceRows = await db
+      .select()
+      .from(searchSources)
+      .where(eq(searchSources.searchId, searchId));
+    expect(sourceRows[0]?.status).toBe("complete");
+    expect(sourceRows[0]?.linkedJobCount).toBe(2);
+
+    for (const scoreJob of scoreJobs) await rig.runScore(scoreJob);
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("complete");
+    expect(body.linked).toBe(2);
+    expect(body.scored).toBe(2);
+    expect(body.degraded).toBe(false);
+
+    const results = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+    expect((results.json() as { results: unknown[] }).results).toHaveLength(2);
+  });
+
+  it("the queue path keeps exactly the postings POST /searches/estimate priced — the acceptance criterion, asserted as an equality between the two routes", async () => {
+    // The live defect was precisely a disagreement between these two: the
+    // estimate said 1 job, the run scored 200. Separate resumes so the
+    // in-flight guard never sees the two runs as one.
+    const suffix = randomUUID();
+    const board = mixedBoard(suffix);
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+
+    const estimateResumeId = await createResume(app);
+    const estimate = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId: estimateResumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: NARROW_CRITERIA,
+      },
+    });
+    const estimateBody = estimate.json() as {
+      candidatesNeedingScore: number;
+      costEstimate: { jobCount: number };
+    };
+    expect(estimateBody.candidatesNeedingScore).toBe(2);
+    expect(estimateBody.costEstimate.jobCount).toBe(2);
+
+    const runResumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: runResumeId, sourceIds: [DATA_SOURCE], criteria: NARROW_CRITERIA },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(publisher.published[0]!);
+
+    const linked = await linkedExternalIds(searchId);
+    expect(linked).toHaveLength(estimateBody.candidatesNeedingScore);
+    expect(rig.takeScoreJobs()).toHaveLength(estimateBody.costEstimate.jobCount);
+  });
+
+  it("no `criteria` in the request body travels as an explicit null and applies the CLI DEFAULT filter, exactly as the estimate does", async () => {
+    // The `null`-not-omitted half of the wire format: `JSON.stringify`
+    // drops an undefined-valued key, so "the caller supplied no criteria"
+    // has to be spelled out or it is indistinguishable from a message
+    // published before the field existed.
+    const suffix = randomUUID();
+    const board = [
+      fakeJob(`qf-default-miss-${suffix}`, "Account Executive", {
+        company: "Sales Co",
+        location: "Seattle, WA",
+        locationType: "onsite",
+      }),
+      matchingJob(`qf-default-hit-${suffix}`),
+    ];
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE] },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    expect(publisher.published[0]?.filterCriteria).toBeNull();
+    expect("filterCriteria" in (publisher.published[0] ?? {})).toBe(true);
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(publisher.published[0]!);
+
+    expect(await linkedExternalIds(searchId)).toEqual([`qf-default-hit-${suffix}`]);
+    expect(rig.takeScoreJobs()).toHaveLength(1);
+  });
+
+  it("an explicit empty `{}` still means 'filter nothing' on the queue path too — a non-engineering posting is linked and scored", async () => {
+    // The third arm of the three-way state, and the one every other test in
+    // this file leans on: `{}` is a real criteria object that restricts
+    // nothing, NOT a synonym for the CLI default.
+    const suffix = randomUUID();
+    const board = [
+      fakeJob(`qf-optout-${suffix}`, "Account Executive", {
+        company: "Sales Co",
+        location: "Seattle, WA",
+        locationType: "onsite",
+      }),
+    ];
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    expect(publisher.published[0]?.filterCriteria).toEqual({});
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(publisher.published[0]!);
+
+    expect(await linkedExternalIds(searchId)).toEqual([`qf-optout-${suffix}`]);
+    expect(rig.takeScoreJobs()).toHaveLength(1);
+  });
+
+  it("a message with NO filterCriteria field at all is processed unfiltered AND says so loudly, rather than silently inventing a filter or dead-lettering valid work", async () => {
+    // Backward compatibility with anything that published a `fetch.source`
+    // message before this field existed. The two tempting alternatives are
+    // both worse: applying the CLI default would change what an old message
+    // means without anyone asking, and rejecting it would dead-letter work
+    // that is otherwise perfectly valid.
+    const suffix = randomUUID();
+    const board = mixedBoard(suffix);
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: NARROW_CRITERIA },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    // Strip the field back off, reproducing a pre-45ea34c publisher.
+    const { filterCriteria: _dropped, ...legacyMessage } = publisher.published[0]!;
+    expect("filterCriteria" in legacyMessage).toBe(false);
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+    await rig.runFetch(legacyMessage);
+
+    // Unfiltered: all five postings, including the three the criteria on
+    // the ORIGINAL message would have rejected.
+    expect(await linkedExternalIds(searchId)).toHaveLength(board.length);
+    expect(rig.takeScoreJobs()).toHaveLength(board.length);
+    expect(rig.logs.some((line) => line.includes("NO FILTER CRITERIA ON MESSAGE"))).toBe(true);
+  });
+
+  it("a malformed filterCriteria dead-letters as an invalid message instead of throwing out of the handler", async () => {
+    // `compileFilter` would otherwise reach `.map` on a non-array or
+    // `.replace` on a number and throw something `classify()` files under
+    // "unknown" — i.e. RETRYABLE — so a permanently-broken body would burn
+    // every retry tier before dead-lettering, on every redelivery.
+    const suffix = randomUUID();
+    const board = mixedBoard(suffix);
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), board),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: NARROW_CRITERIA },
+    });
+    const { searchId } = started.json() as { searchId: string };
+    const good = publisher.published[0]!;
+
+    const malformed = [
+      "not an object at all",
+      { titleInclude: "software engineer" },
+      { remoteOk: "yes" },
+      { commitmentIn: ["fulltime"] },
+    ];
+
+    for (const filterCriteria of malformed) {
+      const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(board) } });
+      await rig.runFetch({ ...good, filterCriteria } as unknown as FetchSourceMessage);
+
+      // Dead-lettered on the first attempt (non-retryable), nothing
+      // published, nothing written.
+      expect(rig.channel.nacked).toHaveLength(1);
+      expect(rig.channel.acked).toHaveLength(0);
+      expect(rig.channel.sentToQueue).toHaveLength(0);
+      expect(rig.takeScoreJobs()).toHaveLength(0);
+      expect(await linkedExternalIds(searchId)).toEqual([]);
+    }
+  });
+});
+
 /**
  * DELETED WITH THIS TICKET, RECORDED RATHER THAN SILENTLY DROPPED
  * (ticket 4f88339):
@@ -2019,4 +2379,10 @@ describe("the in-flight guard under REAL concurrency (ticket 4f88339 review roun
  *    default's regexes), and `demo-match.test.ts` (the filter end to end
  *    through `runDemoMatch`, which `POST /searches/estimate` and the CLI
  *    both still use).
+ *
+ *    UPDATE (ticket 45ea34c): that follow-up ticket exists and is done —
+ *    the queue path applies the filter again, and "the quality filter on
+ *    the queue path" above is the queue-shaped replacement for this
+ *    coverage. It is not a restoration of the deleted tests: those drove
+ *    `runDemoMatch` through the route, which this route no longer calls.
  */
