@@ -168,6 +168,20 @@ const searchCriteriaSchema = {
     titleExclude: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
     nearLocations: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
     remoteOk: { type: "boolean" },
+    // Ticket 807561c: `@app/shared`'s `SearchCriteria.commitmentIn` (added by
+    // ticket 18c9f18, and already wired all the way through
+    // `compileFilter`/the web UI's checkboxes) was never added HERE, so
+    // `additionalProperties: false` below rejected every request that set
+    // it with a 400 naming `commitmentIn` -- live-reproduced, checking any
+    // of the UI's Full-time/Part-time/Contract filters broke the search
+    // outright. The enum mirrors `Job["commitment"]` (packages/shared)
+    // exactly, the same way this schema mirrors every other
+    // `SearchCriteria` field's shape/rigor.
+    commitmentIn: {
+      type: "array",
+      items: { type: "string", enum: ["full-time", "part-time", "contract"] },
+      maxItems: 3,
+    },
   },
   additionalProperties: false,
 } as const;
