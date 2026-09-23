@@ -4,22 +4,26 @@
  * it, and whether that adapter is currently configured (env vars present).
  *
  * Exists because `demo-match.ts`'s `main()` used to be the only place that
- * knew "these five ids have `createXSourceFromEnv` factories, try each and
+ * knew "these ids have `createXSourceFromEnv` factories, try each and
  * skip the ones that throw" — duplicating that list (and its skip-on-throw
  * behavior) inside a route handler would drift from `main()`'s the moment
  * either changed. This module is the one place both the CLI's underlying
  * list and the API's route handlers can share, built from
- * `db/seed.ts`'s `SOURCE_DESCRIPTORS` (the canonical six-id list already
- * used to seed the `source_descriptors` table) rather than a third
- * hand-maintained copy.
+ * `db/seed.ts`'s `SOURCE_DESCRIPTORS` (the canonical nine-id list already
+ * used to seed the `source_descriptors` table — eight of which have a
+ * `BUILDERS` entry below; `"wa-state"` does not, see its own comment)
+ * rather than a third hand-maintained copy.
  */
 import type { Job, SkippedSource, SourceHealth } from "@app/shared";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 import { createAshbySourceFromEnv } from "./ashby.js";
 import { createGreenhouseSourceFromEnv } from "./greenhouse.js";
 import { createLeverSourceFromEnv } from "./lever.js";
+import { createRecruiteeSourceFromEnv } from "./recruitee.js";
+import { createRipplingSourceFromEnv } from "./rippling.js";
 import { createSmartRecruitersSourceFromEnv } from "./smartrecruiters.js";
 import { createUsajobsSourceFromEnv } from "./usajobs.js";
+import { createWorkableSourceFromEnv } from "./workable.js";
 import type { JobSource } from "./types.js";
 
 /**
@@ -35,6 +39,9 @@ const BUILDERS: Partial<Record<Job["dataSource"], () => JobSource>> = {
   lever: createLeverSourceFromEnv,
   ashby: createAshbySourceFromEnv,
   smartrecruiters: createSmartRecruitersSourceFromEnv,
+  workable: createWorkableSourceFromEnv,
+  recruitee: createRecruiteeSourceFromEnv,
+  rippling: createRipplingSourceFromEnv,
 };
 
 /**
@@ -55,6 +62,9 @@ const SOURCE_DESCRIPTIONS: Partial<Record<Job["dataSource"], string>> = {
   lever: "Outreach, Palantir, Wealthfront, Rover.",
   ashby: "Ramp, Notion, Vanta, Temporal.",
   smartrecruiters: "Nike, Starbucks, Nordstrom, and other large enterprises.",
+  workable: "Rokt, Seeq, TetraScience, and other SaaS companies.",
+  recruitee: "Bunq, Channable, Nmbrs, and other European SaaS companies.",
+  rippling: "Rippling, Carbon Health, QuotaPath, and other Rippling-hosted employers.",
 };
 
 /**
