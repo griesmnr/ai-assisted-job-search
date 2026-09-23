@@ -1036,6 +1036,106 @@ describe("DLQ terminability (design §6.4, §8)", () => {
     expect(body.degraded).toBe(true);
   });
 
+  it("a job whose score.job dies in the worker's OUTER catch — not in the scoring loop — still reaches complete+degraded instead of sitting pending until the staleness backstop (ticket 96fc30d)", async () => {
+    // The gap this pins: the scoring call itself SUCCEEDS here, and the
+    // handler falls over afterwards, inserting `job_matches` (a Postgres
+    // blip). That error lands in the handler's outer catch, which used to
+    // dead-letter writing nothing at all — leaving the job with neither a
+    // `job_matches` nor a `job_match_failures` row, so this search's
+    // `outstanding` count never reached 0 and it read `pending` for the
+    // full 45-minute `STALL_AFTER_MS` window before being called stalled.
+    const good = matchingJob(`outer-ok-${randomUUID()}`);
+    const doomed = matchingJob(`outer-blip-${randomUUID()}`);
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [good, doomed]),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    // A `db` that is the real one except that the `job_matches` insert
+    // fails while `failTheInsert` is set — which is how one specific
+    // score.job message is made to die outside the per-resume loop while
+    // its sibling goes through untouched. Everything else (including the
+    // fetch worker's own writes and the `job_match_failures` write on the
+    // dead-letter path) is delegated to the real db, bound to it so
+    // drizzle's builders never see the proxy as `this`.
+    let failTheInsert = false;
+    const blippyDb = new Proxy(db as object, {
+      get(target, prop) {
+        if (prop === "insert") {
+          return (table: unknown) => {
+            if (failTheInsert && table === jobMatches) {
+              throw new Error("simulated Postgres blip on the job_matches insert");
+            }
+            return (db.insert as (t: never) => unknown)(table as never);
+          };
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === "function"
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as NodePgDatabase;
+
+    const rig = makeQueueRig({
+      sources: { [DATA_SOURCE]: new FakeSource([good, doomed]) },
+      db: blippyDb,
+      // The first failure is already the last attempt, so the outer catch
+      // takes its retries-exhausted branch with no waiting.
+      scoreMaxAttempts: 1,
+    });
+    await rig.runFetch(publisher.published[0]!);
+    const scoreJobs = rig.takeScoreJobs();
+    expect(scoreJobs).toHaveLength(2);
+
+    const linkedJobIds = (
+      await db.select().from(searchResults).where(eq(searchResults.searchId, searchId))
+    ).map((row) => row.jobId);
+    const doomedRow = await db
+      .select()
+      .from(jobsTable)
+      .where(eq(jobsTable.externalId, doomed.externalId));
+    const doomedJobId = doomedRow[0]!.id;
+    expect(linkedJobIds).toContain(doomedJobId);
+
+    for (const scoreJob of scoreJobs) {
+      failTheInsert = scoreJob.jobId === doomedJobId;
+      await rig.runScore(scoreJob);
+    }
+
+    // It really did dead-letter, and it really did score first — the
+    // failure is entirely outside the per-resume loop.
+    expect(rig.channel.nacked).toHaveLength(1);
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.searchId, searchId));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.jobId).toBe(doomedJobId);
+    expect(failures[0]?.kind).toBe("handler-unknown");
+    expect(failures[0]?.errorMessage).toContain("simulated Postgres blip");
+
+    const body = await getStatus(app, searchId);
+    expect(body.status).toBe("complete");
+    expect(body.status).not.toBe("pending");
+    expect(body.stalledSince).toBeUndefined();
+    expect(body.linked).toBe(2);
+    expect(body.scored).toBe(1);
+    expect(body.permanentlyFailed).toBe(1);
+    expect(body.degraded).toBe(true);
+    expect(body.scored! + body.permanentlyFailed! + body.cappedForBudget!).toBe(body.linked);
+  });
+
   it("TOTAL scoring failure is reported as failed, not as a normal complete (design §8)", async () => {
     const job = matchingJob(`total-fail-${randomUUID()}`);
     const publisher = fakePublisher();
