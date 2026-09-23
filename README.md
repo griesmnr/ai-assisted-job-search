@@ -308,7 +308,8 @@ mechanism) to use real historical per-call averages instead of the
 bootstrap estimate; started via `pnpm dev` (cwd `apps/api`), that read
 misses and the estimate silently falls back to the less-accurate bootstrap
 basis. Same underlying issue step 7 below warns about for the scoring
-worker — not yet fixed for the route that reads it at estimate time.
+worker — not yet fixed for the route that reads it at estimate time
+(ticket `2b93534`).
 
 Open `http://localhost:5173` and the app is live against whatever
 Postgres/RabbitMQ instance step 2 started.
