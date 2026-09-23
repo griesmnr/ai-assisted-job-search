@@ -254,10 +254,9 @@ before it happens:
   per-search scoring cap — is closed. Both landed the day after this ADR
   was first written: ticket `45ea34c` wired the quality filter into
   `fetchSourceWorker`, and ticket `c9c676d` made the scoring cap
-  genuinely per-search (see `DEFAULT_SCORE_THRESHOLD`, `matching/
-scoring.ts`) with capped-vs-failed jobs reported honestly rather than
-  conflated. Neither changed this document's own retry/DLQ/idempotency
-  design.
+  genuinely per-search (see `DEFAULT_SCORE_THRESHOLD`, `matching/scoring.ts`)
+  with capped-vs-failed jobs reported honestly rather than conflated.
+  Neither changed this document's own retry/DLQ/idempotency design.
 
 ## Notes
 

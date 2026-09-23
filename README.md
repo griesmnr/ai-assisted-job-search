@@ -80,7 +80,7 @@ flowchart LR
     API -->|"1 fetch.source msg\nper selected source"| FQ["fetch.source queue"]
     FQ --> FW["fetch.source worker"]
     FW -->|filter + normalize + upsert| DB[(Postgres)]
-    FW -->|"1 score.job msg\nper linked job"| SQ["score.job queue"]
+    FW -->|"1 score.job msg\nper newly-linked job\n(budget permitting)"| SQ["score.job queue"]
     SQ --> SW["score.job worker"]
     SW -->|resume + description| Claude["Claude\n(match score)"]
     Claude --> SW
@@ -216,8 +216,11 @@ never look identical to a complete one.
   with Node 22) makes the `pnpm` command resolve to the pinned version.
 - Docker Desktop, for Postgres and RabbitMQ.
 - An Anthropic API key — not needed for `pnpm install`, migrations, or
-  `pnpm test`/`pnpm lint`, but required before step 5
-  (`demo-match.ts`); see that step for why it can't be skipped silently.
+  `pnpm test`/`pnpm lint`, but required before step 5 (`demo-match.ts`; see
+  that step for why it can't be skipped silently), and again for step 7's
+  scoring worker and for real (non-`estimateOnly`) `POST /searches` calls
+  in step 6 — the same key, just two different processes that each need
+  it in their own environment.
 
 ### 1. Enable pnpm and configure environment
 
@@ -262,12 +265,17 @@ pnpm lint           # eslint . && prettier --check .
 ```
 
 `vitest.config.ts` aliases `@app/shared` to its TypeScript source, so tests
-run against current source without a build step first. Six test files
-connect to a real Postgres instance (`db/schema.test.ts`, `db/seed.test.ts`,
-`db/migration-0004.test.ts`, `ingest/ingestJobs.test.ts`,
-`demo-match.test.ts`, `worker/fetchSourceWorker.test.ts` — the last of
-those also needs a real RabbitMQ connection), so step 2 has to have
-happened first.
+run against current source without a build step first. 16 test files
+connect to a real Postgres instance — every `db/migration-*.test.ts`, plus
+`db/schema.test.ts`, `db/seed.test.ts`, `db/user-job-statuses.test.ts`,
+`demo-match.test.ts`, `ingest/ingestJobs.test.ts`, every `routes/*.test.ts`,
+`scripts/rescore-existing-matches.test.ts`, and both `worker/*.test.ts`
+files — with `worker/fetchSourceWorker.test.ts` and
+`worker/scoreJobWorker.test.ts` also needing a real RabbitMQ connection —
+so step 2 has to have happened first. (Stale here before this audit: this
+paragraph still described the pre-epic file count — REST routes,
+`scoreJobWorker`, and most of the migration tests were added by the same
+work this whole README was rewritten to reflect, ticket 7472002.)
 
 ### 5. Run the end-to-end pipeline
 
@@ -436,9 +444,14 @@ $ pnpm test
    Duration  43.08s (transform 4.07s, setup 0ms, import 51.85s, tests 87.24s, environment 71.55s)
 ```
 
-The one failing file is `worker/fetchSourceWorker.test.ts` — it needs a live
-RabbitMQ connection (see step 4 above); every other file, including every
-other queue/worker/route test, passes.
+The one failing file is `worker/fetchSourceWorker.test.ts`; its 19 tests
+show as "skipped" above because its top-level `beforeAll` throws before any
+of them run. In a normal clone, following steps 1-2 (`.env` populated,
+`docker compose up -d` for Postgres + RabbitMQ), it passes along with
+everything else — this specific run was captured from an environment
+without `RABBITMQ_DEFAULT_USER`/`_PASS`/`_HOST`/`_PORT` set, which fails
+before it ever tries to reach a broker. Every other file, including every
+other queue/worker/route test, passes regardless.
 
 ## Project layout
 
