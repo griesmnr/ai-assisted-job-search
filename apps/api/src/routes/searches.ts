@@ -41,26 +41,32 @@
  * ceiling, ticket b53c422) remains the last-resort backstop underneath it,
  * not the only one.
  *
- * KNOWN GAP, FLAGGED DELIBERATELY (ticket 4f88339 — needs its own
- * follow-up ticket, do not assume it is handled somewhere else): the
- * QUALITY FILTER below (`compileFilter`) is a LOCAL, post-fetch filter
- * that `runDemoMatch` applied between fetching and scoring. The queue path
- * has no equivalent — `fetchSourceWorker` ingests everything a source
- * returns and publishes a `score.job` for the first
- * `DEFAULT_SCORE_THRESHOLD` linked jobs IN SOURCE ORDER — so the filter
- * currently only takes effect on `POST /searches/estimate` (still
- * synchronous) and the CLI. Note how this interacts with the per-source
- * cap added in review round 1 (see above): the cap bounds HOW MANY jobs a
- * run scores, not WHICH, so a capped queue-driven run scores the first 200
- * postings a source happened to return rather than the 200 most relevant.
- * That makes closing this gap more valuable, not less — the two follow-ups
- * belong in one ticket. Design c54b9e0, which this ticket implements,
- * does not address it. Carrying the caller's filter criteria on the
- * `fetch.source` message and applying it before ingest is the obvious fix,
- * but it needs a real decision about the wire format for the filter's
- * three-way state (no `criteria` field at all -> the CLI default filter;
- * an explicit `criteria` -> `compileFilter(criteria)`; an explicit `{}`
- * -> no filtering), which is why it is not improvised here.
+ * CLOSED (ticket 45ea34c) — this paragraph used to flag the QUALITY FILTER
+ * as a known gap in the queue path, and it is worth keeping the history:
+ * the filter below (`compileFilter`) is a LOCAL, post-fetch filter that
+ * `runDemoMatch` applies between fetching and scoring, and ticket 4f88339's
+ * queue path shipped with no equivalent. `fetchSourceWorker` ingested
+ * everything a source returned and published `score.job` for the first
+ * `DEFAULT_SCORE_THRESHOLD` linked jobs IN RAW SOURCE ORDER, so the user's
+ * stated criteria took effect only on `POST /searches/estimate` (still
+ * synchronous) and the CLI. Live consequence, 2026-09-23: a search for a
+ * specific Seattle staff-engineering title, estimated at 1 job, linked all
+ * 6,418 Greenhouse postings and scored 200 unrelated sales roles.
+ *
+ * The fix: `POST /searches` now puts the caller's full `@app/shared`
+ * `SearchCriteria` on every `fetch.source` message as `filterCriteria`
+ * (SEPARATE from the narrowed, source-query-hint `criteria` field —
+ * `buildFetchCriteria` below drops everything but titles, so the two cannot
+ * share a slot), and the worker applies `compileFilter` to it before
+ * ingesting. The wire format for the filter's three-way state — absent
+ * `criteria` -> the CLI default filter, an explicit `criteria` ->
+ * `compileFilter(criteria)`, an explicit `{}` -> permissive/dedupe-only —
+ * is encoded as `object | null | absent`; see
+ * `FetchSourceMessage.filterCriteria`'s doc comment for why `null` rather
+ * than an omitted key carries "no criteria supplied". The per-source
+ * scoring cap (above) is unchanged and still orthogonal: it bounds HOW MANY
+ * jobs a run scores, this bounds WHICH — but it now applies to an
+ * already-relevant pool, so it should rarely bind on a normal search.
  *
  * Amended (ticket 39b4a48): `POST /resumes` also makes one real, small,
  * BOUNDED Claude call per genuinely-new resume (title-keyword inference,
@@ -95,8 +101,10 @@
  * present in the request body) or `compileFilter(undefined)` (when it's
  * absent — which reproduces the CLI's filter EXACTLY, see criteria.ts) is
  * what a caller gets by default; passing an explicit empty `{}` is how a
- * caller opts out of filtering entirely. See the KNOWN GAP above for where
- * this does and does not currently apply.
+ * caller opts out of filtering entirely. Since ticket 45ea34c this applies
+ * on BOTH routes — the estimate compiles it here, and `POST /searches`
+ * ships it to `fetchSourceWorker` on the message so the queue path compiles
+ * the identical filter (see the CLOSED paragraph above).
  */
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -207,6 +215,13 @@ export const STALL_AFTER_MS = 45 * 60 * 1000;
  * every `fetch.source` message (ticket 4f88339) — it was already exactly
  * the shape `FetchSourceMessage` carries, which is why no translation
  * layer was needed.
+ *
+ * It is NOT sufficient for LOCAL filtering, and must never be repurposed as
+ * such (ticket 45ea34c): this function deliberately keeps only title
+ * phrases, so `titleExclude`, `nearLocations`, `remoteOk` and
+ * `commitmentIn` are gone by the time the result leaves here. The worker
+ * gets the caller's untranslated `@app/shared` criteria in a SEPARATE
+ * message field (`filterCriteria`) for exactly that reason.
  *
  * Deliberately omitted when `titleInclude` is empty/absent: that already
  * means "no title restriction, search every title" (ticket 39b4a48's
@@ -897,6 +912,19 @@ export function registerSearchRoutes(
         searchId,
         sourceId: source.dataSource,
         criteria: fetchCriteria,
+        // Ticket 45ea34c: the caller's FULL criteria ride alongside the
+        // narrowed fetch-level hint above, so `fetchSourceWorker` can apply
+        // `compileFilter(criteria)` — the identical filter the estimate
+        // route applies two handlers up — before ingesting or scoring
+        // anything. `?? null` is load-bearing and not a style choice:
+        // `JSON.stringify` drops an `undefined`-valued key, so sending
+        // `criteria` bare would make "the caller supplied no criteria"
+        // (which must mean the CLI default filter, exactly as it does for
+        // the estimate) indistinguishable on the wire from a pre-45ea34c
+        // publisher that knows nothing about the field. See
+        // `FetchSourceMessage.filterCriteria` for the full three-way
+        // mapping.
+        filterCriteria: criteria ?? null,
       }));
 
       let failures: Awaited<ReturnType<PublishFetchSourceFn>>;
