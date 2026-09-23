@@ -182,6 +182,34 @@ gender, sexual orientation, age, marital status, veteran status, or
 disability status.
 `;
 
+/**
+ * THE KNOWN FALSE-MERGE CASE (ticket 78d31b7, review F2a). A HEAVILY
+ * TEMPLATED employer: two genuinely different reqs where the ATS template
+ * supplies everything except one "The Role" paragraph — the About block, the
+ * responsibilities, the requirements, compensation and EEO are all
+ * company-wide copy pasted verbatim into both.
+ *
+ * This one DOES merge at the shipped 0.65 threshold (measured 0.676,
+ * 2026-09-23). It is here precisely because it merges: `DESCRIPTION_
+ * SIMILARITY_THRESHOLD`'s doc comment used to describe the false-merge
+ * region as needing "more than ~70% verbatim shared boilerplate", implying
+ * nothing realistic reaches it. This fixture is 75.5% verbatim shared
+ * boilerplate (77 role-specific tokens of 314) and is entirely realistic —
+ * plenty of employers write exactly one bespoke paragraph per req. See that
+ * doc comment for the corrected narrative.
+ *
+ * Deliberately derived from `SAME_REQ_ATS_A` rather than written out again,
+ * so "only the role paragraph differs" is guaranteed by construction instead
+ * of by careful copy-editing. `textSimilarity.test.ts` asserts the
+ * substitution actually happened.
+ */
+const THE_ROLE_SECTION = /The Role[\s\S]*?\n\nWhat you will do/;
+
+export const TEMPLATED_COMPANY_DIFFERENT_REQ = SAME_REQ_ATS_A.replace(
+  THE_ROLE_SECTION,
+  THE_ROLE_SECTION.exec(DIFFERENT_REQ_SAME_COMPANY)?.[0] ?? "",
+);
+
 /** The same req as ATS_A, with the second platform's own footer appended. */
 export const SAME_REQ_WITH_PLATFORM_FOOTER =
   SAME_REQ_ATS_A +

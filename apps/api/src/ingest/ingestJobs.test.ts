@@ -146,7 +146,11 @@ describe("ingestJobsForSearch", () => {
   it("returns empty results for an empty jobs array without touching the DB", async () => {
     const db = testDb.db;
     const result = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, []);
-    expect(result).toEqual({ linkedJobIds: [], newlyInsertedJobIds: [] });
+    expect(result).toEqual({
+      linkedJobIds: [],
+      newlyInsertedJobIds: [],
+      crossSourceMerges: [],
+    });
   });
 
   it(

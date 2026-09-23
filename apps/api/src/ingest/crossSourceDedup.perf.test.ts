@@ -32,6 +32,20 @@ import {
  *   check ON, no candidates (today's state)  163 ms   (+11 ms, +7.6%)
  *   check ON, every posting has a candidate  369 ms  (+218 ms, +144%)
  *
+ * RE-MEASURED 2026-09-23, same container, after the adversarial review's
+ * F2b change added merge logging to this path — checking that reporting
+ * every applied merge back to the caller didn't quietly cost something:
+ *
+ *   check OFF (pre-ticket baseline)          162 ms
+ *   check ON, no candidates (today's state)  166 ms   (+4 ms, +2.4%)
+ *   check ON, every posting has a candidate  374 ms  (+212 ms, +130.9%)
+ *
+ * i.e. unchanged within this container's run-to-run spread (the worst-case
+ * DELTA even came in slightly lower, +212 vs +218 ms). Expected: the
+ * logging work is one array push per merge — none at all in the middle row,
+ * which is the one that describes production — and the string formatting
+ * happens in the caller, outside the ingest transaction.
+ *
  * and, with SEEDED_CORPUS temporarily raised to 20,000 to see how the
  * unindexed candidate scan scales: +58 ms for the no-candidate case,
  * i.e. about 3 ms per 1,000 rows of `jobs` per ingest call. See

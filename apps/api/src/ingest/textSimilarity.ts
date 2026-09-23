@@ -114,24 +114,56 @@ export const DESCRIPTION_SIMILARITY_SHINGLE_SIZE = 3;
  *     49%                                 0.411
  *     64%  (the realistic fixture)         0.277
  *
- * 0.65 is chosen from those two tables together. It sits 0.072 below the
- * measured true-duplicate FLOOR (0.722), and a pair of different reqs has
- * to be more than ~70% verbatim shared boilerplate before it can reach it.
- * Real engineering postings are nowhere near that: the realistic fixture is
- * 64% role-specific and scores 0.277, a 2.3x margin.
+ * 0.65 is chosen from those two tables together: it sits 0.072 below the
+ * measured true-duplicate FLOOR (0.722), and clears the realistic
+ * different-req fixture (0.277) by a wide margin.
  *
- * THE HONEST LIMITATION, stated rather than hidden: no non-semantic text
- * measure can separate "the same req" from "two reqs that differ only in
- * which team is named", and this one does not pretend to. Below roughly 30%
- * role-specific content the two clusters genuinely overlap and this check
- * can merge two different openings. What bounds the damage is that it is
- * the SECOND gate, not the first — the pair must already agree exactly on
- * company, title AND location to be compared at all — and that the first
- * gate is exact, not fuzzy (see `crossSourceDuplicates.ts`).
+ * THE KNOWN LIMITATION, CORRECTED (ticket 78d31b7, adversarial review F2a).
+ * An earlier version of this comment read the curve above as "a pair of
+ * different reqs has to be more than ~70% verbatim shared boilerplate before
+ * it can reach [the threshold]. Real engineering postings are nowhere near
+ * that... a 2.3x margin." That was ONE fixture's margin generalized into a
+ * claim about realistic text, and the review disproved it against the
+ * SHIPPED implementation. Measured 2026-09-23, all of these are two
+ * GENUINELY DIFFERENT reqs, and all of them MERGE at 0.65 today:
  *
- * IF THIS EVER NEEDS RETUNING: raise it, don't lower it. A missed merge
+ *   heavily-templated employer, one 77-word "The Role"
+ *   paragraph is the only difference (75.5% shared)         0.676  <- merges
+ *   the same, cut to a 40-word role paragraph               0.830  <- merges
+ *   the same, cut to a 20-word role paragraph               0.940  <- merges
+ *
+ * `TEMPLATED_COMPANY_DIFFERENT_REQ` in `textSimilarity.fixtures.ts` is the
+ * first of those, and `textSimilarity.test.ts` asserts it merges — honestly,
+ * as a known limitation, rather than leaving it undiscovered. An employer
+ * whose ATS template supplies the About block, responsibilities,
+ * requirements, compensation and EEO copy, leaving one bespoke paragraph per
+ * req, is not exotic; the 2.3x margin describes the 64%-role-specific
+ * fixture and nothing more general than that.
+ *
+ * So, stated plainly: THIS CHECK CAN MERGE TWO DIFFERENT OPENINGS, and the
+ * region where it does is reachable by real postings, not just contrived
+ * ones. No non-semantic text measure can separate "the same req" from "two
+ * reqs that differ only in which team is named", and this one does not
+ * pretend to. What bounds the damage is the ARCHITECTURE, not this number:
+ * it is the SECOND gate, and the FIRST is exact, not fuzzy (see
+ * `crossSourceDuplicates.ts`) — the pair must already agree byte-for-byte,
+ * after normalization, on company AND title AND location before this
+ * function is called at all. The two reqs above only collide because they
+ * were given the same title and city on purpose. That was the design's own
+ * argument for an exact first gate, and it is doing the work here.
+ *
+ * WHY THE NUMBER IS STILL 0.65. Raising it trades false merges for missed
+ * merges, and the measured true-duplicate floor is 0.722 — so there is only
+ * 0.072 of room before real duplicates start slipping through, and the
+ * templated case at 0.676 sits inside it. There is no threshold that
+ * separates these two clusters; picking one is a product judgment about
+ * which error to prefer, which belongs to the owner, not to this file. Left
+ * at 0.65 pending that call.
+ *
+ * IF THIS EVER DOES GET RETUNED: raise it, don't lower it. A missed merge
  * reproduces today's behavior. A wrong merge deletes a job the user should
- * have seen, silently and permanently.
+ * have seen, silently and permanently — and, per review F2b, the only trace
+ * is the log line `describeCrossSourceMerge` writes (see ingestJobs.ts).
  */
 export const DESCRIPTION_SIMILARITY_THRESHOLD = 0.65;
 

@@ -412,6 +412,18 @@ describe("cross-source duplicate detection: the existing (dataSource, externalId
     // impossible" throw would never happen and a real dispatch bug would
     // ack as a success. `findCrossSourceDuplicates` excludes rows from the
     // posting's OWN dataSource for exactly this reason.
+    //
+    // CORRECTION (ticket 78d31b7, adversarial review). This ticket's own
+    // commit message claimed the equivalent pre-existing test in
+    // ingestJobs.test.ts ("rolls back the insert when the caller's
+    // dataSource doesn't match...") would have been MASKED by this change,
+    // i.e. that it had been passing for the wrong reason and this test
+    // replaced it. That is backwards, and re-measured here on 2026-09-23:
+    // deleting the own-source exclusion in crossSourceDuplicates.ts fails
+    // BOTH tests, not just this one. The pre-existing test was already a
+    // real guard against this regression; this one is a second, closer
+    // guard at the layer where the exclusion actually lives, not a
+    // replacement for a test that wasn't working.
     const company = "Mismatch Co";
     await ingestJobsForSearch(db, SEARCH_ID, SOURCE_A, [
       job(SOURCE_A, { externalId: "mismatch-seed", company }),

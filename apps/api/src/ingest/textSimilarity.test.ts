@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { crossSourceMatchKey } from "./crossSourceDuplicates.js";
 import {
   DESCRIPTION_SIMILARITY_SHINGLE_SIZE,
   DESCRIPTION_SIMILARITY_THRESHOLD,
@@ -15,6 +16,7 @@ import {
   SAME_REQ_MAXIMALLY_DISTORTED,
   SAME_REQ_WITHOUT_COMPENSATION,
   SAME_REQ_WITH_PLATFORM_FOOTER,
+  TEMPLATED_COMPANY_DIFFERENT_REQ,
   UNRELATED_POSTING,
 } from "./textSimilarity.fixtures.js";
 
@@ -187,6 +189,77 @@ describe("threshold calibration: FALSE-merge risk (different reqs, same company/
 
   it("two unrelated postings score zero", () => {
     expect(descriptionSimilarity(SAME_REQ_ATS_A, UNRELATED_POSTING)).toBe(0);
+  });
+
+  /**
+   * THE KNOWN, ACCEPTED LIMITATION (ticket 78d31b7, adversarial review F2a).
+   *
+   * This test asserts a FALSE MERGE. That is deliberate. The threshold's doc
+   * comment used to imply that reaching the false-merge region took ~70%+
+   * verbatim shared boilerplate and that real postings never get there; the
+   * review measured the shipped implementation and found otherwise. Pinning
+   * the failure is the honest form of "documented limitation": if someone
+   * later changes the tokenizer, the shingle size or the threshold and this
+   * case stops merging, that is a real improvement and this test should be
+   * updated to say so — but nobody gets to believe the limitation isn't
+   * there while it is.
+   */
+  it("KNOWN LIMITATION: a heavily-templated employer's two different reqs DO merge at the shipped threshold", () => {
+    // Guard the fixture's construction: it is derived by substituting one
+    // section of SAME_REQ_ATS_A, so a regex that stopped matching would
+    // silently turn this into "a posting compared with itself".
+    expect(TEMPLATED_COMPANY_DIFFERENT_REQ).not.toBe(SAME_REQ_ATS_A);
+    expect(TEMPLATED_COMPANY_DIFFERENT_REQ).toContain("Perception");
+    expect(TEMPLATED_COMPANY_DIFFERENT_REQ).toContain("Compensation and benefits");
+
+    // How much of the posting is actually role-specific: everything else is
+    // byte-identical company template. 77 of 314 tokens, i.e. 75.5% shared.
+    const total = tokenizeForSimilarity(SAME_REQ_ATS_A).length;
+    const shared = tokenizeForSimilarity(
+      SAME_REQ_ATS_A.replace(/The Role[\s\S]*?\n\nWhat you will do/, ""),
+    ).length;
+    expect(shared / total).toBeGreaterThan(0.7);
+
+    // And it merges. Measured 0.676 on 2026-09-23 — above 0.65, with only
+    // 0.026 to spare, which is the actual size of the margin here.
+    const similarity = descriptionSimilarity(SAME_REQ_ATS_A, TEMPLATED_COMPANY_DIFFERENT_REQ);
+    expect(similarity).toBeGreaterThan(DESCRIPTION_SIMILARITY_THRESHOLD);
+    expect(similarity).toBeCloseTo(0.676, 2);
+    expect(isSameDescription(SAME_REQ_ATS_A, TEMPLATED_COMPANY_DIFFERENT_REQ)).toBe(true);
+
+    // It gets WORSE, not better, as the bespoke paragraph gets shorter —
+    // so this is not a knife-edge case that a slightly different fixture
+    // would fall the other side of.
+    const roleA = /The Role[\s\S]*?\n\nWhat you will do/.exec(SAME_REQ_ATS_A)?.[0] ?? "";
+    const roleB =
+      /The Role[\s\S]*?\n\nWhat you will do/.exec(TEMPLATED_COMPANY_DIFFERENT_REQ)?.[0] ?? "";
+    const truncateRoleTo = (source: string, role: string, words: number) =>
+      source.replace(
+        role,
+        `The Role\n\n${tokenizeForSimilarity(role).slice(0, words).join(" ")}\n\nWhat you will do`,
+      );
+    for (const words of [20, 40]) {
+      expect(
+        descriptionSimilarity(
+          truncateRoleTo(SAME_REQ_ATS_A, roleA, words),
+          truncateRoleTo(TEMPLATED_COMPANY_DIFFERENT_REQ, roleB, words),
+        ),
+      ).toBeGreaterThan(similarity);
+    }
+
+    // WHAT ACTUALLY BOUNDS THE DAMAGE, asserted rather than asserted-about:
+    // this function is gate 2. These two reqs are only ever compared if they
+    // ALSO share an exact company + title + location, which is the one thing
+    // gate 1 refuses to be fuzzy about. See crossSourceDuplicates.ts.
+    expect(
+      crossSourceMatchKey({ company: "Northwind Robotics", title: "SWE", location: "Seattle" }),
+    ).not.toBe(
+      crossSourceMatchKey({
+        company: "Northwind Robotics",
+        title: "SWE II",
+        location: "Seattle",
+      }),
+    );
   });
 
   /**

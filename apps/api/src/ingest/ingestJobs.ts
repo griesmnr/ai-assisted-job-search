@@ -33,6 +33,53 @@ const JOBS_INSERT_CHUNK = 500;
  */
 const SEARCH_RESULTS_INSERT_CHUNK = 500;
 
+/**
+ * One cross-source merge that ACTUALLY HAPPENED in this call (ticket
+ * 78d31b7, review F2b) — not a candidate considered, one applied.
+ *
+ * Exists because a merge is, by this feature's own design, silent and
+ * permanent: nothing in the UI says "we collapsed two postings", so a WRONG
+ * merge hides a real opening from the user with no trace. `textSimilarity.
+ * ts` is explicit that the check can be fooled by a heavily-templated
+ * employer (see its threshold doc comment, which measures a realistic pair
+ * that does merge at 0.65). The minimum acceptable answer to "this is
+ * silent and permanent" is that it is at least OBSERVABLE, so both callers
+ * log every one of these. Whether the log is enough, or whether the UI
+ * should eventually surface "also posted on X", is a product decision this
+ * ticket deliberately leaves out of scope.
+ */
+export type CrossSourceMerge = {
+  /** The source being ingested under — the posting that was NOT inserted. */
+  incomingDataSource: string;
+  /** That posting's id within `incomingDataSource`. It has no `jobs.id`,
+   * because no row was created for it; this plus `incomingDataSource` is the
+   * only handle on the posting that was dropped. */
+  incomingExternalId: string;
+  /** The pre-existing `jobs.id` it was merged into. */
+  existingJobId: string;
+  /** Which source had contributed that row. */
+  existingDataSource: string;
+  /** Company and title as the INCOMING posting stated them. Gate 1 is an
+   * exact match after normalization, so the existing row's differ at most in
+   * case and whitespace. */
+  company: string;
+  title: string;
+  /** The measured description similarity that cleared the threshold — the
+   * single number that says how confident the merge was. */
+  similarity: number;
+};
+
+/** A one-line, greppable rendering of a merge, so both callers report it
+ * identically. Names both sides and the score, per review F2b. */
+export function describeCrossSourceMerge(merge: CrossSourceMerge): string {
+  return (
+    `cross-source duplicate merged: "${merge.title}" at "${merge.company}" from ` +
+    `${merge.incomingDataSource}:${merge.incomingExternalId} was NOT inserted — it matched ` +
+    `existing job ${merge.existingJobId} (${merge.existingDataSource}) with ` +
+    `similarity=${merge.similarity.toFixed(3)}. Only the existing row is linked and scored.`
+  );
+}
+
 export type IngestResult = {
   /**
    * Every job now linked to this search - jobs inserted by this call, jobs
@@ -53,6 +100,13 @@ export type IngestResult = {
    * re-publishing would pay for a duplicate LLM call (ticket 6bf2196).
    */
   newlyInsertedJobIds: string[];
+  /**
+   * Every cross-source merge this call applied, in batch order (ticket
+   * 78d31b7, review F2b). Empty in the overwhelmingly common case — a live
+   * check on 2026-09-23 found zero cross-source collisions across 2,304
+   * jobs. Callers are expected to LOG these; see `CrossSourceMerge`.
+   */
+  crossSourceMerges: CrossSourceMerge[];
 };
 
 /**
@@ -123,7 +177,7 @@ export async function ingestJobsForSearch(
   normalizedJobs: NormalizedJob[],
 ): Promise<IngestResult> {
   if (normalizedJobs.length === 0) {
-    return { linkedJobIds: [], newlyInsertedJobIds: [] };
+    return { linkedJobIds: [], newlyInsertedJobIds: [], crossSourceMerges: [] };
   }
 
   // Dedupe by externalId within this one batch. A single search response
@@ -178,9 +232,17 @@ export async function ingestJobsForSearch(
     // this is the next ceiling to chunk.
     //
     // Scoped to the externalIds actually headed for `jobs` under this
-    // dataSource (ticket 78d31b7): a posting matched as a cross-source
-    // duplicate was never inserted and has no row under THIS source, so
-    // looking it up here would find nothing and trip the throw below.
+    // dataSource (ticket 78d31b7). AN OPTIMIZATION, NOT A CORRECTNESS
+    // REQUIREMENT — an earlier version of this comment claimed the filter
+    // was load-bearing ("looking it up here would find nothing and trip the
+    // throw below"), and the adversarial review checked: it isn't. The loop
+    // below `continue`s on a cross-source match BEFORE it ever consults
+    // `idByExternalId`, so a merged externalId is never looked up and can
+    // never reach the throw. Removing the filter leaves every targeted test
+    // passing. What it buys is real but modest: fewer bound parameters and
+    // no wasted index probes for postings we already know have no row under
+    // this source. Keep it; just don't mistake it for the thing that makes
+    // the merge path correct.
     const externalIdsToResolve = allExternalIds.filter((id) => !crossSourceMatches.has(id));
     const rows =
       externalIdsToResolve.length === 0
@@ -196,6 +258,7 @@ export async function ingestJobsForSearch(
 
     const linkedJobIds: string[] = [];
     const newlyInsertedJobIds: string[] = [];
+    const crossSourceMerges: CrossSourceMerge[] = [];
     for (const externalId of allExternalIds) {
       const crossSourceMatch = crossSourceMatches.get(externalId);
       if (crossSourceMatch) {
@@ -209,6 +272,22 @@ export async function ingestJobsForSearch(
         // function's doc comment for exactly what that does and does not
         // guarantee on the queue path.
         linkedJobIds.push(crossSourceMatch.existingJobId);
+        // Reported back so the caller can log it (review F2b). Recorded
+        // HERE, at the point the merge is actually applied, rather than
+        // from `crossSourceMatches` wholesale — those are findings, these
+        // are the ones that changed what got written.
+        const merged = byExternalId.get(externalId);
+        if (merged) {
+          crossSourceMerges.push({
+            incomingDataSource: dataSource,
+            incomingExternalId: externalId,
+            existingJobId: crossSourceMatch.existingJobId,
+            existingDataSource: crossSourceMatch.existingDataSource,
+            company: merged.company,
+            title: merged.title,
+            similarity: crossSourceMatch.similarity,
+          });
+        }
         continue;
       }
       const id = idByExternalId.get(externalId);
@@ -247,6 +326,6 @@ export async function ingestJobsForSearch(
         .onConflictDoNothing({ target: [searchResults.searchId, searchResults.jobId] });
     }
 
-    return { linkedJobIds, newlyInsertedJobIds };
+    return { linkedJobIds, newlyInsertedJobIds, crossSourceMerges };
   });
 }

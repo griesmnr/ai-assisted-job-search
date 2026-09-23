@@ -24,7 +24,7 @@ import {
   searchSources,
   userJobStatuses,
 } from "../db/schema.js";
-import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
+import { describeCrossSourceMerge, ingestJobsForSearch } from "../ingest/ingestJobs.js";
 import { loadEnvFile } from "../load-env.js";
 import { CompositeSource, type PerSourceOutcome } from "../sources/composite.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "../sources/types.js";
@@ -1217,13 +1217,16 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // logic relies on is unchanged.
   const linkedJobIdSet = new Set<string>();
   for (const [dataSource, jobsForSource] of candidatesByDataSource) {
-    const { linkedJobIds: linked } = await ingestJobsForSearch(
+    const { linkedJobIds: linked, crossSourceMerges } = await ingestJobsForSearch(
       db,
       searchId,
       dataSource,
       jobsForSource,
     );
     for (const id of linked) linkedJobIdSet.add(id);
+    // Ticket 78d31b7 review F2b: a merge silently and permanently removes a
+    // posting from this run's results, so say so. Empty in the normal case.
+    for (const merge of crossSourceMerges) log(describeCrossSourceMerge(merge));
   }
   const linkedJobIds = [...linkedJobIdSet];
 
@@ -1257,24 +1260,48 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
 
   // Map linked job ids back to the NormalizedJob payload a scorer needs
-  // (title/description/etc — not stored on job_matches). Looked up by
-  // (dataSource, externalId) TOGETHER — see the two-level map built below.
+  // (title/description/etc — not stored on job_matches).
+  //
+  // KEYED BY `jobs.id`, OVER EXACTLY `linkedJobIds` (ticket 78d31b7 review
+  // F1). This query used to be scoped to this run's OWN candidates —
+  // `dataSource IN (this run's sources) AND external_id IN (this run's
+  // externalIds)` — on the assumption that every id `ingestJobsForSearch`
+  // returns is one of them. Cross-source duplicate detection broke that
+  // assumption: a posting merged into ANOTHER source's row puts THAT row's
+  // id in `linkedJobIds`, and that source need not be part of this run at
+  // all (not selected this time, its fetch failed, or it has since delisted
+  // the posting). The id then had no entry in the map below, and the very
+  // next thing that happens to it is `estimateScoringCost` — which threw
+  // inside `buildScoringPrompt` on the `undefined`, BEFORE the
+  // `estimateOnly` branch, so `POST /searches`, `POST /searches/estimate`
+  // and the CLI all failed together, permanently for that resume (the only
+  // thing that would clear it is scoring the row that crashes). Selecting
+  // by id closes the gap by construction: every `NormalizedJob` field is a
+  // real `jobs` column, so any linked row can supply its own payload even
+  // when nothing in this run's candidate set describes it.
+  //
+  // Deliberately not chunked, for the same reason the sibling lookup in
+  // ingestJobs.ts isn't: one bound parameter per id, so the ceiling is
+  // 65,535 linked jobs in a single run — an order of magnitude past the
+  // largest single-source response this repo has seen (4,771, ticket
+  // 3067e2c).
   const dbRows = await db
     .select({
       id: jobsTable.id,
       externalId: jobsTable.externalId,
       dataSource: jobsTable.dataSource,
+      title: jobsTable.title,
+      description: jobsTable.description,
+      company: jobsTable.company,
+      payType: jobsTable.payType,
+      commitment: jobsTable.commitment,
+      locationType: jobsTable.locationType,
+      location: jobsTable.location,
+      linkToApply: jobsTable.linkToApply,
+      postedAt: jobsTable.postedAt,
     })
     .from(jobsTable)
-    .where(
-      and(
-        inArray(jobsTable.dataSource, [...candidatesByDataSource.keys()]),
-        inArray(
-          jobsTable.externalId,
-          candidates.map((j) => j.externalId),
-        ),
-      ),
-    );
+    .where(inArray(jobsTable.id, linkedJobIds));
   // A two-level lookup (dataSource -> externalId -> job), not a single
   // joined-string key: with multiple sources in play, two different
   // sources can plausibly reuse the same externalId format (e.g. both hand
@@ -1292,9 +1319,39 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   }
   const normalizedJobById = new Map<string, NormalizedJob>();
   for (const row of dbRows) {
+    // Prefer the in-memory candidate when this run actually fetched this
+    // row's posting: `ingestJobsForSearch` upserts with ON CONFLICT DO
+    // NOTHING, so a row that already existed keeps whatever text it was
+    // first ingested with, while the candidate carries what the source is
+    // publishing TODAY — which is the fairer thing to score. Falling back
+    // to the stored row is what covers the F1 case above, where nothing in
+    // this run describes the row at all.
     const nj = jobByDataSourceAndExternalId.get(row.dataSource)?.get(row.externalId);
-    if (nj) normalizedJobById.set(row.id, nj);
+    normalizedJobById.set(row.id, nj ?? toNormalizedJob(row));
   }
+
+  /**
+   * `normalizedJobById.get(id)` with the invariant it relies on stated out
+   * loud. Every id in `linkedJobIds` was just SELECTed back out of `jobs`
+   * above, so a miss here means a row vanished between the two statements
+   * (nothing in this app deletes `jobs` rows) — not the routine
+   * "this run didn't fetch that posting" case, which the fallback above
+   * now handles. Throwing rather than silently dropping the job: the
+   * previous code filtered misses out of `needsScoreJobs` and then used a
+   * bare `!` at the cost-estimate call three lines apart, so the same gap
+   * quietly under-counted the estimate in one place and crashed with an
+   * unreadable TypeError in the other.
+   */
+  const requireNormalizedJob = (id: string): NormalizedJob => {
+    const nj = normalizedJobById.get(id);
+    if (!nj) {
+      throw new Error(
+        `runDemoMatch: no jobs row found for linked job id "${id}" immediately after ` +
+          `selecting every linked id back out of the jobs table. This should be impossible.`,
+      );
+    }
+    return nj;
+  };
 
   // Score only what has no score yet for this resume. This is the whole
   // point of ticket 620ca30: a second run against the same candidates must
@@ -1305,9 +1362,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     .where(and(eq(jobMatches.resumeId, resumeId), inArray(jobMatches.jobId, linkedJobIds)));
   const alreadyScoredIds = new Set(alreadyScoredRows.map((r) => r.jobId));
   const needsScoreIds = linkedJobIds.filter((id) => !alreadyScoredIds.has(id));
-  const needsScoreJobs = needsScoreIds
-    .map((id) => normalizedJobById.get(id))
-    .filter((nj): nj is NormalizedJob => nj !== undefined);
+  const needsScoreJobs = needsScoreIds.map(requireNormalizedJob);
 
   // Spend guard (ticket 16c824a). Estimated BEFORE any scoring call is
   // made, over every job that needs a new score — not the whole survivor
@@ -1338,7 +1393,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   const cappedCount = needsScoreIds.length - toScoreIds.length;
 
   const costEstimate = estimateScoringCost(
-    toScoreIds.map((id) => normalizedJobById.get(id)!),
+    toScoreIds.map(requireNormalizedJob),
     resumeText,
     usageStats,
   );
@@ -1393,13 +1448,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     // allSettled keeps every fulfilled result so only the actual failures
     // get retried next time.
     const scoreOne = async (jobId: string): Promise<{ jobId: string } & ScoredJob> => {
-      const nj = normalizedJobById.get(jobId);
-      if (!nj) {
-        // Should be impossible: every id in toScoreIds came from
-        // linkedJobIds, which ingestJobsForSearch derived from this same
-        // candidate set.
-        throw new Error(`runDemoMatch: no NormalizedJob found for linked job id "${jobId}"`);
-      }
+      // Should be impossible, and `requireNormalizedJob` says why: every id
+      // in `toScoreIds` came from `linkedJobIds`, and `normalizedJobById` is
+      // built by selecting every one of those ids back out of `jobs`. (The
+      // comment that used to sit here said the map was derived from "this
+      // same candidate set" — that stopped being true when cross-source
+      // duplicate detection made `ingestJobsForSearch` able to return a row
+      // this run never fetched, which is exactly the crash review F1 found.
+      // The lookup is now keyed on `jobs.id`, so the invariant holds again.)
+      const nj = requireNormalizedJob(jobId);
       const scored = await scoreJob(nj, resumeText);
       // Fired here, not after `Promise.allSettled` below settles: this is
       // what makes the count observable WHILE the run is still in flight

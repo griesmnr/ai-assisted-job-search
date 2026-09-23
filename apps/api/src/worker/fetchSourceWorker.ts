@@ -4,7 +4,7 @@ import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import { and, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobMatchFailures, searchSources, searches } from "../db/schema.js";
-import { ingestJobsForSearch } from "../ingest/ingestJobs.js";
+import { describeCrossSourceMerge, ingestJobsForSearch } from "../ingest/ingestJobs.js";
 import { DEFAULT_SCORE_THRESHOLD } from "../matching/index.js";
 import { compileFilter } from "../sources/criteria.js";
 import {
@@ -1446,12 +1446,29 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         }
       }
 
-      const { linkedJobIds } = await ingestJobsForSearch(
+      const { linkedJobIds, crossSourceMerges } = await ingestJobsForSearch(
         db,
         message.searchId,
         message.sourceId,
         jobsToIngest,
       );
+
+      // Ticket 78d31b7 review F2b. A cross-source merge means a posting
+      // this source returned was deliberately NOT stored and will never
+      // appear in this search's results — the right outcome when the two
+      // really are one job, and an invisible deletion when they are not.
+      // Normally zero lines (a live check on 2026-09-23 found no
+      // cross-source collisions at all across 2,304 jobs), so this is not
+      // log noise; when it does fire it is the only record that a posting
+      // was dropped. Logged per merge rather than as a count, because the
+      // useful question after a suspicious result is "which posting, and
+      // how confident was it" — see `describeCrossSourceMerge`.
+      for (const merge of crossSourceMerges) {
+        log(
+          `[fetch.source] source=${message.sourceId} search=${message.searchId} ` +
+            describeCrossSourceMerge(merge),
+        );
+      }
 
       // THE PER-SEARCH SCORING CAP (ticket 4f88339 review round 1 F1;
       // per-SEARCH since ticket c9c676d). Everything above this line linked

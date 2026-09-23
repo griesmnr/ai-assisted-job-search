@@ -16,6 +16,7 @@ import {
   searchSources,
 } from "./db/schema.js";
 import { createTestDatabase, type TestDatabase } from "./db/test-db.js";
+import { SAME_REQ_ATS_A, SAME_REQ_ATS_B } from "./ingest/textSimilarity.fixtures.js";
 import { loadEnvFile } from "./load-env.js";
 import {
   applyMatchScoreFloor,
@@ -1037,6 +1038,296 @@ describe("runDemoMatch: multiple sources (ticket d8417b2)", () => {
         log: () => {},
       }),
     ).rejects.toThrow(/at least one JobSource/);
+  });
+});
+
+/**
+ * End-to-end cover for cross-source duplicate detection (ticket 78d31b7)
+ * AS RUN BY `runDemoMatch`, which is what `crossSourceDedup.test.ts` — which
+ * drives `ingestJobsForSearch` directly — cannot reach.
+ *
+ * The first test here is a REGRESSION test for the crash the adversarial
+ * review found (F1). Before the fix, `runDemoMatch` built its
+ * `normalizedJobById` map only from `jobs` rows whose (dataSource,
+ * externalId) was among THIS run's own candidates. Cross-source merging
+ * broke that assumption: `ingestJobsForSearch` can now return another
+ * source's job id in `linkedJobIds` even when that source contributed
+ * nothing to this run — it wasn't selected, its fetch failed, or it has
+ * since delisted the posting. That id had no entry in the map, so
+ * `normalizedJobById.get(id)!` handed `undefined` to `estimateScoringCost`
+ * and the whole run threw inside `buildScoringPrompt` — before the
+ * `estimateOnly` branch, so `POST /searches`, `POST /searches/estimate` and
+ * the CLI all failed, and every subsequent run for that resume failed the
+ * same way, because the only thing that would have cleared it is scoring the
+ * row that crashes.
+ */
+describe("runDemoMatch: cross-source duplicate merge (ticket 78d31b7, review F1/F2b)", () => {
+  // One real posting, listed by one employer on two ATS platforms. Same
+  // company + title + location (gate 1 is exact), descriptions reworded the
+  // way an employer actually re-pastes them (gate 2 measures 0.886 on this
+  // pair — see textSimilarity.test.ts).
+  const XSRC_COMPANY = "Northwind Robotics";
+  const XSRC_TITLE = "Senior Software Engineer";
+  const XSRC_LOCATION = "Seattle, WA";
+
+  /** A second employer, used ONLY by the same-run test below. It needs its
+   * own gate-1 key: with `XSRC_COMPANY` it would also match the row the
+   * first test leaves behind, and which of the two identical-key rows the
+   * merge claimed would depend on UUID ordering. */
+  const XSRC_SAME_RUN_COMPANY = "Southwind Robotics";
+
+  function crossSourceJob(
+    externalId: string,
+    dataSource: NormalizedJob["dataSource"],
+    description: string,
+    company: string = XSRC_COMPANY,
+  ): NormalizedJob {
+    return {
+      externalId,
+      dataSource,
+      title: XSRC_TITLE,
+      description,
+      company,
+      payType: "salary",
+      commitment: "full-time",
+      locationType: "remote",
+      location: XSRC_LOCATION,
+      linkToApply: `https://example.com/${externalId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    };
+  }
+
+  // externalIds end in `-1`/`-2` because makeCountingScorer derives its
+  // score from that suffix (see COUNTING_SCORER_BASE): 71 and 72, both
+  // clear of MATCH_SCORE_FLOOR, so a scored job is visible in `results`.
+  const GH_EXTERNAL_ID = "demo-match-xsrc-gh-1";
+  const LV_EXTERNAL_ID = "demo-match-xsrc-lv-1";
+  const SAME_RUN_GH_EXTERNAL_ID = "demo-match-xsrc-same-run-gh-2";
+  const SAME_RUN_LV_EXTERNAL_ID = "demo-match-xsrc-same-run-lv-2";
+
+  const GH_JOB = crossSourceJob(GH_EXTERNAL_ID, "greenhouse", SAME_REQ_ATS_A);
+  const LV_JOB = crossSourceJob(LV_EXTERNAL_ID, "lever", SAME_REQ_ATS_B);
+  const SAME_RUN_GH_JOB = crossSourceJob(
+    SAME_RUN_GH_EXTERNAL_ID,
+    "greenhouse",
+    SAME_REQ_ATS_A,
+    XSRC_SAME_RUN_COMPANY,
+  );
+  const SAME_RUN_LV_JOB = crossSourceJob(
+    SAME_RUN_LV_EXTERNAL_ID,
+    "lever",
+    SAME_REQ_ATS_B,
+    XSRC_SAME_RUN_COMPANY,
+  );
+
+  class GreenhouseFake implements JobSource {
+    readonly dataSource = "greenhouse" as const;
+    constructor(private readonly jobsToReturn: NormalizedJob[]) {}
+    async search(): Promise<SourceSearchResult> {
+      return { jobs: this.jobsToReturn, skipped: [], skipRate: 0 };
+    }
+  }
+  class LeverFake implements JobSource {
+    readonly dataSource = "lever" as const;
+    constructor(private readonly jobsToReturn: NormalizedJob[]) {}
+    async search(): Promise<SourceSearchResult> {
+      return { jobs: this.jobsToReturn, skipped: [], skipRate: 0 };
+    }
+  }
+
+  // One resume per test: the whole point of the F1 case is a resume that
+  // has NEVER scored the pre-existing row, so these must not be shared.
+  const RESUME_SEED = `${RESUME_TEXT_PREFIX} xsrc-seed ${randomUUID()}`;
+  const RESUME_OTHER_SOURCE_ONLY = `${RESUME_TEXT_PREFIX} xsrc-other-source-only ${randomUUID()}`;
+  const RESUME_ESTIMATE_ONLY = `${RESUME_TEXT_PREFIX} xsrc-estimate-only ${randomUUID()}`;
+  const RESUME_SAME_RUN = `${RESUME_TEXT_PREFIX} xsrc-same-run ${randomUUID()}`;
+
+  beforeAll(() => {
+    // Same reasoning as the multi-source describe above: `allExternalIds`
+    // is only ever swept under DATA_SOURCE ("usajobs"), so these
+    // greenhouse/lever rows need this describe's own afterAll. The resume
+    // texts ARE shared, since that sweep is dataSource-agnostic.
+    allResumeTexts.push(
+      RESUME_SEED,
+      RESUME_OTHER_SOURCE_ONLY,
+      RESUME_ESTIMATE_ONLY,
+      RESUME_SAME_RUN,
+    );
+  });
+
+  afterAll(async () => {
+    const jobRows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
+      .where(
+        inArray(jobsTable.externalId, [
+          GH_EXTERNAL_ID,
+          LV_EXTERNAL_ID,
+          SAME_RUN_GH_EXTERNAL_ID,
+          SAME_RUN_LV_EXTERNAL_ID,
+        ]),
+      );
+    const jobIds = jobRows.map((r) => r.id);
+    if (jobIds.length > 0) {
+      await safeDelete("cross-source search_results", () =>
+        db.delete(searchResults).where(inArray(searchResults.jobId, jobIds)),
+      );
+      await safeDelete("cross-source job_matches", () =>
+        db.delete(jobMatches).where(inArray(jobMatches.jobId, jobIds)),
+      );
+      await safeDelete("cross-source jobs", () =>
+        db.delete(jobsTable).where(inArray(jobsTable.id, jobIds)),
+      );
+    }
+  });
+
+  it("scores a cross-source duplicate contributed by a source that is NOT part of this run, for a resume that has never scored it (review F1 regression)", async () => {
+    // RUN 1 — greenhouse only, resume A. Establishes the row every later
+    // run in this describe merges into.
+    const seedScorer = makeCountingScorer();
+    const seedRun = await runDemoMatch({
+      db,
+      sources: [new GreenhouseFake([GH_JOB])],
+      resumeText: RESUME_SEED,
+      scoreJob: seedScorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+    expect(seedScorer.calls()).toBe(1);
+    expect(seedRun.newlyScored).toBe(1);
+
+    const ghRows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
+      .where(and(eq(jobsTable.dataSource, "greenhouse"), eq(jobsTable.externalId, GH_EXTERNAL_ID)));
+    expect(ghRows).toHaveLength(1);
+    const ghJobId = ghRows[0]!.id;
+
+    // RUN 2 — lever ONLY (greenhouse is deliberately not selected this
+    // time) and a DIFFERENT resume, so the merged-into row has no
+    // job_matches row for it. This is exactly the shape that used to
+    // throw: `linkedJobIds` contains greenhouse's id, which is not among
+    // this run's candidates.
+    const scorer = makeCountingScorer();
+    const logs: string[] = [];
+    const run = await runDemoMatch({
+      db,
+      sources: [new LeverFake([LV_JOB])],
+      resumeText: RESUME_OTHER_SOURCE_ONLY,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: (message: string) => logs.push(message),
+    });
+
+    // The lever posting was recognized as the same job and never inserted.
+    const lvRows = await db
+      .select({ id: jobsTable.id })
+      .from(jobsTable)
+      .where(and(eq(jobsTable.dataSource, "lever"), eq(jobsTable.externalId, LV_EXTERNAL_ID)));
+    expect(lvRows).toHaveLength(0);
+
+    // The run completed instead of throwing, and it scored the EXISTING
+    // greenhouse row for the new resume — one Claude call, not a crash and
+    // not zero.
+    expect(scorer.calls()).toBe(1);
+    expect(run.newlyScored).toBe(1);
+    expect(run.results).toHaveLength(1);
+    expect(run.results[0]!.title).toBe(XSRC_TITLE);
+    expect(run.costEstimate.jobCount).toBe(1);
+
+    // The score landed on greenhouse's row, under the new resume — the
+    // search links to that row, not to a second one.
+    const linkedRows = await db
+      .select({ jobId: searchResults.jobId })
+      .from(searchResults)
+      .where(eq(searchResults.searchId, run.searchId));
+    expect(linkedRows.map((r) => r.jobId)).toEqual([ghJobId]);
+    const matchRows = await db
+      .select({ jobId: jobMatches.jobId })
+      .from(jobMatches)
+      .where(and(eq(jobMatches.resumeId, run.resumeId), eq(jobMatches.jobId, ghJobId)));
+    expect(matchRows).toHaveLength(1);
+
+    // Review F2(b): a merge is silent and permanent by design, so it must
+    // at least be OBSERVABLE. The log line names both sides and the score
+    // that caused it.
+    const mergeLog = logs.find((l) => l.includes("cross-source duplicate"));
+    expect(mergeLog).toBeDefined();
+    expect(mergeLog).toContain(XSRC_COMPANY);
+    expect(mergeLog).toContain(XSRC_TITLE);
+    expect(mergeLog).toContain(LV_EXTERNAL_ID);
+    expect(mergeLog).toContain(ghJobId);
+    expect(mergeLog).toContain("greenhouse");
+    expect(mergeLog).toMatch(/similarity=0\.8\d\d/);
+  });
+
+  it("estimates a cross-source duplicate contributed by an absent source without throwing (review F1, POST /searches/estimate path)", async () => {
+    // Same shape as the test above, but stopping at `estimateOnly`. The F1
+    // crash happened BEFORE that branch, so the estimate endpoint was
+    // broken by it too — this pins that separately rather than assuming the
+    // scoring test covers it.
+    const scorer = makeCountingScorer();
+    const run = await runDemoMatch({
+      db,
+      sources: [new LeverFake([LV_JOB])],
+      resumeText: RESUME_ESTIMATE_ONLY,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      estimateOnly: true,
+      log: () => {},
+    });
+
+    expect(scorer.calls()).toBe(0);
+    expect(run.newlyScored).toBe(0);
+    // It priced the merged-into row, which is what a real run would score.
+    expect(run.candidatesNeedingScore).toBe(1);
+    expect(run.costEstimate.jobCount).toBe(1);
+    expect(run.costEstimate.estimatedInputTokens).toBeGreaterThan(0);
+  });
+
+  it("two sources in ONE run returning the same posting link and score it exactly once", async () => {
+    // Covers the Set-based dedup of `linkedJobIds` in runDemoMatch: the
+    // later source's ingest call returns the id the earlier source's call
+    // already returned, and concatenating would score it twice in one run —
+    // paying twice for the duplicate this feature exists to stop.
+    const scorer = makeCountingScorer();
+    const logs: string[] = [];
+    const run = await runDemoMatch({
+      db,
+      sources: [new GreenhouseFake([SAME_RUN_GH_JOB]), new LeverFake([SAME_RUN_LV_JOB])],
+      resumeText: RESUME_SAME_RUN,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: (message: string) => logs.push(message),
+    });
+
+    expect(scorer.calls()).toBe(1);
+    expect(run.newlyScored).toBe(1);
+    expect(run.results).toHaveLength(1);
+    expect(run.costEstimate.jobCount).toBe(1);
+
+    // One jobs row, under greenhouse (ingested first); lever's posting was
+    // merged, not inserted.
+    const rows = await db
+      .select({ id: jobsTable.id, dataSource: jobsTable.dataSource })
+      .from(jobsTable)
+      .where(inArray(jobsTable.externalId, [SAME_RUN_GH_EXTERNAL_ID, SAME_RUN_LV_EXTERNAL_ID]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dataSource).toBe("greenhouse");
+
+    // One search_results link, not two.
+    const linkedRows = await db
+      .select({ jobId: searchResults.jobId })
+      .from(searchResults)
+      .where(eq(searchResults.searchId, run.searchId));
+    expect(linkedRows.map((r) => r.jobId)).toEqual([rows[0]!.id]);
+
+    // And the merge is logged here too (review F2b).
+    expect(logs.some((l) => l.includes("cross-source duplicate"))).toBe(true);
   });
 });
 
