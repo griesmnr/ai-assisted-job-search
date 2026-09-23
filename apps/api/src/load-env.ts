@@ -21,10 +21,35 @@
  * A missing `.env` is never an error here: it means there's nothing extra
  * to add on top of whatever's already in `process.env`, not that the
  * environment is broken.
+ *
+ * Ticket 2fd6706: the original fix above still called
+ * `process.loadEnvFile()` with NO PATH ARGUMENT, which meant it *still*
+ * resolved `.env` relative to `process.cwd()` -- just now without crashing
+ * when that lookup missed. That's silent, not fixed: `pnpm --filter
+ * @app/api dev`, root `pnpm dev` (which runs each workspace package's
+ * script with THAT package's own directory as cwd), and `cd apps/api &&
+ * pnpm dev` all run with cwd = apps/api, so they were all silently loading
+ * nothing and falling through to whatever was already in `process.env`
+ * (confirmed live: Postgres then falls back to the OS username, producing
+ * `error: role "dev" does not exist` instead of ever reading
+ * `POSTGRES_USER`/`PASSWORD`/`DB`). There is exactly one `.env`, at the
+ * repo root, for the whole monorepo -- so the correct fix is to stop
+ * depending on `process.cwd()` at all and instead resolve `.env` relative
+ * to THIS FILE's own location via `import.meta.url`, which Node fixes at
+ * module-load time regardless of the caller's cwd. This file lives at
+ * `apps/api/src/load-env.ts`, three directory levels below the repo root
+ * (`src/` -> `apps/api/` -> `apps/` -> repo root), hence `../../../.env`.
+ * Verified directly (not just reasoned about): resolving that path from
+ * this worktree lands on `<this worktree's own root>/.env`, not
+ * `/workspace/.env` -- each worktree is a full physical copy of the
+ * source tree, so file-relative resolution naturally stays worktree-local
+ * with no extra handling needed.
  */
+const REPO_ROOT_ENV_PATH = new URL("../../../.env", import.meta.url);
+
 export function loadEnvFile(): void {
   try {
-    process.loadEnvFile?.();
+    process.loadEnvFile?.(REPO_ROOT_ENV_PATH);
   } catch (err) {
     if (!(err instanceof Error) || (err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;

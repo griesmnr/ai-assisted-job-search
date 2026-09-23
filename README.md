@@ -282,7 +282,29 @@ software-engineering roles, scores each new posting against
 `prep/resume.txt`, and persists jobs/resumes/scores to Postgres so a
 second run doesn't re-score anything it already has.
 
-### 6. Run the queue workers
+### 6. Start the API and web dev servers
+
+```bash
+pnpm dev
+```
+
+That's the whole command — `pnpm dev` (root `package.json`: `pnpm --parallel
+-r --if-present run dev`) starts `apps/api`'s Fastify server
+(`http://localhost:3000`) and `apps/web`'s Vite dev server
+(`http://localhost:5173`) together, in one terminal, each rebuilding on save.
+No cwd caveats: `apps/api/src/load-env.ts`'s `loadEnvFile()` used to resolve
+`.env` relative to `process.cwd()`, which broke this exact command (and
+`pnpm --filter @app/api dev`, and `cd apps/api && pnpm dev`) with `error:
+role "dev" does not exist` — Postgres falling back to the OS username once
+`POSTGRES_USER`/`PASSWORD`/`DB` silently never loaded. Fixed (ticket
+`2fd6706`): it now resolves `.env` from the repo root via
+`import.meta.url`, independent of the caller's working directory, so any of
+those invocation forms works.
+
+Open `http://localhost:5173` and the app is live against whatever
+Postgres/RabbitMQ instance step 2 started.
+
+### 7. Run the queue workers
 
 Both workers are long-lived processes, meant to be started manually
 (each in its own terminal, in the same dev-container shell step 4's tests
@@ -316,9 +338,59 @@ but don't assume it would be safe if that changes.
 
 The scoring worker enforces a lifetime-per-process spend ceiling
 (`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket
-b53c422) — once tripped, restart the process to reset it. Neither worker
-is exercised by `POST /searches` yet; that queue-publish wiring is a
-separate, later ticket (see `routes/searches.ts`).
+b53c422) — once tripped, restart the process to reset it. `POST /searches`
+does publish to the queue (tickets `4f88339`, `45ea34c`, `c9c676d`): both
+workers above pick up real work from a real search, not just from a
+hand-crafted test message — see the next step.
+
+### 8. Run a real, queue-driven search end to end
+
+The exact flow: Postgres/RabbitMQ up, both workers running, API+web dev
+servers running, then a search from either the UI or `curl`.
+
+```bash
+# Terminal 1
+docker compose up -d
+# Terminal 2 (repo root)
+npx tsx apps/api/src/worker/run-fetch-source-worker.ts
+# Terminal 3 (repo root)
+npx tsx apps/api/src/worker/run-score-job-worker.ts
+# Terminal 4 (repo root)
+pnpm dev
+```
+
+**Web UI**: open `http://localhost:5173`, paste a resume, toggle on the
+sources you want, and submit. The frontend polls the search until results
+land, scored by the workers above as they come in.
+
+**Or `curl` directly**, if you'd rather watch the API/worker logs than the
+UI:
+
+```bash
+# 1. Create a resume, capture its id
+curl -s -X POST http://localhost:3000/resumes \
+  -H 'Content-Type: application/json' \
+  -d '{"resumeText": "paste your resume text here"}'
+# -> { "id": "<resumeId>", ... }
+
+# 2. See which source ids are configured
+curl -s http://localhost:3000/sources
+
+# 3. Kick off a search — publishes one fetch.source message per sourceId
+curl -s -X POST http://localhost:3000/searches \
+  -H 'Content-Type: application/json' \
+  -d '{"resumeId": "<resumeId>", "sourceIds": ["greenhouse", "lever"]}'
+# -> { "id": "<searchId>", ... }
+
+# 4. Poll for results as the workers fetch, score, and persist
+curl -s http://localhost:3000/searches/<searchId>
+```
+
+Watch the two worker terminals: the fetch-source worker logs each source it
+queries and how many jobs it normalized, then the score-job worker logs
+each one it scores against the resume via a real Anthropic call. This is
+the same flow this session's own live smoke tests ran for hours against a
+real Postgres, a real hand-built RabbitMQ broker, and real Claude calls.
 
 ### Verified
 
