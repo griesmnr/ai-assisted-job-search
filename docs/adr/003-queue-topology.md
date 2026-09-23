@@ -249,11 +249,15 @@ before it happens:
   once" produce identical durable state, verified directly in both
   workers' test suites and in `ticket 4f88339`'s completion-detection
   design.
-- Known, deliberately out-of-scope gap (tracked separately, ticket
-  `c9c676d`): the queue path currently has no equivalent of the
-  synchronous CLI path's quality filter or true per-search scoring cap —
-  a real product gap, not a topology gap, and not something this ADR's
-  retry/DLQ/idempotency design needs to change to fix.
+- The gap this bullet used to describe — the queue path having no
+  equivalent of the synchronous CLI path's quality filter or a true
+  per-search scoring cap — is closed. Both landed the day after this ADR
+  was first written: ticket `45ea34c` wired the quality filter into
+  `fetchSourceWorker`, and ticket `c9c676d` made the scoring cap
+  genuinely per-search (see `DEFAULT_SCORE_THRESHOLD`, `matching/
+scoring.ts`) with capped-vs-failed jobs reported honestly rather than
+  conflated. Neither changed this document's own retry/DLQ/idempotency
+  design.
 
 ## Notes
 
