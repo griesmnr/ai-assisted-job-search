@@ -121,6 +121,16 @@ export async function ingestJobsForSearch(
     // Look up authoritative ids for the whole batch, including rows that
     // already existed (and so were silently skipped above) - pre-existing
     // jobs still need to be linked to this search.
+    //
+    // Deliberately NOT chunked like the insert above: this is one statement
+    // binding allExternalIds.length + 1 params (the +1 is `dataSource`), so
+    // its own ceiling is 65,535 - 1 = 65,534 externalIds per call - about
+    // 13x SmartRecruiters' largest observed response (4,771, ticket 3067e2c)
+    // and well past JOBS_INSERT_CHUNK's 500-row insert chunks ever
+    // accumulating that many distinct ids in one call. Chunking this too is
+    // possible but not required to satisfy this ticket's acceptance
+    // criteria; if a source ever approaches 65,534 postings in one search,
+    // this is the next ceiling to chunk.
     const rows = await tx
       .select({ id: jobs.id, externalId: jobs.externalId })
       .from(jobs)

@@ -194,6 +194,49 @@ describe("ingestJobsForSearch", () => {
     30000,
   );
 
+  it(
+    "correctly separates newly-inserted from pre-existing jobs when a single chunked call " +
+      "mixes both, interleaved across every 500-row chunk boundary (opus review, ticket 3067e2c)",
+    async () => {
+      const db = testDb.db;
+      // The 6,000-row test above only exercises the all-new path - every
+      // row in every chunk is a fresh insert, so it can't catch a bug where
+      // `inserted`/`newlyInsertedJobIds` gets reset per-chunk instead of
+      // accumulated, or where a conflicting row in one chunk is mishandled
+      // relative to a non-conflicting row in the next. This forces that:
+      // 1,500 jobs pre-exist (ingested via a first, separate search), then
+      // one 3,000-row call interleaves them 1:1 with 1,500 brand-new jobs,
+      // so every 500-row JOBS_INSERT_CHUNK chunk contains an even mix of
+      // conflicting and non-conflicting rows.
+      const PRE_EXISTING_COUNT = 1500;
+      const preExisting = Array.from({ length: PRE_EXISTING_COUNT }, (_, i) =>
+        makeNormalizedJob({ externalId: `interleave-old-${i}` }),
+      );
+      const seeded = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, preExisting);
+      expect(seeded.newlyInsertedJobIds).toHaveLength(PRE_EXISTING_COUNT);
+
+      const interleaved: NormalizedJob[] = [];
+      for (let i = 0; i < PRE_EXISTING_COUNT; i++) {
+        interleaved.push(makeNormalizedJob({ externalId: `interleave-old-${i}` }));
+        interleaved.push(makeNormalizedJob({ externalId: `interleave-new-${i}` }));
+      }
+
+      const result = await ingestJobsForSearch(db, OTHER_SEARCH_ID, DATA_SOURCE, interleaved);
+
+      expect(result.linkedJobIds).toHaveLength(2 * PRE_EXISTING_COUNT);
+      expect(new Set(result.linkedJobIds).size).toBe(2 * PRE_EXISTING_COUNT);
+      // Exactly the "-new-" half is newly inserted - none of the
+      // pre-existing "-old-" jobs' ids leaked into this set.
+      expect(result.newlyInsertedJobIds).toHaveLength(PRE_EXISTING_COUNT);
+      expect(new Set(result.newlyInsertedJobIds).size).toBe(PRE_EXISTING_COUNT);
+      const preExistingIds = new Set(seeded.linkedJobIds);
+      for (const id of result.newlyInsertedJobIds) {
+        expect(preExistingIds.has(id)).toBe(false);
+      }
+    },
+    30000,
+  );
+
   it("rolls back the insert when the caller's dataSource doesn't match the job's own dataSource (transaction regression)", async () => {
     const db = testDb.db;
     // The job itself is tagged DATA_SOURCE (a valid FK target, so the
