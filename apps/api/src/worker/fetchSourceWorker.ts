@@ -287,8 +287,17 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * nobody can invalidate between the read and the write.
  *
  * WHAT THIS DELIBERATELY DOES NOT DO. It does not make the estimate EXACT,
- * and the residual gap is one-directional — real spend ≤ estimate, never
- * above it:
+ * and the residual gap is one-directional in ROLES scored — real runs score
+ * fewer distinct roles than estimated, never more. Opus review, ticket
+ * c9c676d: this does NOT mean real DOLLARS can never exceed the estimate.
+ * The cross-source dedupe gap below (fewer distinct roles, but per-source
+ * rather than per-union) means a role cross-posted to N boards can be
+ * scored N times here against 1 time in the estimate — more Claude calls,
+ * more real spend, for fewer distinct roles. Bounded well under the $15
+ * lifetime ScoringSpendGuard regardless (200 jobs total per search caps
+ * this at ~$4.40-$9.36), which is the catastrophic failure mode this
+ * ticket exists to kill — but "never above" was true only for role count,
+ * not dollars, and the two were conflated in this sentence before the fix:
  *
  *   - Cross-source dedupe. `compileFilter` dedupes on `${company}|${title}`;
  *     the estimate dedupes the UNION, this worker sees one source per
