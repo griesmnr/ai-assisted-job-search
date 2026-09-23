@@ -113,7 +113,11 @@ import {
 // `locations` array for `Job.location` — see `mergedLocations`. This is the
 // same "union of what a naive single-entry read would miss" shape as
 // Lever's `allLocations` and Ashby's `secondaryLocations` fixes, arrived at
-// by a different mechanism (row duplication instead of an array field).
+// primarily by a different mechanism (row duplication) -- though Workable
+// ALSO has the array-field shape on rare occasions (one row's own
+// `locations` array holding multiple entries, e.g. the Valsoft "Managing
+// Director" posting above), so unlike Lever/Ashby this adapter has to
+// handle both at once, not one or the other.
 //
 // `hidden` (a boolean on each `locations[]` entry, e.g. a real Valsoft
 // "Managing Director" posting open to Germany/Switzerland/France/Austria,
@@ -669,8 +673,9 @@ function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
 
 // ---------------------------------------------------------------------------
 // Location merging — see Finding 2. Reads every entry's own `locations`
-// array (always single-entry on real data, but not assumed to be) and
-// returns the deduped union, formatted and in first-seen order.
+// array (usually single-entry per row, but not always — see Finding 2 and
+// the WorkableJob.locations doc comment) and returns the deduped union,
+// formatted and in first-seen order.
 // ---------------------------------------------------------------------------
 
 function mergedLocations(entries: WorkableJob[]): string[] {
