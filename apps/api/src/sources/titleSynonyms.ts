@@ -79,19 +79,49 @@
  * estate developer and a business developer. Substituting one for the other
  * with no qualifier present drags in entire unrelated professions --
  * a bare `titleInclude: ["developer"]` would start returning "Sales
- * Engineer" and "Mechanical Engineer". Requiring a qualifier makes
- * cross-domain drift structurally impossible instead of merely unlikely:
- * the qualifier survives every substitution, so "software engineer" can
- * only ever expand to other *software* phrases. The tests in
- * `criteria.test.ts` pin exactly this.
+ * Engineer" and "Mechanical Engineer". Requiring a qualifier BOUNDS
+ * cross-domain drift to titles sharing the caller's own qualifier token --
+ * NOT "structurally impossible" (fable review, ticket 0298b20, corrected
+ * an earlier overclaim here): the qualifier can be ANY token absent from
+ * the table, not necessarily a real domain word, so a punctuation or
+ * grammatical qualifier still satisfies the rule while pinning nothing.
+ * Confirmed live against this table: `titleInclude: ["engineer -"]`
+ * expands to `"developer -"` and matches "Real Estate Developer - Seattle"
+ * (the trailing hyphen is the "qualifier"); `titleInclude: ["engineer
+ * ii"]` -- a common civil/mechanical ordinal form -- matches "Developer
+ * II" and "Software Developer II". The qualifier survives every
+ * substitution, so "software engineer" can only ever expand to other
+ * phrases sharing the word "software" specifically -- that part holds --
+ * but "the qualifier survives" is a narrower, true claim than "cross-domain
+ * drift is impossible". The tests in `criteria.test.ts` pin the cases that
+ * ARE safe; the ones below are the honest list of what isn't.
  *
- * Accepted weakness of the rule, recorded honestly: a seniority-only
- * qualifier ("senior engineer" -> "senior developer") satisfies it without
- * pinning a domain. That is accepted because the resulting phrase is still
- * far narrower than a bare role word, and real-world "Senior Developer"
- * postings are overwhelmingly software. If that ever produces a real
- * complaint, the fix is a small stop-list of non-domain qualifiers
- * (senior/junior/lead/staff/principal), not a redesign.
+ * Accepted weaknesses of the rule, recorded honestly (widened after fable
+ * review found the seniority case wasn't the only one):
+ *  - A seniority-only qualifier ("senior engineer" -> "senior developer")
+ *    satisfies the rule without pinning a domain. Real-world "Senior
+ *    Developer" postings are overwhelmingly software, so this is low-risk
+ *    in practice, but it is not prevented by the rule itself.
+ *  - An ordinal-suffix qualifier ("engineer ii" -> "developer ii") is the
+ *    same shape and hits real civil/mechanical postings ("Developer II" as
+ *    a real-estate title).
+ *  - A punctuation or filler-word qualifier ("engineer -", "remote
+ *    engineer", "engineer, remote") technically satisfies the rule while
+ *    pinning nothing semantic at all.
+ * A stop-list (senior/junior/lead/staff/principal/ii/iii/remote and a
+ * handful of others) would only ever be a partial mitigation, since the
+ * qualifier space is open-ended (any punctuation counts) -- not attempted
+ * here. If this produces a real complaint, the honest fix is tightening
+ * the qualifier check to require a WORD token specifically (not
+ * punctuation) as a first pass, still leaving the ordinal/seniority cases
+ * open, not a claim that this becomes airtight.
+ * Two adjacent-role drifts within the software/IT group specifically, also
+ * accepted rather than fixed: `"computer programmer"` -> `"Computer
+ * Engineer"` (a distinct hardware/EE role -- federal job series GS-0854 --
+ * reachable since USAJOBS is a live source here), and `"audio engineer"`
+ * (studio/live sound) <-> `"Audio Developer"` (game-studio DSP/audio
+ * programming) -- close enough in practice that most postings using either
+ * phrasing are the same underlying work, but not guaranteed.
  *
  * **Nonsense expansions are free.** A generated phrase that corresponds to
  * no real job title ("civil developer", "technician lead") simply never
@@ -112,10 +142,17 @@
  * MEASURED AGAINST REAL CAPTURED POSTINGS, 2026-09-23
  * ---------------------------------------------------------------------------
  *
- * Before/after diff over the 151 distinct real titles in
+ * Before/after diff over 68 distinct real job titles, extracted from
  * `sources/__fixtures__/` (genuine captured Greenhouse / Lever / Ashby /
- * Recruitee / Rippling / SmartRecruiters / USAJOBS / Workable responses),
- * 33 probe phrases spanning all six domains:
+ * Recruitee / Rippling / SmartRecruiters / USAJOBS / Workable responses) by
+ * pulling each source's actual title field (`jobs[].title` for Greenhouse/
+ * Ashby/Workable, `[].text` for Lever, `offers[].title` for Recruitee,
+ * `name` for Rippling, `content[].name` for SmartRecruiters,
+ * `PositionTitle` for USAJOBS) -- corrected after fable review found the
+ * original count (151) included non-title strings from a naive key-walk
+ * ("Berlin, Germany", "Responsibilities", people's names) that weren't
+ * actually job titles. 33 probe phrases spanning all five surviving
+ * domains:
  *
  *  - LOST: 0, on every probe. Nothing that matched before stops matching.
  *  - `"software developer"`: 0 -> 9 matches, and all nine are genuine
@@ -160,10 +197,14 @@ export interface TitleSynonymGroup {
  * plausible: every entry here is a claim that a real job board uses these
  * words for one role, and a wrong claim silently changes what a user sees.
  *
- * Six groups spanning six professional domains -- software, skilled
- * technical trades/healthcare, sales & customer service, administrative
- * support, writing, and education -- which is the ticket's "demonstrate at
- * least 3 distinct professions" bar with margin.
+ * Five groups spanning five professional domains -- software, skilled
+ * technical trades, sales & customer service, writing, and education --
+ * which is the ticket's "demonstrate at least 3 distinct professions" bar
+ * with margin. (An earlier draft also grouped administrative/healthcare
+ * support ("assistant" ~ "aide"); removed after fable review found a real
+ * false positive -- see the "assistant ~ aide" entry in NOT GROUPED below
+ * for why that one doesn't survive contact with real healthcare job
+ * titles.)
  */
 export const TITLE_SYNONYM_GROUPS: readonly TitleSynonymGroup[] = [
   {
@@ -209,18 +250,6 @@ export const TITLE_SYNONYM_GROUPS: readonly TitleSynonymGroup[] = [
       "investigation, see sources/smartrecruiters-swe-filter-findings.md). " +
       "Note this group is a strict abbreviation and is NOT grouped with " +
       "'agent' -- see NOT GROUPED below.",
-  },
-  {
-    domain: "administrative / education / healthcare support",
-    words: ["assistant", "aide"],
-    why:
-      "Interchangeable across three unrelated fields for the same job: " +
-      "'Legislative Assistant'/'Legislative Aide' (government), 'Teaching " +
-      "Assistant'/'Teaching Aide' (K-12 paraeducator), 'Nursing " +
-      "Assistant'/'Nurse Aide' (the CNA family, where both forms appear in " +
-      "the same state regulations). The qualifier rule matters here: " +
-      "unqualified 'assistant' spans everything from an executive " +
-      "assistant to a research assistant, so it is never expanded alone.",
   },
   {
     domain: "writing & content",
@@ -286,6 +315,27 @@ export const TITLE_SYNONYM_GROUPS: readonly TitleSynonymGroup[] = [
  *    Scientist", and this repo's default filter already treats "data
  *    scientist" as deliberately adjacent-but-out-of-scope (swe-filter.ts).
  *    Left out.
+ *
+ *  - `assistant` ~ `aide`. Looked like a clean cross-domain safe pick (see
+ *    an earlier draft of this table, and fable review, ticket 0298b20) --
+ *    but in therapy fields these are SEPARATE OCCUPATIONS, not two names
+ *    for one job: the BLS lists "Physical Therapist Assistants and Aides"
+ *    as distinct roles. A Physical Therapist ASSISTANT holds an associate
+ *    degree and a state license and is paid roughly double a Physical
+ *    Therapist AIDE, an unlicensed, on-the-job-trained role -- the same
+ *    split exists for occupational therapy. Both titles are common on real
+ *    healthcare boards. Confirmed live against this exact table before the
+ *    fix: `titleInclude: ["physical therapy assistant"]` surfaced "Physical
+ *    Therapy Aide" postings, and -- the actually damaging case -- a
+ *    perfectly natural search for a licensed PTA,
+ *    `titleInclude: ["physical therapy assistant"], titleExclude:
+ *    ["physical therapy aide"]`, silently returned ZERO results, because
+ *    the excluded phrase's expansion caught the included phrase's own
+ *    expansion. Exactly the "invisible hiding" failure mode this file's own
+ *    include/exclude-symmetry argument above warns is the expensive
+ *    direction. An "except in healthcare" carve-out cannot be expressed in
+ *    a flat one-token-for-one-token table, so the fix is leaving the group
+ *    out entirely, not qualifying it. Left out.
  *
  *  - `developer` ~ `coder`. Semantically fine, but "coder" is not a word
  *    real postings use in titles -- a keyword scan of 519 live Expeditors

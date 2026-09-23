@@ -69,6 +69,7 @@ describe("TITLE_SYNONYM_GROUPS — table invariants (ticket 0298b20)", () => {
       "creator",
       "copywriter",
       "professor",
+      "aide", // removed post-review: PTA/OTA vs. aide are separate, licensed-vs-unlicensed roles
     ]) {
       expect(allWords.has(rejected), `"${rejected}" was deliberately left out`).toBe(false);
     }
@@ -135,7 +136,10 @@ describe("expandTitlePhrase (ticket 0298b20)", () => {
     ]);
     expect(expandTitlePhrase("technical writer")).toEqual(["technical writer", "technical author"]);
     expect(expandTitlePhrase("math teacher")).toEqual(["math teacher", "math instructor"]);
-    expect(expandTitlePhrase("nursing assistant")).toEqual(["nursing assistant", "nursing aide"]);
+  });
+
+  it("does NOT expand a removed candidate group — 'assistant'/'aide' (PTA/OTA vs. aide are separate, licensed-vs-unlicensed roles, see NOT GROUPED)", () => {
+    expect(expandTitlePhrase("nursing assistant")).toEqual(["nursing assistant"]);
   });
 
   it("expands every eligible token when a phrase contains more than one role word", () => {

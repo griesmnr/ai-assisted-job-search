@@ -242,7 +242,6 @@ describe("compileFilter — role-word synonym expansion (ticket 0298b20)", () =>
       job({ externalId: "2", title: "Sales Rep, Midwest", company: "Sales Co" }),
       job({ externalId: "3", title: "Senior Technical Author", company: "Docs Co" }),
       job({ externalId: "4", title: "Math Instructor", company: "School Co" }),
-      job({ externalId: "5", title: "Certified Nursing Aide", company: "Clinic Co" }),
     ];
     expect(
       compileFilter({ titleInclude: ["pharmacy tech"] })(jobs).map((j) => j.externalId),
@@ -256,9 +255,6 @@ describe("compileFilter — role-word synonym expansion (ticket 0298b20)", () =>
     expect(
       compileFilter({ titleInclude: ["math teacher"] })(jobs).map((j) => j.externalId),
     ).toEqual(["4"]);
-    expect(
-      compileFilter({ titleInclude: ["nursing assistant"] })(jobs).map((j) => j.externalId),
-    ).toEqual(["5"]);
   });
 
   it("NO FALSE POSITIVES across genuinely different roles — a qualified phrase keeps its qualifier through every substitution", () => {
@@ -286,6 +282,34 @@ describe("compileFilter — role-word synonym expansion (ticket 0298b20)", () =>
     expect(
       compileFilter({ titleInclude: ["software developer"] })(jobs).map((j) => j.externalId),
     ).toEqual(["8"]);
+  });
+
+  it("regression (fable review, ticket 0298b20): a PTA/OTA search does not silently return zero results via an aide exclusion", () => {
+    // The false positive the review found: "assistant"/"aide" were
+    // originally grouped as cross-field synonyms, but in therapy fields
+    // they're separate, licensed-vs-unlicensed occupations (BLS: "Physical
+    // Therapist Assistants and Aides" are two distinct roles). A licensed
+    // PTA searching for her own role while excluding the unlicensed one --
+    // a completely natural, real search -- would have silently returned
+    // NOTHING, because the excluded phrase's expansion caught the included
+    // phrase's own expansion. That group is now removed (see
+    // titleSynonyms.ts's NOT GROUPED section); this pins that it stays out.
+    const jobs: NormalizedJob[] = [
+      job({ externalId: "1", title: "Physical Therapy Assistant", company: "Clinic Co" }),
+      job({ externalId: "2", title: "Physical Therapy Aide", company: "Clinic Co" }),
+    ];
+    const filter = compileFilter({
+      titleInclude: ["physical therapy assistant"],
+      titleExclude: ["physical therapy aide"],
+    });
+    // Must return the real PTA posting, not an empty list.
+    expect(filter(jobs).map((j) => j.externalId)).toEqual(["1"]);
+    // And a plain include must not pull in the aide posting either.
+    expect(
+      compileFilter({ titleInclude: ["physical therapy assistant"] })(jobs).map(
+        (j) => j.externalId,
+      ),
+    ).toEqual(["1"]);
   });
 
   it("the qualifier rule: a BARE role word is never expanded, so it cannot drag in other professions", () => {
