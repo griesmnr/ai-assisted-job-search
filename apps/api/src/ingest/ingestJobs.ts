@@ -4,6 +4,34 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { jobs, searchResults } from "../db/schema.js";
 import type { NormalizedJob } from "../sources/types.js";
 
+/**
+ * How many `jobs` rows go into one INSERT statement.
+ *
+ * `jobs` has 12 columns, so an unchunked insert of N rows binds 12*N
+ * parameters — Postgres's wire protocol caps a single statement at 65,535
+ * bound parameters, so the real per-statement ceiling is 65,535 / 12 ≈
+ * 5,461 rows. Reachable in practice, not theoretical: SmartRecruiters has
+ * already returned 4,771 postings for a single company (ticket 3067e2c) —
+ * close enough to the ceiling that source growth trips it, and past it the
+ * whole `fetch.source` message failed outright with a raw Postgres error.
+ * 500 rows (6,000 parameters) is far inside the limit with room for the row
+ * shape to grow, matching the chunk size ticket 4f88339 chose for
+ * `job_match_failures`.
+ */
+const JOBS_INSERT_CHUNK = 500;
+
+/**
+ * How many `search_results` rows go into one INSERT statement.
+ *
+ * `search_results` only has 3 columns (65,535 / 3 ≈ 21,845 rows before
+ * hitting the same bound-parameter limit as `jobs` above), so this insert
+ * can't hit the ceiling at today's realistic source sizes. Chunked anyway,
+ * at the same 500-row size, so this insert doesn't quietly become the next
+ * ticket-3067e2c the day either the row shape grows or a source's result
+ * count does.
+ */
+const SEARCH_RESULTS_INSERT_CHUNK = 500;
+
 export type IngestResult = {
   /**
    * Every job now linked to this search - both jobs inserted by this call
@@ -77,17 +105,32 @@ export async function ingestJobsForSearch(
   return db.transaction(async (tx) => {
     const toInsert = uniqueJobs.map((job) => ({ ...job, id: randomUUID() }));
 
-    const inserted = await tx
-      .insert(jobs)
-      .values(toInsert)
-      .onConflictDoNothing({ target: [jobs.dataSource, jobs.externalId] })
-      .returning({ id: jobs.id, externalId: jobs.externalId });
+    const inserted: { id: string; externalId: string }[] = [];
+    for (let i = 0; i < toInsert.length; i += JOBS_INSERT_CHUNK) {
+      const chunk = toInsert.slice(i, i + JOBS_INSERT_CHUNK);
+      const insertedChunk = await tx
+        .insert(jobs)
+        .values(chunk)
+        .onConflictDoNothing({ target: [jobs.dataSource, jobs.externalId] })
+        .returning({ id: jobs.id, externalId: jobs.externalId });
+      inserted.push(...insertedChunk);
+    }
 
     const insertedExternalIds = new Set(inserted.map((row) => row.externalId));
 
     // Look up authoritative ids for the whole batch, including rows that
     // already existed (and so were silently skipped above) - pre-existing
     // jobs still need to be linked to this search.
+    //
+    // Deliberately NOT chunked like the insert above: this is one statement
+    // binding allExternalIds.length + 1 params (the +1 is `dataSource`), so
+    // its own ceiling is 65,535 - 1 = 65,534 externalIds per call - about
+    // 13x SmartRecruiters' largest observed response (4,771, ticket 3067e2c)
+    // and well past JOBS_INSERT_CHUNK's 500-row insert chunks ever
+    // accumulating that many distinct ids in one call. Chunking this too is
+    // possible but not required to satisfy this ticket's acceptance
+    // criteria; if a source ever approaches 65,534 postings in one search,
+    // this is the next ceiling to chunk.
     const rows = await tx
       .select({ id: jobs.id, externalId: jobs.externalId })
       .from(jobs)
@@ -126,10 +169,11 @@ export async function ingestJobsForSearch(
       }
     }
 
-    if (linkedJobIds.length > 0) {
+    for (let i = 0; i < linkedJobIds.length; i += SEARCH_RESULTS_INSERT_CHUNK) {
+      const chunk = linkedJobIds.slice(i, i + SEARCH_RESULTS_INSERT_CHUNK);
       await tx
         .insert(searchResults)
-        .values(linkedJobIds.map((jobId) => ({ id: randomUUID(), searchId, jobId })))
+        .values(chunk.map((jobId) => ({ id: randomUUID(), searchId, jobId })))
         .onConflictDoNothing({ target: [searchResults.searchId, searchResults.jobId] });
     }
 

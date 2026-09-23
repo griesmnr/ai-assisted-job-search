@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { jobs, searches, searchResults, sourceDescriptors, resumes } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
@@ -148,6 +148,94 @@ describe("ingestJobsForSearch", () => {
     const result = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, []);
     expect(result).toEqual({ linkedJobIds: [], newlyInsertedJobIds: [] });
   });
+
+  it(
+    "ingests more than 5,461 postings in one call (the real per-statement bound-parameter " +
+      "ceiling for the 12-column jobs table: 65,535 / 12 ≈ 5,461, ticket 3067e2c) without " +
+      "throwing, and links/reports every single one - not just the first 500-row chunk",
+    async () => {
+      const db = testDb.db;
+      // 6,000 rows needs 12 chunks at JOBS_INSERT_CHUNK's 500-row size, and
+      // an unchunked insert of this many rows (12 params/row = 72,000
+      // params) is well past Postgres's 65,535 bound-parameter cap - this
+      // is exactly the case that threw "Failed query: insert into jobs..."
+      // before this ticket's chunking fix.
+      const ROW_COUNT = 6000;
+      const jobsBatch = Array.from({ length: ROW_COUNT }, (_, i) =>
+        makeNormalizedJob({ externalId: `chunk-test-${i}` }),
+      );
+
+      const result = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, jobsBatch);
+
+      expect(result.newlyInsertedJobIds).toHaveLength(ROW_COUNT);
+      expect(result.linkedJobIds).toHaveLength(ROW_COUNT);
+      // Every id is distinct - proves no chunk's rows were dropped or
+      // double-counted across the 12 separate INSERT statements.
+      expect(new Set(result.linkedJobIds).size).toBe(ROW_COUNT);
+
+      const externalIds = jobsBatch.map((job) => job.externalId);
+      const rows = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.dataSource, DATA_SOURCE), inArray(jobs.externalId, externalIds)));
+      expect(rows).toHaveLength(ROW_COUNT);
+
+      const links = await db
+        .select({ id: searchResults.id })
+        .from(searchResults)
+        .where(
+          and(
+            eq(searchResults.searchId, SEARCH_ID),
+            inArray(searchResults.jobId, result.linkedJobIds),
+          ),
+        );
+      expect(links).toHaveLength(ROW_COUNT);
+    },
+    30000,
+  );
+
+  it(
+    "correctly separates newly-inserted from pre-existing jobs when a single chunked call " +
+      "mixes both, interleaved across every 500-row chunk boundary (opus review, ticket 3067e2c)",
+    async () => {
+      const db = testDb.db;
+      // The 6,000-row test above only exercises the all-new path - every
+      // row in every chunk is a fresh insert, so it can't catch a bug where
+      // `inserted`/`newlyInsertedJobIds` gets reset per-chunk instead of
+      // accumulated, or where a conflicting row in one chunk is mishandled
+      // relative to a non-conflicting row in the next. This forces that:
+      // 1,500 jobs pre-exist (ingested via a first, separate search), then
+      // one 3,000-row call interleaves them 1:1 with 1,500 brand-new jobs,
+      // so every 500-row JOBS_INSERT_CHUNK chunk contains an even mix of
+      // conflicting and non-conflicting rows.
+      const PRE_EXISTING_COUNT = 1500;
+      const preExisting = Array.from({ length: PRE_EXISTING_COUNT }, (_, i) =>
+        makeNormalizedJob({ externalId: `interleave-old-${i}` }),
+      );
+      const seeded = await ingestJobsForSearch(db, SEARCH_ID, DATA_SOURCE, preExisting);
+      expect(seeded.newlyInsertedJobIds).toHaveLength(PRE_EXISTING_COUNT);
+
+      const interleaved: NormalizedJob[] = [];
+      for (let i = 0; i < PRE_EXISTING_COUNT; i++) {
+        interleaved.push(makeNormalizedJob({ externalId: `interleave-old-${i}` }));
+        interleaved.push(makeNormalizedJob({ externalId: `interleave-new-${i}` }));
+      }
+
+      const result = await ingestJobsForSearch(db, OTHER_SEARCH_ID, DATA_SOURCE, interleaved);
+
+      expect(result.linkedJobIds).toHaveLength(2 * PRE_EXISTING_COUNT);
+      expect(new Set(result.linkedJobIds).size).toBe(2 * PRE_EXISTING_COUNT);
+      // Exactly the "-new-" half is newly inserted - none of the
+      // pre-existing "-old-" jobs' ids leaked into this set.
+      expect(result.newlyInsertedJobIds).toHaveLength(PRE_EXISTING_COUNT);
+      expect(new Set(result.newlyInsertedJobIds).size).toBe(PRE_EXISTING_COUNT);
+      const preExistingIds = new Set(seeded.linkedJobIds);
+      for (const id of result.newlyInsertedJobIds) {
+        expect(preExistingIds.has(id)).toBe(false);
+      }
+    },
+    30000,
+  );
 
   it("rolls back the insert when the caller's dataSource doesn't match the job's own dataSource (transaction regression)", async () => {
     const db = testDb.db;
