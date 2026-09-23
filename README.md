@@ -25,9 +25,10 @@ running a search from a terminal without starting the queue workers, not
 the only way to run this any more. See [Current state](#current-state) for
 exactly what's real.
 
-- Five job-board sources (USAJOBS, Greenhouse, Lever, Ashby,
-  SmartRecruiters), covering a U.S. federal-jobs API and several dozen
-  configured ATS employers, selectable per search via source toggles.
+- Eight job-board sources (USAJOBS, Greenhouse, Lever, Ashby,
+  SmartRecruiters, Workable, Recruitee, Rippling), covering a U.S.
+  federal-jobs API and several dozen configured ATS employers, selectable
+  per search via source toggles.
 - Postings are normalized into one `Job` shape, filtered down to
   software-engineering roles matching a caller's criteria, deduplicated, and
   scored against a resume by Claude — each score comes back as a 0-100
@@ -41,9 +42,10 @@ exactly what's real.
 
 Built, tested, and what `POST /searches` actually runs in production today:
 
-- Five source adapters (USAJOBS, Greenhouse, Lever, Ashby,
-  SmartRecruiters) behind one `JobSource` interface, each with its own
-  idiosyncrasies handled — see [Source adapters](#source-adapters).
+- Eight source adapters (USAJOBS, Greenhouse, Lever, Ashby,
+  SmartRecruiters, Workable, Recruitee, Rippling) behind one `JobSource`
+  interface, each with its own idiosyncrasies handled — see
+  [Source adapters](#source-adapters).
 - A Postgres schema (Drizzle) with idempotent upserts on jobs, resumes,
   match scores, and per-search scoring-failure records.
 - A RabbitMQ topology with per-queue dead-letter exchanges and a
@@ -68,8 +70,9 @@ Built, tested, and what `POST /searches` actually runs in production today:
 
 Known limitation:
 
-- **A sixth seeded source, Washington state's own job board (`wa-state`),
-  has no adapter yet.** It shows up everywhere as "no adapter implemented"
+- **One seeded source, Washington state's own job board (`wa-state`), has
+  no adapter yet** (the ninth seeded id, alongside the eight real
+  adapters above). It shows up everywhere as "no adapter implemented"
   rather than a misconfiguration — see `apps/api/src/sources/registry.ts`.
 
 ## Architecture
@@ -101,7 +104,7 @@ running.
 
 ### Why a queue, not a direct fan-out
 
-A search can hit up to five independent job-board APIs that are unequal and
+A search can hit up to eight independent job-board APIs that are unequal and
 unreliable in different ways: one rate-limits, one 404s a mistyped board
 name, one returns HTTP 200 with zero results for both a real employer with
 no openings and a nonexistent one (see
@@ -148,8 +151,8 @@ after the fact.
 ## Source adapters
 
 Every adapter implements the same `JobSource` interface
-(`search(criteria) -> { jobs, skipped }`) but the four ATS APIs in this
-table disagree about almost everything else. USAJOBS is a fifth adapter
+(`search(criteria) -> { jobs, skipped }`) but the seven ATS APIs in this
+table disagree about almost everything else. USAJOBS is an eighth adapter
 behind the same interface — its access method, auth, and terms are covered
 in [ADR 001](docs/adr/001-job-sources.md) instead of here, since it's a
 government API with different characteristics than an ATS vendor's, not
@@ -161,6 +164,9 @@ the same shape of "awkward."
 | **Lever**           | Posting content is split across a plain-text summary field and a separate `lists` field that actually holds the requirements — reading only the summary field discards the majority of a posting's real content. Location is similarly split between one canonical field and an `allLocations` array that doesn't always agree with it; reading only one silently drops real matches, and it took three review rounds to land on reading the union of both correctly.                     |
 | **Ashby**           | Location data is spread across a primary field, a `secondaryLocations` array, and a structured `address.postalAddress` block that's absent from the API response unless you read it — missing any one of the three silently zeroes out entire cities' worth of results. Compensation data only exists at all behind an undocumented query parameter.                                                                                                                                      |
 | **SmartRecruiters** | Returns HTTP `200` with `totalFound: 0` for both a real employer with no current openings and a completely nonexistent company identifier — byte-identical responses. Distinguishing the two required an independent liveness check against the company's own careers-site redirect behavior. Descriptions live behind a separate per-posting detail endpoint, so a large employer can cost thousands of extra HTTP requests for one search.                                              |
+| **Workable**        | The documented Accounts API endpoint 302-redirects to a widget host before it's usable at all — an invalid subdomain and a real one both look identical until that redirect is followed, at which point a real account resolves `200` (`jobs: []` for a genuinely quiet employer) and an unrecognized one resolves a clean, distinct `404`. No compensation field exists anywhere in the API.                                                                                             |
+| **Recruitee**       | No pagination on the offers endpoint at all — a whole company's board comes back as one request, unlike SmartRecruiters' paginated list. `remote`/`hybrid`/`on_site` booleans, assumed mutually exclusive, aren't in real data — two real bunq postings assert both `hybrid` and `on_site` simultaneously, so the adapter requires exactly one true and maps zero-or-multiple to `undefined` rather than guessing a winner.                                                               |
+| **Rippling**        | The list endpoint carries no description, company name, employment type, or pay data at all — every posting requires a mandatory per-posting detail fetch, same as SmartRecruiters. Worse, a job posted to multiple locations appears once PER LOCATION as separate rows sharing an identical `uuid`; failing to dedupe by `uuid` would insert the same posting into `jobs` multiple times under the same `(source, external_id)` key.                                                    |
 
 ## What "adversarial review" actually catches
 

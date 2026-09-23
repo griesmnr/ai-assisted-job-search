@@ -12,8 +12,9 @@ const fakeDb = {} as any;
 // inject a fake env object directly and don't touch process.env at all.
 // This route has no env parameter to inject into, so the only way to make
 // its test deterministic is to control process.env ourselves: save the
-// exact six vars the six sources read, force them to a known state before
-// each test, and restore whatever was there before.
+// exact vars the sources with real adapters read (every id in BUILDERS,
+// sources/registry.ts), force them to a known state before each test, and
+// restore whatever was there before.
 //
 // Ticket 9a3b7f1: this test used to skip that step and assert directly on
 // whatever this machine's real, gitignored .env happened to contain
@@ -29,6 +30,9 @@ const ENV_VARS = [
   "LEVER_COMPANIES",
   "ASHBY_BOARD_NAMES",
   "SMARTRECRUITERS_COMPANIES",
+  "WORKABLE_COMPANIES",
+  "RECRUITEE_COMPANIES",
+  "RIPPLING_COMPANIES",
 ] as const;
 
 let savedEnv: Record<(typeof ENV_VARS)[number], string | undefined>;
@@ -42,12 +46,19 @@ beforeEach(() => {
   // usajobs: both required vars present -> configured.
   process.env.USAJOBS_API_KEY = "test-usajobs-key";
   process.env.USAJOBS_USER_AGENT = "test-runner@example.com";
-  // greenhouse/lever/ashby/smartrecruiters: deliberately absent -> each
-  // should report configured: false with its own "must be set" error.
+  // workable: configured -> demonstrates the ticket 8c2cea0 wiring reports
+  // configured: true, not just "unconfigured but no longer a 501".
+  process.env.WORKABLE_COMPANIES = "rokt,seeq";
+  // greenhouse/lever/ashby/smartrecruiters/recruitee/rippling: deliberately
+  // absent -> each should report configured: false with its own "must be
+  // set" error (recruitee/rippling exercising the same real-adapter path
+  // workable's positive case above does, just the negative branch).
   delete process.env.GREENHOUSE_BOARD_TOKENS;
   delete process.env.LEVER_COMPANIES;
   delete process.env.ASHBY_BOARD_NAMES;
   delete process.env.SMARTRECRUITERS_COMPANIES;
+  delete process.env.RECRUITEE_COMPANIES;
+  delete process.env.RIPPLING_COMPANIES;
 });
 
 afterEach(() => {
@@ -107,17 +118,20 @@ describe("GET /sources", () => {
     expect(waState?.configured).toBe(false);
     expect(waState?.error).toBe("no adapter implemented yet");
 
-    // Three newly scaffolded sources should all report as not implemented
+    // Ticket 8c2cea0 wired workable/recruitee/rippling into BUILDERS. All
+    // three now go through the real createXSourceFromEnv() config-check
+    // path instead of the "no adapter implemented yet" placeholder that
+    // wa-state (still un-adapted, asserted above) reports.
     const workable = body.sources.find((s) => s.id === "workable");
-    expect(workable?.configured).toBe(false);
-    expect(workable?.error).toBe("no adapter implemented yet");
+    expect(workable?.configured).toBe(true);
+    expect(workable?.error).toBeUndefined();
 
     const recruitee = body.sources.find((s) => s.id === "recruitee");
     expect(recruitee?.configured).toBe(false);
-    expect(recruitee?.error).toBe("no adapter implemented yet");
+    expect(recruitee?.error).toMatch(/RECRUITEE_COMPANIES/);
 
     const rippling = body.sources.find((s) => s.id === "rippling");
     expect(rippling?.configured).toBe(false);
-    expect(rippling?.error).toBe("no adapter implemented yet");
+    expect(rippling?.error).toMatch(/RIPPLING_COMPANIES/);
   });
 });
