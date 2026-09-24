@@ -657,12 +657,11 @@ export function SearchFlow({
         <div className="cost-panel running" aria-label="Search running">
           <h3>Search running...</h3>
           <ElapsedTimer startedAt={phase.startedAt} />
-          {/* Ticket 2e7ba8a: the "of M" denominator is the live, durable
-              `linked` count from GET /searches/:id (falling back to the
-              pre-run estimate's `jobCount` only for the brief window before
-              the first poll response lands — see the `Phase` type's
-              `linked` doc comment above). Previously this read
-              `phase.estimate.costEstimate.jobCount` for the whole run,
+          {/* Ticket 2e7ba8a: the "of M" denominator started reading the
+              live, durable `linked` count from GET /searches/:id instead
+              of always showing the pre-run estimate's `jobCount` (see the
+              `Phase` type's `linked` doc comment above) — previously this
+              read `phase.estimate.costEstimate.jobCount` for the whole run,
               which F4 (review round, ticket 1998875) already noted could
               read e.g. "12 of 10" once the real run re-fetched sources and
               found more or fewer postings than the estimate had.

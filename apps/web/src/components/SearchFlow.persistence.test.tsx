@@ -119,10 +119,11 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       estimate: EstimateSearchResponse;
     };
     expect(record.resumeId).toBe("resume-1");
-    // The estimate still rides along, but (ticket 2e7ba8a) ONLY for the
-    // running panel's pre-run cost figures / budget wording now -- the "of
-    // M" denominator no longer depends on this surviving a reload at all,
-    // see the "reload -> durable denominator" test below.
+    // The estimate rides along for the running panel's pre-run cost
+    // figures / budget wording, AND (ticket 4146881) as the floor of the
+    // live "of M" denominator across a reload -- see the "reload ->
+    // durable denominator" test below, which exercises that floor
+    // directly via Math.max(jobCount, linked).
     expect(record.estimate.costEstimate.jobCount).toBe(10);
     expect(typeof record.startedAt).toBe("number");
   });

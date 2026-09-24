@@ -107,15 +107,23 @@ export type PersistedAppState = {
  * honest across the reload.
  *
  * UPDATED, ticket 2e7ba8a: the "N of M scored" denominator used to be
- * read from this persisted `estimate.costEstimate.jobCount` too, for the
+ * read from this persisted `estimate.costEstimate.jobCount` alone, for the
  * same "nothing else has it" reason above — `GET /searches/:id`'s
  * `"pending"` member used to carry only `scoredSoFar`. It now also carries
  * `linked`, a DB-backed, durably-growing count re-derivable on every poll
- * (ticket c9c676d), so the denominator no longer needs to survive in
- * storage at all: SearchFlow.tsx's "running" panel reads it straight off
- * the live poll response, same as `scoredSoFar`. `estimate` staying in
- * this record is now solely about the cost figures and (via
- * `scoreThreshold`) the budget-cap wording — not the denominator.
+ * (ticket c9c676d).
+ *
+ * UPDATED AGAIN, ticket 4146881: `linked` alone is NOT a safe denominator
+ * either — it grows incrementally as each source's fetch/ingest completes,
+ * so switching straight to it made the shown "of M" visibly grow mid-run
+ * ("4 of 4" becoming "5 of 7" moments later), reading as regression. The
+ * denominator SearchFlow.tsx's "running" panel now shows is
+ * `Math.max(estimate.costEstimate.jobCount, linked ?? 0)` — so this
+ * persisted `jobCount` is NOT just "the cost figures and budget-cap
+ * wording" as an earlier version of this comment claimed; it is the FLOOR
+ * of the live denominator for the whole run, including across a reload.
+ * Losing it would let the denominator start lower after a reload than it
+ * showed before one.
  *
  * `scoredSoFar` (and, by the same reasoning since ticket 2e7ba8a, `linked`
  * and the rest of the live per-poll fields) is deliberately NOT persisted:
