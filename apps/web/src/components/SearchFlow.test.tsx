@@ -372,6 +372,115 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     );
   }, 15000);
 
+  // Ticket 4146881: Nicole, live, watching a real search: "I did just see
+  // four of four of four scored so far, and then it went up to five of
+  // seven." The estimate's `jobCount` was 8 the whole time — the denominator
+  // only LOOKED like it shrank-then-grew because it was reading `linked`
+  // (a live, partial, still-climbing count of jobs linked so far) straight
+  // off `GET /searches/:id`, rather than pinning to the estimate's total
+  // until the real total genuinely exceeds it. This test pins that exact
+  // scenario byte for byte: `linked` climbs 4 -> 7 across two poll ticks
+  // while `estimate.costEstimate.jobCount` stays 8 throughout, and the
+  // denominator shown must be 8 at every tick — never 4, never 7 — proving
+  // the fix (`Math.max(jobCount, linked)` at the render site).
+  it("pins the reported denominator regression: linked climbing 4 -> 7 must render '8', not '4' then '7' (ticket 4146881)", async () => {
+    estimateSearch.mockResolvedValue(
+      makeEstimate({
+        costEstimate: {
+          jobCount: 8,
+          estimatedInputTokens: 1000,
+          estimatedCacheReadTokens: 0,
+          estimatedCacheCreationTokens: 0,
+          estimatedOutputTokens: 200,
+          estimatedCostUsd: 0.42,
+          maxCostUsd: 0.42,
+          probableCostUsd: 0.3,
+          basis: "bootstrap",
+        },
+      }),
+    );
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+
+    // Tick 1: one source has landed — `linked` (4) happens to equal
+    // `scoredSoFar` (4), which is exactly the "N of N" shape that read as
+    // "100% done" to Nicole. Tick 2: a second source lands, `linked` grows
+    // to 7 — still below the estimate's 8, but the old (bare-`linked`)
+    // behavior would have jumped the denominator itself from 4 to 7,
+    // reading as regressing progress. Tick 3: the run completes.
+    getSearchStatus
+      .mockResolvedValueOnce({
+        status: "pending",
+        scoredSoFar: 4,
+        linked: 4,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
+        searchId: "search-1",
+        resumeId: "resume-1",
+      })
+      .mockResolvedValueOnce({
+        status: "pending",
+        scoredSoFar: 5,
+        linked: 7,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        sourcesSettled: false,
+        sources: [],
+        searchId: "search-1",
+        resumeId: "resume-1",
+      })
+      .mockResolvedValue({
+        status: "complete",
+        searchId: "search-1",
+        resumeId: "resume-1",
+        scored: 8,
+        permanentlyFailed: 0,
+        cappedForBudget: 0,
+        linked: 8,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
+      });
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    await screen.findByLabelText("Search running");
+    expect(screen.getByText("0 of 8 scored so far.")).toBeInTheDocument();
+
+    // First tick: `linked` (4) equals `scoredSoFar` (4) — the exact "N of
+    // N" moment Nicole saw. Must read "4 of 8", never "4 of 4".
+    await waitFor(
+      () => {
+        expect(screen.getByText("4 of 8 scored so far.")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+    expect(screen.queryByText("4 of 4 scored so far.")).not.toBeInTheDocument();
+
+    // Second tick: `linked` grows to 7. Must still read "5 of 8" — the
+    // denominator must not visibly move at all, let alone jump to 7.
+    await waitFor(
+      () => {
+        expect(screen.getByText("5 of 8 scored so far.")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+    expect(screen.queryByText("5 of 7 scored so far.")).not.toBeInTheDocument();
+
+    // Third tick completes the run.
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText("Search finished")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+  }, 15000);
+
   // Review round, F2: `setInterval` fires unconditionally every
   // POLL_INTERVAL_MS, and each tick's `poll()` awaits its OWN independent
   // `getSearchStatus` round trip — so two ticks for the same run can settle
