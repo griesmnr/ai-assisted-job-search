@@ -119,10 +119,11 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       estimate: EstimateSearchResponse;
     };
     expect(record.resumeId).toBe("resume-1");
-    // The estimate still rides along, but (ticket 2e7ba8a) ONLY for the
-    // running panel's pre-run cost figures / budget wording now -- the "of
-    // M" denominator no longer depends on this surviving a reload at all,
-    // see the "reload -> durable denominator" test below.
+    // The estimate rides along for the running panel's pre-run cost
+    // figures / budget wording, AND (ticket 4146881) as the floor of the
+    // live "of M" denominator across a reload -- see the "reload ->
+    // durable denominator" test below, which exercises that floor
+    // directly via Math.max(jobCount, linked).
     expect(record.estimate.costEstimate.jobCount).toBe(10);
     expect(typeof record.startedAt).toBe("number");
   });
@@ -139,13 +140,22 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       status: "pending",
       resumeId: "resume-1",
       scoredSoFar: 6,
-      // Ticket 2e7ba8a: deliberately DIFFERENT from the persisted
-      // estimate's `costEstimate.jobCount` (10, see `makeEstimate` above).
-      // If the denominator were still coming from the persisted estimate
-      // (the old, now-fixed behavior), this would render "6 of 10" — the
-      // assertion below proves it instead comes from THIS poll response's
-      // durable `linked` field.
-      linked: 8,
+      // Ticket 2e7ba8a: deliberately LARGER than the persisted estimate's
+      // `costEstimate.jobCount` (10, see `makeEstimate` above). If the
+      // denominator were still coming from the persisted estimate alone
+      // (ignoring this live poll response entirely), this would render "6
+      // of 10" — the assertion below proves it instead reflects THIS poll
+      // response's durable `linked` field. Chosen ABOVE 10, not below it,
+      // because ticket 4146881 made the shown denominator
+      // `Math.max(jobCount, linked)`: a `linked` below 10 would render "6
+      // of 10" for the WRONG reason (the estimate winning the max, not the
+      // persisted-estimate bug this test guards against), making the two
+      // failure modes indistinguishable. See the "the reload-survived
+      // denominator is genuinely live" test below, and
+      // SearchFlow.test.tsx's ticket-4146881 test, for the normal case
+      // where `linked` stays under the estimate and the denominator
+      // correctly stays pinned at it.
+      linked: 15,
       permanentlyFailed: 0,
       cappedForBudget: 0,
       sourcesSettled: false,
@@ -161,10 +171,10 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.queryByRole("button", { name: "Estimate search cost" })).not.toBeInTheDocument();
 
     await waitFor(() => expect(getSearchStatus).toHaveBeenCalledWith("search-abc"));
-    expect(await screen.findByText("6 of 8 scored so far.")).toBeInTheDocument();
+    expect(await screen.findByText("6 of 15 scored so far.")).toBeInTheDocument();
   });
 
-  // Ticket 2e7ba8a's own bonus-fix proof: before this ticket, the "of M"
+  // Ticket 2e7ba8a's own bonus-fix proof: before that ticket, the "of M"
   // denominator lived ONLY in the persisted `estimate` (see the record test
   // above and session.ts's updated doc comment) — there was no way to
   // rebuild it from the server, so a reload's denominator was necessarily
@@ -172,9 +182,21 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
   // fresher number. Now `linked` is a durable, DB-backed count that grows
   // as sources land, independent of anything this tab remembers — this
   // test proves that by polling TWICE after the reload and watching the
-  // denominator itself climb, which the old estimate-derived denominator
-  // could never do (the estimate is a fixed snapshot, written once).
-  it("the reload-survived denominator is genuinely live, not just a one-time restore (ticket 2e7ba8a)", async () => {
+  // SHOWN denominator itself climb PAST the estimate's `jobCount` (10),
+  // which the old estimate-derived denominator could never do (the
+  // estimate is a fixed snapshot, written once).
+  //
+  // Ticket 4146881 updated the numbers here (they used to be 4 then 13,
+  // asserting "2 of 4" then "5 of 13"): with the denominator now
+  // `Math.max(jobCount, linked)`, a `linked` of 4 — BELOW the estimate's
+  // jobCount of 10 — would correctly render "2 of 10", not "2 of 4", which
+  // would have made this look like a regression rather than the fix
+  // working as intended. Keeping the first tick's `linked` (9) still below
+  // 10 and the second tick's (13) above it exercises both halves of the
+  // fix in one test: pinned-at-the-estimate while linked hasn't caught up,
+  // then genuinely growing past it once the real run finds more postings
+  // than the estimate predicted.
+  it("the reload-survived denominator is genuinely live, not just a one-time restore, and honors the ticket-4146881 max() (ticket 2e7ba8a)", async () => {
     const { unmount } = await runASearch();
     unmount();
     getSearchStatus.mockClear();
@@ -185,7 +207,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
         status: "pending",
         resumeId: "resume-1",
         scoredSoFar: 2,
-        linked: 4,
+        linked: 9,
         permanentlyFailed: 0,
         cappedForBudget: 0,
         sourcesSettled: false,
@@ -198,7 +220,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
         scoredSoFar: 5,
         // A THIRD source has since finished fetching and linked more jobs
         // — `linked` growing on its own, independent of the persisted
-        // estimate's fixed `jobCount` (10).
+        // estimate's fixed `jobCount` (10), and now past it.
         linked: 13,
         permanentlyFailed: 0,
         cappedForBudget: 0,
@@ -208,7 +230,11 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    expect(await screen.findByText("2 of 4 scored so far.")).toBeInTheDocument();
+    // linked (9) is still below the estimate's jobCount (10): denominator
+    // stays pinned at 10, not "2 of 9".
+    expect(await screen.findByText("2 of 10 scored so far.")).toBeInTheDocument();
+    // linked (13) now genuinely exceeds jobCount (10): denominator follows
+    // it up to 13, proving this isn't clamped downward either.
     await waitFor(
       () => {
         expect(screen.getByText("5 of 13 scored so far.")).toBeInTheDocument();
