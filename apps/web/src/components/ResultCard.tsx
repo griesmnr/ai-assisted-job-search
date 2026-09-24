@@ -185,17 +185,25 @@ export function ResultCard({
             assistive tech. `role="note"` permits an accessible name and
             fits this element semantically (supplementary info alongside
             the job), without needing a visually-hidden-text utility class
-            this stylesheet doesn't otherwise have. */}
+            this stylesheet doesn't otherwise have.
+            Ticket 8c252ff: text changed from "Above/Below this level" to
+            "Maybe overqualified"/"Maybe underqualified" -- Nicole, live:
+            "it's not clear to me whether it's saying that I am above this
+            level." The new wording matches the `levelFit` value names
+            directly instead of requiring the reader to infer whose level
+            "this level" refers to. */}
         {result.levelFit === "overqualified" && (
           <span
             className="result-level-fit result-level-fit-over"
             role="note"
             title={result.levelFitNote ?? undefined}
             aria-label={
-              result.levelFitNote ? `Above this level: ${result.levelFitNote}` : "Above this level"
+              result.levelFitNote
+                ? `Maybe overqualified: ${result.levelFitNote}`
+                : "Maybe overqualified"
             }
           >
-            Above this level
+            Maybe overqualified
           </span>
         )}
         {result.levelFit === "underqualified" && (
@@ -204,10 +212,12 @@ export function ResultCard({
             role="note"
             title={result.levelFitNote ?? undefined}
             aria-label={
-              result.levelFitNote ? `Below this level: ${result.levelFitNote}` : "Below this level"
+              result.levelFitNote
+                ? `Maybe underqualified: ${result.levelFitNote}`
+                : "Maybe underqualified"
             }
           >
-            Below this level
+            Maybe underqualified
           </span>
         )}
       </div>

@@ -19,8 +19,9 @@ import { useEffect, useId, useState } from "react";
  * independent ones). A caller moving this slider changes `App.tsx`'s
  * `scoreFloor` state, which flows into `useResults`'s `minScore` argument
  * and re-fetches (see that hook's doc comment) -- a REAL server-side
- * re-filter, not a client-side hide like the "Hide roles above my level"
- * checkbox or the source toggles: a lower floor can surface jobs that were
+ * re-filter, not a client-side hide like the "Hide roles I'm overqualified
+ * for" checkbox (ticket 8c252ff) or the source toggles: a lower floor can
+ * surface jobs that were
  * never sent to the client at all under the old floor.
  *
  * Bounds are 0-90, not 0-100: `matchScore` is a 0-100 percentage, but a

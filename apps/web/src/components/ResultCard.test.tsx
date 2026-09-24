@@ -365,7 +365,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
 // fit. This adds a separate levelFit + levelFitNote pill/detail, visible
 // WITHOUT expanding the card, and null/well_matched must render nothing.
 describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
-  it('shows "Above this level" without expanding the card when levelFit is overqualified, carrying the note as both title and aria-label', () => {
+  it('shows "Maybe overqualified" without expanding the card when levelFit is overqualified, carrying the note as both title and aria-label', () => {
     render(
       <ResultCard
         result={makeResult({
@@ -377,18 +377,18 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       />,
     );
 
-    const pill = screen.getByText("Above this level");
+    const pill = screen.getByText("Maybe overqualified");
     expect(pill).toBeInTheDocument();
     expect(pill).toHaveAttribute("title", "This posting asks for 1.5-2 years; you have far more.");
     expect(pill).toHaveAttribute(
       "aria-label",
-      "Above this level: This posting asks for 1.5-2 years; you have far more.",
+      "Maybe overqualified: This posting asks for 1.5-2 years; you have far more.",
     );
     // No need to expand the card to see it.
     expect(screen.getByRole("button", { name: "Why this match?" })).toBeInTheDocument();
   });
 
-  it('shows "Below this level" when levelFit is underqualified', () => {
+  it('shows "Maybe underqualified" when levelFit is underqualified', () => {
     render(
       <ResultCard
         result={makeResult({
@@ -400,8 +400,8 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       />,
     );
 
-    expect(screen.getByText("Below this level")).toBeInTheDocument();
-    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
+    expect(screen.getByText("Maybe underqualified")).toBeInTheDocument();
+    expect(screen.queryByText("Maybe overqualified")).not.toBeInTheDocument();
   });
 
   it("shows no pill at all when levelFit is well_matched", () => {
@@ -413,8 +413,8 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       />,
     );
 
-    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
-    expect(screen.queryByText("Below this level")).not.toBeInTheDocument();
+    expect(screen.queryByText("Maybe overqualified")).not.toBeInTheDocument();
+    expect(screen.queryByText("Maybe underqualified")).not.toBeInTheDocument();
   });
 
   // Regression: a legacy pre-migration row has levelFit: null. It must
@@ -429,8 +429,8 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
       />,
     );
 
-    expect(screen.queryByText("Above this level")).not.toBeInTheDocument();
-    expect(screen.queryByText("Below this level")).not.toBeInTheDocument();
+    expect(screen.queryByText("Maybe overqualified")).not.toBeInTheDocument();
+    expect(screen.queryByText("Maybe underqualified")).not.toBeInTheDocument();
   });
 
   it("shows the full levelFitNote in the expanded details, above Strengths", () => {
