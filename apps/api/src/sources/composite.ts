@@ -104,10 +104,31 @@ export class CompositeSource {
    * `allSettled`, specifically, not `all`: the whole point of this class
    * is that one source's rejection must not cancel or discard the
    * others' in-flight results.
+   *
+   * `onSourceSettled` (ticket bf2dd0a) is the per-source progress hook a
+   * slow, multi-source `POST /searches/estimate` needs — see
+   * `matching/estimateProgress.ts`'s doc comment for the full story of why
+   * it exists. Attached via `.finally()` on each INDIVIDUAL source promise,
+   * not read off the aggregate `settled` array below: `Promise.allSettled`
+   * itself only resolves once every source is done, so waiting for it
+   * before reporting anything would defeat the entire point — a caller
+   * watching for incremental progress needs to hear about the fast sources
+   * as they land, not all at once at the end alongside the slowest one.
+   * `.finally()`, not `.then()`, because a source that REJECTED has still
+   * settled — an error is exactly as reportable a "this one's done" event
+   * as a success, and the caller already has to interpret a mix of
+   * ok/error outcomes from `PerSourceOutcome` itself. Optional and
+   * defaults to a no-op so every existing caller (this class's own tests,
+   * `runDemoMatch`'s CLI path) keeps working unchanged.
    */
-  async search(criteria: SearchCriteria): Promise<PerSourceOutcome[]> {
+  async search(
+    criteria: SearchCriteria,
+    onSourceSettled?: (dataSource: Job["dataSource"]) => void,
+  ): Promise<PerSourceOutcome[]> {
     const settled = await Promise.allSettled(
-      this.#sources.map((source) => source.search(criteria)),
+      this.#sources.map((source) =>
+        source.search(criteria).finally(() => onSourceSettled?.(source.dataSource)),
+      ),
     );
 
     return settled.map((outcome, i): PerSourceOutcome => {

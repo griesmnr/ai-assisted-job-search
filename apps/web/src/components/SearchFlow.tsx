@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  EstimateProgressResponse,
   EstimateSearchResponse,
   SearchCriteria,
   SearchSourceState,
   SearchStatusResponse,
 } from "@app/shared";
-import { estimateSearch, getSearchStatus, startSearch } from "../api/client";
+import { estimateSearch, getEstimateProgress, getSearchStatus, startSearch } from "../api/client";
 import { clearActiveSearchFor, readActiveSearch, writeActiveSearch } from "../session";
 import { SourceOutcomesList } from "./SourceOutcomesList";
 import { SearchSourceStatusList } from "./SearchSourceStatusList";
@@ -26,7 +27,19 @@ const POLL_INTERVAL_MS = 2000;
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "estimating" }
+  | {
+      kind: "estimating";
+      /**
+       * Ticket bf2dd0a: the most recent `GET /searches/estimate/:id/progress`
+       * snapshot for this in-flight estimate, or `undefined` before the
+       * first poll response lands (or if progress polling never gets a
+       * usable answer — see `pollEstimateProgress` below, which treats a 404
+       * as "nothing to show" rather than an error). Purely additive: the
+       * estimate itself runs identically whether or not this ever becomes
+       * defined.
+       */
+      progress: EstimateProgressResponse | undefined;
+    }
   | {
       kind: "estimated";
       estimate: EstimateSearchResponse;
@@ -226,6 +239,13 @@ export function SearchFlow({
     };
   });
   const pollRef = useRef<number | undefined>(undefined);
+  // Ticket bf2dd0a: a SEPARATE interval from `pollRef` above -- that one
+  // polls `GET /searches/:id` for a real, already-started (async) search;
+  // this one polls `GET /searches/estimate/:id/progress` for a still-
+  // in-flight (synchronous) estimate. The two phases never overlap
+  // (`"estimating"` vs `"running"`), but keeping separate refs means
+  // starting one can never accidentally clobber the other's interval id.
+  const estimateProgressPollRef = useRef<number | undefined>(undefined);
   // Captured once, from the FIRST render's phase — `useRef`'s initial value
   // is evaluated on every render but only the first one is kept, so this
   // stays the restored run (or undefined) for the life of the mount even
@@ -235,6 +255,9 @@ export function SearchFlow({
   useEffect(() => {
     return () => {
       if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
+      if (estimateProgressPollRef.current !== undefined) {
+        window.clearInterval(estimateProgressPollRef.current);
+      }
     };
   }, []);
 
@@ -306,17 +329,64 @@ export function SearchFlow({
     clearActiveSearchFor(phase.kind === "done" ? phase.result.resumeId : resumeId);
   }, [phase, resumeId]);
 
+  /**
+   * Ticket bf2dd0a: starts polling `GET /searches/estimate/:id/progress` on
+   * `POLL_INTERVAL_MS`, the same cadence the real-search poll loop below
+   * uses. A 404 (no tracked record yet, or the id has aged out) is treated
+   * as "nothing to show" — `getEstimateProgress`'s own doc comment says why
+   * this is the expected shape of "no progress data", not an error — so it
+   * is silently ignored rather than bumping the phase to `"error"`; the
+   * plain spinner text stays visible underneath either way. Only updates
+   * `phase` while still `"estimating"` (a tick that resolves after the
+   * estimate itself has already finished, or been superseded, is a stale
+   * write and must no-op rather than resurrect a phase the component has
+   * already moved on from).
+   */
+  function startEstimateProgressPolling(estimateRequestId: string): void {
+    function tick(): void {
+      void getEstimateProgress(estimateRequestId)
+        .then((progress) => {
+          setPhase((current) =>
+            current.kind === "estimating" ? { ...current, progress } : current,
+          );
+        })
+        .catch(() => {
+          // 404 ("nothing tracked yet/anymore") or a transient network blip
+          // -- either way, just skip this tick. The estimate's OWN request
+          // (handleEstimate's `estimateSearch` call) is what actually
+          // reports real errors; this side channel never should.
+        });
+    }
+    tick();
+    estimateProgressPollRef.current = window.setInterval(tick, POLL_INTERVAL_MS);
+  }
+
+  function stopEstimateProgressPolling(): void {
+    if (estimateProgressPollRef.current !== undefined) {
+      window.clearInterval(estimateProgressPollRef.current);
+      estimateProgressPollRef.current = undefined;
+    }
+  }
+
   async function handleEstimate() {
     onEstimateStart?.();
-    setPhase({ kind: "estimating" });
+    setPhase({ kind: "estimating", progress: undefined });
+    // Minted by the CALLER (ticket bf2dd0a) -- the server has no way to
+    // hand back an id before the blocking response it's attached to, so the
+    // frontend generates one before firing the request and starts polling
+    // immediately after, well before `estimateSearch` below can resolve.
+    const estimateRequestId = crypto.randomUUID();
+    startEstimateProgressPolling(estimateRequestId);
     try {
-      const estimate = await estimateSearch(resumeId, sourceIds, criteria);
+      const estimate = await estimateSearch(resumeId, sourceIds, criteria, estimateRequestId);
+      stopEstimateProgressPolling();
       // Snapshot props AT THE MOMENT the estimate landed (F1) — not a
       // reference to the live `resumeId`/`sourceIds`/`criteria` closed over
       // above, which are exactly the same values right now but will
       // silently diverge if props change before confirm.
       setPhase({ kind: "estimated", estimate, resumeId, sourceIds: [...sourceIds], criteria });
     } catch (err) {
+      stopEstimateProgressPolling();
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -610,6 +680,21 @@ export function SearchFlow({
         <p className="estimating" role="status">
           <span className="spinner" aria-hidden="true" />
           Getting a cost estimate... this may take a minute.
+          {/* Ticket bf2dd0a: "N of M sources checked" once the first
+              progress poll lands, instead of leaving the wait a bare
+              spinner the whole time — this is the literal complaint
+              ("I don't know if I sent you on any of this") this ticket
+              exists to fix. `total > 0` guards the brief window where a
+              progress record exists but hasn't resolved a source count yet;
+              `phase.progress` itself stays `undefined` until the first poll
+              response lands at all. */}
+          {phase.progress !== undefined && phase.progress.total > 0 && (
+            <span className="estimating-progress">
+              {" "}
+              ({phase.progress.completed} of {phase.progress.total} source
+              {phase.progress.total === 1 ? "" : "s"} checked)
+            </span>
+          )}
         </p>
       )}
 

@@ -40,6 +40,11 @@ vi.mock("./api/client", () => ({
   getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
+  // Ticket bf2dd0a: SearchFlow now polls this alongside every estimate
+  // call. This file never asserts on progress display, so a simple
+  // always-rejecting stub (treated as "nothing to show" -- see
+  // SearchFlow.tsx's startEstimateProgressPolling) is enough.
+  getEstimateProgress: () => Promise.reject(new Error("no progress tracked in this test")),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));
@@ -152,9 +157,12 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     // this ticket exists to remove. `anyLocationOk` itself is a
     // frontend-only gating signal -- it never appears in the criteria
     // payload sent to the API.
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      { titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"] },
+      expect.any(String),
+    );
   });
 
   // Review round 1 finding (opus, F2): ticket 8a403ee means titleChips is
@@ -190,7 +198,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {});
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {}, expect.any(String));
   });
 
   it("pre-populates chips from the resume's real suggestedTitles and sends them as titleInclude", async () => {
@@ -213,15 +221,20 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: [
-        "Backend Engineer",
-        "Platform Engineer",
-        "Program Analyst",
-        "IT Specialist",
-        "Computer Scientist",
-      ],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      {
+        titleInclude: [
+          "Backend Engineer",
+          "Platform Engineer",
+          "Program Analyst",
+          "IT Specialist",
+          "Computer Scientist",
+        ],
+      },
+      expect.any(String),
+    );
   });
 
   it("removing a suggested chip changes what's sent", async () => {
@@ -242,9 +255,19 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Platform Engineer", "Program Analyst", "IT Specialist", "Computer Scientist"],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      {
+        titleInclude: [
+          "Platform Engineer",
+          "Program Analyst",
+          "IT Specialist",
+          "Computer Scientist",
+        ],
+      },
+      expect.any(String),
+    );
   });
 
   it("adding a custom chip includes it alongside the suggestions", async () => {
@@ -269,16 +292,21 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: [
-        "Backend Engineer",
-        "Program Analyst",
-        "IT Specialist",
-        "Computer Scientist",
-        "Site Reliability Engineer",
-      ],
-      remoteOk: true,
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      {
+        titleInclude: [
+          "Backend Engineer",
+          "Program Analyst",
+          "IT Specialist",
+          "Computer Scientist",
+          "Site Reliability Engineer",
+        ],
+        remoteOk: true,
+      },
+      expect.any(String),
+    );
   });
 
   it("commitment checkboxes (ticket 18c9f18) are omitted from criteria when unchecked and sent as commitmentIn when checked", async () => {
@@ -300,10 +328,15 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
-      commitmentIn: ["full-time", "contract"],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      {
+        titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
+        commitmentIn: ["full-time", "contract"],
+      },
+      expect.any(String),
+    );
   });
 });
 
@@ -697,9 +730,12 @@ describe("App — extra title chips folded in automatically at resume-submission
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      { titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"] },
+      expect.any(String),
+    );
   });
 
   it("removing an extra chip removes it for good -- it is not re-added on a later render", async () => {

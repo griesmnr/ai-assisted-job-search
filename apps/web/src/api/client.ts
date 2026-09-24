@@ -13,6 +13,7 @@
  */
 import type {
   CreateResumeResponse,
+  EstimateProgressResponse,
   EstimateSearchRequest,
   EstimateSearchResponse,
   GetAllResultsResponse,
@@ -169,16 +170,41 @@ export function getAllResults(params: GetResultsParams = {}): Promise<GetAllResu
   return request<GetAllResultsResponse>(`/results${qs ? `?${qs}` : ""}`);
 }
 
+/**
+ * `estimateRequestId` (ticket bf2dd0a) is optional and, when supplied, is
+ * purely a progress-tracking token — see `getEstimateProgress` below and
+ * @app/shared's `EstimateSearchRequest.estimateRequestId` doc comment for
+ * the full design. It changes nothing about what this call returns or when.
+ */
 export function estimateSearch(
   resumeId: string,
   sourceIds: string[],
   criteria?: SearchCriteria,
+  estimateRequestId?: string,
 ): Promise<EstimateSearchResponse> {
-  const body: EstimateSearchRequest = { resumeId, sourceIds, criteria };
+  const body: EstimateSearchRequest = { resumeId, sourceIds, criteria, estimateRequestId };
   return request<EstimateSearchResponse>("/searches/estimate", {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Ticket bf2dd0a: polls the in-memory progress record for an
+ * `estimateRequestId` previously passed to `estimateSearch` — meant to be
+ * called on a timer WHILE that call's promise is still pending, so a caller
+ * can show "3 of 8 sources checked" instead of a bare spinner during
+ * `POST /searches/estimate`'s (deliberately synchronous, see design c54b9e0
+ * §9) blocking wait. A 404 here is the NORMAL, expected shape of "nothing to
+ * report yet" (see `EstimateProgressResponse`'s own doc comment in
+ * @app/shared) — callers should treat it as "no progress data available",
+ * not surface it as an error; `SearchFlow.tsx`'s poll loop does exactly
+ * that.
+ */
+export function getEstimateProgress(estimateRequestId: string): Promise<EstimateProgressResponse> {
+  return request<EstimateProgressResponse>(
+    `/searches/estimate/${encodeURIComponent(estimateRequestId)}/progress`,
+  );
 }
 
 export function startSearch(

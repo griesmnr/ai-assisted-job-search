@@ -43,6 +43,11 @@ vi.mock("./api/client", () => ({
   getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
+  // Ticket bf2dd0a: SearchFlow now polls this alongside every estimate
+  // call. This file never asserts on progress display, so a simple
+  // always-rejecting stub (treated as "nothing to show" -- see
+  // SearchFlow.tsx's startEstimateProgressPolling) is enough.
+  getEstimateProgress: () => Promise.reject(new Error("no progress tracked in this test")),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));
@@ -300,11 +305,21 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // Restoring the toggles without restoring what they MEAN would be the
     // worst of both worlds: a screen that looks right pricing a search it
     // isn't describing.
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {
-      titleInclude: ["Backend Engineer", "Program Analyst", "IT Specialist", "Computer Scientist"],
-      nearLocations: ["seattle", "bellevue"],
-      remoteOk: true,
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["usajobs"],
+      {
+        titleInclude: [
+          "Backend Engineer",
+          "Program Analyst",
+          "IT Specialist",
+          "Computer Scientist",
+        ],
+        nearLocations: ["seattle", "bellevue"],
+        remoteOk: true,
+      },
+      expect.any(String),
+    );
   });
 
   it("keeps an all-sources-off selection off instead of re-checking the defaults", async () => {

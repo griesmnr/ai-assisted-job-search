@@ -142,11 +142,42 @@
  * See that module's own doc comment for why the cache is in-memory, why the
  * key is the whole criteria object rather than a hand-picked projection of
  * it, and why the reuse window is 5 minutes specifically.
+ *
+ * PROGRESS FEEDBACK DURING THE WAIT (ticket bf2dd0a). Nicole, live, after
+ * watching an estimate sit for 3+ minutes: "I don't know if I sent you on
+ * any of this." The complaint was about the FELT experience of an opaque
+ * wait, not the actual latency — making the estimate faster is a separate,
+ * harder, explicitly out-of-scope optimization (sampling instead of full
+ * fetch, shorter per-source timeouts). Two independent things changed:
+ *
+ *   1. THE SYNCHRONOUS ESTIMATE (`POST /searches/estimate`, below). Still
+ *      exactly as synchronous as the "STILL SYNCHRONOUS" paragraph above
+ *      describes — this ticket does not relitigate that. What is new is a
+ *      purely ADDITIONAL side channel: if the caller sends an
+ *      `estimateRequestId`, this handler registers it with
+ *      `estimateProgress` (matching/estimateProgress.ts) before calling
+ *      `runDemoMatch`, and `runDemoMatch`'s `onSourceSettled` hook (threaded
+ *      through `CompositeSource`, see pipeline.ts) marks each source done
+ *      the instant its own fetch resolves — not when the whole fan-out
+ *      does. `GET /searches/estimate/:requestId/progress` (also below) is a
+ *      plain, stateless read of that in-memory record, pollable by the
+ *      frontend WHILE the blocking POST is still in flight. See
+ *      `estimateProgress.ts`'s own doc comment for the full design,
+ *      including why in-memory-plus-polling was chosen over SSE.
+ *
+ *   2. THE REAL, ALREADY-ASYNC SEARCH (`POST /searches` / `GET /searches/:id`,
+ *      further below). Checked, not changed: `SearchStatusResponse`'s
+ *      `"pending"` member already carries `sources: SearchSourceState[]`
+ *      (ticket 2e7ba8a) with a live per-source `"pending" | "complete" |
+ *      "failed"` status, durable and re-derived on every poll — exactly the
+ *      granularity "3 of 8 sources checked" needs (count the non-`"pending"`
+ *      entries). Nothing was added here; there was nothing missing.
  */
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type {
+  EstimateProgressResponse,
   EstimateSearchResponse,
   SearchCriteria,
   SearchSourceState,
@@ -167,6 +198,7 @@ import {
   searches as searchesTable,
 } from "../db/schema.js";
 import { seedSourceDescriptors } from "../db/seed.js";
+import { EstimateProgressTracker } from "../matching/estimateProgress.js";
 import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import { createAmqpFetchSourcePublisher, type PublishFetchSourceFn } from "../queue/publisher.js";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
@@ -236,6 +268,30 @@ const searchBodySchema = {
 } as const;
 
 type SearchBody = { resumeId: string; sourceIds: string[]; criteria?: SearchCriteria };
+
+/**
+ * `POST /searches/estimate`'s body schema (ticket bf2dd0a) — `searchBodySchema`
+ * plus one optional field, `estimateRequestId`, that has no business being
+ * on `POST /searches`: the real, queue-driven search already reports
+ * progress durably via `search_sources` (see `SearchSourceState` in
+ * @app/shared and this file's own "SKIPPING A SOURCE..." doc-comment
+ * section), so it has no use for a caller-minted, in-memory progress-poll
+ * id. Kept as a SEPARATE schema object, not a mutation of
+ * `searchBodySchema`, so `/searches` keeps rejecting the field under its own
+ * `additionalProperties: false` exactly as before — see
+ * `estimateProgress.ts`'s doc comment for what this id is actually for.
+ */
+const estimateSearchBodySchema = {
+  type: "object",
+  required: ["resumeId", "sourceIds"],
+  properties: {
+    ...searchBodySchema.properties,
+    estimateRequestId: { type: "string", minLength: 1, maxLength: 200 },
+  },
+  additionalProperties: false,
+} as const;
+
+type EstimateSearchBody = SearchBody & { estimateRequestId?: string };
 
 /**
  * How long a `running` search stays eligible to block a new search for the
@@ -443,6 +499,17 @@ export function registerSearchRoutes(
    * instance across two `buildApp` calls that must see each other's writes.
    */
   zeroResultCache: ZeroResultEstimateCache = new ZeroResultEstimateCache(),
+  /**
+   * The estimate progress side channel (ticket bf2dd0a — see this file's
+   * own "PROGRESS FEEDBACK DURING THE WAIT" section and
+   * matching/estimateProgress.ts). Same injection pattern as
+   * `zeroResultCache` above and for the same reason: defaults to a fresh,
+   * process-local instance evaluated once at the real call site
+   * (`index.ts`'s `buildApp`), and a test can inject its own instance with a
+   * controllable clock to exercise retention-window expiry without a real
+   * sleep, or to read back state a route handler wrote.
+   */
+  estimateProgress: EstimateProgressTracker = new EstimateProgressTracker(),
 ): void {
   async function loadResumeText(resumeId: string): Promise<string | undefined> {
     const rows = await db
@@ -778,11 +845,11 @@ export function registerSearchRoutes(
     };
   }
 
-  app.post<{ Body: SearchBody }>(
+  app.post<{ Body: EstimateSearchBody }>(
     "/searches/estimate",
-    { schema: { body: searchBodySchema } },
+    { schema: { body: estimateSearchBodySchema } },
     async (request, reply) => {
-      const { resumeId, sourceIds, criteria } = request.body;
+      const { resumeId, sourceIds, criteria, estimateRequestId } = request.body;
       const resumeText = await loadResumeText(resumeId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -796,6 +863,22 @@ export function registerSearchRoutes(
         });
       }
 
+      // Ticket bf2dd0a: register the progress record BEFORE the slow part
+      // (`runDemoMatch`) starts, using this run's own resolved source list —
+      // a poll landing the instant after this POST is received already sees
+      // a real, all-pending snapshot rather than a 404. Only when the caller
+      // actually asked for one: `estimateRequestId` is optional, and a
+      // caller that omits it gets identical estimate behavior with zero
+      // progress-tracking overhead (no map entry, no `onSourceSettled` calls
+      // — the ternary below leaves it `undefined`, and `CompositeSource`'s
+      // hook is itself a no-op when absent).
+      if (estimateRequestId !== undefined) {
+        estimateProgress.start(
+          estimateRequestId,
+          resolved.sources.map((source) => source.dataSource),
+        );
+      }
+
       const result = await runDemoMatch({
         db,
         sources: resolved.sources,
@@ -806,6 +889,10 @@ export function registerSearchRoutes(
         excludedForMissingWorkArrangement: compileExcludedForMissingWorkArrangement(criteria),
         estimateOnly: true,
         outputPath: tempOutputPath(`estimate-${randomUUID()}`),
+        onSourceSettled:
+          estimateRequestId !== undefined
+            ? (dataSource) => estimateProgress.markSourceSettled(estimateRequestId, dataSource)
+            : undefined,
       });
 
       // Ticket 447e210: record every source this estimate just proved a
@@ -854,6 +941,37 @@ export function registerSearchRoutes(
         sourceOutcomes: result.sourceOutcomes,
         skippedSources: resolved.skipped,
       };
+      return reply.send(response);
+    },
+  );
+
+  /**
+   * The estimate progress side channel (ticket bf2dd0a). A plain, stateless
+   * read of `estimateProgress`'s in-memory record — see this file's
+   * "PROGRESS FEEDBACK DURING THE WAIT" doc-comment section and
+   * matching/estimateProgress.ts for the full design. Deliberately has
+   * NOTHING to do with `searches`/`search_sources` — this id is minted by
+   * the CALLER (not a `searchId`, and this run's `searches` row, if any,
+   * isn't even committed yet when a poll can first land) and never
+   * persisted, so there is no database read here at all.
+   *
+   * 404 is the normal, expected answer for "nothing to report" — an id that
+   * was never `start()`-ed (the caller's `POST /searches/estimate` omitted
+   * `estimateRequestId`), one whose record already aged out of
+   * `PROGRESS_RETENTION_MS`, or a plain typo — not evidence anything is
+   * wrong. A frontend poller should treat it as "keep showing the plain
+   * spinner", never surface it as an error.
+   */
+  app.get<{ Params: { requestId: string } }>(
+    "/searches/estimate/:requestId/progress",
+    async (request, reply) => {
+      const snapshot = estimateProgress.get(request.params.requestId);
+      if (snapshot === undefined) {
+        return reply.code(404).send({
+          error: `No in-progress (or recently finished) estimate tracked under id "${request.params.requestId}".`,
+        });
+      }
+      const response: EstimateProgressResponse = snapshot;
       return reply.send(response);
     },
   );

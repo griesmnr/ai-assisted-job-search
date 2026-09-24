@@ -21,11 +21,22 @@ afterEach(() => {
 const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
+// Ticket bf2dd0a: defaults to a rejection, mirroring what the REAL
+// `getEstimateProgress` sees for the vast majority of test cases (no
+// server, so no `estimateRequestId` was ever actually `start()`-ed) --
+// SearchFlow's poll loop treats that as "nothing to show yet" and swallows
+// it (see `startEstimateProgressPolling`'s own comment), so this default
+// is silent/inert for every test that doesn't care about progress display.
+// `vi.clearAllMocks()` (afterEach below) resets call history, not this
+// implementation, so it holds for the whole file unless a test overrides it
+// with its own `mockResolvedValueOnce`/`mockResolvedValue`.
+const getEstimateProgress = vi.fn().mockRejectedValue(new Error("no progress tracked in test"));
 
 vi.mock("../api/client", () => ({
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
+  getEstimateProgress: (...args: unknown[]) => getEstimateProgress(...args),
 }));
 
 /**
@@ -110,7 +121,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     // Request is now in flight (phase === "estimating"); the mocked
     // estimateSearch call captured the selection at click time, ["a", "b"].
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["a", "b"],
+      undefined,
+      expect.any(String),
+    );
     await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, the user toggles "b" off — sourceIds prop
@@ -150,7 +166,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], undefined);
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["a", "b"],
+      undefined,
+      expect.any(String),
+    );
     await screen.findByText(/Getting a cost estimate/);
 
     // WHILE still in flight, resumeId changes (e.g. a different resume was
@@ -183,9 +204,12 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
     await screen.findByRole("button", { name: "Run search" });
-    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["a", "b"], {
-      titleInclude: ["backend"],
-    });
+    expect(estimateSearch).toHaveBeenCalledWith(
+      "resume-1",
+      ["a", "b"],
+      { titleInclude: ["backend"] },
+      expect.any(String),
+    );
 
     // Criteria changes AFTER the estimate landed and is on screen -- e.g.
     // the user edits the title-include field having already seen a price.
@@ -1077,5 +1101,83 @@ describe("SearchFlow — estimating phase feedback (ticket 541b55b)", () => {
       resolve(makeEstimate());
       await promise;
     });
+  });
+});
+
+describe("SearchFlow — estimate progress feedback (ticket bf2dd0a)", () => {
+  it("shows incremental per-source progress once the first progress poll lands", async () => {
+    const { promise, resolve } = deferred<EstimateSearchResponse>();
+    estimateSearch.mockReturnValue(promise);
+    // The estimate itself never resolves during this test -- the progress
+    // side channel is what this test is exercising, not the terminal
+    // "estimated" panel.
+    getEstimateProgress.mockResolvedValue({
+      requestId: "does-not-matter-to-the-assertion",
+      total: 3,
+      completed: 1,
+      sources: [
+        { sourceId: "usajobs", status: "done" },
+        { sourceId: "greenhouse", status: "pending" },
+        { sourceId: "lever", status: "pending" },
+      ],
+      done: false,
+    });
+
+    render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["usajobs", "greenhouse", "lever"]}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    // `startEstimateProgressPolling` fires its first poll synchronously
+    // (not on the next 2s interval tick — see that function's own comment),
+    // so this needs no `waitFor` timeout extension the way a genuine
+    // interval-tick assertion would.
+    await screen.findByText(/1 of 3 sources checked/);
+    // Still the plain wait-time sentence underneath, not replaced by it.
+    expect(screen.getByRole("status")).toHaveTextContent("this may take a minute");
+
+    // The SAME id drives both calls -- this is the whole mechanism: the
+    // frontend mints one id, hands it to the blocking POST, and polls the
+    // progress side channel under that identical id.
+    const requestId = (estimateSearch.mock.calls[0] as unknown[])[3] as string;
+    expect(typeof requestId).toBe("string");
+    expect(requestId.length).toBeGreaterThan(0);
+    expect((getEstimateProgress.mock.calls[0] as unknown[])[0]).toBe(requestId);
+
+    // Resolve so the deferred promise doesn't leak into the next test.
+    await act(async () => {
+      resolve(makeEstimate());
+      await promise;
+    });
+  });
+
+  it("treats a progress-poll rejection (no tracked record) as 'nothing to show', not an error", async () => {
+    const { promise, resolve } = deferred<EstimateSearchResponse>();
+    estimateSearch.mockReturnValue(promise);
+    getEstimateProgress.mockRejectedValue(new Error("404: not tracked"));
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+
+    const status = await screen.findByRole("status");
+    // The plain spinner/copy is unaffected -- no "N of M" text ever
+    // appears, and critically the phase never flips to "error" just
+    // because this optional side channel came back empty.
+    expect(status).toHaveTextContent("this may take a minute");
+    expect(screen.queryByText(/sources checked/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolve(makeEstimate());
+      await promise;
+    });
+    // Proves the phase reached "estimated", not "error" -- a progress-poll
+    // rejection alone must never surface as a failed estimate.
+    await screen.findByRole("button", { name: "Run search" });
   });
 });

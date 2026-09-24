@@ -241,6 +241,25 @@ export type RunDemoMatchOptions = {
    */
   onJobScored?: () => void;
   /**
+   * Ticket bf2dd0a: fired once per configured SOURCE as its own fetch
+   * settles — success or failure — inside `CompositeSource#search`'s
+   * `Promise.allSettled` fan-out, threaded straight through unchanged (see
+   * that method's own doc comment for why it fires per-source, via
+   * `.finally()`, rather than once for the whole batch). Exists for the
+   * SAME reason `onJobScored` above does — a caller polling a counter this
+   * increments can show genuine incremental progress instead of a bare
+   * spinner — but for the FETCH phase rather than the scoring phase, which
+   * matters because `POST /searches/estimate` (routes/searches.ts) never
+   * reaches scoring at all (`estimateOnly`, `NEVER_SCORE`): `onJobScored`
+   * fires zero times on that path no matter how slow the run is, while this
+   * fires once per source regardless of `estimateOnly`. See
+   * `matching/estimateProgress.ts` for the in-memory record this feeds on
+   * the estimate route. Optional and defaults to a no-op so every existing
+   * caller (the CLI's `main()`, every `runDemoMatch` test) keeps working
+   * unchanged.
+   */
+  onSourceSettled?: (dataSource: Job["dataSource"]) => void;
+  /**
    * Overrides the randomly generated `searches.id` this run creates.
    * Ticket 59fdc52: the REST API's async "run a search" route needs to hand
    * the client a pollable id *before* this (multi-minute, billed) call
@@ -1066,6 +1085,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     searchId: providedSearchId,
     estimateOnly = false,
     onJobScored,
+    onSourceSettled,
   } = options;
 
   if (sources.length === 0) {
@@ -1116,7 +1136,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // reason TokenOutcome (ticket b723fb9) exists one level down: an
   // aggregate number across sources of very different sizes hides exactly
   // which one is unhealthy.
-  const perSource = await new CompositeSource(sources).search(criteria);
+  const perSource = await new CompositeSource(sources).search(criteria, onSourceSettled);
 
   const found: NormalizedJob[] = [];
   for (const outcome of perSource) {

@@ -46,6 +46,11 @@ vi.mock("./api/client", () => ({
   getAllResults: (...args: unknown[]) => getAllResults(...args),
   setJobStatus: (...args: unknown[]) => setJobStatus(...args),
   estimateSearch: (...args: unknown[]) => estimateSearch(...args),
+  // Ticket bf2dd0a: SearchFlow now polls this alongside every estimate
+  // call. This file never asserts on progress display, so a simple
+  // always-rejecting stub (treated as "nothing to show" -- see
+  // SearchFlow.tsx's startEstimateProgressPolling) is enough.
+  getEstimateProgress: () => Promise.reject(new Error("no progress tracked in this test")),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));

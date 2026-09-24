@@ -6,6 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadEnvFile } from "./load-env.js";
+import { EstimateProgressTracker } from "./matching/estimateProgress.js";
 import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
 import { ZeroResultEstimateCache } from "./matching/zeroResultCache.js";
 import { inferTitleKeywords } from "./resume-title-inference.js";
@@ -75,6 +76,16 @@ export type BuildAppDeps = {
    * clock (to exercise window expiry without a real sleep).
    */
   zeroResultCache?: ZeroResultEstimateCache;
+  /**
+   * Overrides the estimate progress side channel (ticket bf2dd0a — see
+   * routes/searches.ts's "PROGRESS FEEDBACK DURING THE WAIT" and
+   * matching/estimateProgress.ts). Same shape/reasoning as `zeroResultCache`
+   * above: defaults to a fresh instance, evaluated once here, that lives for
+   * the process's lifetime. Route tests inject an explicit instance to
+   * assert what it recorded, or one with a controllable clock to exercise
+   * `PROGRESS_RETENTION_MS` expiry without a real sleep.
+   */
+  estimateProgress?: EstimateProgressTracker;
 };
 
 /**
@@ -150,6 +161,7 @@ export function buildApp(deps: BuildAppDeps) {
     deps.resolveSourceIds,
     deps.publishFetchSource,
     deps.zeroResultCache,
+    deps.estimateProgress,
   );
   registerJobStatusRoutes(app, deps.db);
   registerHandoffRoutes(app, deps.db);

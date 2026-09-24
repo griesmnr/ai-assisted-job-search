@@ -28,6 +28,7 @@ import {
   type ScoreJobMessage,
 } from "../worker/fetchSourceWorker.js";
 import { createScoreJobHandler, type SpendGuard } from "../worker/scoreJobWorker.js";
+import { EstimateProgressTracker, PROGRESS_RETENTION_MS } from "../matching/estimateProgress.js";
 import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import type {
   JobSource,
@@ -113,6 +114,72 @@ class FakeSource implements JobSource {
   async search(): Promise<SourceSearchResult> {
     return { jobs: this.jobsToReturn, skipped: [], skipRate: 0 };
   }
+}
+
+/**
+ * A `JobSource` whose `search()` call is resolved/rejected BY HAND (ticket
+ * bf2dd0a) — used only by the `GET /searches/estimate/:requestId/progress`
+ * tests below, to hold a real, multi-source `POST /searches/estimate` call
+ * genuinely in flight so a poll mid-run observes a real partial snapshot,
+ * not one inferred from timing. Mirrors composite.test.ts's own gated-source
+ * pattern one level up (through the real route + real `runDemoMatch`, not
+ * just `CompositeSource` in isolation).
+ */
+class DeferredSource implements JobSource {
+  #settle?: (result: SourceSearchResult) => void;
+  #fail?: (err: unknown) => void;
+  #markStarted!: () => void;
+  /** Resolves once `search()` has actually been called — awaiting this
+   * before polling avoids a race against the route's own (synchronous,
+   * pre-`runDemoMatch`) `estimateProgress.start()` call. */
+  readonly started: Promise<void>;
+
+  constructor(
+    readonly dataSource: NormalizedJob["dataSource"],
+    private readonly jobs: NormalizedJob[] = [],
+  ) {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async search(): Promise<SourceSearchResult> {
+    this.#markStarted();
+    return new Promise<SourceSearchResult>((resolve, reject) => {
+      this.#settle = resolve;
+      this.#fail = reject;
+    });
+  }
+
+  release(): void {
+    this.#settle?.({ jobs: this.jobs, skipped: [], skipRate: 0 });
+  }
+
+  releaseWithError(err: unknown): void {
+    this.#fail?.(err);
+  }
+}
+
+function deferredResolver(sources: Record<string, DeferredSource>) {
+  return (sourceIds: string[]) => {
+    const resolved: JobSource[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+    for (const id of sourceIds) {
+      const source = sources[id];
+      if (source) resolved.push(source);
+      else skipped.push({ id, reason: "not available in this test's fake resolver" });
+    }
+    return { sources: resolved, skipped };
+  };
+}
+
+/** Real time, real macrotask, short and deliberate: enough for the
+ * `.finally()` callback `CompositeSource#search` attaches per source
+ * (ticket bf2dd0a) to run after a `DeferredSource` is released, mirroring
+ * composite.test.ts's own `setTimeout(resolve, 10)` idiom for the same
+ * "let a just-resolved promise's continuations actually run" purpose. */
+async function flushSettled(ms = 20): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -494,6 +561,164 @@ describe("POST /searches/estimate", () => {
       payload: { resumeId, sourceIds: [DATA_SOURCE, DATA_SOURCE] },
     });
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe("GET /searches/estimate/:requestId/progress (ticket bf2dd0a)", () => {
+  it("reports incremental per-source completion while a multi-source estimate is still in flight", async () => {
+    const usajobs = new DeferredSource("usajobs", [matchingJob(`p-a-${randomUUID()}`, "usajobs")]);
+    const greenhouse = new DeferredSource("greenhouse", [
+      matchingJob(`p-b-${randomUUID()}`, "greenhouse"),
+    ]);
+    // This one FAILS rather than resolving -- proves a source that errors
+    // still counts as "settled" for progress purposes (CompositeSource's
+    // `.finally()`, not `.then()` — see that file's own comment).
+    const lever = new DeferredSource("lever");
+
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: deferredResolver({ usajobs, greenhouse, lever }),
+    });
+    const resumeId = await createResume(app);
+    const requestId = randomUUID();
+
+    const estimatePromise = app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId,
+        sourceIds: ["usajobs", "greenhouse", "lever"],
+        criteria: {},
+        estimateRequestId: requestId,
+      },
+    });
+
+    // Wait for every source's search() to have actually been called (i.e.
+    // for the route's pre-runDemoMatch `estimateProgress.start()` to have
+    // definitely already run) before polling at all.
+    await Promise.all([usajobs.started, greenhouse.started, lever.started]);
+
+    let progress = (
+      await app.inject({ method: "GET", url: `/searches/estimate/${requestId}/progress` })
+    ).json() as {
+      requestId: string;
+      total: number;
+      completed: number;
+      done: boolean;
+      sources: Array<{ sourceId: string; status: string }>;
+    };
+    expect(progress).toMatchObject({ requestId, total: 3, completed: 0, done: false });
+    expect(progress.sources.every((s) => s.status === "pending")).toBe(true);
+
+    usajobs.release();
+    await flushSettled();
+    progress = (
+      await app.inject({ method: "GET", url: `/searches/estimate/${requestId}/progress` })
+    ).json() as typeof progress;
+    expect(progress).toMatchObject({ total: 3, completed: 1, done: false });
+    expect(progress.sources.find((s) => s.sourceId === "usajobs")).toMatchObject({
+      status: "done",
+    });
+    expect(progress.sources.find((s) => s.sourceId === "greenhouse")).toMatchObject({
+      status: "pending",
+    });
+
+    greenhouse.release();
+    lever.releaseWithError(new Error("simulated lever outage"));
+    await flushSettled();
+    progress = (
+      await app.inject({ method: "GET", url: `/searches/estimate/${requestId}/progress` })
+    ).json() as typeof progress;
+    expect(progress).toMatchObject({ total: 3, completed: 3, done: true });
+    expect(progress.sources.every((s) => s.status === "done")).toBe(true);
+
+    // The blocking POST itself is unaffected by any of this polling — it
+    // still returns the normal, final estimate, unchanged.
+    const estimateResponse = await estimatePromise;
+    expect(estimateResponse.statusCode).toBe(200);
+  });
+
+  it("404s for a requestId nobody ever started (never sent, or a typo)", async () => {
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("not used");
+      },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/searches/estimate/${randomUUID()}/progress`,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("a progress record is readable right after the estimate completes, then expires — it does not leak indefinitely", async () => {
+    let now = Date.now();
+    const tracker = new EstimateProgressTracker({ now: () => now });
+    const jobs = [matchingJob(`ret-${randomUUID()}`)];
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("not used");
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+      estimateProgress: tracker,
+    });
+    const resumeId = await createResume(app);
+    const requestId = randomUUID();
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {}, estimateRequestId: requestId },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // Readable immediately after — this is the "short grace period" the
+    // ticket asks for: a poll landing right after the POST resolves must
+    // still see the final, all-done snapshot, not a 404.
+    let progressResponse = await app.inject({
+      method: "GET",
+      url: `/searches/estimate/${requestId}/progress`,
+    });
+    expect(progressResponse.statusCode).toBe(200);
+    expect(progressResponse.json()).toMatchObject({ done: true, completed: 1, total: 1 });
+
+    // Past the retention window: gone, not held onto forever.
+    now += PROGRESS_RETENTION_MS + 1;
+    progressResponse = await app.inject({
+      method: "GET",
+      url: `/searches/estimate/${requestId}/progress`,
+    });
+    expect(progressResponse.statusCode).toBe(404);
+  });
+
+  it("omitting estimateRequestId costs nothing — the estimate behaves exactly as before this ticket", async () => {
+    const jobs = [matchingJob(`no-progress-${randomUUID()}`)];
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+    });
+    const resumeId = await createResume(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { candidatesNeedingScore: number };
+    expect(body.candidatesNeedingScore).toBe(jobs.length);
   });
 });
 
