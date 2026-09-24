@@ -223,10 +223,10 @@ never look identical to a complete one.
 - Docker Desktop, for Postgres and RabbitMQ.
 - An Anthropic API key — not needed for `pnpm install`, migrations, or
   `pnpm test`/`pnpm lint`, but required before step 5 (`demo-match.ts`; see
-  that step for why it can't be skipped silently), and again for step 7's
-  scoring worker and for real (non-`estimateOnly`) `POST /searches` calls
-  in step 6 — the same key, just two different processes that each need
-  it in their own environment.
+  that step for why it can't be skipped silently), and again once `pnpm
+dev`'s scoring worker (step 6) actually scores something — real
+  (non-`estimateOnly`) `POST /searches` calls in step 8 are what trigger
+  that.
 
 ### 1. Enable pnpm and configure environment
 
@@ -309,90 +309,174 @@ software-engineering roles, scores each new posting against
 `prep/resume.txt`, and persists jobs/resumes/scores to Postgres so a
 second run doesn't re-score anything it already has.
 
-### 6. Start the API and web dev servers
+### 6. Start everything — API, web, and both queue workers
 
 ```bash
 pnpm dev
 ```
 
-That's the whole command — `pnpm dev` (root `package.json`: `pnpm --parallel
--r --if-present run dev`) starts `apps/api`'s Fastify server
-(`http://localhost:3000`) and `apps/web`'s Vite dev server
-(`http://localhost:5173`) together, in one terminal, each rebuilding on save.
-No `.env`-loading cwd caveat: `apps/api/src/load-env.ts`'s `loadEnvFile()`
-used to resolve `.env` relative to `process.cwd()`, which broke this exact
-command (and `pnpm --filter @app/api dev`, and `cd apps/api && pnpm dev`)
-with `error: role "dev" does not exist` — Postgres falling back to the OS
-username once `POSTGRES_USER`/`PASSWORD`/`DB` silently never loaded. Fixed
-(ticket `2fd6706`): it now resolves `.env` from the repo root via
-`import.meta.url`, independent of the caller's working directory, so any of
-those invocation forms loads the same `.env` correctly.
+**This one command is now the whole dev-startup story** (ticket `47407f7`).
+Root `package.json`'s `dev` script no longer just fans out to each
+workspace package's own `dev` script (the old `pnpm --parallel -r
+--if-present run dev`, which silently covered only `apps/api` and
+`apps/web` — neither queue worker has a package-level `dev` script, so it
+never started them). It now runs all four dev-time processes through
+[`concurrently`](https://github.com/open-cli-tools/concurrently), each with
+its own colored, labeled output prefix so a crash or a stray log line is
+attributable at a glance:
 
-That fix is scoped to `.env` loading only — one separate, still-open
-cwd-dependence remains. `POST /searches/estimate`'s pre-search cost figure
-reads `prep/scoring-usage-stats.json` (also cwd-relative, unrelated
-mechanism) to use real historical per-call averages instead of the
-bootstrap estimate; started via `pnpm dev` (cwd `apps/api`), that read
-misses and the estimate silently falls back to the less-accurate bootstrap
-basis. Same underlying issue step 7 below warns about for the scoring
-worker — not yet fixed for the route that reads it at estimate time
-(ticket `2b93534`).
+```
+[api]           apps/api's Fastify server (predev runs drizzle-kit migrate first)
+[web]           apps/web's Vite dev server
+[fetch-worker]  npx tsx apps/api/src/worker/run-fetch-source-worker.ts
+[score-worker]  npx tsx apps/api/src/worker/run-score-job-worker.ts
+```
+
+This closes a real gap Nicole hit live: a search that only had `pnpm dev`
+running (not the workers) sat at "pending" on every source for 6+ minutes,
+with no error anywhere pointing at the cause — the fetch-source and
+score-job queues just had nobody consuming them. `pnpm dev` starting all
+four processes from one command in one terminal means that specific
+failure mode can't happen again from a missed manual step.
+
+Only the two `npx tsx` worker invocations run with the repo root as their
+working directory (`concurrently`'s default `cwd`, since neither is wrapped
+in a `pnpm --filter` call); `api` and `web` each run from their own package
+directory, because `pnpm --filter @app/<x> run dev` changes into that
+package before running its script. That distinction matters for two
+cwd-relative reads that predate this ticket and are unchanged by it:
+
+- `apps/api/src/load-env.ts`'s `loadEnvFile()` resolves `.env` from the repo
+  root via `import.meta.url` regardless of caller cwd (ticket `2fd6706`), so
+  this isn't actually cwd-sensitive any more — noted here only because the
+  next point is.
+- The scoring worker's usage-stats read (`USAGE_STATS_PATH`,
+  `scoreJobWorker.ts:209` — a bare `"prep/scoring-usage-stats.json"`
+  string) is **genuinely, still, cwd-relative** — a separate constant from,
+  and NOT fixed by, ticket `2b93534` (that ticket fixed only
+  `POST /searches/estimate`'s OWN read, `pipeline.ts`'s
+  `DEFAULT_USAGE_STATS_PATH`, to an absolute `import.meta.url`-derived
+  path — already cwd-independent regardless of this ticket). Because
+  `pnpm dev` now runs the scoring worker from the repo root (not
+  `apps/api/`), its bare relative path happens to resolve to the same real
+  file the estimate route already reads absolutely — so the two now agree
+  in practice, but only the estimate route's own read is actually fixed;
+  the worker's remains a real, unfixed cwd-relative constant that would
+  break again under a different invocation cwd (e.g. the worker's old
+  `pnpm --filter @app/api worker:score-job` form). That form isn't
+  documented below any more for exactly this reason. The same hazard
+  applies to the built form: `apps/api/package.json`'s
+  `worker:score-job:start` script still exists (`node
+dist/worker/run-score-job-worker.js`), and `pnpm --filter @app/api
+worker:score-job:start` runs it with `apps/api/` as cwd exactly like the
+  dev form does, silently reintroducing the same disconnected usage-stats
+  file (opus review, ticket b53c422, F1). Nothing in this repo deploys via
+  `pnpm --filter ...:start` today, but don't assume it would be safe if
+  that changes — only invoking `node dist/worker/run-score-job-worker.js`
+  directly, from the repo root, is safe.
 
 Open `http://localhost:5173` and the app is live against whatever
 Postgres/RabbitMQ instance step 2 started.
 
-### 7. Run the queue workers
+**Postgres/RabbitMQ must already be up before you run `pnpm dev`** — step 2
+(`docker compose up -d`), confirmed with `docker compose ps` showing both
+`healthy`. `pnpm dev` does not wait for them and cannot detect "still
+starting" versus "not started." Verified live (ticket `47407f7`) what
+actually happens if you jump the gun:
 
-Both workers are long-lived processes, meant to be started manually
-(each in its own terminal, in the same dev-container shell step 4's tests
-and step 5's pipeline already run in) — there is no docker-compose service
-for either (see [Architecture](#architecture) for why the queue exists,
-and the worker source files themselves for the retry/DLQ/idempotency
-design). `RABBITMQ_*`/`POSTGRES_*` must be set (step 1); the scoring
-worker additionally needs `ANTHROPIC_API_KEY`, same as step 5.
+- **Both workers crash immediately and loudly**, not silently and not by
+  hanging — `run-fetch-source-worker.ts`/`run-score-job-worker.ts` fail
+  their initial RabbitMQ connection with a plain `Error: connect ECONNREFUSED
+127.0.0.1:5672` and exit with code 1. `concurrently` prints this under the
+  `[fetch-worker]`/`[score-worker]` prefix and moves on — it does not kill
+  the other three processes, so `web` and (once Postgres answers) `api` keep
+  running with two workers down.
+- **`apps/api`'s `predev` (`drizzle-kit migrate`) fails FAST and SILENTLY**
+  if nothing is listening on Postgres's port yet (the actual case you hit
+  by starting `pnpm dev` before `docker compose up -d` has finished) --
+  measured: it exits in about 1 second, with exit code 1 and **no error
+  text printed at all**. `concurrently` shows this as
+  `[api] pnpm --filter @app/api run dev exited with code 1` and nothing
+  else -- there is no visible cause to point at. (An earlier version of
+  this note claimed `drizzle-kit` hangs and self-heals here -- that is
+  only true for a different, rarer failure shape, a host that accepts the
+  TCP connection but never responds at all; it is not what "Postgres isn't
+  up yet" actually looks like on a normal `docker compose` localhost bind,
+  which just refuses the connection outright and exits immediately. See
+  ticket `47407f7`'s review for the measurements behind this correction.)
+- **`web` is unaffected** either way — Vite's dev server doesn't touch
+  Postgres or RabbitMQ at all, so it comes up normally even when both
+  workers are dead and `api` never started.
+
+Net effect of starting too early: the browser loads, but `[api]` printed a
+bare "exited with code 1" with no cause shown, and/or `[fetch-worker]`/
+`[score-worker]` printed a real `ECONNREFUSED` and exited too — so searches
+never move off "pending" because nothing is listening on either end. If you
+see any of the four labeled processes report an early exit, that is the
+signal, not a hang. Either way, the fix is the same: Ctrl-C the whole thing,
+confirm `docker compose ps` shows both containers `healthy`, and run
+`pnpm dev` again — restarting is cheap and there's no partial-startup state
+to clean up first.
+
+**Shutdown**: Ctrl-C (SIGINT) on the `pnpm dev` terminal stops all four
+processes — `concurrently` forwards the signal to every child, and none of
+them lingers as an orphan. Verified live by inspecting the full process
+tree before and after a SIGINT: zero descendants remained afterward and
+ports 3000/5173 were both free.
+
+**Running `pnpm dev` a second time while one is already up** (e.g. a second
+terminal, or forgetting the first is still running) does not fail the same
+way on all four processes — not independently measured live, but expected
+from how each one binds:
+
+- **`web`** now fails loudly and immediately: `--strictPort` (added by this
+  ticket) makes the second Vite refuse to silently fall back to 5174 — it
+  exits with a port-in-use error you'll see in the `[web]` pane.
+- **`api`** runs under `tsx watch`, which wraps the actual Fastify process.
+  If the inner server can't bind port 3000 because the first `api` already
+  holds it, that failure happens inside the wrapped process — `tsx watch`
+  itself doesn't necessarily exit, so `concurrently`'s `[api]` pane may not
+  show a labeled "exited with code N" line the way a real crash does. The
+  only visible sign can be an address-in-use error buried in the log output.
+- **The two workers bind no port at all**, so a second copy of either starts
+  up cleanly and just becomes a second consumer competing for the same
+  RabbitMQ queue — no crash, no error, just messages silently split between
+  two processes instead of one.
+
+If searches behave strangely with no process reporting an exit, check for a
+second `pnpm dev` before assuming something else is wrong.
+
+### 7. Restarting just one process
+
+`pnpm dev`'s single command is the primary path, but killing all four just
+to restart one (e.g. iterating on the scoring worker without bouncing the
+API/web servers too) is real friction. The old manual, one-process-per-
+terminal approach from before this ticket still works for that case: stop
+`pnpm dev` first (two consumers on the same queue just compete for
+messages, they don't cooperate), then run whichever single process you need
+standalone from the repo root:
 
 ```bash
-npx tsx apps/api/src/worker/run-fetch-source-worker.ts   # consumes fetch.source
-npx tsx apps/api/src/worker/run-score-job-worker.ts      # consumes score.job
+pnpm --filter @app/api run dev                           # apps/api only
+pnpm --filter @app/web run dev                            # apps/web only
+npx tsx apps/api/src/worker/run-fetch-source-worker.ts    # fetch.source worker only
+npx tsx apps/api/src/worker/run-score-job-worker.ts       # score.job worker only
 ```
-
-Run from the repo root, like step 5's `demo-match.ts` above -- **not**
-`pnpm --filter @app/api worker:*`, which runs with `apps/api` as the
-working directory. The scoring worker's usage-stats file
-(`USAGE_STATS_PATH`, `scoreJobWorker.ts`) is a cwd-relative `prep/...`
-path, matching every other `prep/`-touching entry point in this repo
-(`demo-match.ts`, `rescore-existing-matches.ts`) -- running it from
-`apps/api/` instead silently writes to `apps/api/prep/...`, a second,
-disconnected usage-stats file the spend guard's cost estimate never sees
-(opus review, ticket b53c422, F1). The `package.json` `worker:*` scripts
-still exist for the built `:start` form, but the same cwd rule applies to
-THEM too: `pnpm --filter @app/api worker:score-job:start` runs with
-`apps/api/` as cwd exactly like the dev form does and reintroduces the
-identical bug (re-review note, ticket b53c422) -- only invoking
-`node dist/worker/run-score-job-worker.js` directly, from the repo root,
-is safe. Nothing in this repo deploys via `pnpm --filter ...:start` today,
-but don't assume it would be safe if that changes.
 
 The scoring worker enforces a lifetime-per-process spend ceiling
 (`ScoringSpendGuard`, `apps/api/src/worker/scoreJobWorker.ts`, ticket
-b53c422) — once tripped, restart the process to reset it. `POST /searches`
-does publish to the queue (tickets `4f88339`, `45ea34c`, `c9c676d`): both
-workers above pick up real work from a real search, not just from a
-hand-crafted test message — see the next step.
+b53c422) — once tripped, restart the process (or all of `pnpm dev`) to
+reset it.
 
 ### 8. Run a real, queue-driven search end to end
 
-The exact flow: Postgres/RabbitMQ up, both workers running, API+web dev
-servers running, then a search from either the UI or `curl`.
+The exact flow: Postgres/RabbitMQ up and healthy, then one command.
 
 ```bash
 # Terminal 1
 docker compose up -d
+docker compose ps    # wait for both healthy
 # Terminal 2 (repo root)
-npx tsx apps/api/src/worker/run-fetch-source-worker.ts
-# Terminal 3 (repo root)
-npx tsx apps/api/src/worker/run-score-job-worker.ts
-# Terminal 4 (repo root)
 pnpm dev
 ```
 
@@ -424,11 +508,32 @@ curl -s -X POST http://localhost:3000/searches \
 curl -s http://localhost:3000/searches/<searchId>
 ```
 
-Watch the two worker terminals: the fetch-source worker logs each source it
-queries and how many jobs it normalized, then the score-job worker logs
-each one it scores against the resume via a real Anthropic call. This is
-the same flow this session's own live smoke tests ran for hours against a
-real Postgres, a real hand-built RabbitMQ broker, and real Claude calls.
+Watch the `[fetch-worker]`/`[score-worker]`-prefixed lines in the same
+`pnpm dev` terminal: the fetch-source worker logs each source it queries and
+how many jobs passed the search's quality filter. The score-job worker is
+quieter — it logs nothing on a successful score (only a non-fatal warning
+if it can't find a `prep/` directory to record usage stats in, harmless
+since the score itself is already persisted; see the cwd note above) — so
+`GET /searches/<searchId>`'s `scoredSoFar` count, not the terminal, is the
+way to watch scoring progress in real time. Re-verified live for ticket
+`47407f7` itself, against a real
+Postgres and a real hand-built RabbitMQ broker in the environment this
+ticket was finished in (no Docker CLI there, so no `docker compose`, but
+the broker and database it would have started were both already up):
+`POST /searches` with `sourceIds: ["lever"]` published one `fetch.source`
+message, `[fetch-worker]` picked it up, queried Lever's real API, and
+linked 15 of 401 postings; `[score-worker]` consumed the resulting 15
+`score.job` messages one at a time (`prefetch(1)`) and produced 15 real
+match scores via the Anthropic API; and `GET /searches/<searchId>` moved
+from `pending` to `complete` with `scored: 15` — all without starting
+anything by hand beyond `pnpm dev` and the two `curl` calls above. (Torn
+down afterward by killing the process tree directly rather than a
+terminal Ctrl-C, so this run doesn't re-confirm the SIGINT behavior the
+Shutdown section describes separately — only that the queue-driven path
+itself still works end to end under `pnpm dev`.) This is the same flow
+this session's own earlier live smoke tests ran for hours before this
+ticket folded both workers into `pnpm dev`; this run confirms the fold
+didn't change that.
 
 ### Verified
 
@@ -446,19 +551,24 @@ $ pnpm test
 
  RUN  v4.1.10
 
- Test Files  1 failed | 53 passed (54)
-      Tests  948 passed | 19 skipped (967)
-   Duration  43.08s (transform 4.07s, setup 0ms, import 51.85s, tests 87.24s, environment 71.55s)
+ Test Files  62 passed (62)
+      Tests  1176 passed (1176)
+   Duration  41.93s (transform 3.07s, setup 0ms, import 39.49s, tests 87.04s, environment 61.69s)
 ```
 
-The one failing file is `worker/fetchSourceWorker.test.ts`; its 19 tests
-show as "skipped" above because its top-level `beforeAll` throws before any
-of them run. In a normal clone, following steps 1-2 (`.env` populated,
-`docker compose up -d` for Postgres + RabbitMQ), it passes along with
-everything else — this specific run was captured from an environment
-without `RABBITMQ_DEFAULT_USER`/`_PASS`/`_HOST`/`_PORT` set, which fails
-before it ever tries to reach a broker. Every other file, including every
-other queue/worker/route test, passes regardless.
+Captured with a real RabbitMQ broker and Postgres both reachable (`.env`
+populated, both services up) — the documented, expected clean state
+following steps 1-2. Without a broker (`RABBITMQ_DEFAULT_USER`/`_PASS`/
+`_HOST`/`_PORT` unset, or nothing listening), exactly one file fails —
+`worker/fetchSourceWorker.test.ts` — and its 19 tests show as "skipped"
+because its top-level `beforeAll` throws before any of them run; every
+other file, including every other queue/worker/route test, is unaffected.
+Separately, that same file's retry/backoff-tier tests are timing-sensitive
+enough to occasionally flake under heavy system load even WITH a broker up
+(observed under the full suite running in parallel at high load average;
+the file passes cleanly in isolation) — if it fails alone with real timing
+assertions rather than a connection error, rerun it before assuming
+something's broken.
 
 ## Project layout
 

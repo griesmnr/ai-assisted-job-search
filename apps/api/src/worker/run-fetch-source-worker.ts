@@ -6,7 +6,7 @@
  *
  *   npx tsx apps/api/src/worker/run-fetch-source-worker.ts
  *
- * Run from the repo root (README "Run the queue workers"), not `pnpm
+ * Run from the repo root (README "6. Start everything"), not `pnpm
  * --filter @app/api worker:fetch-source` -- this file has no cwd-relative
  * path of its own, but keeping both workers' documented launch commands
  * consistent with run-score-job-worker.ts (which DOES have one -- see that

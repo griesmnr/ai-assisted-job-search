@@ -152,8 +152,8 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  *
  * NOW WIRED TO RUN (ticket b53c422): `startScoreJobWorker` is called from a
  * real long-lived process by `run-score-job-worker.ts` in this same
- * directory - see that file's own doc comment (and README "Run the queue
- * workers") for how the real `channel`/`db`/`scoreJob` dependencies are
+ * directory - see that file's own doc comment (and README "6. Start
+ * everything") for how the real `channel`/`db`/`scoreJob` dependencies are
  * constructed and the correct (root-relative, NOT `package.json`'s
  * `worker:score-job` `pnpm --filter` form - see `USAGE_STATS_PATH`'s doc
  * comment below for why that matters) way to launch it. `fetchSourceWorker.ts`
@@ -195,7 +195,8 @@ export class UnknownJobError extends Error {}
  * CWD-RELATIVE, same as `demo-match.ts`/`rescore-existing-matches.ts`'s own
  * `prep/`-relative paths -- this worker MUST be launched with the repo root
  * as the working directory (`npx tsx apps/api/src/worker/run-score-job-
- * worker.ts` from root, README "Run the queue workers"), never via `pnpm
+ * worker.ts` from root, README "6. Start everything" -- also how `pnpm dev`
+ * itself launches it, ticket 47407f7), never via `pnpm
  * --filter @app/api worker:score-job` (cwd = `apps/api/`). Opus review,
  * ticket b53c422, F1: launching from the wrong cwd doesn't error -- it
  * silently writes/reads `apps/api/prep/scoring-usage-stats.json`, the exact
