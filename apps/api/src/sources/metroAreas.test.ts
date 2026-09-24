@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   METRO_AREA_GROUPS,
-  compileMetroSiblingMatchers,
+  compileMetroAreaMatchers,
   metroGroupsFor,
   metroSiblingCitiesFor,
 } from "./metroAreas.js";
@@ -74,6 +74,17 @@ describe("metroGroupsFor — which group a caller's phrase selects", () => {
     }
   });
 
+  it("still selects the metro when the caller's phrase has a trailing zip or parenthetical (review finding F1)", () => {
+    // The caller side of F1: whole-field equality read "WA 98004" as "not a
+    // region", which was harmless here (it selected the group anyway) but
+    // silently wrong. Now it resolves, and the right-region cases still
+    // select while the wrong-region ones still do not.
+    expect(metroGroupsFor("Bellevue, WA 98004")).toHaveLength(1);
+    expect(metroGroupsFor("Bellevue, WA (HQ)")).toHaveLength(1);
+    expect(metroGroupsFor("Everett, MA 02149")).toEqual([]);
+    expect(metroGroupsFor("Pasadena, TX (Hybrid)")).toEqual([]);
+  });
+
   it("does not select a metro when the phrase pins the city to another region", () => {
     // The ambiguous-city-name cases the table's own doc comment names:
     // Everett, MA (Boston metro), Pasadena, TX (Houston metro), Glendale,
@@ -120,14 +131,14 @@ describe("metroSiblingCitiesFor — what a phrase expands to", () => {
   });
 });
 
-describe("compileMetroSiblingMatchers — the region guard, per posting", () => {
+describe("compileMetroAreaMatchers — the region guard, per posting", () => {
   function matchesAny(phrase: string, location: string): boolean {
-    return compileMetroSiblingMatchers(phrase).some((m) => m(location));
+    return compileMetroAreaMatchers(phrase).some((m) => m(location));
   }
 
   it("matches the sibling-city location shapes that appear in this app's real data", () => {
     // Every one of these strings is copied from the owner's real scored
-    // corpus (prep/match-results.json, 2026-09-23) -- 29 of its 200
+    // corpus (prep/match-results.json, written 2026-08-31) -- 29 of its 200
     // postings are Seattle-metro-but-not-Seattle, and these are the exact
     // spellings they use.
     for (const location of [
@@ -163,21 +174,92 @@ describe("compileMetroSiblingMatchers — the region guard, per posting", () => 
     expect(matchesAny("Los Angeles", "Pasadena, California")).toBe(true);
   });
 
-  it("accepts a bare city with no region at all — best effort, which is the widening direction the flag opted into", () => {
-    expect(matchesAny("Seattle", "Bellevue")).toBe(true);
-    expect(matchesAny("Seattle", "Everett")).toBe(true);
+  it("rejects a same-named city whose trailing text hides the region (review finding F1)", () => {
+    // The whole point of F1: whole-field equality required the field to BE
+    // the region, so anything trailing it in the same field defeated the
+    // guard entirely. Every one of these matched a Seattle/LA search before
+    // the fix. "City, ST (suffix)" is not hypothetical -- the owner's corpus
+    // contains "New York, NY (HQ); San Francisco, CA; Remote (US)".
+    for (const location of ["Everett, MA 02149", "Everett, MA (HQ)", "Everett, MA (Hybrid)"]) {
+      expect(matchesAny("Seattle", location), location).toBe(false);
+    }
+    expect(matchesAny("Seattle", "Redmond, OR 97756")).toBe(false);
+    expect(matchesAny("Seattle", "Bellevue, NE 68005")).toBe(false);
+    expect(matchesAny("Los Angeles", "Pasadena, TX 77501")).toBe(false);
+    expect(matchesAny("Los Angeles", "Pasadena, TX (Hybrid)")).toBe(false);
+    expect(matchesAny("Los Angeles", "Long Beach, NY - Hybrid")).toBe(false);
+    // The original claimed-safe cases, re-pinned: no trailing text, and
+    // still correctly rejected.
+    expect(matchesAny("Seattle", "Redmond, Oregon")).toBe(false);
+    expect(matchesAny("Seattle", "Bellevue, Nebraska")).toBe(false);
+    // ...and the right region with the same trailing shapes still matches.
+    expect(matchesAny("Seattle", "Bellevue, WA (HQ)")).toBe(true);
+    expect(matchesAny("Seattle", "Bellevue, WA 98004")).toBe(true);
+    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(true);
   });
 
-  it("is not confused by non-region fields after the city", () => {
-    expect(matchesAny("Seattle", "Bellevue, USA")).toBe(true);
-    expect(matchesAny("Seattle", "Redmond (Hybrid)")).toBe(true);
+  it("does not read a two-letter code that is also an English word out of prose", () => {
+    // The protection whole-field equality got for free and the leading-token
+    // scan has to re-earn: "in office" must not resolve to Indiana and drop
+    // a real Bellevue posting.
+    expect(matchesAny("Seattle", "Bellevue, WA; in office 3 days")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, in office")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, or remote")).toBe(true);
+  });
+
+  it("requires an ambiguous city to name its region positively (review finding F4)", () => {
+    // For the nine table cities whose bare name is a real place elsewhere,
+    // "no region named" is not good enough on the posting side. Each of
+    // these matched before the fix. Measured cost on the owner's corpus:
+    // zero -- all 29 real Bellevue postings spell WA/Washington out.
+    expect(matchesAny("Los Angeles", "Santa Ana, Costa Rica")).toBe(false);
+    expect(matchesAny("Los Angeles", "Irvine, Scotland")).toBe(false);
+    expect(matchesAny("Los Angeles", "Irvine, United Kingdom")).toBe(false);
+    expect(matchesAny("Los Angeles", "Glendale, Phoenix, AZ")).toBe(false);
+    expect(matchesAny("Los Angeles", "Glendale, United States")).toBe(false);
+    expect(matchesAny("Seattle", "Kirkland, Canada")).toBe(false);
+    expect(matchesAny("Seattle", "Everett, Middlesex County")).toBe(false);
+    expect(matchesAny("Seattle", "Everett, United States")).toBe(false);
+    // The cost, stated rather than hidden: a genuinely in-metro posting that
+    // names no region is now missed, which is exactly strict behavior.
+    expect(matchesAny("Seattle", "Bellevue")).toBe(false);
+    expect(matchesAny("Seattle", "Bellevue, USA")).toBe(false);
+    expect(matchesAny("Seattle", "Redmond (Hybrid)")).toBe(false);
+    // Unambiguous names keep the absence-passes rule, so "Los Angeles,
+    // United States" (the shape of the real Airbnb fixture) still matches
+    // an LA search.
+    expect(matchesAny("Los Angeles", "Los Angeles, United States")).toBe(true);
+    expect(matchesAny("Los Angeles", "West Hollywood")).toBe(true);
     expect(matchesAny("Seattle", "Tacoma, 98402")).toBe(true);
+    expect(matchesAny("Seattle", "Seattle")).toBe(true);
+    // ...and a CALLER's bare ambiguous phrase still selects its metro, which
+    // is the asymmetry `REGION_REQUIRED_CITIES` documents.
+    expect(metroGroupsFor("Bellevue")).toHaveLength(1);
+    expect(metroGroupsFor("Irvine")).toHaveLength(1);
+  });
+
+  it("gives the caller's OWN city the same lenient matching as its siblings (review finding F2)", () => {
+    // The bug: the named city was skipped, so it got only criteria.ts's
+    // literal matcher while every sibling got the region-guarded one. A
+    // "Seattle, WA" search therefore matched "Bellevue, Washington" but not
+    // "Seattle, Washington" -- its own city, differently punctuated. On the
+    // owner's corpus that cost 25 real Seattle-named postings.
+    expect(matchesAny("Seattle, WA", "Seattle, Washington")).toBe(true);
+    expect(matchesAny("Seattle, WA", "Seattle, Washington, United States")).toBe(true);
+    expect(matchesAny("Seattle, WA", "Seattle")).toBe(true);
+    expect(matchesAny("Bellevue, WA", "Bellevue, Washington")).toBe(true);
+    // Additive, not a replacement: the F1 guard still applies to the named
+    // city, so trailing text does not defeat it either way.
+    expect(matchesAny("Seattle, WA", "Seattle, WA (HQ)")).toBe(true);
+    expect(matchesAny("Los Angeles, CA", "Los Angeles, California")).toBe(true);
+    // And it does not become a way into another metro.
+    expect(matchesAny("Seattle, WA", "Denver, CO")).toBe(false);
   });
 
   it("returns no matchers at all for a phrase outside the table — the flag is then a no-op", () => {
-    expect(compileMetroSiblingMatchers("Denver")).toEqual([]);
-    expect(compileMetroSiblingMatchers("Remote")).toEqual([]);
-    expect(compileMetroSiblingMatchers("")).toEqual([]);
+    expect(compileMetroAreaMatchers("Denver")).toEqual([]);
+    expect(compileMetroAreaMatchers("Remote")).toEqual([]);
+    expect(compileMetroAreaMatchers("")).toEqual([]);
   });
 
   it("compiled matchers are reusable — a shared global RegExp's lastIndex cannot leak between jobs", () => {
@@ -187,7 +269,7 @@ describe("compileMetroSiblingMatchers — the region guard, per posting", () => 
     // unreset, the SECOND job in a search would be matched starting from
     // wherever the first one stopped -- i.e. results that depend on the
     // order jobs arrive in.
-    const matchers = compileMetroSiblingMatchers("Seattle");
+    const matchers = compileMetroAreaMatchers("Seattle");
     const run = () => matchers.some((m) => m("Bellevue, WA"));
     expect(run()).toBe(true);
     expect(run()).toBe(true);

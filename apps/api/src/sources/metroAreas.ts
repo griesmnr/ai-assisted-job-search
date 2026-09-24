@@ -18,21 +18,27 @@
  * substring matching. It has no idea that a job in Bellevue is, to most
  * Seattle-area job seekers, a Seattle-area job.
  *
- * Measured, not assumed. Against the owner's own real scored corpus from her
- * 2026-09-23 run (`prep/match-results.json`, 200 postings that had already
- * passed the CLI default filter and been scored by Claude), a strict
- * `nearLocations: ["Seattle"]` search drops **29 of 200** postings that are
- * physically in the Seattle metro area but never say "Seattle":
+ * Measured, not assumed. Against the owner's own real scored corpus
+ * (`prep/match-results.json`, written 2026-08-31 21:34 -- 200 postings that
+ * had already passed the CLI default filter and been scored by Claude; the
+ * same run swe-filter.ts's "200 jobs scored 2026-08-31" note cites), a
+ * strict `nearLocations: ["Seattle"]` search drops **29 of 200** postings
+ * that are physically in the Seattle metro area but never say "Seattle".
+ * Recounted from the file itself (ticket 410e1a2 review finding F3 -- an
+ * earlier version of this comment said "24 single-city / 5 multi-city",
+ * which double-counted two multi-city strings as Bellevue-only; the total of
+ * 29 was right):
  *
- *   - 24 Bellevue-only postings (Databricks "Senior Software Engineer -
- *     Backend", Robinhood "Senior Software Engineer, Kubernetes Compute",
+ *   - 22 single-city Bellevue postings (Databricks "Senior Software Engineer
+ *     - Backend", Robinhood "Senior Software Engineer, Kubernetes Compute",
  *     Smartsheet "Senior Software Engineer I (Automation)", ...), written as
- *     "Bellevue, WA" (9), "Bellevue, Washington" (12), "Bellevue, WA, USA"
- *     (1), and multi-city strings led by Bellevue (2).
- *   - 5 more multi-city postings pairing Bellevue with an out-of-state
- *     office: "Bellevue, WA; Menlo Park, CA" (3), "Bellevue, Washington;
- *     Chicago, Illinois; New York, New York" (1+1 variant), "Bellevue,
- *     Washington; San Francisco, California" (1).
+ *     "Bellevue, Washington" (12), "Bellevue, WA" (9) and "Bellevue, WA,
+ *     USA" (1).
+ *   - 7 multi-city postings pairing Bellevue with an out-of-state office:
+ *     "Bellevue, WA; Menlo Park, CA" (3), "Bellevue, WA; Menlo Park, CA; New
+ *     York, NY" (1), two Okta variants of "Bellevue, Washington; Chicago,
+ *     Illinois; New York, New York" (the second adding "; Washington, DC"),
+ *     and "Bellevue, Washington; San Francisco, California" (1).
  *
  * Verified before writing any of this (see criteria.test.ts's own strict
  * tests): `compileFilter({ nearLocations: ["Seattle"] })` returns nothing for
@@ -94,35 +100,39 @@
  * search.
  *
  * So each group declares the REGIONS (US state / DC / Canadian province
- * postal codes) it spans, and a sibling-city match is rejected when the text
- * names a region OUTSIDE that set immediately after the city. "Everett, MA"
- * does not satisfy a Seattle expansion; "Everett, WA", "Everett, Washington"
- * and bare "Everett" all do. The same guard runs on the CALLER's phrase, so
- * typing "Pasadena, TX" selects no group at all rather than quietly
- * selecting Los Angeles.
+ * postal codes) it spans, and a city match is rejected when the text names a
+ * region OUTSIDE that set immediately after the city. "Everett, MA" does not
+ * satisfy a Seattle expansion; "Everett, WA" and "Everett, Washington" do.
+ * The same guard runs on the CALLER's phrase, so typing "Pasadena, TX"
+ * selects no group at all rather than quietly selecting Los Angeles.
  *
  * **Immediately after** is doing real work and is not a simplification of
- * "anywhere in the string". Five of the 29 real postings above are
+ * "anywhere in the string". Seven of the 29 real postings above are
  * multi-city ("Bellevue, WA; Menlo Park, CA"), and a whole-string test would
  * see "CA", call the posting foreign, and drop a job that genuinely is in
  * Bellevue. So the guard reads only the comma-delimited field that follows
  * the matched city, cut at the first `;`/`|`/`/` -- i.e. the "WA" in
- * "Bellevue, WA; Menlo Park, CA" -- and that field must BE a region
- * name/code for the guard to fire. A field that is anything else ("USA",
- * "98004", "Hybrid", nothing at all) is not a region mention and does not
- * reject.
+ * "Bellevue, WA; Menlo Park, CA".
  *
- * **The guard can only ever suppress an expansion, never create one.** That
- * asymmetry is the whole safety argument, and it is structural rather than
- * argued: expansion only ever ADDS matchers to `nearLocations` (the caller's
- * own literal phrase is always compiled and tested first, unmodified), and
- * the guard only ever removes added matchers. So every posting that matched
- * with the flag off still matches with it on, and every way the guard can be
- * wrong -- a misread field, an unusual separator, a city list like "Seattle,
- * New York, San Francisco" where "New York" is a city and not a state --
- * costs coverage this feature would otherwise have added, never a false
- * positive. A user who hits one of those sees exactly today's strict
- * behavior.
+ * That field is a region mention when it IS a region name/code ("WA",
+ * "Washington") or BEGINS with one at a word boundary with a non-word after
+ * it ("MA 02149", "MA (HQ)", "NY - Hybrid", "WA-Remote"). The leading-prefix
+ * half is ticket 410e1a2 review finding F1: whole-field equality alone let
+ * "Everett, MA 02149" and "Everett, MA (HQ)" through a Seattle search, and
+ * "City, ST (suffix)" is a shape this app's own corpus contains ("New York,
+ * NY (HQ); San Francisco, CA; Remote (US)"). The non-word requirement is
+ * what keeps the two-letter codes that are also English words from firing on
+ * prose -- "Bellevue, in office 3 days" is not Indiana. A field that is
+ * anything else ("USA", "98004", "Hybrid", nothing at all) is not a region
+ * mention.
+ *
+ * A region mention that is absent is not the same as one that agrees. For
+ * most cities absence passes ("Seattle" alone is Seattle), but for the nine
+ * table cities whose bare name is genuinely ambiguous a POSTING must name an
+ * in-set region positively -- see `REGION_REQUIRED_CITIES`, which is where
+ * "Irvine, Scotland", "Kirkland, Canada" and "Everett, United States" are
+ * rejected. Callers' phrases are exempt, because "Bellevue" with no state is
+ * how people search.
  *
  * Known residual weaknesses, recorded rather than papered over:
  *  - A bare, region-less ambiguous city name in the CALLER's phrase still
@@ -132,15 +142,31 @@
  *    one (requiring a region in the caller's phrase before expanding at all)
  *    was rejected as too strict -- "Seattle" with no state is how people
  *    actually type, and it is the exact phrase this ticket exists to serve.
- *  - The region vocabulary is US + Canada. A city field naming a region
+ *  - The region vocabulary is US + Canada, so a POSTING field naming a region
  *    elsewhere ("Kirkland, Île-de-France") is not recognized as foreign.
- *    Canada is included because it is the adjacency that actually shows up
- *    in this app's real data (the corpus above contains "Vancouver, British
- *    Columbia", "Toronto, Ontario", "Ottawa, Ontario" and "Remote, Canada").
- *  - Free-text prefixes between the city and its region ("Bellevue (Hybrid),
- *    WA") put a non-region field in the guard's window, so the guard does not
- *    fire. Unobserved in real data; harmless for an in-metro posting, a false
- *    positive for an out-of-metro one.
+ *    `REGION_REQUIRED_CITIES` closes this for the nine names where it
+ *    actually bites; for the rest ("Tacoma, Bogotá") it stands. Canada is
+ *    included because it is the adjacency that shows up in this app's real
+ *    data (the corpus contains "Vancouver, British Columbia", "Toronto,
+ *    Ontario", "Ottawa, Ontario" and "Remote, Canada").
+ *  - Free-text between the city and its region ("Bellevue (Hybrid), WA") puts
+ *    a non-region field in the guard's window, so no region is found.
+ *    Unobserved in real data; for the nine region-required names that now
+ *    means no expansion, and for the rest it is still a possible false
+ *    positive.
+ *  - A city list whose fields are cities, not regions -- "Seattle, New York,
+ *    San Francisco" -- reads "New York" as a state and suppresses the
+ *    expansion. One real posting in the corpus has this shape. It costs
+ *    coverage, never a false positive (the caller's literal matcher still
+ *    matches it), which is the direction below.
+ *
+ * **The guard can only ever suppress an expansion, never create one**, and
+ * that holds for every change above: expansion only ADDS matchers, and the
+ * caller's own literal phrase is always compiled and tested first,
+ * unmodified. So a posting that matched with the flag off still matches with
+ * it on, and every way the guard can be wrong costs coverage this feature
+ * would otherwise have added. A user who hits one sees exactly today's
+ * strict behavior.
  */
 
 /**
@@ -463,24 +489,98 @@ const REGION_CODE_BY_NAME: ReadonlyMap<string, string> = new Map(
 );
 
 /**
+ * One region token -> its code, or `undefined`. A trailing period is common
+ * on abbreviations ("Pasadena, Tx.") and is never part of a region name here
+ * except in "d.c.", which the first lookup catches before the strip.
+ */
+function lookupRegion(token: string): string | undefined {
+  const key = token.trim().toLowerCase();
+  if (key.length === 0) return undefined;
+  return REGION_CODE_BY_NAME.get(key) ?? REGION_CODE_BY_NAME.get(key.replace(/\.$/, ""));
+}
+
+/** Longest region name in words: "district of columbia", "newfoundland and
+ * labrador", "prince edward island". Nothing in the table is longer, so a
+ * fourth word can never be part of a region name. */
+const MAX_REGION_WORDS = 3;
+
+/**
+ * The region a single comma-delimited field names, or `undefined`.
+ *
+ * The whole field is tried first -- "WA", "Washington", "New York" -- and
+ * that is the shape the overwhelming majority of real location strings use.
+ * Failing that, the field's LEADING words are tried, longest prefix first, so
+ * that a region with something trailing it in the same field is still seen:
+ * "MA 02149", "MA (HQ)", "NY - Hybrid", "WA-Remote". Whole-field equality
+ * alone (this function's original shape, ticket 410e1a2 review finding F1)
+ * missed every one of those and let "Everett, MA 02149" pass a Seattle
+ * expansion.
+ *
+ * Two constraints keep the prefix scan from firing on ordinary text:
+ *
+ *  - A prefix is only considered at a word boundary, and only for the first
+ *    three words, because no region name is longer.
+ *  - A prefix only counts as a region mention when what FOLLOWS it is not
+ *    another word -- a digit, a bracket, a dash, or nothing at all.
+ *    Whole-field equality got this protection for free, and it is what stops
+ *    the two-letter codes that are also English words ("IN", "OR", "ON",
+ *    "OK", "ME", "DE", "LA") from firing on prose: "Bellevue, in office 3
+ *    days" must not resolve to Indiana and throw away a real Bellevue
+ *    posting. It costs nothing on the shapes that matter, because "MA 02149",
+ *    "MA (HQ)", "NY - Hybrid" and "WA-Remote" all continue with a non-word.
+ *    It also keeps "Everett, Massachusetts Ave" from resolving to
+ *    Massachusetts on the strength of a street name.
+ *
+ * Direction of error, which is what makes the looser matching safe: relative
+ * to whole-field equality this function can only ever find MORE regions, and
+ * a region it finds can only ever REJECT an expansion (the guard's sole
+ * effect), never create one. So the prefix scan is strictly at least as
+ * conservative as the code it replaces -- there is no posting that matched
+ * before this change and does not match after it.
+ */
+function regionOfField(field: string): string | undefined {
+  const whole = lookupRegion(field);
+  if (whole !== undefined) return whole;
+
+  // Leading word-prefixes of the field, shortest first, each with the text
+  // that follows it: "MA 02149" -> [{ text: "MA", rest: " 02149" }].
+  const prefixes: { text: string; rest: string }[] = [];
+  let cursor = 0;
+  while (prefixes.length < MAX_REGION_WORDS) {
+    const word = /^\s*[A-Za-z]+\.?/.exec(field.slice(cursor));
+    if (word === null) break;
+    cursor += word[0].length;
+    prefixes.push({ text: field.slice(0, cursor).trim(), rest: field.slice(cursor) });
+  }
+
+  // Longest first: a two-word region ("New York") must win over its own
+  // first word. None of the one-word prefixes of a multi-word region is
+  // itself a region today ("new", "north", "rhode", "prince", "british", …),
+  // so the order is belt-and-braces rather than load-bearing -- but it stays
+  // correct if the table ever grows one that is.
+  for (let i = prefixes.length - 1; i >= 0; i--) {
+    const { text, rest } = prefixes[i];
+    if (/^\s*[A-Za-z]/.test(rest)) continue;
+    const region = lookupRegion(text);
+    if (region !== undefined) return region;
+  }
+  return undefined;
+}
+
+/**
  * The region named immediately after `index` in `text`, or `undefined` if the
  * text names none there.
  *
  * Reads exactly one field: skip any leading separator/whitespace, then take
- * characters up to the next `,`, `;`, `|`, `/` or end of string, and look the
- * trimmed result up as a region. "…, WA; Menlo Park, CA" -> "WA". "…,
- * Washington, United States" -> "WA". "…, MA" -> "MA". ", USA" / " (Hybrid)"
- * / "" -> undefined.
+ * characters up to the next `,`, `;`, `|`, `/` or end of string, and resolve
+ * the result with `regionOfField`. "…, WA; Menlo Park, CA" -> "WA". "…,
+ * Washington, United States" -> "WA". "…, MA 02149" -> "MA". ", USA" /
+ * " (Hybrid)" / ", in office 3 days" / "" -> undefined.
  */
 function regionAfter(text: string, index: number): string | undefined {
   const match = /^[\s,]*([^,;|/]*)/.exec(text.slice(index));
   if (match === null) return undefined;
-  const field = match[1].trim().toLowerCase();
-  if (field.length === 0) return undefined;
-  // A trailing period is common on abbreviations ("Pasadena, Tx.") and is
-  // never part of a region name here except in "d.c.", which is matched
-  // before the strip by the first lookup.
-  return REGION_CODE_BY_NAME.get(field) ?? REGION_CODE_BY_NAME.get(field.replace(/\.$/, ""));
+  return regionOfField(match[1].trim());
 }
 
 /** `\b city \b`, case-insensitive, global (the caller walks occurrences).
@@ -501,21 +601,85 @@ const PATTERN_BY_CITY: ReadonlyMap<string, RegExp> = (() => {
 })();
 
 /**
+ * Table cities whose bare name, with NO region attached, is genuinely
+ * ambiguous enough that a POSTING carrying it should not be expanded on the
+ * strength of the name alone (ticket 410e1a2 review finding F4).
+ *
+ * The region guard's default is "absence of a foreign region passes" -- a
+ * posting that says only "Bellevue" is taken to mean the Bellevue of the
+ * metro the user asked about. That is right for a name with one famous
+ * bearer ("Seattle", "Los Angeles", "Tacoma", "Anaheim"), and wrong for
+ * these nine, each of which names a real, populous place somewhere the user
+ * did not ask about:
+ *
+ *   everett (MA, Boston metro) · glendale (AZ, Phoenix metro) ·
+ *   pasadena (TX, Houston metro) · long beach (NY, MS) ·
+ *   kirkland (QC) · redmond (OR) · bellevue (NE, KY, OH) ·
+ *   santa ana (Costa Rica, El Salvador) · irvine (Scotland)
+ *
+ * For these, the posting must POSITIVELY name a region in the group's set.
+ * That is what rejects "Santa Ana, Costa Rica", "Irvine, Scotland",
+ * "Kirkland, Canada", "Everett, Middlesex County", "Glendale, Phoenix, AZ"
+ * and "Everett, United States" -- all of which the absence rule accepted,
+ * and the last of which is a real shape in this repo's data (the Airbnb
+ * fixture's "Los Angeles, United States").
+ *
+ * Measured cost, not assumed: re-running the owner's corpus
+ * (`prep/match-results.json`) with this rule on changes the "Seattle" result
+ * by zero postings. All 29 real Bellevue postings spell "WA" or
+ * "Washington" out. What it does give up is the hypothetical bare
+ * "Bellevue" / "Redmond (Hybrid)" posting, which is exactly today's strict
+ * behavior for that posting -- i.e. coverage, not a false positive.
+ *
+ * This applies to POSTINGS only. On the CALLER's side a bare "Bellevue" must
+ * still select the Seattle metro, because typing a city with no state is how
+ * people actually search; the residual weakness that creates (a searcher
+ * meaning Everett, MA) is recorded in this file's header and answered by the
+ * UI label, not here.
+ */
+const REGION_REQUIRED_CITIES: ReadonlySet<string> = new Set([
+  "everett",
+  "glendale",
+  "pasadena",
+  "long beach",
+  "kirkland",
+  "redmond",
+  "bellevue",
+  "santa ana",
+  "irvine",
+]);
+
+/**
+ * Which side of the match `text` is: the caller's search phrase, or a
+ * posting's location string. Only `REGION_REQUIRED_CITIES` treats the two
+ * differently -- see its doc comment.
+ */
+type MatchSide = "phrase" | "posting";
+
+/**
  * Does `text` place `city` inside `regions`?
  *
- * True when at least one occurrence of the city is either followed by no
- * region at all ("Bellevue", "Bellevue, USA") or followed by one of
- * `regions` ("Bellevue, WA"). False when every occurrence is followed by a
- * region outside the set ("Everett, MA") -- and false, of course, when the
- * city does not occur.
+ * True when at least one occurrence of the city is followed by one of
+ * `regions` ("Bellevue, WA"), or -- for a city whose bare name is not
+ * ambiguous -- by no region at all ("Seattle", "Tacoma, 98402"). False when
+ * every occurrence is followed by a region outside the set ("Everett, MA"),
+ * false for an ambiguous city with no region on the posting side (see
+ * `REGION_REQUIRED_CITIES`), and false, of course, when the city does not
+ * occur.
  *
  * Per-occurrence rather than per-string on purpose: "Bellevue, WA; Menlo
  * Park, CA" is a real posting shape in this app's own data and is genuinely
  * in Bellevue.
  */
-function cityIsInRegions(city: string, text: string, regions: readonly string[]): boolean {
+function cityIsInRegions(
+  city: string,
+  text: string,
+  regions: readonly string[],
+  side: MatchSide,
+): boolean {
   const pattern = PATTERN_BY_CITY.get(city);
   if (pattern === undefined) return false;
+  const regionRequired = side === "posting" && REGION_REQUIRED_CITIES.has(city);
   // Shared compiled RegExp objects carry `lastIndex` between calls, so reset
   // before every walk. (A fresh RegExp per call would be correct too, and
   // measurably more allocation on the per-job path.)
@@ -523,7 +687,11 @@ function cityIsInRegions(city: string, text: string, regions: readonly string[])
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     const region = regionAfter(text, match.index + match[0].length);
-    if (region === undefined || regions.includes(region)) return true;
+    if (region === undefined) {
+      if (!regionRequired) return true;
+    } else if (regions.includes(region)) {
+      return true;
+    }
     // Zero-length matches are impossible here (every city is non-empty), so
     // exec's lastIndex always advances and this loop always terminates.
   }
@@ -542,7 +710,7 @@ function cityIsInRegions(city: string, text: string, regions: readonly string[])
  */
 export function metroGroupsFor(phrase: string): MetroAreaGroup[] {
   return METRO_AREA_GROUPS.filter((group) =>
-    group.cities.some((city) => cityIsInRegions(city, phrase, group.regions)),
+    group.cities.some((city) => cityIsInRegions(city, phrase, group.regions, "phrase")),
   );
 }
 
@@ -551,14 +719,15 @@ export function metroGroupsFor(phrase: string): MetroAreaGroup[] {
  * selects, minus the ones the phrase already names.
  *
  * Exported for tests and for anything that wants to SHOW a user what a
- * phrase will pull in; `compileMetroSiblingMatchers` is what the filter
- * itself uses.
+ * phrase will pull in -- which is the only thing "sibling" is the right word
+ * for. `compileMetroAreaMatchers` is what the filter itself uses, and it
+ * deliberately covers the named city too.
  */
 export function metroSiblingCitiesFor(phrase: string): string[] {
   const siblings: string[] = [];
   for (const group of metroGroupsFor(phrase)) {
     for (const city of group.cities) {
-      if (cityIsInRegions(city, phrase, group.regions)) continue;
+      if (cityIsInRegions(city, phrase, group.regions, "phrase")) continue;
       if (!siblings.includes(city)) siblings.push(city);
     }
   }
@@ -570,18 +739,31 @@ export function metroSiblingCitiesFor(phrase: string): string[] {
  * `expandMetroAreas` is on. Empty for a phrase that names no table city --
  * i.e. for the overwhelming majority of phrases, the flag changes nothing.
  *
- * Each matcher is "this posting names the sibling city, and does not place
- * that city in another region" (see `cityIsInRegions`). The caller's own
- * literal matcher is NOT included here: `criteria.ts` always compiles and
- * tests that one itself, unmodified, which is what makes expansion purely
- * additive.
+ * Each matcher is "this posting names that city, and does not place it in
+ * another region" (see `cityIsInRegions`). The caller's own literal matcher
+ * is NOT included here: `criteria.ts` always compiles and tests that one
+ * itself, unmodified, which is what makes expansion purely additive.
+ *
+ * EVERY city of a selected group gets a matcher, INCLUDING the one the
+ * caller typed (ticket 410e1a2 review finding F2). Skipping the named city
+ * -- this function's original shape -- gave it strictly HARSHER matching
+ * than its own metro siblings: `nearLocations: ["Seattle, WA"]` with the
+ * flag on got only the literal `\bseattle, wa\b` for Seattle while Bellevue
+ * and Kirkland got the lenient, region-guarded treatment, so it matched a
+ * posting phrased "Bellevue, Washington" but not one phrased "Seattle,
+ * Washington". Measured on the owner's corpus: that cost 25 real
+ * Seattle-named postings ("Seattle" alone, "Seattle, Washington", "Seattle,
+ * Washington, United States" and five multi-city strings). The ticket's own
+ * requirement is that a phrase match its metro GROUPING, and a city is in
+ * its own grouping.
  */
-export function compileMetroSiblingMatchers(phrase: string): ((location: string) => boolean)[] {
+export function compileMetroAreaMatchers(phrase: string): ((location: string) => boolean)[] {
   const matchers: ((location: string) => boolean)[] = [];
   for (const group of metroGroupsFor(phrase)) {
     for (const city of group.cities) {
-      if (cityIsInRegions(city, phrase, group.regions)) continue;
-      matchers.push((location: string) => cityIsInRegions(city, location, group.regions));
+      matchers.push((location: string) =>
+        cityIsInRegions(city, location, group.regions, "posting"),
+      );
     }
   }
   return matchers;

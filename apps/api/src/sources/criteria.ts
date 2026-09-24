@@ -43,7 +43,7 @@ import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
 } from "../matching/swe-filter.js";
-import { compileMetroSiblingMatchers } from "./metroAreas.js";
+import { compileMetroAreaMatchers } from "./metroAreas.js";
 import { expandTitlePhrase } from "./titleSynonyms.js";
 import type { NormalizedJob } from "./types.js";
 
@@ -122,11 +122,17 @@ function makeTitleMatcher(phrase: string): (haystack: string) => boolean {
  *
  * With the flag on, the caller's literal matcher is still compiled and still
  * tested first; the curated metro table (`metroAreas.ts`, which carries the
- * full evidence and safety argument) only ever APPENDS sibling-city matchers
+ * full evidence and safety argument) only ever APPENDS metro-city matchers
  * after it. So expansion can only widen `nearLocations` -- every posting that
  * passed with the flag off still passes with it on -- and a phrase naming no
- * city in the table ("Denver", "EMEA", "") produces no siblings and collapses
- * back to the single literal matcher.
+ * city in the table ("Denver", "EMEA", "") produces no extra matchers and
+ * collapses back to the single literal matcher.
+ *
+ * The appended matchers cover the caller's OWN city as well as its metro
+ * siblings, which is why the literal matcher is a floor rather than the whole
+ * story for it: "Seattle, WA" with the flag on matches a posting phrased
+ * "Seattle, Washington" through the metro matcher, not the literal one. See
+ * `compileMetroAreaMatchers` for the measurement behind that.
  */
 function makeLocationMatcher(
   phrase: string,
@@ -134,9 +140,9 @@ function makeLocationMatcher(
 ): (haystack: string) => boolean {
   const literal = makePhraseMatcher(phrase);
   if (!expandMetroAreas) return literal;
-  const siblings = compileMetroSiblingMatchers(phrase);
-  if (siblings.length === 0) return literal;
-  return (haystack: string) => literal(haystack) || siblings.some((m) => m(haystack));
+  const metro = compileMetroAreaMatchers(phrase);
+  if (metro.length === 0) return literal;
+  return (haystack: string) => literal(haystack) || metro.some((m) => m(haystack));
 }
 
 const REMOTE_TEXT = /\bremote\b/i;

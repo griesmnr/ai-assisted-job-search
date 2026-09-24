@@ -805,6 +805,52 @@ describe("compileFilter — metro-area expansion when the caller opts in (ticket
     ).toEqual(["3"]);
   });
 
+  it("the caller's own city matches as leniently as its siblings do (review finding F2)", () => {
+    // The concrete regression this pins: with the flag on, a "Seattle, WA"
+    // search used to get ONLY the literal `\bseattle, wa\b` for Seattle
+    // while Bellevue got the region-guarded matcher -- so it matched a
+    // Bellevue posting and missed a Seattle one written "Seattle,
+    // Washington". Measured on the owner's real corpus, that cost 25 real
+    // Seattle-named postings; the same corpus now gives 17 strict -> 72 with
+    // the flag, up from 48.
+    const jobs: NormalizedJob[] = [
+      "Seattle, Washington",
+      "Seattle, Washington, United States",
+      "Seattle",
+      "Seattle, WA (HQ)",
+      "Bellevue, WA",
+    ].map((location, i) => job({ externalId: String(i), company: `Co ${i}`, location }));
+    const criteria = { nearLocations: ["Seattle, WA"], expandMetroAreas: true };
+    expect(compileFilter(criteria)(jobs)).toHaveLength(jobs.length);
+    // Strict is untouched: only the one literal spelling passes.
+    expect(
+      compileFilter({ nearLocations: ["Seattle, WA"] })(jobs).map((j) => j.externalId),
+    ).toEqual(["3"]);
+  });
+
+  it("trailing text after a foreign state does not defeat the guard (review finding F1)", () => {
+    // "City, ST <anything>" used to pass, because the guard demanded the
+    // comma field BE the region. A Boston-area "Everett, MA (HQ)" landing in
+    // a Seattle search is the false positive this whole module exists to
+    // prevent, and "City, ST (suffix)" is a real shape in the corpus.
+    const foreign: NormalizedJob[] = [
+      "Everett, MA 02149",
+      "Everett, MA (HQ)",
+      "Redmond, OR 97756",
+      "Bellevue, NE 68005",
+    ].map((location, i) => job({ externalId: String(i), company: `Co ${i}`, location }));
+    expect(compileFilter({ nearLocations: ["Seattle"], expandMetroAreas: true })(foreign)).toEqual(
+      [],
+    );
+    // Same shapes, right state: still matched.
+    const local: NormalizedJob[] = ["Bellevue, WA 98004", "Bellevue, WA (HQ)"].map((location, i) =>
+      job({ externalId: String(i), company: `Co ${i}`, location }),
+    );
+    expect(
+      compileFilter({ nearLocations: ["Seattle"], expandMetroAreas: true })(local),
+    ).toHaveLength(2);
+  });
+
   it("expansion is purely additive — every job that passed strict still passes", () => {
     const jobs: NormalizedJob[] = [
       job({ externalId: "1", location: "Seattle, WA" }),
