@@ -9,13 +9,14 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "pnpm -r run build",
-    "dev": "pnpm --parallel -r --if-present run dev",
+    "dev": "concurrently -n api,web,fetch-worker,score-worker -c blue,green,yellow,magenta \"pnpm --filter @app/api run dev\" \"pnpm --filter @app/web run dev\" \"npx tsx apps/api/src/worker/run-fetch-source-worker.ts\" \"npx tsx apps/api/src/worker/run-score-job-worker.ts\"",
     "test": "vitest run",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "concurrently": "^10.0.5",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.6",
