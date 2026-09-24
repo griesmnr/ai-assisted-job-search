@@ -1,6 +1,7 @@
 /**
  * Live evaluation of `inferTitleKeywords`'s prompt/schema against several
- * DIFFERENT resume shapes (ticket 5ba5cca, review round 1 F1/F2).
+ * DIFFERENT resume shapes (ticket 5ba5cca, review round 1 F1/F2; extended
+ * for ticket 976a782 -- see that shapes list below).
  *
  * WHY THIS EXISTS: the ticket's own acceptance criteria require evaluating
  * the tightened prompt against 2-3 different resume shapes, "since a
@@ -18,7 +19,18 @@
  * distinction); this script is how to check it actually holds for a model,
  * not just for a human reading the prompt text.
  *
- * COST: real, billed Anthropic calls, but tiny -- 3 resumes x
+ * TICKET 976a782 (round 2): extended this SAME script, per that ticket's
+ * own instruction, rather than writing a new one -- with two more resume
+ * shapes reproducing tonight's specific live finding (Nicole's fresh
+ * resume edit produced "Software Engineer, Microservices" as one
+ * comma-joined chip, plus "Backend Software Engineer" and "Cloud Software
+ * Engineer" as over-qualified variants of otherwise-standard titles). The
+ * flagging logic below is also widened: it used to only flag parens/slash
+ * (5ba5cca's failure mode); it now also flags the join-punctuation and
+ * over-qualification shapes this round exists to close, and reports
+ * whether each of the three exact incident chips reproduced.
+ *
+ * COST: real, billed Anthropic calls, but tiny -- 5 resumes x
  * MAX_OUTPUT_TOKENS (300) each, same call this app already makes once per
  * real resume submission. Default is DRY RUN (prints the resumes and
  * exits without calling anything); pass `--live` to actually call the API.
@@ -48,9 +60,28 @@ const RESUME_SHAPES: { label: string; text: string }[] = [
       "Non-engineering profession (product manager -- checks the prompt generalizes past 'engineer' entirely)",
     text: "Priya Shah. Senior Product Manager, 7 years, B2B SaaS. Owned the roadmap for a billing platform used by 200+ enterprise customers. Led cross-functional teams of engineers and designers through discovery, launch, and iteration. Background in UX research and SQL-based analytics. MBA.",
   },
+  {
+    label:
+      "976a782: backend/cloud/microservices full-stack resume shaped to reproduce tonight's live incident directly -- this is the resume shape most likely to elicit 'Software Engineer, Microservices' and 'Backend Software Engineer'/'Cloud Software Engineer'",
+    text: "Nicole R. Full stack and backend software engineer, 7 years experience, cloud-native systems. Designed, built, and operated backend microservices in Java and Node.js on AWS and GCP, including service decomposition of a monolith into an event-driven microservices architecture. Built React front ends consuming those services. Owned CI/CD, containerization (Docker/Kubernetes), and cloud infrastructure as code (Terraform) for the team's cloud deployments. Comfortable across the stack but spends the majority of time on backend services and cloud infrastructure work. BS Computer Science.",
+  },
+  {
+    label:
+      "976a782: senior backend engineer with NO full-stack or cloud framing at all -- checks the shortest-phrasing/generic-mix guidance generalizes to a plainer resume, not just the specific incident shape",
+    text: "Marcus Chen. Senior Backend Engineer, 9 years, fintech and payments. Designed and maintained high-throughput Java services processing millions of transactions daily. Deep experience with PostgreSQL, Kafka, and distributed systems reliability. Mentored junior engineers and led on-call rotations. BS Computer Science.",
+  },
 ];
 
 const isLive = process.argv.includes("--live");
+
+// The exact three bad chips reported live tonight (git-bug 976a782) -- the
+// specific strings this round's acceptance criteria require no longer
+// reproducing.
+const REPORTED_BAD_CHIPS = [
+  "Software Engineer, Microservices",
+  "Backend Software Engineer",
+  "Cloud Software Engineer",
+];
 
 async function main(): Promise<void> {
   loadEnvFile();
@@ -72,9 +103,17 @@ async function main(): Promise<void> {
     const titles = await inferTitleKeywords(anthropic, text);
     console.log(JSON.stringify(titles, null, 2));
 
-    const flagged = titles.filter((t) => /[()/]/.test(t));
-    if (flagged.length > 0) {
-      console.log(`  FLAGGED (parens/slash): ${JSON.stringify(flagged)}`);
+    const flaggedPunctuation = titles.filter((t) => /[()/,;&]/.test(t));
+    if (flaggedPunctuation.length > 0) {
+      console.log(
+        `  FLAGGED (parens/slash/comma/semicolon/ampersand): ${JSON.stringify(flaggedPunctuation)}`,
+      );
+    }
+    const reproducedBadChips = REPORTED_BAD_CHIPS.filter((bad) =>
+      titles.some((t) => t.toLowerCase() === bad.toLowerCase()),
+    );
+    if (reproducedBadChips.length > 0) {
+      console.log(`  REPRODUCED REPORTED BAD CHIP(S): ${JSON.stringify(reproducedBadChips)}`);
     }
     console.log();
   }
