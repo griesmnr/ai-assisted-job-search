@@ -627,3 +627,44 @@ button[aria-disabled="true"] {
   color: #c0392b;
   font-size: 0.85rem;
 }
+
+/* Ticket 303cff0: "My Resumes" tab. */
+.resume-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.resume-list-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+
+.resume-list-item summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  cursor: pointer;
+}
+
+.resume-nickname {
+  font-weight: 600;
+}
+
+.resume-created-at {
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.resume-text {
+  margin-top: 0.75rem;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.9rem;
+}

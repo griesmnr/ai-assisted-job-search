@@ -141,6 +141,27 @@ export type GetResumeResponse = {
 };
 
 /**
+ * One row of `GET /resumes`'s list (ticket 303cff0 -- "My Resumes" tab).
+ * Deliberately NOT `resumeText`: the list is meant to be cheap to load for
+ * every saved resume at once, and full text is fetched per-resume, on
+ * demand, via the existing `GET /resumes/:id` -- see that route and
+ * `GetResumeResponse` above.
+ */
+export type ResumeSummary = {
+  id: string;
+  /** See `CreateResumeResponse.resumeNickname`'s doc comment. */
+  resumeNickname: string;
+  /** ISO 8601 timestamp (schema.ts's `resumes.createdAt`, `defaultNow()`). */
+  createdAt: string;
+};
+
+export type ListResumesResponse = {
+  /** Oldest first -- matches the "Resume 1", "Resume 2", ... nickname
+   * numbering (ticket 38a7598), so list order and nickname order agree. */
+  resumes: ResumeSummary[];
+};
+
+/**
  * `PATCH /resumes/:id` (ticket 38a7598) — renames a resume's nickname.
  * Deliberately minimal: this is NOT a general resume-editing endpoint (the
  * ticket's own Scope excludes that) — the only field it can change is

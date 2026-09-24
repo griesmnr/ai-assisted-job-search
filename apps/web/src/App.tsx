@@ -11,6 +11,7 @@ import {
   groupKeyForStatus,
   type ScoredGroupKey,
 } from "./components/GroupedResultsList";
+import { MyResumes } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
 import { ScoreFloorControl } from "./components/ScoreFloorControl";
@@ -19,6 +20,7 @@ import { SearchFlow } from "./components/SearchFlow";
 import { SourceToggles } from "./components/SourceToggles";
 import { useAllResults } from "./hooks/useAllResults";
 import { useResults } from "./hooks/useResults";
+import { useResumesList } from "./hooks/useResumesList";
 import { useSources } from "./hooks/useSources";
 import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
 import { splitPhrases } from "./criteriaText";
@@ -104,7 +106,7 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
  * comment) -- there is exactly one implicit "user" and no session/auth
  * concept anywhere in this file or the API it talks to.
  */
-type Tab = "search" | "scored";
+type Tab = "search" | "scored" | "resumes";
 
 function App() {
   const sourcesState = useSources();
@@ -251,6 +253,11 @@ function App() {
   // "Results from this search"). See hooks/useAllResults.ts's own doc
   // comment for why it isn't gated on `resumeId` the way `useResults` is.
   const { state: allResultsState, refresh: refreshAllResults } = useAllResults(scoreFloor);
+  // Ticket 303cff0 ("My Resumes" tab): its own independently-fetched list,
+  // same shape as `allResultsState` above -- not derived from anything
+  // else on this page (there is no other place that already holds every
+  // saved resume's id/nickname/createdAt at once).
+  const { state: resumesListState, refresh: refreshResumesList } = useResumesList();
 
   // Ticket 0308d7e (Nicole, dogfooding ac141d0: "when I said I wanted
   // number, I wanted it in the tab itself... I want people to know that
@@ -270,6 +277,13 @@ function App() {
       ? (allResultsState.data.totalMatchingCount ?? allResultsState.data.results.length) +
         (allResultsState.data.hiddenBelowFloor ?? 0)
       : undefined;
+
+  // Ticket 303cff0: same "count in the tab button itself" pattern as
+  // `scoredJobCount` above, `undefined` (not 0) before the list has
+  // actually loaded so the tab button shows no number rather than a
+  // misleading "(0)" while still fetching.
+  const resumeCount =
+    resumesListState.status === "ready" ? resumesListState.data.resumes.length : undefined;
 
   // Ticket f4a7f07, refined live: "results should be reserved for results
   // from the most recent search... cleared every time a new search is
@@ -473,6 +487,11 @@ function App() {
       // `resumeEditing`'s own doc comment above). A no-op on the
       // first-ever submission, where this was already false.
       setResumeEditing(false);
+      // Ticket 303cff0: a genuinely new resume (or a resubmission that
+      // matched an existing one, per `createResume`'s find-or-create) --
+      // either way, "My Resumes" should reflect it without waiting for
+      // some unrelated action to happen to refresh it.
+      refreshResumesList();
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -519,6 +538,9 @@ function App() {
       setResumeNickname(saved);
       setLastSavedNickname(saved);
       refresh();
+      // Ticket 303cff0: keeps "My Resumes" showing the current nickname
+      // rather than whatever it had cached from before the rename.
+      refreshResumesList();
     } catch (err) {
       setNicknameError(err instanceof Error ? err.message : String(err));
       setResumeNickname(lastSavedNickname);
@@ -618,6 +640,15 @@ function App() {
         >
           Already Scored Jobs
           {scoredJobCount !== undefined && ` (${scoredJobCount})`}
+        </button>
+        <button
+          type="button"
+          className="tab-button"
+          aria-pressed={activeTab === "resumes"}
+          onClick={() => setActiveTab("resumes")}
+        >
+          My Resumes
+          {resumeCount !== undefined && ` (${resumeCount})`}
         </button>
       </nav>
 
@@ -817,6 +848,25 @@ function App() {
               // message is the right call in this location specifically.
               <p>No jobs scored yet.</p>
             ))}
+        </section>
+      </div>
+
+      {/* Ticket 303cff0: `hidden`, same as the other two tabs above -- kept
+          mounted so switching away and back doesn't re-fetch or lose an
+          expanded row's already-fetched text. */}
+      <div hidden={activeTab !== "resumes"}>
+        <section className="resumes-section">
+          <h2>
+            My Resumes
+            {resumeCount !== undefined && ` (${resumeCount})`}
+          </h2>
+          {resumesListState.status === "loading" && <p>Loading resumes...</p>}
+          {resumesListState.status === "error" && (
+            <p role="alert">Could not load resumes: {resumesListState.message}</p>
+          )}
+          {resumesListState.status === "ready" && (
+            <MyResumes resumes={resumesListState.data.resumes} />
+          )}
         </section>
       </div>
     </main>
