@@ -368,8 +368,19 @@ async function main(): Promise<void> {
 
     console.log("\nDependent rows that would also be deleted:");
     for (const [table, count] of Object.entries(counts)) {
+      // Opus review, required (round 2): this table is the one exception --
+      // `deleteTaggedResumes` NULLs its resume_id, it never deletes the row
+      // (see that function's own F1 comment). Printing it under "would
+      // also be deleted" is exactly backwards for the one table this
+      // script goes out of its way to protect, so it gets its own line
+      // below instead of joining this loop's "deleted" framing.
+      if (table === "user_job_statuses") continue;
       console.log(`  ${table}: ${count}`);
     }
+    console.log(
+      `  (plus ${counts.user_job_statuses} user_job_statuses row(s) KEPT -- only their resume_id ` +
+        'is set to NULL, so any real "I applied" fact survives)',
+    );
 
     if (!live) {
       console.log(
