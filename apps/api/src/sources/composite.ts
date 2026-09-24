@@ -120,6 +120,19 @@ export class CompositeSource {
    * ok/error outcomes from `PerSourceOutcome` itself. Optional and
    * defaults to a no-op so every existing caller (this class's own tests,
    * `runDemoMatch`'s CLI path) keeps working unchanged.
+   *
+   * The call is wrapped in try/catch (opus review round 1): a `.finally()`
+   * callback that throws rejects the promise IT returns, and that returned
+   * promise — not the source's own `search()` promise — is what this
+   * source's entry in `settled` actually reflects. Without the guard, a bug
+   * in the progress-tracking callback would silently turn a source that
+   * fetched successfully into a reported `"error"` and drop its real jobs
+   * from the estimate — exactly the kind of failure `estimateProgress.ts`'s
+   * own `markSourceSettled` doc comment promises can never happen ("must
+   * never have its actual fetch/estimate work fail because a progress
+   * update landed late"). `markSourceSettled` itself cannot throw today, so
+   * this is a belt-and-braces isolation at the one place that promise
+   * actually has to be kept, not a fix for an observed bug.
    */
   async search(
     criteria: SearchCriteria,
@@ -127,7 +140,13 @@ export class CompositeSource {
   ): Promise<PerSourceOutcome[]> {
     const settled = await Promise.allSettled(
       this.#sources.map((source) =>
-        source.search(criteria).finally(() => onSourceSettled?.(source.dataSource)),
+        source.search(criteria).finally(() => {
+          try {
+            onSourceSettled?.(source.dataSource);
+          } catch {
+            // Intentionally swallowed -- see this method's doc comment.
+          }
+        }),
       ),
     );
 

@@ -58,11 +58,23 @@
  *
  * LIFECYCLE / CLEANUP. `start()` overwrites any existing entry for the same
  * id — a caller retrying with a reused id just gets a fresh record, no leak.
- * An entry is opportunistically dropped from the map once it is older than
- * `PROGRESS_RETENTION_MS`, checked lazily on `get()` — exactly like
- * `ZeroResultEstimateCache.hasZeroResult`'s opportunistic expiry, and for the
- * same reason: this is a single-user app with a search cadence of searches
- * per session, not per second, so no background sweep is needed.
+ * An entry is dropped once it is older than `PROGRESS_RETENTION_MS`.
+ *
+ * UNLIKE `ZeroResultEstimateCache.hasZeroResult`'s opportunistic
+ * expire-on-read, that alone is NOT sufficient here and this module does
+ * NOT rely on it exclusively (an earlier version of this comment claimed it
+ * did — wrong: `zeroResultCache.ts`'s keys are canonicalized CRITERIA, which
+ * genuinely repeat across estimates, so a later read re-touches and evicts
+ * an old entry for free. This module's keys are `crypto.randomUUID()` — by
+ * construction they never repeat, so an abandoned or already-fully-polled
+ * id is NEVER read again and expire-on-read alone would let it sit in the
+ * map for the rest of the process's life). `start()` therefore ALSO sweeps
+ * every expired entry (not just this call's own id) each time it runs —
+ * cheap, since this app's real cadence is a handful of estimates per
+ * session, and it is the only method guaranteed to run once per estimate
+ * regardless of whether anyone ever polls. `get()` keeps its own
+ * expire-on-read too, for the ordinary case of a poll landing after
+ * `PROGRESS_RETENTION_MS` on an id nothing else has touched since.
  * `PROGRESS_RETENTION_MS` is deliberately LONGER than any real estimate
  * should ever take — it exists only so a frontend poll landing just after
  * the POST resolves still sees the final `done: true` snapshot instead of a
@@ -93,14 +105,17 @@ export type EstimateProgressSnapshot = {
 };
 
 /**
- * How long a progress record stays readable after `start()` created it.
- * Ten minutes — an order of magnitude past any estimate this app has ever
+ * How long a progress record stays readable after `start()` created it, and
+ * how long `start()`'s own sweep (see the module doc comment's LIFECYCLE
+ * section for why a sweep exists at all) lets an unpolled entry survive
+ * before removing it regardless of whether anyone ever reads it. Ten
+ * minutes — an order of magnitude past any estimate this app has ever
  * measured (the ticket's own worst case is "a couple of slow boards can eat
  * a minute-plus"), chosen the same judgment-call way
  * `ZERO_RESULT_REUSE_WINDOW_MS` was: generous enough that a poll landing
- * moments after the POST resolves never 404s, short enough that this map
- * cannot accumulate meaningfully even if a caller mints an id and never
- * polls it.
+ * moments after the POST resolves never 404s, short enough that even an
+ * abandoned, never-polled id is bounded to one process-lifetime-scale
+ * window rather than living forever.
  */
 export const PROGRESS_RETENTION_MS = 10 * 60 * 1000;
 
@@ -125,6 +140,16 @@ export class EstimateProgressTracker {
     this.#now = options?.now ?? Date.now;
   }
 
+  /** Test-support surface only -- lets a test prove `start()`'s sweep
+   * actually removed a stale entry from the underlying map, rather than
+   * observing only `get()`'s own expire-on-read (which would return
+   * `undefined` for an expired id either way, and so can't by itself
+   * distinguish "swept proactively" from "never swept, just always lazily
+   * re-checked"). Not used by any production code path. */
+  get size(): number {
+    return this.#entries.size;
+  }
+
   /**
    * Registers a new progress record for `requestId`, one entry per
    * `sourceIds` (this run's own resolved source list — every configured
@@ -135,9 +160,20 @@ export class EstimateProgressTracker {
    * (all-pending) snapshot rather than a 404.
    */
   start(requestId: string, sourceIds: readonly string[]): void {
+    const now = this.#now();
+    // Sweeps every expired entry, not just this call's own id -- see the
+    // module doc comment's LIFECYCLE section for why `get()`'s
+    // expire-on-read alone doesn't bound this map's size: this method's
+    // keys never repeat, so an id nobody ever polls again would otherwise
+    // sit here for the rest of the process's life. Cheap at this app's real
+    // scale (a handful of estimates per session), and `start()` is the one
+    // call guaranteed to run once per estimate regardless of polling.
+    for (const [id, entry] of this.#entries) {
+      if (now - entry.createdAt > PROGRESS_RETENTION_MS) this.#entries.delete(id);
+    }
     const sources = new Map<string, typeof PENDING | typeof DONE>();
     for (const sourceId of sourceIds) sources.set(sourceId, PENDING);
-    this.#entries.set(requestId, { createdAt: this.#now(), sources });
+    this.#entries.set(requestId, { createdAt: now, sources });
   }
 
   /**
@@ -148,9 +184,18 @@ export class EstimateProgressTracker {
    * pure bookkeeping for a progress bar, and a caller (`CompositeSource` via
    * `runDemoMatch`) must never have its actual fetch/estimate work fail
    * because a progress update landed late or against a stale id.
+   *
+   * The `sources.has(sourceId)` check is load-bearing, not decoration (opus
+   * review round 1): `Map#set` on an absent key INSERTS rather than no-ops,
+   * so without this check a settle notification for a source `start()` never
+   * registered for this id — e.g. two callers reusing the same client-minted
+   * `requestId` for overlapping estimates — would silently inflate `total`
+   * for the FIRST run's poller mid-flight instead of being the no-op this
+   * method's own doc comment already promised.
    */
   markSourceSettled(requestId: string, sourceId: string): void {
-    this.#entries.get(requestId)?.sources.set(sourceId, DONE);
+    const entry = this.#entries.get(requestId);
+    if (entry?.sources.has(sourceId)) entry.sources.set(sourceId, DONE);
   }
 
   /**

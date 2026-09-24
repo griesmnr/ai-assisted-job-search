@@ -371,13 +371,19 @@ export function SearchFlow({
   async function handleEstimate() {
     onEstimateStart?.();
     setPhase({ kind: "estimating", progress: undefined });
-    // Minted by the CALLER (ticket bf2dd0a) -- the server has no way to
-    // hand back an id before the blocking response it's attached to, so the
-    // frontend generates one before firing the request and starts polling
-    // immediately after, well before `estimateSearch` below can resolve.
-    const estimateRequestId = crypto.randomUUID();
-    startEstimateProgressPolling(estimateRequestId);
     try {
+      // Minted by the CALLER (ticket bf2dd0a) -- the server has no way to
+      // hand back an id before the blocking response it's attached to, so
+      // the frontend generates one before firing the request and starts
+      // polling immediately after, well before `estimateSearch` below can
+      // resolve. Inside this try (opus review round 1): `randomUUID` is not
+      // reachable in an insecure context, which this app's docker-compose
+      // loopback-only setup never is, but if it -- or the poll-start call --
+      // ever threw, leaving it outside the try would strand the UI on the
+      // "estimating" spinner forever with no error, exactly the opaque-wait
+      // failure mode this ticket exists to eliminate.
+      const estimateRequestId = crypto.randomUUID();
+      startEstimateProgressPolling(estimateRequestId);
       const estimate = await estimateSearch(resumeId, sourceIds, criteria, estimateRequestId);
       stopEstimateProgressPolling();
       // Snapshot props AT THE MOMENT the estimate landed (F1) — not a

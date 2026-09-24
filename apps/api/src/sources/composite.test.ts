@@ -288,4 +288,29 @@ describe("CompositeSource (ticket d8417b2)", () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]!.status).toBe("ok");
   });
+
+  it("a THROWING onSourceSettled does not turn a successful source into a reported error (opus review round 1, F3)", async () => {
+    // .finally()'s callback runs inside the derived promise chain -- if it
+    // throws, the promise IT returns rejects, and that's what Promise.
+    // allSettled actually observes for that entry, not the source's own
+    // search() promise. Without the try/catch around the callback call,
+    // this source would report status "error" with the CALLBACK's message,
+    // and its real, successfully-fetched job would be silently dropped.
+    const healthy = new FakeSource("greenhouse", {
+      jobs: [job("greenhouse", "gh-1")],
+      skipped: [],
+      skipRate: 0,
+    });
+    const throwingCallback = () => {
+      throw new Error("bug in the progress tracker, not the source");
+    };
+
+    const outcomes = await new CompositeSource([healthy]).search({}, throwingCallback);
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("ok");
+    if (outcomes[0]!.status === "ok") {
+      expect(outcomes[0]!.result.jobs).toHaveLength(1);
+    }
+  });
 });
