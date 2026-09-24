@@ -330,11 +330,6 @@ button[aria-disabled="true"] {
   font-weight: 600;
 }
 
-.cost-caveat {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
 .source-outcomes ul {
   padding-left: 1.1rem;
   font-size: 0.85rem;
