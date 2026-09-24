@@ -168,6 +168,13 @@ describe("MyResumes — focusResume (ticket 1e183a4)", () => {
     });
     expect(getResume).toHaveBeenCalledWith("resume-2");
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    // Opus review, ticket 1e183a4 (required F1): "the text already
+    // expanded" is Nicole's own explicit ask, not just "the text is
+    // somewhere in the DOM" -- jsdom keeps a collapsed <details>'s children
+    // in the DOM regardless of `open`, so the assertion above alone would
+    // pass even if the row never actually expanded. This is the one that
+    // actually pins it.
+    expect(screen.getByText("Backend-focused resume").closest("details")).toHaveAttribute("open");
   });
 
   it("does not touch a row that isn't the focus target", () => {

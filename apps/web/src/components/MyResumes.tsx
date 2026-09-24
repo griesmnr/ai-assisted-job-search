@@ -58,7 +58,16 @@ const FOCUS_HIGHLIGHT_MS = 2000;
 function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume?: FocusResume }) {
   const [open, setOpen] = useState(false);
   const [textState, setTextState] = useState<ResumeTextState>({ status: "idle" });
-  const [justFocused, setJustFocused] = useState(false);
+  // Opus review, ticket 1e183a4 (F3): the TOKEN that's currently driving
+  // the highlight, not a plain boolean. A boolean can't tell "still
+  // highlighted from the last focus" apart from "just focused again" --
+  // `setJustFocused(true)` while already `true` is a no-op render, so the
+  // cleanup effect below (keyed on the value actually changing) would
+  // never restart its timer, and a second click on the same row while its
+  // first highlight was still fading would cut the flash SHORT instead of
+  // restarting it. Keying on the token itself means every distinct focus
+  // event is a real state change, even a repeat one.
+  const [highlightToken, setHighlightToken] = useState<number | undefined>(undefined);
   const rowRef = useRef<HTMLLIElement>(null);
   // Which `focusResume.token` this row has already acted on -- without
   // this, the effect below would re-run (and re-scroll/re-flash) on every
@@ -101,20 +110,25 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
 
     setOpen(true);
     fetchTextIfNeeded();
-    setJustFocused(true);
+    setHighlightToken(focusResume.token);
     rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [focusResume, resume.id, textState.status]);
 
+  // Opus review, ticket 1e183a4 (F3): keyed on `highlightToken` itself
+  // (not a boolean), so a NEW focus event always restarts this timer --
+  // including one that arrives while the previous highlight is still
+  // showing -- rather than silently doing nothing because the boolean it
+  // would have set was already `true`.
   useEffect(() => {
-    if (!justFocused) return;
-    const timer = setTimeout(() => setJustFocused(false), FOCUS_HIGHLIGHT_MS);
+    if (highlightToken === undefined) return;
+    const timer = setTimeout(() => setHighlightToken(undefined), FOCUS_HIGHLIGHT_MS);
     return () => clearTimeout(timer);
-  }, [justFocused]);
+  }, [highlightToken]);
 
   return (
     <li
       ref={rowRef}
-      className={`resume-list-item${justFocused ? " resume-list-item-focused" : ""}`}
+      className={`resume-list-item${highlightToken !== undefined ? " resume-list-item-focused" : ""}`}
     >
       <details
         open={open}

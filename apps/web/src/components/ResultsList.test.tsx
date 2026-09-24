@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GetResumeResultsResponse, ScoredJobResult } from "@app/shared";
 import { ResultsList } from "./ResultsList";
 
@@ -592,5 +592,33 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         "Showing 1 of 2 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.)",
       ),
     ).toBeInTheDocument();
+  });
+});
+
+// Opus review, ticket 1e183a4 (required F2): `onViewResume` was passed
+// through to `ResultCard` with no test proving it actually reaches it --
+// TypeScript catches a MISSING prop, not a WRONG one, so a passthrough
+// that silently dropped or ignored the real callback (e.g. `() => {}`)
+// would have shipped with a fully green suite. GroupedResultsList.test.tsx
+// already had the equivalent coverage; this is ResultsList's own.
+describe("ResultsList — onViewResume passthrough (ticket 1e183a4)", () => {
+  it("calls onViewResume with the clicked card's resumeId", () => {
+    const onViewResume = vi.fn();
+    render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={onViewResume}
+      />,
+    );
+
+    // Both fixture results share the nickname "Resume 1" (same resume,
+    // two jobs) -- either card's link is equally valid here, since this
+    // test is only proving the callback wiring, not per-card identity.
+    fireEvent.click(screen.getAllByRole("button", { name: "Resume 1" })[0]!);
+
+    expect(onViewResume).toHaveBeenCalledWith("resume-1");
   });
 });
