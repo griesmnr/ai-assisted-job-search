@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadEnvFile } from "./load-env.js";
 import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
+import { ZeroResultEstimateCache } from "./matching/zeroResultCache.js";
 import { inferTitleKeywords } from "./resume-title-inference.js";
 import { registerHandoffRoutes } from "./routes/handoffs.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
@@ -63,6 +64,17 @@ export type BuildAppDeps = {
    * a live broker; they assert what WOULD have been published.
    */
   publishFetchSource?: PublishFetchSourceFn;
+  /**
+   * Overrides the estimate-to-search zero-result bridge (ticket 447e210 —
+   * see routes/searches.ts's "SKIPPING A SOURCE THE ESTIMATE JUST PROVED
+   * EMPTY" and matching/zeroResultCache.ts). Defaults to a fresh instance
+   * when omitted — production gets one instance, evaluated once here, that
+   * lives for the process's lifetime. Route tests pass an explicit instance
+   * so a single test can share one across two `POST /searches/estimate` and
+   * `POST /searches` calls (to assert a cache hit), or inject a controllable
+   * clock (to exercise window expiry without a real sleep).
+   */
+  zeroResultCache?: ZeroResultEstimateCache;
 };
 
 /**
@@ -137,6 +149,7 @@ export function buildApp(deps: BuildAppDeps) {
     deps.getScoreJob,
     deps.resolveSourceIds,
     deps.publishFetchSource,
+    deps.zeroResultCache,
   );
   registerJobStatusRoutes(app, deps.db);
   registerHandoffRoutes(app, deps.db);

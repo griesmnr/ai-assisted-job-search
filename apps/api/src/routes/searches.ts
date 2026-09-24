@@ -122,6 +122,26 @@
  * on BOTH routes — the estimate compiles it here, and `POST /searches`
  * ships it to `fetchSourceWorker` on the message so the queue path compiles
  * the identical filter (see the CLOSED paragraph above).
+ *
+ * SKIPPING A SOURCE THE ESTIMATE JUST PROVED EMPTY (ticket 447e210). Until
+ * this ticket, the estimate above and the real search below were two
+ * completely independent live fetches — nothing carried the estimate's
+ * per-source "this source yields zero jobs after filtering" outcome into
+ * the real search that follows it moments later, so a source the estimate
+ * just proved empty got queried live all over again. `zeroResultCache`
+ * (matching/zeroResultCache.ts) is the short-lived, in-memory bridge: the
+ * estimate handler RECORDS a zero for every `sourceOutcome` with
+ * `survivedFilter === 0` (and `status !== "error"` — an error means "we
+ * don't know," not "we know it's empty," and must never be cached as a
+ * zero); `POST /searches` READS it per selected source, keyed on the EXACT
+ * `(resumeId, criteria, sourceId, selection)` combination, before deciding whether to
+ * publish a `fetch.source` message for that source at all. A source hitting
+ * the cache gets its `search_sources` row written `complete`/`linkedJobCount:
+ * 0` directly, in the SAME insert that writes every other source's `pending`
+ * row — so it can never be observed `pending` even by the very next poll.
+ * See that module's own doc comment for why the cache is in-memory, why the
+ * key is the whole criteria object rather than a hand-picked projection of
+ * it, and why the reuse window is 5 minutes specifically.
  */
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -147,6 +167,7 @@ import {
   searches as searchesTable,
 } from "../db/schema.js";
 import { seedSourceDescriptors } from "../db/seed.js";
+import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import { createAmqpFetchSourcePublisher, type PublishFetchSourceFn } from "../queue/publisher.js";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
@@ -410,6 +431,18 @@ export function registerSearchRoutes(
    * every other route keeps working on a machine with no RabbitMQ running.
    */
   publishFetchSource: PublishFetchSourceFn = createAmqpFetchSourcePublisher(),
+  /**
+   * The estimate-to-search zero-result bridge (ticket 447e210 — see this
+   * file's own doc comment section "SKIPPING A SOURCE THE ESTIMATE JUST
+   * PROVED EMPTY" and `zeroResultCache.ts`). Defaults to a fresh, process-
+   * local instance — evaluated once, at the single real call site
+   * (`index.ts`'s `buildApp`), so production gets one instance that lives
+   * for the process's lifetime, exactly like `createAmqpFetchSourcePublisher()`
+   * above. Overridable so a test can inject an instance with a controllable
+   * clock (to exercise window expiry without a real sleep) or share one
+   * instance across two `buildApp` calls that must see each other's writes.
+   */
+  zeroResultCache: ZeroResultEstimateCache = new ZeroResultEstimateCache(),
 ): void {
   async function loadResumeText(resumeId: string): Promise<string | undefined> {
     const rows = await db
@@ -775,6 +808,35 @@ export function registerSearchRoutes(
         outputPath: tempOutputPath(`estimate-${randomUUID()}`),
       });
 
+      // Ticket 447e210: record every source this estimate just proved a
+      // dead end (0 jobs survived `filter`) so a real search for the same
+      // (resumeId, criteria, sourceId, selection) starting soon after can
+      // skip re-querying it live. `status !== "error"` is load-bearing, not
+      // decoration: "error" means this source's `search()` call itself
+      // rejected — the estimate LEARNED NOTHING about whether it has
+      // postings — and caching that as "zero jobs" would tell a real search
+      // to skip a source we have no actual evidence is empty, defeating the
+      // whole "the UI shows that source as unavailable, and the other
+      // sources still return" behavior CLAUDE.md asks for by silently
+      // turning a transient error into a fabricated success.
+      // `selectedSourceIds` is this ESTIMATE's own full selection (opus
+      // review round 1, F2) -- required because `outcome.survivedFilter`
+      // reflects filtering against the UNION of every source selected
+      // here, cross-source dedupe included, not this one source in
+      // isolation. A zero recorded under this selection must not be
+      // replayed for a search with a different one.
+      const estimateSourceIds = resolved.sources.map((source) => source.dataSource);
+      for (const outcome of result.sourceOutcomes) {
+        if (outcome.status !== "error" && outcome.survivedFilter === 0) {
+          zeroResultCache.record({
+            resumeId,
+            sourceId: outcome.dataSource,
+            criteria,
+            selectedSourceIds: estimateSourceIds,
+          });
+        }
+      }
+
       // No `searchId` in this response (ticket 59fdc52 review round 2):
       // this run's `searches` row is not something a caller can honestly
       // poll — `runDemoMatch` marks it `'complete'` immediately and it has
@@ -912,6 +974,33 @@ export function registerSearchRoutes(
       // reason.
       await seedSourceDescriptors(db);
 
+      // Ticket 447e210: which of THIS request's sources does the
+      // zero-result cache say were just proven a dead end for this EXACT
+      // (resumeId, criteria, sourceId, selection) combination? A pure
+      // in-memory read, no DB
+      // involved, so it costs nothing to compute here and reuse below —
+      // once to decide each source's INITIAL `search_sources` row (a cache
+      // hit is written `complete` from the start, never `pending`), and
+      // once to decide which sources actually get a `fetch.source` message.
+      // `selectedSourceIds` is THIS search's own full selection (opus
+      // review round 1, F2) -- a zero only counts if it was recorded under
+      // this EXACT selection; a search with a different source selection
+      // (even a subset or superset) always misses and falls through to a
+      // real fetch. See `ZeroResultCacheKey`'s doc comment for why.
+      const searchSourceIds = resolved.sources.map((source) => source.dataSource);
+      const cachedZeroSourceIds = new Set(
+        resolved.sources
+          .filter((source) =>
+            zeroResultCache.hasZeroResult({
+              resumeId,
+              sourceId: source.dataSource,
+              criteria,
+              selectedSourceIds: searchSourceIds,
+            }),
+          )
+          .map((source) => source.dataSource),
+      );
+
       const searchId = randomUUID();
 
       // DB-THEN-PUBLISH, AND THIS ORDERING IS LOAD-BEARING (design
@@ -1005,12 +1094,26 @@ export function registerSearchRoutes(
           .insert(searchesTable)
           .values({ id: searchId, resumeId, searchedAt: new Date(), status: "running" });
         await tx.insert(searchSources).values(
-          resolved.sources.map((source) => ({
-            id: randomUUID(),
-            searchId,
-            sourceDescriptorId: source.dataSource,
-            status: "pending" as const,
-          })),
+          resolved.sources.map((source) => {
+            const base = { id: randomUUID(), searchId, sourceDescriptorId: source.dataSource };
+            // Ticket 447e210: a cache hit is written COMPLETE in this same
+            // insert — never `pending` first and flipped later — so no poll
+            // of GET /searches/:id, however soon after this 202, can ever
+            // observe it any other way. `linkedJobCount: 0` mirrors EXACTLY
+            // what fetchSourceWorker's own success-path ledger write sets
+            // (see that file's "SUCCESS-PATH LEDGER WRITE" comment) for a
+            // live fetch that happened to link zero jobs — this is that same
+            // terminal state, reached without a live fetch. `publishedJobCount`
+            // is deliberately left NULL rather than set to 0: a real
+            // zero-linked fetch runs `adjudicateScoringBudget` and stamps it
+            // 0 explicitly, but the scoring-cap arithmetic (fetchSourceWorker
+            // module doc comment, "THE PER-SEARCH SCORING CAP") reads a NULL
+            // claim as 0 too, so the two are behaviorally identical and there
+            // is nothing here for a sibling source to be misled by.
+            return cachedZeroSourceIds.has(source.dataSource)
+              ? { ...base, status: "complete" as const, linkedJobCount: 0 }
+              : { ...base, status: "pending" as const };
+          }),
         );
         return undefined;
       });
@@ -1025,8 +1128,16 @@ export function registerSearchRoutes(
         });
       }
 
+      // Ticket 447e210: no `fetch.source` message at all for a cached-zero
+      // source — its `search_sources` row is already terminal (written
+      // above), so publishing one would just relitigate a question this
+      // process already has the answer to.
+      const sourcesToFetch = resolved.sources.filter(
+        (source) => !cachedZeroSourceIds.has(source.dataSource),
+      );
+
       const fetchCriteria = buildFetchCriteria(criteria);
-      const messages: FetchSourceMessage[] = resolved.sources.map((source) => ({
+      const messages: FetchSourceMessage[] = sourcesToFetch.map((source) => ({
         searchId,
         sourceId: source.dataSource,
         criteria: fetchCriteria,
@@ -1084,12 +1195,28 @@ export function registerSearchRoutes(
         }
       }
 
-      if (failures.length === messages.length) {
+      // Compares against `resolved.sources.length`, NOT `messages.length`
+      // (opus review round 1, ticket 447e210, F1): once the zero-result
+      // cache can serve some sources without publishing a message for
+      // them at all, `messages` no longer covers every source in this
+      // search, so `failures.length === messages.length` stops meaning
+      // "every source failed" the moment even one source is cache-served.
+      // Reproduced: a 2-source search where source A is cache-served and
+      // source B's publish genuinely fails — the old check saw
+      // `failures.length === messages.length` (1 === 1) and 502'd the
+      // whole search as a total outage, even though A had already
+      // terminated `complete`/0 correctly. `resolved.sources.length` is
+      // the right denominator in every case: it equals `messages.length`
+      // exactly when nothing was cache-served (today's existing,
+      // unchanged behavior), and is always >= it otherwise, so a genuine
+      // total outage (nothing published, nothing cached, every source
+      // failed) still 502s while a partial cache-hit no longer can.
+      if (resolved.sources.length > 0 && failures.length === resolved.sources.length) {
         await markSearchFailed(searchId);
         return reply.code(502).send({
           error:
-            `Could not dispatch this search: none of its ${messages.length} source message(s) ` +
-            `could be published. Is RabbitMQ running and has setupTopology() been run?`,
+            `Could not dispatch this search: none of its ${resolved.sources.length} source(s) ` +
+            `could be started. Is RabbitMQ running and has setupTopology() been run?`,
           searchId,
           skippedSources: resolved.skipped,
         });
