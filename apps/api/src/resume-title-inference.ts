@@ -270,14 +270,21 @@ const PROMPT_PREFIX =
  * of "role-indicating words" (Engineer, Manager, Developer, ...) to require
  * in a survivor, which is exactly the kind of hand-curated, ever-growing
  * rule this ticket's own Context explicitly warned against reaching for.
- * Low-cost either way: like the dropped "Microservices"/"Billing" chips
- * this fix already had to reckon with, a chip like "B2B SaaS" essentially
- * never appears verbatim in a real posting's title, so it functions as dead
- * weight in the OR'd `titleInclude` list -- unlike THOSE chips, it does not
- * appear to collide with common English words the way "Billing"/"Data" did,
- * so the false-positive risk this whole function exists to avoid is much
- * lower here, closer to "wastes one array slot" than "matches the wrong
- * postings." Revisit if a real search is ever measurably hurt by it.
+ * Lower-severity than the one-word case, not risk-free (round 2 review):
+ * "B2B SaaS" specifically is essentially dead weight in the OR'd
+ * `titleInclude` list -- it doesn't collide with an ordinary English word
+ * the way "Billing"/"Data" did, so THIS chip is closer to "wastes one array
+ * slot" than "matches the wrong postings." But the CLASS isn't immune:
+ * "Product Manager, Customer Success" -> a bare "Customer Success" chip
+ * would literal-match "Customer Success Representative"/"Associate"
+ * postings, and "Engineer, Machine Learning" -> a bare "Machine Learning"
+ * chip would match every ML-titled posting regardless of role. Those are
+ * at least domain-coherent collisions (unlike "Medical Billing Clerk" for a
+ * product-management search) that land in an AI-scored ranked list rather
+ * than a hard accept/reject, which is why this is still judged not worth a
+ * role-word allowlist -- but "essentially never happens" is a claim about
+ * the one observed case, not a property of every 2-word fragment this could
+ * produce. Revisit if a real search is ever measurably hurt by it.
  */
 export function splitConjoinedTitles(titles: string[]): string[] {
   const JOIN_PATTERN = /\s*,\s*|\s*;\s*/g;
@@ -321,6 +328,12 @@ export function splitConjoinedTitles(titles: string[]): string[] {
  * instruction only means anything against this RAW, pre-split output --
  * the split step makes that check vacuously true on its own output, which
  * is exactly the bug round 1 found in this eval script's first draft.
+ *
+ * NOT for production use (round 2 review, N4): every real caller must go
+ * through `inferTitleKeywords` below, which applies `splitConjoinedTitles`
+ * before returning -- skipping straight to this function anywhere outside
+ * an eval/diagnostic context reintroduces the unsplit comma/semicolon chips
+ * this whole ticket exists to close.
  */
 export async function fetchRawTitleSuggestions(
   anthropic: Anthropic,
