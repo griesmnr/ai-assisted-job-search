@@ -28,6 +28,7 @@ import {
   type ScoreJobMessage,
 } from "../worker/fetchSourceWorker.js";
 import { createScoreJobHandler, type SpendGuard } from "../worker/scoreJobWorker.js";
+import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import type {
   JobSource,
   NormalizedJob,
@@ -433,9 +434,7 @@ describe("POST /searches/estimate", () => {
     const app = buildApp({
       db,
       inferTitles: async () => [],
-      getScoreJob: () => {
-        throw new Error("not used");
-      },
+      getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
     });
     const response = await app.inject({
@@ -485,9 +484,7 @@ describe("POST /searches/estimate", () => {
     const app = buildApp({
       db,
       inferTitles: async () => [],
-      getScoreJob: () => {
-        throw new Error("not used");
-      },
+      getScoreJob: makeFakeScorer,
       resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
     });
     const resumeId = await createResume(app);
@@ -3194,6 +3191,201 @@ describe("the quality filter on the queue path (ticket 45ea34c)", () => {
       expect(rig.takeScoreJobs()).toHaveLength(0);
       expect(await linkedExternalIds(searchId)).toEqual([]);
     }
+  });
+});
+
+describe("estimate-to-search zero-result cache (ticket 447e210)", () => {
+  it("a source the estimate just proved empty is not re-queried live within the reuse window, and its search_sources row is complete/0 from the start — never pending", async () => {
+    const cache = new ZeroResultEstimateCache();
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      // `POST /searches` calls `getScoreJob()` synchronously up front
+      // (routes/searches.ts's own comment: "the route still AUTHORIZES the
+      // spend... refusing early is better than publishing N messages"), so
+      // this must be a real factory even though nothing in this test's
+      // all-cached run ever gets far enough to actually call the scorer it
+      // returns.
+      getScoreJob: makeFakeScorer,
+      // Empty jobsToReturn: the source responds "ok, zero postings" — the
+      // simplest way to make `runDemoMatch`'s per-source outcome read
+      // `survivedFilter === 0`, which is exactly the signal this cache
+      // records on.
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+    const { searchId } = searchResponse.json() as { searchId: string };
+
+    // The whole point: no fetch.source message went out for this source —
+    // the cache is what skipped it, not a worker that happened to run fast.
+    expect(publisher.published).toEqual([]);
+
+    // Never observably `pending`, checked on the very first poll — no
+    // worker has run, and none needs to for this source to already be
+    // terminal.
+    const status = await getStatus(app, searchId);
+    expect(status.status).toBe("complete");
+    expect(status.linked).toBe(0);
+    expect(status.sources).toEqual([
+      expect.objectContaining({ sourceId: DATA_SOURCE, status: "complete", linkedJobCount: 0 }),
+    ]);
+  });
+
+  it("a criteria change since the estimate is a cache MISS — the source is queried live", async () => {
+    const cache = new ZeroResultEstimateCache();
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // Same resume, same source — ONE title chip added. The ticket's bar:
+    // "ANY difference... must be a cache miss, not a stale hit."
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { titleInclude: ["Staff Software Engineer"] },
+      },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+    const { searchId } = searchResponse.json() as { searchId: string };
+
+    expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
+
+    // Freshly dispatched, not cache-completed: pending until a worker runs.
+    const status = await getStatus(app, searchId);
+    expect(status.sources).toEqual([
+      expect.objectContaining({ sourceId: DATA_SOURCE, status: "pending" }),
+    ]);
+  });
+
+  it("a resume change since the estimate is a cache MISS — the source is queried live", async () => {
+    const cache = new ZeroResultEstimateCache();
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const criteria = {};
+    const estimatedResumeId = await createResume(app);
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId: estimatedResumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // A DIFFERENT resume — same source, same criteria — must not benefit
+    // from a zero recorded against someone else's resume.
+    const otherResumeId = await createResume(app);
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: otherResumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+
+    expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
+  });
+
+  it("a zero-result estimate outside the reuse window is a cache MISS — the source is queried live", async () => {
+    // A controllable clock (constructor injection, not `vi.useFakeTimers`)
+    // is how this cache's own doc comment says an expiry test should work —
+    // this codebase's OTHER staleness window (`STALL_AFTER_MS`) is tested by
+    // writing a stored timestamp directly into the past rather than mocking
+    // global time, and this cache has no stored row to backdate, so the
+    // equivalent move is a `now` the test controls directly.
+    let now = 1_700_000_000_000;
+    const windowMs = 60_000;
+    const cache = new ZeroResultEstimateCache({ now: () => now, windowMs });
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // Still within the window: this is the cache-hit case again, asserted
+    // here as a control so the expiry assertion below is contrasted against
+    // a real hit, not against a cache that quietly never worked.
+    now += windowMs - 1;
+    const stillCachedResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(stillCachedResponse.statusCode).toBe(202);
+    expect(publisher.published).toEqual([]);
+
+    // Past the window now (a SECOND resume+source used, since the first has
+    // already consumed its cache entry above and would otherwise reach a
+    // second, unrelated dispatch-guard question about a repeat search for
+    // the same resume).
+    const secondResumeId = await createResume(app);
+    const secondEstimate = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId: secondResumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(secondEstimate.statusCode).toBe(200);
+
+    now += windowMs + 1;
+    const expiredResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: secondResumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(expiredResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
   });
 });
 
