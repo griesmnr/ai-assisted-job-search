@@ -235,6 +235,25 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     expect(matchesAny("Los Angeles", "Burbank, CA-Hybrid")).toBe(true);
   });
 
+  it("does not misread a lowercase hyphenated word as a region code either (fable review round 4)", () => {
+    // Round 3's fix used a hand-curated list of ambiguous words, which was
+    // itself incomplete: "co" (co-located, co-working, Co-op) wasn't on it,
+    // so "Tacoma, co-located" still misread as Colorado and wrongly rejected
+    // a real Tacoma posting -- the exact round-2 bug with a different code.
+    // The fix replaces the list-completeness question with a property of
+    // the data: a real "City, ST-suffix" code is written in caps; a
+    // hyphenated English word essentially never is.
+    expect(matchesAny("Seattle", "Tacoma, co-located")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, co-working space")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, Co-op")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, hi-tech campus")).toBe(true);
+    // A real uppercase Colorado code is still correctly read as foreign and
+    // rejects a same-named-elsewhere posting -- proving the fix distinguishes
+    // "real caps code" from "prose", not just "any two-letter token before a
+    // hyphen".
+    expect(matchesAny("Seattle", "Tacoma, CO-Hybrid")).toBe(false);
+  });
+
   it("requires an ambiguous city to name its region positively (review finding F4)", () => {
     // For the nine table cities whose bare name is a real place elsewhere,
     // "no region named" is not good enough on the posting side. Each of
