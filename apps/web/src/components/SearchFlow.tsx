@@ -82,8 +82,12 @@ type Phase =
        * started run has no poll data yet (the poll interval's first tick
        * doesn't fire for POLL_INTERVAL_MS), while a restored run polls
        * immediately on mount and fills this within one round trip either
-       * way. The render below falls back to the estimate's `jobCount` only
-       * for that brief window. */
+       * way. The render below takes `Math.max` of this and the estimate's
+       * `jobCount` (ticket 4146881) rather than switching to this value
+       * outright the moment it's defined — see that ticket's comment on
+       * the render site for why: `linked` is a partial, still-climbing
+       * count for most of a run, not a total, and rendering it bare made
+       * the shown denominator visibly grow over the course of a search. */
       linked: number | undefined;
       /** Ticket 2e7ba8a / c9c676d: live, growing count of jobs already
        * deferred over this search's scoring budget. Not a failure — see
@@ -653,26 +657,40 @@ export function SearchFlow({
         <div className="cost-panel running" aria-label="Search running">
           <h3>Search running...</h3>
           <ElapsedTimer startedAt={phase.startedAt} />
-          {/* Ticket 2e7ba8a: the "of M" denominator is now the live,
-              durable `linked` count from GET /searches/:id (falling back to
-              the pre-run estimate's `jobCount` only for the brief window
-              before the first poll response lands — see the `Phase` type's
+          {/* Ticket 2e7ba8a: the "of M" denominator is the live, durable
+              `linked` count from GET /searches/:id (falling back to the
+              pre-run estimate's `jobCount` only for the brief window before
+              the first poll response lands — see the `Phase` type's
               `linked` doc comment above). Previously this read
               `phase.estimate.costEstimate.jobCount` for the whole run,
               which F4 (review round, ticket 1998875) already noted could
               read e.g. "12 of 10" once the real run re-fetched sources and
-              found more or fewer postings than the estimate had. That
-              divergence is still visible here, same as before — `linked`
-              is just as capable of legitimately exceeding or falling short
-              of the estimate — but it is now the REAL count, not a
-              snapshot, and it is what makes F4's other implication (this
-              number surviving a page reload) actually true: see
-              SearchFlow.persistence.test.tsx and session.ts's updated doc
-              comment. Deliberately NOT clamped, same reasoning as before:
-              clamping would hide real divergence instead of displaying it. */}
+              found more or fewer postings than the estimate had.
+
+              Ticket 4146881: switching straight to the live `linked` count
+              the moment it's defined was itself a bug, not just a display
+              choice — `linked` isn't a total, it's a partial count that
+              climbs from 0 toward the eventual total as EACH selected
+              source's fetch/ingest lands, one at a time. Nicole, watching a
+              live run: "I did just see four of four of four scored so
+              far, and then it went up to five of seven" — one source
+              landing made it read "4 of 4" (looks finished), then a second
+              source landing made it "5 of 7" (looks like it regressed),
+              even though nothing was wrong. `Math.max` against the
+              estimate's `jobCount` fixes exactly that: the shown
+              denominator stays pinned at the estimate's number for the
+              entire normal case (`linked` grows toward it, never past it,
+              until every source has reported), and only grows past it if
+              the real run genuinely finds MORE postings than the estimate
+              predicted — F4's original divergence still shows, just once
+              it's a real, final divergence rather than an artifact of
+              `linked` still being partially populated. This only changes
+              what's DISPLAYED: `phase.linked` itself, and the
+              out-of-order-poll `Math.max` guard that protects it in
+              `poll()` above, are untouched. */}
           <p>
-            {phase.scoredSoFar} of {phase.linked ?? phase.estimate.costEstimate.jobCount} scored so
-            far.
+            {phase.scoredSoFar} of{" "}
+            {Math.max(phase.estimate.costEstimate.jobCount, phase.linked ?? 0)} scored so far.
           </p>
           {phase.cappedForBudget > 0 && (
             <p className="capped-for-budget-note">
