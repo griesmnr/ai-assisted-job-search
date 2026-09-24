@@ -55,6 +55,24 @@
  *     handoffs and job_matches (direct `resume_id` FK), then
  *     search_sources and search_results (via the matched resumes'
  *     `searches` rows), then searches, then resumes itself.
+ *   - Prints the resolved POSTGRES_HOST/PORT/DB/USER (never the password)
+ *     AND the total resume count alongside the tagged count, before
+ *     touching anything (opus review, ticket 12fd73d, required F2): a
+ *     missing/misconfigured `.env` silently falls through to whatever is
+ *     already in the environment (`load-env.ts` swallows ENOENT by
+ *     design -- see that file), so without this, running against the
+ *     WRONG database would print a reassuring "Found 0 resume(s)" and
+ *     look identical to "already clean" instead of "checked the wrong
+ *     place." Seeing "0 of 0 total resumes" or an unrecognized
+ *     host/database name is the visible tell.
+ *
+ * Opus review, ticket 12fd73d: one deliberate divergence from the literal
+ * "delete everything that references a tagged resume" rule above --
+ * `user_job_statuses.resume_id` is NOT deleted, it is set to NULL. See
+ * `deleteTaggedResumes`'s own comment for why (schema.ts documents that
+ * column as an attribute, never a key, precisely so a resume's rename/
+ * removal doesn't destroy the one fact -- "I applied to this job" -- this
+ * table exists to preserve).
  *
  * Usage (run on YOUR OWN machine, against YOUR OWN database -- this never
  * runs in CI or in the sandbox this ticket was implemented in, which has
@@ -186,6 +204,20 @@ export async function countDependents(
  * inlined in `main()`) so a test can exercise it directly against an
  * isolated test database, the same way `rescore-existing-matches.ts`
  * exports its own per-row update helper for its tests to call.
+ *
+ * `user_job_statuses` is the one exception to "delete everything that
+ * references a tagged resume" (opus review, ticket 12fd73d, required F1):
+ * its `resume_id` is set to NULL, not deleted. schema.ts is explicit that
+ * this column is "an attribute, deliberately NOT part of the uniqueness
+ * key... worth knowing, never worth keying on", nullable "for two honest
+ * reasons: a `saved`/`dismissed` row can predate any resume being
+ * involved at all, and a backfilled row may record a real application
+ * whose resume version is no longer identifiable" -- exactly the state
+ * this NULL puts it in. `DELETE`ing the row instead would risk destroying
+ * a REAL fact this table exists to preserve ("I applied to this job") in
+ * the unlikely event a genuine application was ever recorded against a
+ * tagged resume, for the sake of removing a column value that was never
+ * the row's identity in the first place.
  */
 export async function deleteTaggedResumes(db: NodePgDatabase, resumeIds: string[]): Promise<void> {
   if (resumeIds.length === 0) return;
@@ -197,16 +229,72 @@ export async function deleteTaggedResumes(db: NodePgDatabase, resumeIds: string[
     const searchIds = searchIdRows.map((r) => r.id);
 
     await tx.delete(jobMatchFailures).where(inArray(jobMatchFailures.resumeId, resumeIds));
-    await tx.delete(userJobStatuses).where(inArray(userJobStatuses.resumeId, resumeIds));
+    await tx
+      .update(userJobStatuses)
+      .set({ resumeId: null })
+      .where(inArray(userJobStatuses.resumeId, resumeIds));
     await tx.delete(handoffs).where(inArray(handoffs.resumeId, resumeIds));
     await tx.delete(jobMatches).where(inArray(jobMatches.resumeId, resumeIds));
     if (searchIds.length > 0) {
+      // Opus review, required F4: `job_match_failures.resume_id` is
+      // documented (schema.ts) as denormalized FROM `search_id` -- true
+      // today, but not enforced by any CHECK constraint. A second,
+      // search_id-scoped delete here is pure defense against the two ever
+      // skewing: it can only match rows the resume_id-scoped delete above
+      // already removed (0 rows, harmless) unless that invariant is ever
+      // violated, in which case THIS is what stops the `searches` delete
+      // below from failing on a real FK violation it would otherwise hit.
+      await tx.delete(jobMatchFailures).where(inArray(jobMatchFailures.searchId, searchIds));
       await tx.delete(searchSources).where(inArray(searchSources.searchId, searchIds));
       await tx.delete(searchResults).where(inArray(searchResults.searchId, searchIds));
     }
     await tx.delete(searches).where(inArray(searches.resumeId, resumeIds));
     await tx.delete(resumes).where(inArray(resumes.id, resumeIds));
   });
+}
+
+export async function countTotalResumes(db: NodePgDatabase): Promise<number> {
+  const rows = await db.select({ id: resumes.id }).from(resumes);
+  return rows.length;
+}
+
+export type CleanupResult = {
+  tagged: { id: string; resumeNickname: string; createdAt: Date }[];
+  totalResumeCount: number;
+  counts: Record<string, number>;
+  deleted: boolean;
+};
+
+/**
+ * The whole find/count/conditionally-delete decision, as one directly
+ * testable function (opus review, ticket 12fd73d, required F3b) -- `live:
+ * false` is the entire safety guarantee this script makes, and before
+ * this it was only proven at the `parseArgs` level: nothing actually
+ * asserted that a dry run performs zero writes against a real database.
+ * `main()` below is now just argv parsing, connection handling, and
+ * printing this result -- no decision logic of its own left to drift out
+ * of a test's reach.
+ */
+export async function runCleanup(
+  db: NodePgDatabase,
+  opts: { live: boolean },
+): Promise<CleanupResult> {
+  const tagged = await findTaggedResumeIds(db);
+  const totalResumeCount = await countTotalResumes(db);
+
+  if (tagged.length === 0) {
+    return { tagged, totalResumeCount, counts: await countDependents(db, []), deleted: false };
+  }
+
+  const resumeIds = tagged.map((r) => r.id);
+  const counts = await countDependents(db, resumeIds);
+
+  if (!opts.live) {
+    return { tagged, totalResumeCount, counts, deleted: false };
+  }
+
+  await deleteTaggedResumes(db, resumeIds);
+  return { tagged, totalResumeCount, counts, deleted: true };
 }
 
 async function main(): Promise<void> {
@@ -225,6 +313,16 @@ async function main(): Promise<void> {
       live ? "LIVE RUN -- this WILL delete rows" : "DRY RUN -- nothing will be deleted"
     }`,
   );
+  // Opus review, required F2: printed BEFORE any query, so a wrong-database
+  // mistake (most likely: a missing .env falling through to whatever is
+  // already in the shell's environment -- load-env.ts swallows ENOENT by
+  // design) is visible up front rather than only inferable from a
+  // suspiciously-empty result below.
+  console.log(
+    `Connecting to postgres://${process.env.POSTGRES_USER ?? "(unset)"}@` +
+      `${process.env.POSTGRES_HOST ?? "(unset)"}:${process.env.POSTGRES_PORT ?? "(unset)"}/` +
+      `${process.env.POSTGRES_DB ?? "(unset)"}`,
+  );
 
   const client = connectDb();
   try {
@@ -241,10 +339,26 @@ async function main(): Promise<void> {
   const db = drizzle(client);
 
   try {
-    const tagged = await findTaggedResumeIds(db);
-    console.log(`\nFound ${tagged.length} resume(s) tagged "${RESUME_TEXT_PREFIX}":`);
+    const result = await runCleanup(db, { live });
+    const { tagged, totalResumeCount, counts } = result;
+
+    console.log(
+      `\nFound ${tagged.length} of ${totalResumeCount} total resume(s) tagged ` +
+        `"${RESUME_TEXT_PREFIX}":`,
+    );
     for (const r of tagged) {
       console.log(`  ${r.id}  "${r.resumeNickname}"  created ${r.createdAt.toISOString()}`);
+    }
+    if (tagged.length > 0) {
+      // Opus review, F5: migration 0010 backfilled every pre-existing row's
+      // created_at to the single instant THAT migration ran (schema.ts's
+      // `resumes.createdAt` doc comment) -- these tagged rows predate that
+      // migration, so a recent-looking date here is expected and does not
+      // mean the row is recent.
+      console.log(
+        "  (created dates above may be migration 0010's one-time backfill instant, not each " +
+          "row's real original creation time -- see schema.ts's resumes.createdAt doc comment)",
+      );
     }
 
     if (tagged.length === 0) {
@@ -252,8 +366,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const resumeIds = tagged.map((r) => r.id);
-    const counts = await countDependents(db, resumeIds);
     console.log("\nDependent rows that would also be deleted:");
     for (const [table, count] of Object.entries(counts)) {
       console.log(`  ${table}: ${count}`);
@@ -265,8 +377,6 @@ async function main(): Promise<void> {
       );
       return;
     }
-
-    await deleteTaggedResumes(db, resumeIds);
 
     console.log(`\nDeleted ${tagged.length} tagged resume(s) and all their dependent rows.`);
   } finally {
