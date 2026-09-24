@@ -501,16 +501,28 @@ curl -s http://localhost:3000/searches/<searchId>
 
 Watch the `[fetch-worker]`/`[score-worker]`-prefixed lines in the same
 `pnpm dev` terminal: the fetch-source worker logs each source it queries and
-how many jobs it normalized, then the score-job worker logs each one it
-scores against the resume via a real Anthropic call. This is the same flow
-this session's own live smoke tests ran for hours against a real Postgres,
-a real hand-built RabbitMQ broker, and real Claude calls, before this
-ticket folded both workers into `pnpm dev`. Not independently re-verified
-live for ticket `47407f7` itself in the environment this ticket was
-finished in — no RabbitMQ broker and no Docker CLI are available there —
-so treat "one `pnpm dev`, everything comes up" as following from the
-unchanged worker code plus `concurrently`'s documented behavior, not as a
-fresh end-to-end run.
+how many jobs passed the search's quality filter, then the score-job worker
+logs each one it scores against the resume via a real Anthropic call, plus a
+non-fatal warning if it can't find a `prep/` directory to record usage stats
+in (harmless — the score itself is already persisted; see the cwd note
+above). Re-verified live for ticket `47407f7` itself, against a real
+Postgres and a real hand-built RabbitMQ broker in the environment this
+ticket was finished in (no Docker CLI there, so no `docker compose`, but
+the broker and database it would have started were both already up):
+`POST /searches` with `sourceIds: ["lever"]` published one `fetch.source`
+message, `[fetch-worker]` picked it up, queried Lever's real API, and
+linked 15 of 401 postings; `[score-worker]` consumed the resulting 15
+`score.job` messages one at a time (`prefetch(1)`) and produced 15 real
+match scores via the Anthropic API; and `GET /searches/<searchId>` moved
+from `pending` to `complete` with `scored: 15` — all without starting
+anything by hand beyond `pnpm dev` and the two `curl` calls above. (Torn
+down afterward by killing the process tree directly rather than a
+terminal Ctrl-C, so this run doesn't re-confirm the SIGINT behavior the
+Shutdown section describes separately — only that the queue-driven path
+itself still works end to end under `pnpm dev`.) This is the same flow
+this session's own earlier live smoke tests ran for hours before this
+ticket folded both workers into `pnpm dev`; this run confirms the fold
+didn't change that.
 
 ### Verified
 
@@ -528,19 +540,18 @@ $ pnpm test
 
  RUN  v4.1.10
 
- Test Files  1 failed | 62 passed (63)
-      Tests  1203 passed | 19 skipped (1222)
-   Duration  41.77s (transform 3.48s, setup 0ms, import 47.60s, tests 83.38s, environment 77.91s)
+ Test Files  62 passed (62)
+      Tests  1176 passed (1176)
+   Duration  41.93s (transform 3.07s, setup 0ms, import 39.49s, tests 87.04s, environment 61.69s)
 ```
 
-The one failing file is `worker/fetchSourceWorker.test.ts`; its 19 tests
-show as "skipped" above because its top-level `beforeAll` throws before any
-of them run. In a normal clone, following steps 1-2 (`.env` populated,
-`docker compose up -d` for Postgres + RabbitMQ), it passes along with
-everything else — this specific run was captured from an environment
-without `RABBITMQ_DEFAULT_USER`/`_PASS`/`_HOST`/`_PORT` set, which fails
-before it ever tries to reach a broker. Every other file, including every
-other queue/worker/route test, passes regardless.
+Captured with a real RabbitMQ broker and Postgres both reachable (`.env`
+populated, both services up) — the documented, expected clean state
+following steps 1-2. Without a broker (`RABBITMQ_DEFAULT_USER`/`_PASS`/
+`_HOST`/`_PORT` unset, or nothing listening), exactly one file fails —
+`worker/fetchSourceWorker.test.ts` — and its 19 tests show as "skipped"
+because its top-level `beforeAll` throws before any of them run; every
+other file, including every other queue/worker/route test, is unaffected.
 
 ## Project layout
 
