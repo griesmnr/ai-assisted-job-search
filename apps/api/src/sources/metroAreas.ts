@@ -159,18 +159,6 @@
  *    expansion. One real posting in the corpus has this shape. It costs
  *    coverage, never a false positive (the caller's literal matcher still
  *    matches it), which is the direction below.
- *  - F1's hyphen-joining fix interacts with F4's region-required list: a
- *    genuinely in-metro posting for one of the nine ambiguous cities that
- *    spells its region as a bare-hyphen suffix ("Bellevue, WA-Remote", no
- *    space before the dash) now finds no positively-named region at all
- *    (the "WA-Remote" cost documented on `regionOfField`), and F4 then
- *    requires exactly that for an ambiguous city -- so the posting is
- *    rejected where the non-ambiguous cities in the same metro would just
- *    fall back to "absence passes". Both fixes are individually correct;
- *    stacked, they turn one specific coverage loss into a stricter one for
- *    the nine-name subset. Unobserved in the corpus; recorded per the same
- *    policy as the rest of this list.
- *
  * **The guard can only ever suppress an expansion, never create one**, and
  * that holds for every change above: expansion only ADDS matchers, and the
  * caller's own literal phrase is always compiled and tested first,
@@ -500,6 +488,25 @@ const REGION_CODE_BY_NAME: ReadonlyMap<string, string> = new Map(
 );
 
 /**
+ * The two-letter region codes that are also ordinary English words: "in",
+ * "or", "on", "ok", "me", "de", "la". Only these need protecting from a
+ * hyphen-joined suffix reading as a word boundary ("on-site", "in-office",
+ * "in-person") -- see the hyphen-handling note on `regionOfField`. Every
+ * other code ("IL", "NY", "WA", ...) never collides with a real word, so a
+ * hyphen after one of those is exactly the "City, ST-suffix" shape the
+ * prefix scan exists to catch, not prose to protect against.
+ */
+const AMBIGUOUS_WORD_CODES: ReadonlySet<string> = new Set([
+  "in",
+  "or",
+  "on",
+  "ok",
+  "me",
+  "de",
+  "la",
+]);
+
+/**
  * One region token -> its code, or `undefined`. A trailing period is common
  * on abbreviations ("Pasadena, Tx.") and is never part of a region name here
  * except in "d.c.", which the first lookup catches before the strip.
@@ -533,45 +540,44 @@ const MAX_REGION_WORDS = 3;
  *    three words, because no region name is longer.
  *  - A prefix only counts as a region mention when what FOLLOWS it is not
  *    another word -- a digit, a bracket, a dash-then-space, or nothing at
- *    all. A hyphen DIRECTLY joining more letters ("on-site", "in-office",
- *    "in-person") counts as the SAME word continuing, not a boundary --
- *    fable review (ticket 410e1a2) found the naive version of this rule
- *    (any non-letter ends the word) misread "Tacoma, on-site" as the region
- *    "ON" (Ontario) and wrongly rejected a real Tacoma-area posting; "on"
- *    was never meant to be read as a standalone token there. Whole-field
- *    equality got the intended protection for free, and this is what stops
- *    the two-letter codes that are also English words ("IN", "OR", "ON",
- *    "OK", "ME", "DE", "LA") from firing on prose generally: "Bellevue, in
- *    office 3 days" must not resolve to Indiana and throw away a real
- *    Bellevue posting. It costs nothing on the shapes that matter for a
- *    TRAILING region code, because "MA 02149", "MA (HQ)", and "NY - Hybrid"
- *    (space before the dash) all still continue with a non-word immediately.
- *    It also keeps "Everett, Massachusetts Ave" from resolving to
- *    Massachusetts on the strength of a street name.
- *    Cost of joining on a bare hyphen: "Bellevue, WA-Remote" (no space
- *    before the dash) no longer resolves "WA" as a region, since "-Remote"
- *    now reads as the same word continuing. Unobserved in the app's real
- *    fixture data and far rarer than the "on-site"/"in-office" shapes this
- *    fix protects; accepted as a residual weakness rather than special-
- *    cased, since distinguishing "trailing city qualifier" from "trailing
- *    word that happens to start with a hyphen" from the text alone is not
- *    reliable.
+ *    all. For most codes that boundary is any non-letter, so "MA 02149",
+ *    "MA (HQ)", "NY - Hybrid", and "IL-Hybrid" (no space before the dash)
+ *    all resolve their region regardless of what trails it -- this is the
+ *    ordinary "City, ST-suffix" shape, not prose to protect against.
+ *
+ *    `AMBIGUOUS_WORD_CODES` -- "in", "or", "on", "ok", "me", "de", "la" --
+ *    are the exception: for exactly these, a hyphen DIRECTLY joining more
+ *    letters ("on-site", "in-office", "in-person") also counts as the SAME
+ *    word continuing, not a boundary. Fable review round 2 (ticket 410e1a2)
+ *    found the version of this rule that used the ordinary any-non-letter
+ *    boundary for every code misread "Tacoma, on-site" as the region "ON"
+ *    (Ontario) and wrongly rejected a real Tacoma-area posting -- "on" was
+ *    never meant to be read as a standalone token there, the way "IN" in
+ *    "IL-Hybrid" plainly is meant as a code. Fable review round 3 then
+ *    found that widening the hyphen-joins rule to every code (not just the
+ *    ambiguous ones) reopened exactly this hole in the other direction:
+ *    "Burbank, IL-Hybrid" stopped resolving "IL" as a region at all, which
+ *    for a NON-ambiguous, non-region-required table city (Burbank is real
+ *    in both the LA metro and Chicago's) is a false-positive expansion, not
+ *    a coverage loss -- the LA-search guard no longer had grounds to reject
+ *    a Chicago suburb. Restricting the hyphen-joins exception to the seven
+ *    ambiguous codes fixes both: "on"/"in"/"ok"/"or"/"me"/"de"/"la" get the
+ *    extra protection they need against reading as a real word, and every
+ *    other code keeps resolving through a bare hyphen exactly like it does
+ *    through a space, because no other code needs the protection.
+ *
+ *    This also restores "Bellevue, WA-Remote" to matching a Seattle search
+ *    (WA is not in the ambiguous set), closing what an earlier version of
+ *    this comment recorded as an accepted residual weakness -- it no longer
+ *    exists.
  *
  * Direction of error: relative to whole-field equality, this function can
- * find MORE regions (the multi-word-prefix scan) but also FEWER in the
- * bare-hyphen case just described -- it is NOT strictly a superset of what
- * whole-field equality found. What IS still true, and what actually matters
- * for this guard's safety: a region this function finds can only ever
- * REJECT an expansion (the guard's sole effect), never create one -- so
- * every change here can only turn a false-positive expansion into a correct
- * rejection, or (the "WA-Remote" cost above) leave a true-positive
- * expansion un-rejected when it should have been suppressed. Neither
- * direction can make the module accept a posting it should not -- the
- * failure modes this function can introduce are both coverage losses
- * (a posting that should expand doesn't), never a bad expansion. (Prior
- * text here claimed the prefix scan was "strictly at least as conservative"
- * as whole-field equality with no posting ever losing a match -- the
- * "on-site" finding above shows that direction is false; corrected.)
+ * only ever find MORE regions (the multi-word-prefix scan), and a region it
+ * finds can only ever REJECT an expansion (the guard's sole effect), never
+ * create one. So every change here can only turn a false-positive expansion
+ * into a correct rejection -- there is no posting that matched before this
+ * function existed and does not match after, for either version of the
+ * hyphen rule described above.
  */
 function regionOfField(field: string): string | undefined {
   const whole = lookupRegion(field);
@@ -595,7 +601,9 @@ function regionOfField(field: string): string | undefined {
   // correct if the table ever grows one that is.
   for (let i = prefixes.length - 1; i >= 0; i--) {
     const { text, rest } = prefixes[i];
-    if (/^(\s*|-)[A-Za-z]/.test(rest)) continue;
+    const isAmbiguousWord = AMBIGUOUS_WORD_CODES.has(text.toLowerCase());
+    const boundary = isAmbiguousWord ? /^(\s*|-)[A-Za-z]/ : /^\s*[A-Za-z]/;
+    if (boundary.test(rest)) continue;
     const region = lookupRegion(text);
     if (region !== undefined) return region;
   }

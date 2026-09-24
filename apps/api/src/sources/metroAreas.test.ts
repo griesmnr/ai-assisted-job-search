@@ -192,16 +192,13 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     // still correctly rejected.
     expect(matchesAny("Seattle", "Redmond, Oregon")).toBe(false);
     expect(matchesAny("Seattle", "Bellevue, Nebraska")).toBe(false);
-    // ...and the right region with the same trailing shapes still matches.
+    // ...and the right region with the same trailing shapes still matches,
+    // including a bare hyphen with no space before it -- "WA" is not one of
+    // the ambiguous English-word codes, so it keeps resolving through a
+    // hyphen exactly like it does through a space (fable review round 3).
     expect(matchesAny("Seattle", "Bellevue, WA (HQ)")).toBe(true);
     expect(matchesAny("Seattle", "Bellevue, WA 98004")).toBe(true);
-    // "WA-Remote" is the one shape that flipped in round 2 (fable review):
-    // once a bare hyphen joins onto the same word (fixing "on-site"/
-    // "in-office" below), "WA-Remote" no longer resolves "WA" as a region
-    // either, so Bellevue -- an ambiguous city requiring a positively named
-    // region (finding F4) -- is now rejected here instead of matched. See
-    // the "hyphen-joined word" test and regionOfField's doc comment.
-    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(false);
+    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(true);
   });
 
   it("does not read a two-letter code that is also an English word out of prose", () => {
@@ -213,19 +210,29 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     expect(matchesAny("Seattle", "Tacoma, or remote")).toBe(true);
   });
 
-  it("does not read a hyphen-joined word as a region code either (fable review round 2)", () => {
+  it("does not read a hyphen-joined ambiguous word as a region code either (fable review round 2)", () => {
     // The naive version of the "not another word" rule treated a hyphen as
     // ending the word, so "on-site" was misread as the two-letter region
-    // "ON" (Ontario) and a real Tacoma posting was wrongly rejected. A
-    // hyphen directly joining more letters must count as the SAME word
-    // continuing, exactly like a space would.
+    // "ON" (Ontario) and a real Tacoma posting was wrongly rejected. For the
+    // seven codes that are also ordinary English words, a hyphen directly
+    // joining more letters must count as the SAME word continuing, exactly
+    // like a space would.
     expect(matchesAny("Seattle", "Tacoma, on-site")).toBe(true);
     expect(matchesAny("Seattle", "Tacoma, in-office")).toBe(true);
     expect(matchesAny("Seattle", "Tacoma, in-person")).toBe(true);
-    // Cost of the fix, accepted rather than hidden: a bare hyphen with no
-    // space still joins onto a real trailing region code, so this one shape
-    // stops resolving -- see the doc comment above regionOfField for why.
-    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(false);
+  });
+
+  it("still resolves a non-ambiguous code through a bare hyphen (fable review round 3)", () => {
+    // Round 2's fix widened the hyphen-joins rule to every code, not just
+    // the ambiguous ones -- which broke detection of a genuinely foreign
+    // region attached by a bare hyphen. Burbank is a real city in BOTH the
+    // LA metro table and a Chicago suburb; "IL" is not an ambiguous word,
+    // so it must still resolve as a region through "-Hybrid" and correctly
+    // reject a Chicago posting from an LA search.
+    expect(matchesAny("Los Angeles", "Burbank, IL-Hybrid")).toBe(false);
+    expect(matchesAny("Los Angeles", "Burbank, Illinois-Hybrid")).toBe(false);
+    // ...and the real Burbank, CA still matches.
+    expect(matchesAny("Los Angeles", "Burbank, CA-Hybrid")).toBe(true);
   });
 
   it("requires an ambiguous city to name its region positively (review finding F4)", () => {
