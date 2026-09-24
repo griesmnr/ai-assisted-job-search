@@ -427,8 +427,13 @@ button[aria-disabled="true"] {
   color: var(--muted);
 }
 
-/* Ticket b182bde: opt-in, default-off "Hide roles above my level" filter. */
-.hide-overqualified-toggle {
+/* Ticket b182bde: opt-in, default-off "Hide roles I'm overqualified for"
+   filter (ticket 8c252ff renamed the label; the class name and styling
+   stayed the same). Ticket a340074: the symmetric
+   "Hide roles I'm underqualified for" toggle shares this same rule, since
+   it's the identical layout with a different underlying filter. */
+.hide-overqualified-toggle,
+.hide-underqualified-toggle {
   display: flex;
   align-items: center;
   gap: 0.4rem;

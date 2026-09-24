@@ -59,7 +59,7 @@ const DATA: GetResumeResultsResponse = {
 // ResultsList's identical checkbox (see that file's tests) -- exercised here
 // too since GroupedResultsList duplicates the filtering logic rather than
 // sharing it with ResultsList.
-describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182bde)', () => {
+describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (ticket b182bde)`, () => {
   it("defaults unchecked, shows every job, and states the live overqualified count", () => {
     render(
       <GroupedResultsList
@@ -71,9 +71,9 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       />,
     );
 
-    const checkbox = screen.getByRole("checkbox", { name: /Hide roles above my level/ });
+    const checkbox = screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ });
     expect(checkbox).not.toBeChecked();
-    expect(screen.getByText("Hide roles above my level (1)")).toBeInTheDocument();
+    expect(screen.getByText("Hide roles I'm overqualified for (1)")).toBeInTheDocument();
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
@@ -89,12 +89,12 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       />,
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
 
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
 
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
@@ -120,7 +120,7 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
       />,
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
 
     expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
@@ -129,7 +129,117 @@ describe('GroupedResultsList — "Hide roles above my level" filter (ticket b182
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+// Ticket a340074: symmetric filter for the OTHER `levelFit` value -- see
+// ResultsList.test.tsx's identical describe block for the full reasoning.
+describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (ticket a340074)`, () => {
+  const DATA_WITH_UNDERQUALIFIED: GetResumeResultsResponse = {
+    ...DATA,
+    results: [
+      ...DATA.results,
+      job({
+        jobId: "job-4",
+        title: "Staff Backend Engineer",
+        levelFit: "underqualified",
+        levelFitNote: "This posting is written for a Staff-level candidate.",
+      }),
+    ],
+  };
+
+  it("defaults unchecked, shows every job (including the underqualified one), and states the live underqualified count", () => {
+    render(
+      <GroupedResultsList
+        data={DATA_WITH_UNDERQUALIFIED}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /Hide roles I'm underqualified for/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText("Hide roles I'm underqualified for (1)")).toBeInTheDocument();
+    expect(screen.getByText("Staff Backend Engineer")).toBeInTheDocument();
+  });
+
+  it("checking the box hides only the underqualified job, client-side, and unchecking restores it, independently of the overqualified toggle", () => {
+    render(
+      <GroupedResultsList
+        data={DATA_WITH_UNDERQUALIFIED}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm underqualified for/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm underqualified for/ }));
+
+    expect(screen.getByText("Staff Backend Engineer")).toBeInTheDocument();
+  });
+
+  it("shows an underqualified-filter-specific empty state when every source-visible job is underqualified and the checkbox is checked", () => {
+    const ALL_UNDERQUALIFIED: GetResumeResultsResponse = {
+      ...DATA,
+      results: DATA.results.map((r) => ({ ...r, levelFit: "underqualified" as const })),
+    };
+
+    render(
+      <GroupedResultsList
+        data={ALL_UNDERQUALIFIED}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm underqualified for/ }));
+
+    expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No jobs match the current source selection."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Every job from the selected sources is one you may be underqualified for — uncheck "Hide roles I'm underqualified for" to see them.`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("composes correctly with the overqualified filter active at the same time, without double-counting a job hidden by either", () => {
+    render(
+      <GroupedResultsList
+        data={DATA_WITH_UNDERQUALIFIED}
+        selectedSourceIds={new Set(["usajobs"])}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm underqualified for/ }));
+
+    expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
       ),
     ).toBeInTheDocument();
   });
@@ -237,7 +347,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       />,
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
 
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
@@ -245,7 +355,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 above your level hidden.) (1 contract/temp hidden.)",
+        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
       ),
     ).toBeInTheDocument();
   });
@@ -275,19 +385,19 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       />,
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
 
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'Every remaining job (after hiding roles above your level) is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+        `Every remaining job (after hiding roles you may be overqualified for) is contract/temp — uncheck "Hide contract/temp roles" to see them.`,
       ),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.',
+        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
       ),
     ).not.toBeInTheDocument();
     expect(
@@ -321,14 +431,14 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       />,
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles above my level/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hide roles I'm overqualified for/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Hide contract\/temp roles/ }));
 
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 2 scored jobs from the sources you've selected. (1 above your level hidden.)",
+        "Showing 1 of 2 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.)",
       ),
     ).toBeInTheDocument();
   });

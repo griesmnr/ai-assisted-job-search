@@ -36,6 +36,13 @@ export function ResultsList({
   // nothing else in the app needs to know this filter is on, unlike
   // `selectedSourceIds`, which is also scoped by the search flow.
   const [hideOverqualified, setHideOverqualified] = useState(false);
+  // Ticket a340074: symmetric opt-in filter for the OTHER levelFit value --
+  // same DEFAULT-OFF reasoning as hideOverqualified (never silently drop a
+  // job the resume's own scoring flagged, only hide on explicit request).
+  // Nicole, live, once the overqualified toggle's wording was fixed: "why
+  // doesn't that also exist" -- there was no principled reason it shouldn't,
+  // just that only one direction had been asked for originally.
+  const [hideUnderqualified, setHideUnderqualified] = useState(false);
   // Ticket 8f5a79c: second, independent opt-in client-side filter, same
   // pattern as `hideOverqualified` above. DEFAULT-OFF/unchecked, per
   // Nicole's explicit "just another job to apply for" framing (git-bug
@@ -45,59 +52,81 @@ export function ResultsList({
 
   const bySource = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
   const overqualifiedCount = bySource.filter((r) => r.levelFit === "overqualified").length;
+  const underqualifiedCount = bySource.filter((r) => r.levelFit === "underqualified").length;
   const contractOrTempCount = bySource.filter((r) => r.isContractOrTemp).length;
-  // Ticket 8f5a79c: filters applied SEQUENTIALLY (source -> level ->
-  // contract/temp), each producing its own "hidden by this step" count as
-  // the delta from the PREVIOUS step, not from `bySource` independently of
-  // the other filter. This is what keeps three simultaneously-active
-  // filters honest in the summary text below: `hiddenBySourceToggle +
-  // hiddenByLevelFilter + hiddenByContractFilter` telescopes exactly to
-  // `data.results.length - visible.length`, so a job hidden by BOTH the
-  // level filter and the contract filter is never counted twice (it's
-  // "claimed" by whichever filter's step actually removed it — here, the
-  // level filter, since it runs first). The CHECKBOX LABEL counts
-  // (`overqualifiedCount`/`contractOrTempCount` above) deliberately do NOT
-  // use this same post-other-filter set — they're both computed straight
-  // off `bySource`, independent of the other checkbox's state, so checking
-  // one filter's box never makes the OTHER box's own displayed count jump
-  // around. The two kinds of number answer different questions on purpose:
-  // the label says "how many roles like this exist in your source-filtered
-  // results," the summary sentence says "how many did this specific filter
-  // actually just hide."
-  const afterLevel = hideOverqualified
+  // Ticket a340074: filters applied SEQUENTIALLY (source -> overqualified ->
+  // underqualified -> contract/temp), each producing its own "hidden by this
+  // step" count as the delta from the PREVIOUS step, not from `bySource`
+  // independently of the other filters -- extends ticket 8f5a79c's same
+  // telescoping design to a fourth stage. This is what keeps every
+  // simultaneously-active filter honest in the summary text below:
+  // `hiddenBySourceToggle + hiddenByOverqualifiedFilter +
+  // hiddenByUnderqualifiedFilter + hiddenByContractFilter` telescopes
+  // exactly to `data.results.length - visible.length`, so a job hidden by
+  // MULTIPLE filters is never counted twice (it's "claimed" by whichever
+  // stage actually removed it). The CHECKBOX LABEL counts
+  // (`overqualifiedCount`/`underqualifiedCount`/`contractOrTempCount` above)
+  // deliberately do NOT use this same post-other-filter set — each is
+  // computed straight off `bySource`, independent of every OTHER checkbox's
+  // state, so checking one filter's box never makes a DIFFERENT box's own
+  // displayed count jump around. The two kinds of number answer different
+  // questions on purpose: the label says "how many roles like this exist in
+  // your source-filtered results," the summary sentence says "how many did
+  // this specific filter actually just hide."
+  const afterOverLevel = hideOverqualified
     ? bySource.filter((r) => r.levelFit !== "overqualified")
     : bySource;
-  const visible = hideContractOrTemp ? afterLevel.filter((r) => !r.isContractOrTemp) : afterLevel;
+  const afterUnderLevel = hideUnderqualified
+    ? afterOverLevel.filter((r) => r.levelFit !== "underqualified")
+    : afterOverLevel;
+  const visible = hideContractOrTemp
+    ? afterUnderLevel.filter((r) => !r.isContractOrTemp)
+    : afterUnderLevel;
   const hiddenBySourceToggle = data.results.length - bySource.length;
-  const hiddenByLevelFilter = bySource.length - afterLevel.length;
-  const hiddenByContractFilter = afterLevel.length - visible.length;
+  const hiddenByOverqualifiedFilter = bySource.length - afterOverLevel.length;
+  const hiddenByUnderqualifiedFilter = afterOverLevel.length - afterUnderLevel.length;
+  const hiddenByContractFilter = afterUnderLevel.length - visible.length;
 
-  // Ticket 8f5a79c: extends ticket b182bde's F1b empty-state fix to a THIRD
-  // filter. `bySource.length === 0` is the only case that's genuinely about
-  // source selection; everything else with `visible.length === 0` means one
-  // (or both) of the two hide-toggles emptied an otherwise non-empty
-  // source-filtered set, and the message must name the toggle actually
-  // responsible rather than falling back to the source-selection message
-  // (which would be false — the jobs DO match the selected sources).
+  // Ticket a340074: extends ticket 8f5a79c's (itself extending b182bde's
+  // F1b) empty-state fix to a FOURTH filter. `bySource.length === 0` is the
+  // only case that's genuinely about source selection; everything else with
+  // `visible.length === 0` means one or more of the three hide-toggles
+  // emptied an otherwise non-empty source-filtered set, and the message must
+  // name the toggle(s) actually responsible rather than falling back to the
+  // source-selection message (which would be false — the jobs DO match the
+  // selected sources).
   let emptyStateMessage: string | null = null;
   if (bySource.length === 0) {
     emptyStateMessage = "No jobs match the current source selection.";
   } else if (visible.length === 0) {
-    if (afterLevel.length === 0) {
-      // The level filter alone already emptied the source-filtered set —
-      // true regardless of whether the contract filter is ALSO checked,
-      // since its own marginal contribution here is necessarily 0 (there
-      // was nothing left for it to remove).
+    if (afterOverLevel.length === 0) {
+      // The overqualified filter alone already emptied the source-filtered
+      // set — true regardless of whether the other filters are ALSO
+      // checked, since their own marginal contribution here is necessarily
+      // 0 (there was nothing left for them to remove).
       emptyStateMessage =
-        'Every job from the selected sources is above your level — uncheck "Hide roles above my level" to see them.';
-    } else if (hideContractOrTemp) {
-      // afterLevel.length > 0 here, so the contract filter is what emptied
-      // the remainder. Names the level filter too when it already narrowed
-      // the set on the way there, so the message doesn't imply the level
-      // filter did nothing when it may have removed some jobs upstream.
+        'Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I\'m overqualified for" to see them.';
+    } else if (afterUnderLevel.length === 0) {
+      // afterOverLevel.length > 0 here, so the underqualified filter is what
+      // emptied the remainder. Names the overqualified filter too when it
+      // already narrowed the set on the way there.
       emptyStateMessage = hideOverqualified
-        ? 'Every remaining job (after hiding roles above your level) is contract/temp — uncheck "Hide contract/temp roles" to see them.'
-        : 'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.';
+        ? 'Every remaining job (after hiding roles you may be overqualified for) is one you may be underqualified for — uncheck "Hide roles I\'m underqualified for" to see them.'
+        : 'Every job from the selected sources is one you may be underqualified for — uncheck "Hide roles I\'m underqualified for" to see them.';
+    } else if (hideContractOrTemp) {
+      // afterUnderLevel.length > 0 here, so the contract filter is what
+      // emptied the remainder. Names whichever of the two level filters
+      // already narrowed the set on the way there, so the message doesn't
+      // imply they did nothing when one or both may have removed jobs
+      // upstream.
+      const leveledClauses = [
+        hideOverqualified ? "overqualified" : null,
+        hideUnderqualified ? "underqualified" : null,
+      ].filter((c): c is string => c !== null);
+      emptyStateMessage =
+        leveledClauses.length > 0
+          ? `Every remaining job (after hiding roles you may be ${leveledClauses.join(" or ")} for) is contract/temp — uncheck "Hide contract/temp roles" to see them.`
+          : 'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.';
     }
   }
 
@@ -113,15 +142,23 @@ export function ResultsList({
             (hiddenBySourceToggle > 0
               ? ` (${hiddenBySourceToggle} hidden by source toggles.)`
               : "") +
-            // Ticket b182bde review (F1a): the level filter is a SEPARATE
-            // hiding mechanism from source toggles and needs its own
-            // clause, or a partial level-filter hide reads as fully
+            // Ticket b182bde review (F1a): the level filters are a SEPARATE
+            // hiding mechanism from source toggles and need their own
+            // clauses, or a partial level-filter hide reads as fully
             // unexplained (e.g. 20 of 25, checkbox on, 5 overqualified --
             // old text blamed source toggles for zero of the missing 5).
-            (hiddenByLevelFilter > 0 ? ` (${hiddenByLevelFilter} above your level hidden.)` : "") +
-            // Ticket 8f5a79c: third independent clause, same reasoning —
-            // `hiddenByContractFilter` is telescoped off `afterLevel`, not
-            // `bySource`, so this never double-counts a job the level
+            (hiddenByOverqualifiedFilter > 0
+              ? ` (${hiddenByOverqualifiedFilter} hidden as maybe overqualified.)`
+              : "") +
+            // Ticket a340074: symmetric clause for the new underqualified
+            // filter, telescoped off `afterOverLevel` so a job already
+            // claimed by the overqualified filter is never double-counted.
+            (hiddenByUnderqualifiedFilter > 0
+              ? ` (${hiddenByUnderqualifiedFilter} hidden as maybe underqualified.)`
+              : "") +
+            // Ticket 8f5a79c: independent clause, same reasoning —
+            // `hiddenByContractFilter` is telescoped off `afterUnderLevel`,
+            // not `bySource`, so this never double-counts a job either level
             // filter already removed.
             (hiddenByContractFilter > 0
               ? ` (${hiddenByContractFilter} contract/temp hidden.)`
@@ -129,17 +166,36 @@ export function ResultsList({
       </p>
       {/* Ticket b182bde: the count is shown regardless of whether the
           checkbox is checked -- same pattern as the "(N hidden by source
-          toggles.)" text above. */}
+          toggles.)" text above.
+          Ticket 8c252ff: label reworded from "Hide roles above my level" --
+          that phrasing was backwards, not just ambiguous. This checkbox
+          filters `levelFit === "overqualified"` -- the CANDIDATE exceeds
+          what the job needs, so the JOB is below the candidate's level, not
+          above it. "Hide roles I'm overqualified for" states what the
+          checkbox actually does without relying on "above/below" at all. */}
       <label className="hide-overqualified-toggle">
         <input
           type="checkbox"
           checked={hideOverqualified}
           onChange={() => setHideOverqualified((v) => !v)}
         />
-        Hide roles above my level ({overqualifiedCount})
+        Hide roles I'm overqualified for ({overqualifiedCount})
+      </label>
+      {/* Ticket a340074: symmetric toggle for the other `levelFit` value --
+          same "count always shown" convention. Nicole asked for this
+          directly once the overqualified toggle's wording was fixed, for
+          consistency: there was no principled reason only one direction of
+          level mismatch had a hide option. */}
+      <label className="hide-underqualified-toggle">
+        <input
+          type="checkbox"
+          checked={hideUnderqualified}
+          onChange={() => setHideUnderqualified((v) => !v)}
+        />
+        Hide roles I'm underqualified for ({underqualifiedCount})
       </label>
       {/* Ticket 8f5a79c: same "count always shown" convention as the level
-          filter above. */}
+          filters above. */}
       <label className="hide-contract-toggle">
         <input
           type="checkbox"
