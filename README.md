@@ -225,7 +225,7 @@ never look identical to a complete one.
   `pnpm test`/`pnpm lint`, but required before step 5 (`demo-match.ts`; see
   that step for why it can't be skipped silently), and again once `pnpm
 dev`'s scoring worker (step 6) actually scores something — real
-  (non-`estimateOnly`) `POST /searches` calls in step 8 are what triggers
+  (non-`estimateOnly`) `POST /searches` calls in step 8 are what trigger
   that.
 
 ### 1. Enable pnpm and configure environment
@@ -364,7 +364,16 @@ cwd-relative reads that predate this ticket and are unchanged by it:
   the worker's remains a real, unfixed cwd-relative constant that would
   break again under a different invocation cwd (e.g. the worker's old
   `pnpm --filter @app/api worker:score-job` form). That form isn't
-  documented below any more for exactly this reason.
+  documented below any more for exactly this reason. The same hazard
+  applies to the built form: `apps/api/package.json`'s
+  `worker:score-job:start` script still exists (`node
+dist/worker/run-score-job-worker.js`), and `pnpm --filter @app/api
+worker:score-job:start` runs it with `apps/api/` as cwd exactly like the
+  dev form does, silently reintroducing the same disconnected usage-stats
+  file (opus review, ticket b53c422, F1). Nothing in this repo deploys via
+  `pnpm --filter ...:start` today, but don't assume it would be safe if
+  that changes — only invoking `node dist/worker/run-score-job-worker.js`
+  directly, from the repo root, is safe.
 
 Open `http://localhost:5173` and the app is live against whatever
 Postgres/RabbitMQ instance step 2 started.
@@ -501,11 +510,13 @@ curl -s http://localhost:3000/searches/<searchId>
 
 Watch the `[fetch-worker]`/`[score-worker]`-prefixed lines in the same
 `pnpm dev` terminal: the fetch-source worker logs each source it queries and
-how many jobs passed the search's quality filter, then the score-job worker
-logs each one it scores against the resume via a real Anthropic call, plus a
-non-fatal warning if it can't find a `prep/` directory to record usage stats
-in (harmless — the score itself is already persisted; see the cwd note
-above). Re-verified live for ticket `47407f7` itself, against a real
+how many jobs passed the search's quality filter. The score-job worker is
+quieter — it logs nothing on a successful score (only a non-fatal warning
+if it can't find a `prep/` directory to record usage stats in, harmless
+since the score itself is already persisted; see the cwd note above) — so
+`GET /searches/<searchId>`'s `scoredSoFar` count, not the terminal, is the
+way to watch scoring progress in real time. Re-verified live for ticket
+`47407f7` itself, against a real
 Postgres and a real hand-built RabbitMQ broker in the environment this
 ticket was finished in (no Docker CLI there, so no `docker compose`, but
 the broker and database it would have started were both already up):
@@ -552,6 +563,12 @@ following steps 1-2. Without a broker (`RABBITMQ_DEFAULT_USER`/`_PASS`/
 `worker/fetchSourceWorker.test.ts` — and its 19 tests show as "skipped"
 because its top-level `beforeAll` throws before any of them run; every
 other file, including every other queue/worker/route test, is unaffected.
+Separately, that same file's retry/backoff-tier tests are timing-sensitive
+enough to occasionally flake under heavy system load even WITH a broker up
+(observed under the full suite running in parallel at high load average;
+the file passes cleanly in isolation) — if it fails alone with real timing
+assertions rather than a connection error, rerun it before assuming
+something's broken.
 
 ## Project layout
 
