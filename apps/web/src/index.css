@@ -532,6 +532,22 @@ button[aria-disabled="true"] {
   font-style: italic;
 }
 
+/* Ticket 1e183a4: "Searched with: <nickname>" is now a link to that
+   resume in My Resumes. Inline within `.result-searched-with`'s own
+   sentence (unlike `.link-button` above, which is its own standalone
+   block), so this resets native button chrome without touching spacing
+   -- font/color/style are inherited from the parent `<p>` instead. */
+.result-resume-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-style: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .result-current-status {
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
@@ -642,6 +658,16 @@ button[aria-disabled="true"] {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
+  transition: background-color 0.3s ease;
+}
+
+/* Ticket 1e183a4: brief flash when a result card's "Searched with:" link
+   jumps here -- FOCUS_HIGHLIGHT_MS (MyResumes.tsx) controls how long this
+   class stays applied; the CSS transition above is what makes it fade
+   rather than pop on and off. */
+.resume-list-item-focused {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
 }
 
 .resume-list-item summary {

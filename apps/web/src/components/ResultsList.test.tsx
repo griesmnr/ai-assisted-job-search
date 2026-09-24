@@ -68,6 +68,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -99,6 +100,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -114,6 +116,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -127,6 +130,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set(["greenhouse"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -142,6 +146,7 @@ describe("ResultsList", () => {
         selectedSourceIds={new Set()}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -162,6 +167,7 @@ describe(`ResultsList — "Hide roles I'm overqualified for" filter (ticket b182
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -179,6 +185,7 @@ describe(`ResultsList — "Hide roles I'm overqualified for" filter (ticket b182
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -221,6 +228,7 @@ describe(`ResultsList — "Hide roles I'm overqualified for" filter (ticket b182
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -279,6 +287,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -295,6 +304,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -328,6 +338,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -352,6 +363,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -412,6 +424,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -428,6 +441,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -460,6 +474,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -487,6 +502,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -516,6 +532,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse", "usajobs"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -557,6 +574,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
         selectedSourceIds={new Set(["greenhouse"])}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 

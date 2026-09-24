@@ -1,9 +1,20 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ResumeSummary } from "@app/shared";
 import { MyResumes } from "./MyResumes";
+
+// Ticket 1e183a4: jsdom does not implement `scrollIntoView` at all -- see
+// App.criteria.test.tsx's identical stub/comment for `locationSectionRef`.
+// Declared here, assigned fresh in `beforeEach` below (not once at module
+// scope) so each test gets its own call history without `vi.clearAllMocks()`
+// (already used in this file's `afterEach`) needing to know about it.
+let scrollIntoViewMock: Mock<typeof Element.prototype.scrollIntoView>;
+beforeEach(() => {
+  scrollIntoViewMock = vi.fn<typeof Element.prototype.scrollIntoView>();
+  Element.prototype.scrollIntoView = scrollIntoViewMock;
+});
 
 const getResume = vi.fn();
 
@@ -127,5 +138,136 @@ describe("MyResumes (ticket 303cff0)", () => {
     });
     expect(screen.queryByText("Could not load resume text: network down")).not.toBeInTheDocument();
     expect(getResume).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Ticket 1e183a4, Nicole: "the resume 13 should now become a link to the
+// My Resumes page with that resume highlighted and the text already
+// expanded." These tests exercise the `focusResume` prop a result card's
+// link drives (via App.tsx) -- see FocusResume's own doc comment for why
+// it carries a `token`, not just an id.
+describe("MyResumes — focusResume (ticket 1e183a4)", () => {
+  it("expands and fetches the named resume's text, and scrolls it into view", async () => {
+    getResume.mockResolvedValue({
+      id: "resume-2",
+      resumeText: "Backend-focused resume text.",
+      resumeNickname: "Backend-focused resume",
+    });
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Backend-focused resume" }),
+        ]}
+        focusResume={{ id: "resume-2", token: 1 }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Backend-focused resume text.")).toBeInTheDocument();
+    });
+    expect(getResume).toHaveBeenCalledWith("resume-2");
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+  });
+
+  it("does not touch a row that isn't the focus target", () => {
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Backend-focused resume" }),
+        ]}
+        focusResume={{ id: "resume-2", token: 1 }}
+      />,
+    );
+
+    expect(getResume).not.toHaveBeenCalledWith("resume-1");
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a highlight class to the focused row, and removes it after the flash", async () => {
+    vi.useFakeTimers();
+    try {
+      getResume.mockResolvedValue({
+        id: "resume-1",
+        resumeText: "Some text.",
+        resumeNickname: "Resume 1",
+      });
+      render(
+        <MyResumes
+          resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+          focusResume={{ id: "resume-1", token: 1 }}
+        />,
+      );
+
+      expect(screen.getByText("Resume 1").closest("li")).toHaveClass("resume-list-item-focused");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(screen.getByText("Resume 1").closest("li")).not.toHaveClass(
+        "resume-list-item-focused",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The whole reason FocusResume carries a `token`, not just an id (ticket
+  // 1e183a4): "My Resumes" stays mounted at all times, so clicking a
+  // DIFFERENT card's link to the SAME resume while already on this tab
+  // must still re-scroll/re-flash -- a naive effect keyed only on the id
+  // would see no change and do nothing the second time.
+  it("re-scrolls and re-flashes on a NEW token for the same resume id, even if already expanded", async () => {
+    getResume.mockResolvedValue({
+      id: "resume-1",
+      resumeText: "Some text.",
+      resumeNickname: "Resume 1",
+    });
+    const { rerender } = render(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        focusResume={{ id: "resume-1", token: 1 }}
+      />,
+    );
+    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        focusResume={{ id: "resume-1", token: 2 }}
+      />,
+    );
+
+    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(2));
+    // Only one fetch, though: the row was already expanded/loaded from the
+    // first focus, and the fetch-once guard (ticket 303cff0) still applies.
+    expect(getResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-scroll on a re-render with the SAME token", async () => {
+    getResume.mockResolvedValue({
+      id: "resume-1",
+      resumeText: "Some text.",
+      resumeNickname: "Resume 1",
+    });
+    const focusResume = { id: "resume-1", token: 1 };
+    const { rerender } = render(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        focusResume={focusResume}
+      />,
+    );
+    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        focusResume={focusResume}
+      />,
+    );
+
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
   });
 });

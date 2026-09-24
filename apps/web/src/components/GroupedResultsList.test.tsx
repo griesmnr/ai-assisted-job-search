@@ -68,6 +68,7 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -86,6 +87,7 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -117,6 +119,7 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -159,6 +162,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -176,6 +180,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -203,6 +208,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -228,6 +234,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -272,6 +279,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -289,6 +297,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -320,6 +329,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -344,6 +354,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -382,6 +393,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -428,6 +440,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -467,6 +480,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -496,6 +510,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -524,6 +539,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -567,6 +583,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -591,6 +608,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -615,6 +633,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -660,6 +679,7 @@ describe("GroupedResultsList — the same job scored under two different resumes
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -693,6 +713,7 @@ describe("GroupedResultsList — the same job scored under two different resumes
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -718,6 +739,7 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -734,6 +756,7 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
