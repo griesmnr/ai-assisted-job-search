@@ -301,6 +301,15 @@ button[aria-disabled="true"] {
   animation: spin 0.8s linear infinite;
 }
 
+/* Ticket bf2dd0a: "(N of M sources checked)" inside the estimating spinner
+   line -- slightly dimmer than the surrounding text so it reads as a live
+   status detail rather than competing with the main "Getting a cost
+   estimate..." sentence. */
+.estimating-progress {
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

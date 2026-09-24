@@ -225,4 +225,92 @@ describe("CompositeSource (ticket d8417b2)", () => {
     expect(outcomes).toHaveLength(3);
     expect(outcomes.every((o) => o.status === "ok")).toBe(true);
   });
+
+  // Ticket bf2dd0a: the per-source progress hook `runDemoMatch`'s
+  // `POST /searches/estimate` path polls through (matching/estimateProgress.ts).
+  it("calls onSourceSettled once per source, as EACH ONE individually settles — not once for the whole batch", async () => {
+    const settledOrder: string[] = [];
+    let releaseGreenhouse: () => void = () => {};
+    const greenhouseGate = new Promise<void>((resolve) => {
+      releaseGreenhouse = resolve;
+    });
+
+    function gatedSource(dataSource: NormalizedJob["dataSource"], gate: Promise<void>): JobSource {
+      return {
+        dataSource,
+        async search(): Promise<SourceSearchResult> {
+          await gate;
+          return { jobs: [], skipped: [], skipRate: 0 };
+        },
+      };
+    }
+
+    // "lever" resolves immediately; "greenhouse" waits on a gate this test
+    // controls by hand.
+    const composite = new CompositeSource([
+      gatedSource("lever", Promise.resolve()),
+      gatedSource("greenhouse", greenhouseGate),
+    ]);
+
+    const resultPromise = composite.search({}, (dataSource) => settledOrder.push(dataSource));
+
+    // "lever" should be reported settled well before "greenhouse" -- if
+    // onSourceSettled only fired once for the whole Promise.allSettled
+    // batch, settledOrder would still be empty here (nothing has fully
+    // settled — greenhouse's gate is still held).
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settledOrder).toEqual(["lever"]);
+
+    releaseGreenhouse();
+    await resultPromise;
+    expect(settledOrder).toEqual(["lever", "greenhouse"]);
+  });
+
+  it("calls onSourceSettled for a REJECTED source too — an error is still a settled outcome", async () => {
+    const settled: string[] = [];
+    const broken = new ThrowingSource("lever", new Error("boom"));
+    const healthy = new FakeSource("greenhouse", { jobs: [], skipped: [], skipRate: 0 });
+
+    await new CompositeSource([broken, healthy]).search({}, (dataSource) =>
+      settled.push(dataSource),
+    );
+
+    expect(settled.sort()).toEqual(["greenhouse", "lever"]);
+  });
+
+  it("onSourceSettled is optional -- omitting it changes nothing about search()'s own return value", async () => {
+    const healthy = new FakeSource("greenhouse", {
+      jobs: [job("greenhouse", "gh-1")],
+      skipped: [],
+      skipRate: 0,
+    });
+    const outcomes = await new CompositeSource([healthy]).search({});
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("ok");
+  });
+
+  it("a THROWING onSourceSettled does not turn a successful source into a reported error (opus review round 1, F3)", async () => {
+    // .finally()'s callback runs inside the derived promise chain -- if it
+    // throws, the promise IT returns rejects, and that's what Promise.
+    // allSettled actually observes for that entry, not the source's own
+    // search() promise. Without the try/catch around the callback call,
+    // this source would report status "error" with the CALLBACK's message,
+    // and its real, successfully-fetched job would be silently dropped.
+    const healthy = new FakeSource("greenhouse", {
+      jobs: [job("greenhouse", "gh-1")],
+      skipped: [],
+      skipRate: 0,
+    });
+    const throwingCallback = () => {
+      throw new Error("bug in the progress tracker, not the source");
+    };
+
+    const outcomes = await new CompositeSource([healthy]).search({}, throwingCallback);
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("ok");
+    if (outcomes[0]!.status === "ok") {
+      expect(outcomes[0]!.result.jobs).toHaveLength(1);
+    }
+  });
 });

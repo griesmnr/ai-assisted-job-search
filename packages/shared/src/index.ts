@@ -561,6 +561,62 @@ export type EstimateSearchRequest = {
   resumeId: string;
   sourceIds: string[];
   criteria?: SearchCriteria;
+  /**
+   * Ticket bf2dd0a. Optional, caller-minted id for the LIGHTWEIGHT progress
+   * side channel — see apps/api's `matching/estimateProgress.ts` for the
+   * full design. `POST /searches/estimate` stays exactly as synchronous as
+   * ever; this id, if supplied, only lets the caller also poll
+   * `GET /searches/estimate/:requestId/progress` WHILE that blocking call is
+   * still in flight, to show something better than a bare spinner ("3 of 8
+   * sources checked"). Minted by the CALLER, not the server, because the
+   * server has no way to hand back an id before the blocking response it's
+   * attached to — the frontend generates one (`crypto.randomUUID()`) before
+   * firing the request and starts polling immediately after, not after the
+   * POST resolves. Omitting it costs nothing: the estimate runs identically
+   * either way, just with no progress record to poll.
+   */
+  estimateRequestId?: string;
+};
+
+/**
+ * One source's progress within a `POST /searches/estimate` run currently
+ * being tracked under `EstimateProgressResponse.requestId` (ticket bf2dd0a).
+ * Deliberately thinner than `SourceOutcome` — no jobsFound/skipRate/etc:
+ * this is pure "has this source's fetch settled yet", read live while the
+ * estimate is still running, not the rich per-source result the estimate's
+ * own final response (`SourceOutcome`) carries once it's done.
+ */
+export type EstimateProgressSourceState = {
+  sourceId: string;
+  status: "pending" | "done";
+};
+
+/**
+ * `GET /searches/estimate/:requestId/progress` (ticket bf2dd0a) — the
+ * optional side channel a caller polls WHILE `POST /searches/estimate` is
+ * still blocking, to answer "which of the selected sources have reported in
+ * so far" instead of showing a bare spinner. NOT part of the estimate's
+ * completion contract: the POST call still returns the final
+ * `EstimateSearchResponse` synchronously in one response, exactly as before
+ * this ticket, whether or not anything ever polls this endpoint. A 404 here
+ * (no `EstimateProgressResponse` to return) means "no tracked run under this
+ * id" — never started (the caller omitted `estimateRequestId`), already past
+ * its retention window, or a process restart — and is an entirely normal,
+ * expected outcome a poller should treat as "nothing to show yet", not an
+ * error.
+ */
+export type EstimateProgressResponse = {
+  requestId: string;
+  /** How many sources this estimate run started with — every source the
+   * caller selected, whether or not it ultimately succeeds. */
+  total: number;
+  /** How many of `total` have settled (fetched successfully OR failed) so
+   * far. `completed === total` means every source has reported in; the
+   * blocking POST itself finishes at essentially the same moment, since the
+   * estimate path never reaches scoring. */
+  completed: number;
+  sources: EstimateProgressSourceState[];
+  done: boolean;
 };
 
 /**
