@@ -810,8 +810,8 @@ export function registerSearchRoutes(
 
       // Ticket 447e210: record every source this estimate just proved a
       // dead end (0 jobs survived `filter`) so a real search for the same
-      // (resumeId, criteria, sourceId) starting soon after can skip
-      // re-querying it live. `status !== "error"` is load-bearing, not
+      // (resumeId, criteria, sourceId, selection) starting soon after can
+      // skip re-querying it live. `status !== "error"` is load-bearing, not
       // decoration: "error" means this source's `search()` call itself
       // rejected — the estimate LEARNED NOTHING about whether it has
       // postings — and caching that as "zero jobs" would tell a real search
@@ -976,7 +976,8 @@ export function registerSearchRoutes(
 
       // Ticket 447e210: which of THIS request's sources does the
       // zero-result cache say were just proven a dead end for this EXACT
-      // (resumeId, criteria, sourceId) triple? A pure in-memory read, no DB
+      // (resumeId, criteria, sourceId, selection) combination? A pure
+      // in-memory read, no DB
       // involved, so it costs nothing to compute here and reuse below —
       // once to decide each source's INITIAL `search_sources` row (a cache
       // hit is written `complete` from the start, never `pending`), and

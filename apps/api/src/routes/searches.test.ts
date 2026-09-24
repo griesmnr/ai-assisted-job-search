@@ -3388,80 +3388,153 @@ describe("estimate-to-search zero-result cache (ticket 447e210)", () => {
     expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
   });
 
-  it("a source selection change since the estimate is a cache MISS, even with the same resume/criteria/source (opus review round 1, F2)", async () => {
-    // The real bug this pins: runDemoMatch's filter runs against the UNION
-    // of every SELECTED source's jobs and ends in a cross-source
-    // `${company}|${title}` dedupe (criteria.ts) -- so a source's
-    // `survivedFilter === 0` in a multi-source estimate can be an artifact
-    // of what ELSE was selected, not a property of that source alone. Two
-    // sources here return a job with the SAME company+title: greenhouse's
-    // copy is the one that survives the cross-source dedupe (whichever
-    // wins is an implementation detail of the union order); usajobs' copy
-    // loses, so usajobs legitimately shows survivedFilter === 0 for THIS
-    // 2-source estimate. The queue path dedupes PER SOURCE
-    // (fetchSourceWorker.ts), so usajobs searched ALONE has a real,
-    // filter-passing job -- a stale cache-hit here would silently lose it.
+  // Both tests below share this setup: two sources returning a job with the
+  // SAME company+title. runDemoMatch's filter runs against the UNION of
+  // every SELECTED source's jobs, concatenated in resolved-source order
+  // (pipeline.ts pushes each source's jobs in `perSource` iteration order),
+  // then ends in a cross-source `${company}|${title}` dedupe that keeps the
+  // FIRST occurrence and drops the rest (criteria.ts). With `sourceIds:
+  // ["usajobs", "greenhouse"]`, usajobs' copy is concatenated first and
+  // survives; greenhouse's copy is the later duplicate and is dropped --
+  // confirmed by instrumenting the real estimate response, not assumed.
+  // The queue path dedupes PER SOURCE (fetchSourceWorker.ts), so greenhouse
+  // searched ALONE (or with a different selection) has a real,
+  // filter-passing job that a stale cache-hit would silently lose.
+  function crossPostedSources() {
     const crossPostedTitle = "Staff Backend Engineer";
     const crossPostedCompany = "Acme Corp";
-    const usajobsCopy = fakeJob("cross-usajobs", crossPostedTitle, {
-      company: crossPostedCompany,
-      dataSource: "usajobs",
-    });
-    const greenhouseCopy = fakeJob("cross-greenhouse", crossPostedTitle, {
-      company: crossPostedCompany,
-      dataSource: "greenhouse",
-    });
+    return {
+      usajobs: [
+        fakeJob("cross-usajobs", crossPostedTitle, {
+          company: crossPostedCompany,
+          dataSource: "usajobs",
+        }),
+      ],
+      greenhouse: [
+        fakeJob("cross-greenhouse", crossPostedTitle, {
+          company: crossPostedCompany,
+          dataSource: "greenhouse",
+        }),
+      ],
+    };
+  }
+
+  it("same source selection as the estimate is a cache HIT for the source the cross-source dedupe zeroed (control for the miss case below, opus review round 2, F2)", async () => {
     const publisher = fakePublisher();
     const cache = new ZeroResultEstimateCache();
     const app = buildApp({
       db,
       inferTitles: async () => [],
       getScoreJob: makeFakeScorer,
-      resolveSourceIds: fakeResolverPerSource({
-        usajobs: [usajobsCopy],
-        greenhouse: [greenhouseCopy],
-      }),
+      resolveSourceIds: fakeResolverPerSource(crossPostedSources()),
       publishFetchSource: publisher.publish,
       zeroResultCache: cache,
     });
     const resumeId = await createResume(app);
     const criteria = {};
 
-    // Estimate over BOTH sources -- confirms the premise: one of the two
-    // duplicate postings is filtered out by the cross-source dedupe.
     const estimateResponse = await app.inject({
       method: "POST",
       url: "/searches/estimate",
       payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
     });
     expect(estimateResponse.statusCode).toBe(200);
-    expect(
-      (estimateResponse.json() as { candidatesNeedingScore: number }).candidatesNeedingScore,
-    ).toBe(1);
+    // Confirms the premise directly rather than assuming it: exactly one of
+    // the two duplicate postings survives the cross-source dedupe, and it's
+    // greenhouse's copy that's zeroed (see crossPostedSources' comment for
+    // why usajobs, listed first, is the one that wins the dedupe).
+    const outcomes = (
+      estimateResponse.json() as {
+        sourceOutcomes: { dataSource: string; survivedFilter: number }[];
+      }
+    ).sourceOutcomes;
+    expect(outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dataSource: "usajobs", survivedFilter: 1 }),
+        expect.objectContaining({ dataSource: "greenhouse", survivedFilter: 0 }),
+      ]),
+    );
 
-    // Same resume, same criteria, same TWO sources: this must be a cache
-    // hit for whichever source's estimate outcome was zero -- the control
-    // for the miss case below.
-    const sameSelectionResponse = await app.inject({
+    // Same resume, same criteria, the SAME two-source selection: greenhouse
+    // is cache-served (skipped), only usajobs is queried live.
+    const searchResponse = await app.inject({
       method: "POST",
       url: "/searches",
       payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
     });
-    expect(sameSelectionResponse.statusCode).toBe(202);
-    expect(publisher.published.map((m) => m.sourceId).sort()).toHaveLength(1);
+    expect(searchResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId)).toEqual(["usajobs"]);
+  });
 
-    // A DIFFERENT resume, searching usajobs ALONE (a strict subset of the
-    // estimate's selection): usajobs' zero must NOT be replayed here, since
-    // alone it has no greenhouse copy to lose the dedupe against -- its
-    // real job must be fetched and found.
-    const secondResumeId = await createResume(app);
+  it("a source selection change since the estimate is a cache MISS, even for the same resume/criteria/source (opus review round 2, F2 regression -- the round-1 version of this test asserted on the wrong source and a different resume, and passed even with the fix reverted)", async () => {
+    const publisher = fakePublisher();
+    const cache = new ZeroResultEstimateCache();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource(crossPostedSources()),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    // Estimate over BOTH sources -- greenhouse's copy is the one the
+    // cross-source dedupe zeroes (see crossPostedSources' comment).
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // SAME resume, SAME criteria, but searching greenhouse ALONE -- a
+    // strict subset of the estimate's selection. Alone, greenhouse has no
+    // usajobs copy to lose the dedupe against, so its real job must survive
+    // the queue path's per-source filter and be fetched live -- greenhouse's
+    // cached zero from the two-source estimate must NOT be replayed here.
     const aloneResponse = await app.inject({
       method: "POST",
       url: "/searches",
-      payload: { resumeId: secondResumeId, sourceIds: ["usajobs"], criteria },
+      payload: { resumeId, sourceIds: ["greenhouse"], criteria },
     });
     expect(aloneResponse.statusCode).toBe(202);
-    expect(publisher.published.map((m) => m.sourceId)).toContain("usajobs");
+    expect(publisher.published.map((m) => m.sourceId)).toEqual(["greenhouse"]);
+  });
+
+  it("source-selection order does not defeat a cache hit (opus review round 2, F4)", async () => {
+    // canonicalize/toCacheKey sorts `selectedSourceIds` before hashing --
+    // this pins that the estimate and the search can list the SAME
+    // selection in a DIFFERENT order and still hit.
+    const publisher = fakePublisher();
+    const cache = new ZeroResultEstimateCache();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource(crossPostedSources()),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // Same two sources, REVERSED order in the request.
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: ["greenhouse", "usajobs"], criteria },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId)).toEqual(["usajobs"]);
   });
 
   it("an errored source is never cached as a zero — a transient failure must still be retried live next time (F3)", async () => {

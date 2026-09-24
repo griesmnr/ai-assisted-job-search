@@ -1,7 +1,9 @@
 /**
  * A short-lived, in-memory, process-local record of "this source yielded
- * zero jobs passing the filter" for one EXACT (resume, criteria, source)
- * combination (ticket 447e210).
+ * zero jobs passing the filter" for one EXACT (resume, criteria, source,
+ * source-selection) combination (ticket 447e210; the fourth element,
+ * `selectedSourceIds`, was added in review round 1's F2 fix -- see
+ * `ZeroResultCacheKey`'s own doc comment for why it's load-bearing).
  *
  * WHY THIS EXISTS. `POST /searches/estimate` and `POST /searches` were two
  * completely independent live fetches — nothing carried the estimate's
