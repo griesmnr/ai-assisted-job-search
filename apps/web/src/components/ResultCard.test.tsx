@@ -61,6 +61,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
         result={makeResult()}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -81,6 +82,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
       <ResultCard
         result={makeResult({ status: "applied" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -96,7 +98,12 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
   it("calls onSetStatus with the right status when a present-tense action button is clicked", async () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
-      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
+      <ResultCard
+        result={makeResult()}
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -110,7 +117,12 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
     render(
-      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
+      <ResultCard
+        result={makeResult()}
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
@@ -137,6 +149,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={onSetStatus}
       />,
     );
@@ -152,7 +165,12 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
   it("Apply is a plain button that records status=applied and does not navigate", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
-      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
+      <ResultCard
+        result={makeResult()}
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
     );
 
     const applyButton = screen.getByRole("button", { name: "Apply" });
@@ -167,6 +185,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ status: "applied" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -179,6 +198,7 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
       <ResultCard
         result={makeResult({ status: "applied" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -195,6 +215,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ company: "Wealthfront", dataSource: "lever" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -208,6 +229,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: "Seattle, WA", locationType: "hybrid" })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -221,6 +243,7 @@ describe("ResultCard — explicit labeled metadata (ticket 3d80a85)", () => {
       <ResultCard
         result={makeResult({ location: null, locationType: null })}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
         onSetStatus={async () => {}}
       />,
     );
@@ -242,6 +265,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult()}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
     expect(screen.queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
@@ -252,6 +276,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult({ status: "dismissed" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
     expect(screen.queryByRole("button", { name: /Undo/ })).not.toBeInTheDocument();
@@ -266,6 +291,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult({ status: "dismissed" })}
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
+        onViewResume={() => {}}
       />,
     );
 
@@ -283,6 +309,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult({ status: "saved" })}
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
+        onViewResume={() => {}}
       />,
     );
 
@@ -298,6 +325,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult({ status: "saved" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -323,6 +351,7 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
         result={makeResult({ status: "resume_optimized" })}
         onSetStatus={onSetStatus}
         onClearStatus={onClearStatus}
+        onViewResume={() => {}}
       />,
     );
 
@@ -345,7 +374,12 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
     render(
-      <ResultCard result={makeResult()} onSetStatus={onSetStatus} onClearStatus={async () => {}} />,
+      <ResultCard
+        result={makeResult()}
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
@@ -374,6 +408,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -397,6 +432,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -410,6 +446,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         result={makeResult({ levelFit: "well_matched", levelFitNote: "" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -426,6 +463,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         result={makeResult({ levelFit: null, levelFitNote: null })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -443,6 +481,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -460,6 +499,7 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
         result={makeResult({ levelFit: null, levelFitNote: null })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
@@ -472,6 +512,11 @@ describe("ResultCard — level fit pill and detail (ticket b182bde)", () => {
 // Ticket 38a7598: "each of the job cards can say 'searched with'... use the
 // resume['s nickname]" -- Nicole's own words in the ticket, so the exact
 // label text is load-bearing, not just any indication of which resume.
+//
+// Ticket 1e183a4: the nickname is now a clickable link, not plain text --
+// `screen.getByText("Searched with: X")` no longer matches a single text
+// node (the nickname is inside a nested `<button>`), so these assertions
+// check the "Searched with:" label and the nickname button separately.
 describe("ResultCard — Searched with (ticket 38a7598)", () => {
   it("shows the resume nickname it was scored against", () => {
     render(
@@ -479,10 +524,12 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
         result={makeResult({ resumeNickname: "Backend-focused resume" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
 
-    expect(screen.getByText("Searched with: Backend-focused resume")).toBeInTheDocument();
+    expect(screen.getByText("Searched with:")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Backend-focused resume" })).toBeInTheDocument();
   });
 
   it("re-renders with a NEW nickname after a rename, without needing a different resumeId", () => {
@@ -491,18 +538,43 @@ describe("ResultCard — Searched with (ticket 38a7598)", () => {
         result={makeResult({ resumeNickname: "Resume 1" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
-    expect(screen.getByText("Searched with: Resume 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume 1" })).toBeInTheDocument();
 
     rerender(
       <ResultCard
         result={makeResult({ resumeNickname: "Renamed resume" })}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
+        onViewResume={() => {}}
       />,
     );
-    expect(screen.getByText("Searched with: Renamed resume")).toBeInTheDocument();
-    expect(screen.queryByText("Searched with: Resume 1")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Renamed resume" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume 1" })).not.toBeInTheDocument();
+  });
+});
+
+// Ticket 1e183a4, Nicole: "the resume 13 should now become a link to the
+// My Resumes page with that resume highlighted and the text already
+// expanded." ResultCard's own responsibility ends at reporting which
+// resume was clicked -- App.tsx owns the tab switch/focus, tested there.
+describe("ResultCard — Searched with resume link (ticket 1e183a4)", () => {
+  it("calls onViewResume with the result's resumeId when clicked", () => {
+    const onViewResume = vi.fn();
+    render(
+      <ResultCard
+        result={makeResult({ resumeId: "resume-42", resumeNickname: "Resume 42" })}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={onViewResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume 42" }));
+
+    expect(onViewResume).toHaveBeenCalledTimes(1);
+    expect(onViewResume).toHaveBeenCalledWith("resume-42");
   });
 });

@@ -19,6 +19,7 @@ export function ResultsList({
   selectedSourceIds,
   onSetStatus,
   onClearStatus,
+  onViewResume,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
@@ -27,6 +28,8 @@ export function ResultsList({
   // component's own doc comment on this prop.
   onSetStatus: (jobId: string, status: UserJobStatus, resumeId: string) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
+  /** Ticket 1e183a4: passthrough to ResultCard -- see its own doc comment. */
+  onViewResume: (resumeId: string) => void;
 }) {
   // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter on already-
   // fetched results, same pattern as `selectedSourceIds` above -- never a
@@ -232,6 +235,7 @@ export function ResultsList({
               result={result}
               onSetStatus={onSetStatus}
               onClearStatus={onClearStatus}
+              onViewResume={onViewResume}
             />
           ))}
         </ul>

@@ -59,6 +59,7 @@ export function GroupedResultsList({
   groupFor,
   onSetStatus,
   onClearStatus,
+  onViewResume,
 }: {
   // Ticket 3f0883f: widened from `GetResumeResultsResponse` (which this
   // component never actually read the `resumeId`/`resumeNickname` half of
@@ -76,6 +77,8 @@ export function GroupedResultsList({
   // component's own doc comment on this prop.
   onSetStatus: (jobId: string, status: UserJobStatus, resumeId: string) => Promise<void>;
   onClearStatus: (jobId: string) => Promise<void>;
+  /** Ticket 1e183a4: passthrough to ResultCard -- see its own doc comment. */
+  onViewResume: (resumeId: string) => void;
 }) {
   // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter, same pattern as
   // `selectedSourceIds` -- see ResultsList.tsx's identical filter for the
@@ -270,6 +273,7 @@ export function GroupedResultsList({
                   result={result}
                   onSetStatus={onSetStatus}
                   onClearStatus={onClearStatus}
+                  onViewResume={onViewResume}
                 />
               ))}
             </ul>

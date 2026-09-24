@@ -11,7 +11,7 @@ import {
   groupKeyForStatus,
   type ScoredGroupKey,
 } from "./components/GroupedResultsList";
-import { MyResumes } from "./components/MyResumes";
+import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
 import { ScoreFloorControl } from "./components/ScoreFloorControl";
@@ -258,6 +258,11 @@ function App() {
   // else on this page (there is no other place that already holds every
   // saved resume's id/nickname/createdAt at once).
   const { state: resumesListState, refresh: refreshResumesList } = useResumesList();
+  // Ticket 1e183a4: which resume a result card's "Searched with:" link
+  // most recently asked to jump to -- see FocusResume's own doc comment
+  // (MyResumes.tsx) for why this carries a `token`, not just an id.
+  // `undefined` before any card has ever been clicked this session.
+  const [focusResume, setFocusResume] = useState<FocusResume | undefined>(undefined);
 
   // Ticket 0308d7e (Nicole, dogfooding ac141d0: "when I said I wanted
   // number, I wanted it in the tab itself... I want people to know that
@@ -610,6 +615,18 @@ function App() {
     refreshAllResults();
   }
 
+  // Ticket 1e183a4, Nicole: "the resume 13 should now become a link to the
+  // My Resumes page with that resume highlighted and the text already
+  // expanded." Switches tabs AND sets the focus target in one go -- see
+  // FocusResume's own doc comment (MyResumes.tsx) for why `token` is
+  // `Date.now()` rather than just the id (a second click on the same
+  // resume, from a different card, while already on that tab, must still
+  // re-scroll/re-flash).
+  function handleViewResume(resumeId: string) {
+    setActiveTab("resumes");
+    setFocusResume({ id: resumeId, token: Date.now() });
+  }
+
   function handleSearchComplete() {
     refresh();
     // The one place `hasFreshSearchResults` is ever set true — SearchFlow
@@ -794,6 +811,7 @@ function App() {
                     selectedSourceIds={selectedSourceIds}
                     onSetStatus={handleSetStatus}
                     onClearStatus={handleClearStatus}
+                    onViewResume={handleViewResume}
                   />
                 ) : (
                   <p>No jobs matched this search.</p>
@@ -838,6 +856,7 @@ function App() {
                 groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
                 onClearStatus={handleClearStatus}
+                onViewResume={handleViewResume}
               />
             ) : (
               // Ticket f4a7f07: unlike ticket 093d9fe's inline-surprise
@@ -865,7 +884,7 @@ function App() {
             <p role="alert">Could not load resumes: {resumesListState.message}</p>
           )}
           {resumesListState.status === "ready" && (
-            <MyResumes resumes={resumesListState.data.resumes} />
+            <MyResumes resumes={resumesListState.data.resumes} focusResume={focusResume} />
           )}
         </section>
       </div>

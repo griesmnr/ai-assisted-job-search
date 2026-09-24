@@ -44,6 +44,7 @@ export function ResultCard({
   result,
   onSetStatus,
   onClearStatus,
+  onViewResume,
 }: {
   result: ScoredJobResult;
   /**
@@ -62,6 +63,11 @@ export function ResultCard({
    * untoggle the buttons, like undismiss") — clears back to no-action-taken
    * rather than writing a new status value. */
   onClearStatus: (jobId: string) => Promise<void>;
+  /** Ticket 1e183a4: "Searched with: {nickname}" jumps to that resume in
+   * My Resumes. Wired in App.tsx to switch tabs and set a focus target —
+   * this component has no idea tabs exist, it just reports which resume
+   * was clicked. */
+  onViewResume: (resumeId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [pending, setPending] = useState<UserJobStatus | "clearing" | null>(null);
@@ -162,8 +168,25 @@ export function ResultCard({
               caller -- see ScoredJobResult.resumeNickname's doc comment
               in @app/shared for why: the next ticket (3f0883f) makes it
               possible for two results in the SAME response to have been
-              scored against two DIFFERENT resumes. */}
-          <p className="result-searched-with">Searched with: {result.resumeNickname}</p>
+              scored against two DIFFERENT resumes.
+
+              Ticket 1e183a4, Nicole: "the resume 13 should now become a
+              link to the My Resumes page with that resume highlighted
+              and the text already expanded... super excited about that
+              little connection." A `<button>` styled as a link, not a
+              real `<a href>` -- there is nothing to navigate TO (no
+              router, no URL for "My Resumes"), only in-app tab state to
+              change (`onViewResume`, wired in App.tsx). */}
+          <p className="result-searched-with">
+            Searched with:{" "}
+            <button
+              type="button"
+              className="result-resume-link"
+              onClick={() => onViewResume(result.resumeId)}
+            >
+              {result.resumeNickname}
+            </button>
+          </p>
         </div>
         {/* Ticket e367a63: the top-right Undo control is gone -- Nicole
             wants the status button itself to undo (see the toggle logic
