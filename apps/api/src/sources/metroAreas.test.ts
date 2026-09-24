@@ -195,7 +195,13 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     // ...and the right region with the same trailing shapes still matches.
     expect(matchesAny("Seattle", "Bellevue, WA (HQ)")).toBe(true);
     expect(matchesAny("Seattle", "Bellevue, WA 98004")).toBe(true);
-    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(true);
+    // "WA-Remote" is the one shape that flipped in round 2 (fable review):
+    // once a bare hyphen joins onto the same word (fixing "on-site"/
+    // "in-office" below), "WA-Remote" no longer resolves "WA" as a region
+    // either, so Bellevue -- an ambiguous city requiring a positively named
+    // region (finding F4) -- is now rejected here instead of matched. See
+    // the "hyphen-joined word" test and regionOfField's doc comment.
+    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(false);
   });
 
   it("does not read a two-letter code that is also an English word out of prose", () => {
@@ -205,6 +211,21 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     expect(matchesAny("Seattle", "Bellevue, WA; in office 3 days")).toBe(true);
     expect(matchesAny("Seattle", "Tacoma, in office")).toBe(true);
     expect(matchesAny("Seattle", "Tacoma, or remote")).toBe(true);
+  });
+
+  it("does not read a hyphen-joined word as a region code either (fable review round 2)", () => {
+    // The naive version of the "not another word" rule treated a hyphen as
+    // ending the word, so "on-site" was misread as the two-letter region
+    // "ON" (Ontario) and a real Tacoma posting was wrongly rejected. A
+    // hyphen directly joining more letters must count as the SAME word
+    // continuing, exactly like a space would.
+    expect(matchesAny("Seattle", "Tacoma, on-site")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, in-office")).toBe(true);
+    expect(matchesAny("Seattle", "Tacoma, in-person")).toBe(true);
+    // Cost of the fix, accepted rather than hidden: a bare hyphen with no
+    // space still joins onto a real trailing region code, so this one shape
+    // stops resolving -- see the doc comment above regionOfField for why.
+    expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(false);
   });
 
   it("requires an ambiguous city to name its region positively (review finding F4)", () => {

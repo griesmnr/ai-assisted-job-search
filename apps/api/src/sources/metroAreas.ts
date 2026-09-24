@@ -159,6 +159,17 @@
  *    expansion. One real posting in the corpus has this shape. It costs
  *    coverage, never a false positive (the caller's literal matcher still
  *    matches it), which is the direction below.
+ *  - F1's hyphen-joining fix interacts with F4's region-required list: a
+ *    genuinely in-metro posting for one of the nine ambiguous cities that
+ *    spells its region as a bare-hyphen suffix ("Bellevue, WA-Remote", no
+ *    space before the dash) now finds no positively-named region at all
+ *    (the "WA-Remote" cost documented on `regionOfField`), and F4 then
+ *    requires exactly that for an ambiguous city -- so the posting is
+ *    rejected where the non-ambiguous cities in the same metro would just
+ *    fall back to "absence passes". Both fixes are individually correct;
+ *    stacked, they turn one specific coverage loss into a stricter one for
+ *    the nine-name subset. Unobserved in the corpus; recorded per the same
+ *    policy as the rest of this list.
  *
  * **The guard can only ever suppress an expansion, never create one**, and
  * that holds for every change above: expansion only ADDS matchers, and the
@@ -521,22 +532,46 @@ const MAX_REGION_WORDS = 3;
  *  - A prefix is only considered at a word boundary, and only for the first
  *    three words, because no region name is longer.
  *  - A prefix only counts as a region mention when what FOLLOWS it is not
- *    another word -- a digit, a bracket, a dash, or nothing at all.
- *    Whole-field equality got this protection for free, and it is what stops
+ *    another word -- a digit, a bracket, a dash-then-space, or nothing at
+ *    all. A hyphen DIRECTLY joining more letters ("on-site", "in-office",
+ *    "in-person") counts as the SAME word continuing, not a boundary --
+ *    fable review (ticket 410e1a2) found the naive version of this rule
+ *    (any non-letter ends the word) misread "Tacoma, on-site" as the region
+ *    "ON" (Ontario) and wrongly rejected a real Tacoma-area posting; "on"
+ *    was never meant to be read as a standalone token there. Whole-field
+ *    equality got the intended protection for free, and this is what stops
  *    the two-letter codes that are also English words ("IN", "OR", "ON",
- *    "OK", "ME", "DE", "LA") from firing on prose: "Bellevue, in office 3
- *    days" must not resolve to Indiana and throw away a real Bellevue
- *    posting. It costs nothing on the shapes that matter, because "MA 02149",
- *    "MA (HQ)", "NY - Hybrid" and "WA-Remote" all continue with a non-word.
+ *    "OK", "ME", "DE", "LA") from firing on prose generally: "Bellevue, in
+ *    office 3 days" must not resolve to Indiana and throw away a real
+ *    Bellevue posting. It costs nothing on the shapes that matter for a
+ *    TRAILING region code, because "MA 02149", "MA (HQ)", and "NY - Hybrid"
+ *    (space before the dash) all still continue with a non-word immediately.
  *    It also keeps "Everett, Massachusetts Ave" from resolving to
  *    Massachusetts on the strength of a street name.
+ *    Cost of joining on a bare hyphen: "Bellevue, WA-Remote" (no space
+ *    before the dash) no longer resolves "WA" as a region, since "-Remote"
+ *    now reads as the same word continuing. Unobserved in the app's real
+ *    fixture data and far rarer than the "on-site"/"in-office" shapes this
+ *    fix protects; accepted as a residual weakness rather than special-
+ *    cased, since distinguishing "trailing city qualifier" from "trailing
+ *    word that happens to start with a hyphen" from the text alone is not
+ *    reliable.
  *
- * Direction of error, which is what makes the looser matching safe: relative
- * to whole-field equality this function can only ever find MORE regions, and
- * a region it finds can only ever REJECT an expansion (the guard's sole
- * effect), never create one. So the prefix scan is strictly at least as
- * conservative as the code it replaces -- there is no posting that matched
- * before this change and does not match after it.
+ * Direction of error: relative to whole-field equality, this function can
+ * find MORE regions (the multi-word-prefix scan) but also FEWER in the
+ * bare-hyphen case just described -- it is NOT strictly a superset of what
+ * whole-field equality found. What IS still true, and what actually matters
+ * for this guard's safety: a region this function finds can only ever
+ * REJECT an expansion (the guard's sole effect), never create one -- so
+ * every change here can only turn a false-positive expansion into a correct
+ * rejection, or (the "WA-Remote" cost above) leave a true-positive
+ * expansion un-rejected when it should have been suppressed. Neither
+ * direction can make the module accept a posting it should not -- the
+ * failure modes this function can introduce are both coverage losses
+ * (a posting that should expand doesn't), never a bad expansion. (Prior
+ * text here claimed the prefix scan was "strictly at least as conservative"
+ * as whole-field equality with no posting ever losing a match -- the
+ * "on-site" finding above shows that direction is false; corrected.)
  */
 function regionOfField(field: string): string | undefined {
   const whole = lookupRegion(field);
@@ -560,7 +595,7 @@ function regionOfField(field: string): string | undefined {
   // correct if the table ever grows one that is.
   for (let i = prefixes.length - 1; i >= 0; i--) {
     const { text, rest } = prefixes[i];
-    if (/^\s*[A-Za-z]/.test(rest)) continue;
+    if (/^(\s*|-)[A-Za-z]/.test(rest)) continue;
     const region = lookupRegion(text);
     if (region !== undefined) return region;
   }
