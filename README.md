@@ -223,10 +223,10 @@ never look identical to a complete one.
 - Docker Desktop, for Postgres and RabbitMQ.
 - An Anthropic API key — not needed for `pnpm install`, migrations, or
   `pnpm test`/`pnpm lint`, but required before step 5 (`demo-match.ts`; see
-  that step for why it can't be skipped silently), and again for step 7's
-  scoring worker and for real (non-`estimateOnly`) `POST /searches` calls
-  in step 6 — the same key, just two different processes that each need
-  it in their own environment.
+  that step for why it can't be skipped silently), and again once `pnpm
+dev`'s scoring worker (step 6) actually scores something — real
+  (non-`estimateOnly`) `POST /searches` calls in step 8 are what triggers
+  that.
 
 ### 1. Enable pnpm and configure environment
 
@@ -339,9 +339,12 @@ score-job queues just had nobody consuming them. `pnpm dev` starting all
 four processes from one command in one terminal means that specific
 failure mode can't happen again from a missed manual step.
 
-All four run with the repo root as their working directory (`concurrently`'s
-default `cwd`), which matters for two cwd-relative reads that predate this
-ticket and are unchanged by it:
+Only the two `npx tsx` worker invocations run with the repo root as their
+working directory (`concurrently`'s default `cwd`, since neither is wrapped
+in a `pnpm --filter` call); `api` and `web` each run from their own package
+directory, because `pnpm --filter @app/<x> run dev` changes into that
+package before running its script. That distinction matters for two
+cwd-relative reads that predate this ticket and are unchanged by it:
 
 - `apps/api/src/load-env.ts`'s `loadEnvFile()` resolves `.env` from the repo
   root via `import.meta.url` regardless of caller cwd (ticket `2fd6706`), so
@@ -501,14 +504,13 @@ Watch the `[fetch-worker]`/`[score-worker]`-prefixed lines in the same
 how many jobs it normalized, then the score-job worker logs each one it
 scores against the resume via a real Anthropic call. This is the same flow
 this session's own live smoke tests ran for hours against a real Postgres,
-a real hand-built RabbitMQ broker, and real Claude calls — re-verified live
-for ticket `47407f7` after `pnpm dev` was changed to start both workers
-itself: `POST /searches` with `sourceIds: ["lever"]` published one
-`fetch.source` message, the `[fetch-worker]` pane picked it up and linked 15
-jobs, the `[score-worker]` pane consumed the resulting `score.job` messages
-one at a time (`prefetch(1)`) and produced real match scores via the
-Anthropic API, and `GET /searches/<searchId>` moved from `pending` to
-scores landing — all without starting anything by hand beyond `pnpm dev`.
+a real hand-built RabbitMQ broker, and real Claude calls, before this
+ticket folded both workers into `pnpm dev`. Not independently re-verified
+live for ticket `47407f7` itself in the environment this ticket was
+finished in — no RabbitMQ broker and no Docker CLI are available there —
+so treat "one `pnpm dev`, everything comes up" as following from the
+unchanged worker code plus `concurrently`'s documented behavior, not as a
+fresh end-to-end run.
 
 ### Verified
 
@@ -526,9 +528,9 @@ $ pnpm test
 
  RUN  v4.1.10
 
- Test Files  1 failed | 53 passed (54)
-      Tests  948 passed | 19 skipped (967)
-   Duration  43.08s (transform 4.07s, setup 0ms, import 51.85s, tests 87.24s, environment 71.55s)
+ Test Files  1 failed | 62 passed (63)
+      Tests  1203 passed | 19 skipped (1222)
+   Duration  41.77s (transform 3.48s, setup 0ms, import 47.60s, tests 83.38s, environment 77.91s)
 ```
 
 The one failing file is `worker/fetchSourceWorker.test.ts`; its 19 tests
