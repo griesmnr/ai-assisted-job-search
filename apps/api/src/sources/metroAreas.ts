@@ -556,12 +556,15 @@ const MAX_REGION_WORDS = 3;
  *    ("WA-Remote", "IL-Hybrid"); a hyphenated English word essentially never
  *    is ("co-located", "on-site", "Co-op"). This is an ASSUMPTION about the
  *    shape of real data, not a measurement -- checked once (2026-09-24)
- *    against every posting this repo's own fixtures/corpus carry: zero
- *    hyphen-joined two-letter tokens of any kind appear in a real `location`
- *    field, ambiguous or not, so the caps-vs-prose rule and every example
- *    below (including "ON-SITE"/"IN-OFFICE" as "common shouted-emphasis
- *    styling") are informed guesses about postings this app hasn't seen yet,
- *    not confirmed patterns. Revisit if a real posting ever contradicts one.
+ *    against every posting this repo's own fixtures/corpus carry: the only
+ *    hyphen-joined two-letter token in any real `location` field is
+ *    "US-Remote" (2 of the 200 postings in `prep/match-results.json`), and
+ *    "us" is not a key in `REGION_CODE_BY_NAME` -- so no region-code-shaped
+ *    token of this kind appears at all. The caps-vs-prose rule and every
+ *    example below (including "ON-SITE"/"IN-OFFICE" as caps styling real
+ *    postings are ASSUMED to also shout as emphasis) are informed guesses
+ *    about postings this app hasn't seen yet, not confirmed patterns.
+ *    Revisit if a real posting ever contradicts one.
  *
  *    So: an exact two-letter ALL-CAPS token is read as a code even across a
  *    bare hyphen, UNLESS it's one of `AMBIGUOUS_WORD_CODES` -- "in", "or",
@@ -602,16 +605,24 @@ const MAX_REGION_WORDS = 3;
  *     - For the seven ambiguous codes, "Tacoma, OR-Hybrid" does not resolve
  *       "OR" as a region even though it's written in caps, because
  *       `AMBIGUOUS_WORD_CODES` can't tell "real Oregon code" from "shouted
- *       'or'" apart -- a coverage loss. Harmless today because no
- *       non-region-required table city has a populous same-named place in
- *       Indiana/Oregon/Ontario/Oklahoma/Maine/Delaware/Louisiana (Burbank,
- *       OK exists but is a ~130-person town). Would need revisiting if a
- *       Portland group is ever added -- both its real namesakes, OR and ME,
- *       are ambiguous codes, so neither "Portland, OR-Hybrid" nor
- *       "Portland, ME-Hybrid" would resolve.
+ *       'or'" apart. For a NON-region-required city like Tacoma this is a
+ *       false positive (the hidden real code means a foreign posting is
+ *       wrongly accepted); for a `REGION_REQUIRED_CITIES` city it would be
+ *       a coverage loss instead (F4 needs a positively-named region, and
+ *       this rule hides the one that was there, so a genuine match is
+ *       wrongly rejected) -- the SAME hidden-code mechanism, but which
+ *       direction it fails in depends on the city. Harmless today because
+ *       no non-region-required table city has a populous same-named place
+ *       in Indiana/Oregon/Ontario/Oklahoma/Maine/Delaware/Louisiana
+ *       (Burbank, OK exists but is a ~130-person town). Would need
+ *       revisiting if a Portland group is ever added -- both its real
+ *       namesakes, OR and ME, are ambiguous codes, and Portland would be
+ *       region-required, so neither "Portland, OR-Hybrid" nor "Portland,
+ *       ME-Hybrid" would resolve, this time as a coverage loss.
  *     - Symmetrically, a NON-ambiguous code shouted in caps as emphasis is
  *       misread as real -- "Tacoma, CO-OP", "Tacoma, WI-FI", and "Tacoma,
- *       HI-TECH" all reject as Colorado/Wisconsin/Hawaii, a false positive.
+ *       HI-TECH" all reject as Colorado/Wisconsin/Hawaii, a coverage loss
+ *       (prose misread as a code, a real Tacoma posting wrongly rejected).
  *       Adding "co"/"wi"/"hi" to `AMBIGUOUS_WORD_CODES` would only recreate
  *       the OR-Hybrid residual for those three codes instead -- there is no
  *       version of this rule that closes both directions for the same
@@ -630,9 +641,9 @@ const MAX_REGION_WORDS = 3;
  * earlier versions of this paragraph claiming a one-directional invariant
  * were each wrong: this function's failure modes are symmetric too -- a
  * code misread out of prose is a wrong rejection (coverage loss, "on-site"
- * round 2, "co-located" round 4), and a real code hidden by the hyphen rule
- * is a failure to reject (false positive, "IL-Hybrid" round 3, "OR-Hybrid"
- * and "CO-OP" above).
+ * round 2, "co-located" round 4, "CO-OP" above), and a real code hidden by
+ * the hyphen rule is a failure to reject (false positive, "IL-Hybrid" round
+ * 3, "OR-Hybrid" above on a non-region-required city).
  */
 function regionOfField(field: string): string | undefined {
   const whole = lookupRegion(field);
@@ -667,9 +678,10 @@ function regionOfField(field: string): string | undefined {
     // caps ("WA-Remote", "IL-Hybrid"); a hyphenated English word essentially
     // never is ("co-located", "on-site", "Co-op"). So an exact two-letter
     // ALL-CAPS token is treated as a code even across a bare hyphen --
-    // unless it's one of the seven codes real postings also shout in caps as
-    // emphasis ("ON-SITE", "IN-OFFICE"), which still need the hyphen read as
-    // a continuation regardless of case.
+    // unless it's one of the seven codes assumed to also be shouted in caps
+    // as prose emphasis ("ON-SITE", "IN-OFFICE" -- see the doc comment
+    // above for why this is an assumption, not a measurement), which still
+    // need the hyphen read as a continuation regardless of case.
     const isTwoLetterToken = text.length === 2;
     const looksLikeShoutedCode = isTwoLetterToken && /^[A-Z]{2}$/.test(text);
     const treatHyphenAsContinuation =
