@@ -254,6 +254,18 @@ describe("compileMetroAreaMatchers — the region guard, per posting", () => {
     expect(matchesAny("Seattle", "Tacoma, CO-Hybrid")).toBe(false);
   });
 
+  it("accepts the symmetric cost: a non-ambiguous code shouted in caps as prose (fable review round 5)", () => {
+    // The all-caps discriminator can't tell "real code written in caps"
+    // from "ordinary word shouted in caps for emphasis" for a code that
+    // ISN'T on the ambiguous list -- there is no version of this rule that
+    // closes both directions for the same token. Documented, accepted
+    // residual weakness (see regionOfField's doc comment), pinned here so a
+    // future change that flips it is a visible, deliberate decision.
+    expect(matchesAny("Seattle", "Tacoma, CO-OP")).toBe(false);
+    expect(matchesAny("Seattle", "Tacoma, WI-FI")).toBe(false);
+    expect(matchesAny("Seattle", "Tacoma, HI-TECH")).toBe(false);
+  });
+
   it("requires an ambiguous city to name its region positively (review finding F4)", () => {
     // For the nine table cities whose bare name is a real place elsewhere,
     // "no region named" is not good enough on the posting side. Each of

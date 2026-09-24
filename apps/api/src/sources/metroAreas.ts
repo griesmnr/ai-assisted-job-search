@@ -554,39 +554,68 @@ const MAX_REGION_WORDS = 3;
  *    postal codes AND short English words/prefixes ("on", "in", "co", "hi").
  *    For these, a real "City, ST-suffix" code is written in caps
  *    ("WA-Remote", "IL-Hybrid"); a hyphenated English word essentially never
- *    is ("co-located", "on-site", "Co-op"). So an exact two-letter ALL-CAPS
- *    token is read as a code even across a bare hyphen, UNLESS it's one of
- *    `AMBIGUOUS_WORD_CODES` -- "in", "or", "on", "ok", "me", "de", "la" --
- *    which real postings also shout in caps as emphasis ("ON-SITE",
- *    "IN-OFFICE") and which therefore still need the hyphen read as a
- *    continuation regardless of case.
+ *    is ("co-located", "on-site", "Co-op"). This is an ASSUMPTION about the
+ *    shape of real data, not a measurement -- checked once (2026-09-24)
+ *    against every posting this repo's own fixtures/corpus carry: zero
+ *    hyphen-joined two-letter tokens of any kind appear in a real `location`
+ *    field, ambiguous or not, so the caps-vs-prose rule and every example
+ *    below (including "ON-SITE"/"IN-OFFICE" as "common shouted-emphasis
+ *    styling") are informed guesses about postings this app hasn't seen yet,
+ *    not confirmed patterns. Revisit if a real posting ever contradicts one.
+ *
+ *    So: an exact two-letter ALL-CAPS token is read as a code even across a
+ *    bare hyphen, UNLESS it's one of `AMBIGUOUS_WORD_CODES` -- "in", "or",
+ *    "on", "ok", "me", "de", "la" -- which are assumed capable of being
+ *    shouted in caps as prose too ("ON-SITE", "IN-OFFICE") and therefore
+ *    still need the hyphen read as a continuation regardless of case.
+ *    Because `lookupRegion` itself is case-insensitive, this makes the
+ *    function case-SENSITIVE in exactly one place it wasn't before: a
+ *    two-letter code joined by a bare hyphen only resolves when written in
+ *    consistent caps. "Bellevue, WA-Remote" resolves; "Bellevue,
+ *    wa-remote" and "Bellevue, Wa-Remote" do not (a coverage loss on a
+ *    region-required city), and "Burbank, il-hybrid" no longer rejects
+ *    either (a false positive on a non-region-required one) -- both
+ *    unobserved shapes, accepted for the same reason as the rest of this
+ *    list.
  *
  *    Three review rounds (ticket 410e1a2) got this rule to its current
  *    shape, each closing a hole the previous one opened in the other
  *    direction: round 2 found the original any-non-letter-is-a-boundary
  *    rule misread "Tacoma, on-site" as the region "ON" (Ontario) and
- *    wrongly rejected a real posting; widening the hyphen-continuation rule
- *    to every code fixed that but (round 3) broke "Burbank, IL-Hybrid" --
- *    Burbank is real in both the LA metro and Chicago's, and the widened
- *    rule stopped seeing "IL" as a region at all, which is a false-positive
- *    expansion, not a coverage loss. Narrowing the exception to a curated
- *    word list (`AMBIGUOUS_WORD_CODES`) fixed that, but (round 4) the list
+ *    wrongly rejected a real posting -- a coverage loss (prose misread as a
+ *    code, wrong rejection). Widening the hyphen-continuation rule to every
+ *    code fixed that but (round 3) broke "Burbank, IL-Hybrid" -- Burbank is
+ *    real in both the LA metro and Chicago's, and the widened rule stopped
+ *    seeing "IL" as a region at all -- a false positive (a real code
+ *    hidden, wrong acceptance). Narrowing the exception to a curated word
+ *    list (`AMBIGUOUS_WORD_CODES`) fixed that, but (round 4) the list
  *    itself was incomplete -- it didn't include "co", so "Tacoma,
- *    co-located" still misread as Colorado. The all-caps discriminator
- *    replaces "did we enumerate every English word this could collide
- *    with" with a property of the DATA: real codes in this shape are
- *    written in caps, ordinary words aren't. `AMBIGUOUS_WORD_CODES` still
- *    exists only for the much narrower case of a real code ALSO written in
- *    caps as prose.
+ *    co-located" still misread as Colorado, ANOTHER coverage loss in the
+ *    same direction as round 2's, not the false-positive direction round 3
+ *    fixed. The all-caps discriminator replaces "did we enumerate every
+ *    English word this could collide with" with a property of the DATA:
+ *    real codes in this shape are assumed written in caps, ordinary words
+ *    aren't. `AMBIGUOUS_WORD_CODES` still exists only for the narrower case
+ *    of a code ALSO plausibly written in caps as prose.
  *
- *    Residual weakness, accepted rather than chased further: this makes
- *    the same trade for the seven ambiguous codes that the curated list
- *    always made -- "Tacoma, OR-Hybrid" does not resolve "OR" as a region
- *    even though it's written in caps, because `AMBIGUOUS_WORD_CODES`
- *    can't tell "real Oregon code" from "shouted 'or'" apart. Harmless
- *    today because no non-region-required table city has a same-named
- *    place in Indiana/Oregon/Ontario/Oklahoma/Maine/Delaware/Louisiana;
- *    would need revisiting if one is ever added.
+ *    Residual weaknesses, accepted rather than chased further:
+ *     - For the seven ambiguous codes, "Tacoma, OR-Hybrid" does not resolve
+ *       "OR" as a region even though it's written in caps, because
+ *       `AMBIGUOUS_WORD_CODES` can't tell "real Oregon code" from "shouted
+ *       'or'" apart -- a coverage loss. Harmless today because no
+ *       non-region-required table city has a populous same-named place in
+ *       Indiana/Oregon/Ontario/Oklahoma/Maine/Delaware/Louisiana (Burbank,
+ *       OK exists but is a ~130-person town). Would need revisiting if a
+ *       Portland group is ever added -- both its real namesakes, OR and ME,
+ *       are ambiguous codes, so neither "Portland, OR-Hybrid" nor
+ *       "Portland, ME-Hybrid" would resolve.
+ *     - Symmetrically, a NON-ambiguous code shouted in caps as emphasis is
+ *       misread as real -- "Tacoma, CO-OP", "Tacoma, WI-FI", and "Tacoma,
+ *       HI-TECH" all reject as Colorado/Wisconsin/Hawaii, a false positive.
+ *       Adding "co"/"wi"/"hi" to `AMBIGUOUS_WORD_CODES` would only recreate
+ *       the OR-Hybrid residual for those three codes instead -- there is no
+ *       version of this rule that closes both directions for the same
+ *       token, only a choice of which one to accept.
  *
  * Direction of error: the prefix scan finds a strict superset of what
  * whole-field equality finds (whole-field is always tried first, and
@@ -598,12 +627,12 @@ const MAX_REGION_WORDS = 3;
  * instead CREATES an acceptance that whole-field equality would have denied
  * (adding a true positive, e.g. "Bellevue, WA (HQ)" -- F4 requires exactly
  * this). Neither is a coverage-only or safety-only guarantee, which is why
- * two earlier versions of this paragraph claiming a one-directional
- * invariant were each wrong: this function's failure modes are symmetric
- * too -- a code misread out of prose is a wrong rejection (coverage loss,
- * "on-site", round 2), and a real code hidden by the hyphen rule is a
- * failure to reject (false positive, "IL-Hybrid" round 3, "co-located"
- * round 4, "OR-Hybrid" above).
+ * earlier versions of this paragraph claiming a one-directional invariant
+ * were each wrong: this function's failure modes are symmetric too -- a
+ * code misread out of prose is a wrong rejection (coverage loss, "on-site"
+ * round 2, "co-located" round 4), and a real code hidden by the hyphen rule
+ * is a failure to reject (false positive, "IL-Hybrid" round 3, "OR-Hybrid"
+ * and "CO-OP" above).
  */
 function regionOfField(field: string): string | undefined {
   const whole = lookupRegion(field);
