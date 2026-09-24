@@ -764,6 +764,50 @@ describe("POST /searches — fan-out (ticket 4f88339, design c54b9e0 §4.1)", ()
     expect(estimateResponse.statusCode).toBe(400);
   });
 
+  it("accepts a real commitmentIn value on both routes instead of 400ing it as an unknown property (ticket 807561c)", async () => {
+    // The exact live defect: `SearchCriteria.commitmentIn` (packages/shared,
+    // added by ticket 18c9f18) and the web UI's commitment checkboxes both
+    // exist and work, but `searchCriteriaSchema` here never listed
+    // `commitmentIn` as an allowed property -- so `additionalProperties:
+    // false` 400'd `"body/criteria must NOT have additional properties"`
+    // for `commitmentIn` on EVERY request that set it, i.e. checking any of
+    // Full-time/Part-time/Contract in the UI. This pins both routes
+    // accepting it so the gap (added elsewhere, never added here) can't
+    // silently reopen the same way again.
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [
+        matchingJob(`commitment-${randomUUID()}`),
+      ]),
+      publishFetchSource: fakePublisher().publish,
+    });
+    const resumeId = await createResume(app);
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { commitmentIn: ["full-time"] },
+      },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: {
+        resumeId,
+        sourceIds: [DATA_SOURCE],
+        criteria: { commitmentIn: ["full-time"] },
+      },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+  });
+
   it("a synchronous throw from getScoreJob() never wedges the resume, and nothing is published (ticket 59fdc52 review round 3, F2)", async () => {
     // The original defect was an in-memory guard set before
     // `getScoreJob()` threw, with nothing left to release it. The guard is
