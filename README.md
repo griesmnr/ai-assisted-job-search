@@ -347,16 +347,21 @@ ticket and are unchanged by it:
   root via `import.meta.url` regardless of caller cwd (ticket `2fd6706`), so
   this isn't actually cwd-sensitive any more — noted here only because the
   next point is.
-- The scoring worker's usage-stats file (`USAGE_STATS_PATH`,
-  `scoreJobWorker.ts`) and `POST /searches/estimate`'s pre-search cost
-  estimate both read `prep/scoring-usage-stats.json` as a **genuinely**
-  cwd-relative path. Because `pnpm dev` now runs the scoring worker from the
-  repo root (not `apps/api/`), both reads see the same file — the
-  estimate-route half of this cwd mismatch (ticket `2b93534`) no longer
-  applies when the worker is started via `pnpm dev`; it would still apply if
-  you resurrected the worker's old `pnpm --filter @app/api worker:score-job`
-  invocation with a different cwd. That form isn't documented below any
-  more for exactly this reason.
+- The scoring worker's usage-stats read (`USAGE_STATS_PATH`,
+  `scoreJobWorker.ts:209` — a bare `"prep/scoring-usage-stats.json"`
+  string) is **genuinely, still, cwd-relative** — a separate constant from,
+  and NOT fixed by, ticket `2b93534` (that ticket fixed only
+  `POST /searches/estimate`'s OWN read, `pipeline.ts`'s
+  `DEFAULT_USAGE_STATS_PATH`, to an absolute `import.meta.url`-derived
+  path — already cwd-independent regardless of this ticket). Because
+  `pnpm dev` now runs the scoring worker from the repo root (not
+  `apps/api/`), its bare relative path happens to resolve to the same real
+  file the estimate route already reads absolutely — so the two now agree
+  in practice, but only the estimate route's own read is actually fixed;
+  the worker's remains a real, unfixed cwd-relative constant that would
+  break again under a different invocation cwd (e.g. the worker's old
+  `pnpm --filter @app/api worker:score-job` form). That form isn't
+  documented below any more for exactly this reason.
 
 Open `http://localhost:5173` and the app is live against whatever
 Postgres/RabbitMQ instance step 2 started.
@@ -374,29 +379,60 @@ actually happens if you jump the gun:
   `[fetch-worker]`/`[score-worker]` prefix and moves on — it does not kill
   the other three processes, so `web` and (once Postgres answers) `api` keep
   running with two workers down.
-- **`apps/api`'s `predev` (`drizzle-kit migrate`) hangs, it does not
-  crash**, if Postgres specifically isn't accepting connections yet:
-  `drizzle-kit` retries silently and indefinitely on `applying
-migrations...` with no timeout and no error — the terminal just looks
-  stuck under the `[api]` prefix. It resolves on its own once Postgres
-  finishes starting; it will not resolve on its own if Postgres is down for
-  another reason.
+- **`apps/api`'s `predev` (`drizzle-kit migrate`) fails FAST and SILENTLY**
+  if nothing is listening on Postgres's port yet (the actual case you hit
+  by starting `pnpm dev` before `docker compose up -d` has finished) --
+  measured: it exits in about 1 second, with exit code 1 and **no error
+  text printed at all**. `concurrently` shows this as
+  `[api] pnpm --filter @app/api run dev exited with code 1` and nothing
+  else -- there is no visible cause to point at. (An earlier version of
+  this note claimed `drizzle-kit` hangs and self-heals here -- that is
+  only true for a different, rarer failure shape, a host that accepts the
+  TCP connection but never responds at all; it is not what "Postgres isn't
+  up yet" actually looks like on a normal `docker compose` localhost bind,
+  which just refuses the connection outright and exits immediately. See
+  ticket `47407f7`'s review for the measurements behind this correction.)
 - **`web` is unaffected** either way — Vite's dev server doesn't touch
   Postgres or RabbitMQ at all, so it comes up normally even when both
-  workers are dead and `api` is wedged.
+  workers are dead and `api` never started.
 
-Net effect of starting too early: the browser loads, but searches never
-move off "pending" (no live worker) or `pnpm dev` just sits there under
-`[api] applying migrations...` forever. Either way, the fix is the same:
-Ctrl-C the whole thing, confirm `docker compose ps` shows both containers
-`healthy`, and run `pnpm dev` again — restarting is cheap and there's no
-partial-startup state to clean up first.
+Net effect of starting too early: the browser loads, but `[api]` printed a
+bare "exited with code 1" with no cause shown, and/or `[fetch-worker]`/
+`[score-worker]` printed a real `ECONNREFUSED` and exited too — so searches
+never move off "pending" because nothing is listening on either end. If you
+see any of the four labeled processes report an early exit, that is the
+signal, not a hang. Either way, the fix is the same: Ctrl-C the whole thing,
+confirm `docker compose ps` shows both containers `healthy`, and run
+`pnpm dev` again — restarting is cheap and there's no partial-startup state
+to clean up first.
 
 **Shutdown**: Ctrl-C (SIGINT) on the `pnpm dev` terminal stops all four
 processes — `concurrently` forwards the signal to every child, and none of
 them lingers as an orphan. Verified live by inspecting the full process
 tree before and after a SIGINT: zero descendants remained afterward and
 ports 3000/5173 were both free.
+
+**Running `pnpm dev` a second time while one is already up** (e.g. a second
+terminal, or forgetting the first is still running) does not fail the same
+way on all four processes — not independently measured live, but expected
+from how each one binds:
+
+- **`web`** now fails loudly and immediately: `--strictPort` (added by this
+  ticket) makes the second Vite refuse to silently fall back to 5174 — it
+  exits with a port-in-use error you'll see in the `[web]` pane.
+- **`api`** runs under `tsx watch`, which wraps the actual Fastify process.
+  If the inner server can't bind port 3000 because the first `api` already
+  holds it, that failure happens inside the wrapped process — `tsx watch`
+  itself doesn't necessarily exit, so `concurrently`'s `[api]` pane may not
+  show a labeled "exited with code N" line the way a real crash does. The
+  only visible sign can be an address-in-use error buried in the log output.
+- **The two workers bind no port at all**, so a second copy of either starts
+  up cleanly and just becomes a second consumer competing for the same
+  RabbitMQ queue — no crash, no error, just messages silently split between
+  two processes instead of one.
+
+If searches behave strangely with no process reporting an exit, check for a
+second `pnpm dev` before assuming something else is wrong.
 
 ### 7. Restarting just one process
 
