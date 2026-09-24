@@ -402,6 +402,28 @@ export type SearchCriteria = {
   /** Place names that qualify regardless of work arrangement — i.e. "near
    * enough to commute". */
   nearLocations?: string[];
+  /**
+   * Ticket 410e1a2: let each `nearLocations` phrase ALSO match the other
+   * cities of its metro area — "Seattle" also matching a posting located
+   * only in "Bellevue, WA" or "Kirkland, WA".
+   *
+   * OPT-IN, and it stays opt-in. Omitted/`false` is the default and means
+   * exactly today's literal matching, byte for byte (the flag selects a
+   * different matcher-compiling branch, so "off" is the original code path
+   * rather than a re-derivation of it). Nicole raised both sides herself
+   * while dogfooding a real Seattle search: some searchers want the metro
+   * assumed, others would be annoyed by an unrequested Kirkland commute —
+   * so this is a visible checkbox, not a default, and the UI label names
+   * the cities it will pull in.
+   *
+   * Only `nearLocations` is affected; `remoteOk` and every title axis are
+   * untouched, and the flag alone (with no `nearLocations`) is not a
+   * location restriction. Which cities count is a small curated,
+   * evidence-carrying table of OMB/Census metro areas —
+   * apps/api/src/sources/metroAreas.ts, which also documents what is
+   * deliberately NOT grouped and why.
+   */
+  expandMetroAreas?: boolean;
   /** Accept confirmed-remote roles anywhere in-country. */
   remoteOk?: boolean;
   /**

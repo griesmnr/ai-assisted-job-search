@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SearchCriteriaForm } from "./SearchCriteriaForm";
 
 afterEach(() => {
@@ -12,6 +12,7 @@ function baseProps() {
   return {
     titleChips: [],
     nearLocations: "",
+    expandMetroAreas: false,
     remoteOk: false,
     anyLocationOk: false,
     commitmentIn: [] as ("full-time" | "part-time" | "contract")[],
@@ -84,6 +85,70 @@ describe("SearchCriteriaForm — red highlight on missing location signal (ticke
   it("still renders the existing text warning alongside the highlight (kept for accessibility, not depended on)", () => {
     render(<SearchCriteriaForm {...baseProps()} />);
 
+    expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Ticket 410e1a2. Nicole's own acceptance bar for this one was visibility --
+ * "I want it given that it meets both users' needs AS LONG AS IT CAN BE
+ * SEEN" -- so these tests assert the control renders, renders unchecked, and
+ * says in its own label what it will actually do, not just that the prop is
+ * wired.
+ */
+describe("SearchCriteriaForm — metro-area expansion checkbox (ticket 410e1a2)", () => {
+  it("renders in the location section, unchecked, with a label naming real sibling cities", () => {
+    render(<SearchCriteriaForm {...baseProps()} />);
+
+    const checkbox = screen.getByLabelText(/Also include nearby cities in the same metro area/);
+    expect(checkbox).toBeInTheDocument();
+    expect(checkbox).not.toBeChecked();
+    // Specific enough that a user can predict the effect before running a
+    // search that costs money, and phrased as an addition ("Also include")
+    // rather than as something already happening.
+    expect(
+      screen.getByText(/a Seattle search would also match Bellevue, Kirkland, Redmond/),
+    ).toBeInTheDocument();
+    // Inside the same block the location input lives in, not stranded
+    // elsewhere in the form.
+    const locationSection = screen
+      .getByLabelText(/Locations you'd commute to/)
+      .closest(".search-criteria-location-section");
+    expect(locationSection).toContainElement(checkbox);
+  });
+
+  it("reports the opt-in up to App.tsx while leaving every other criteria field alone", () => {
+    const onChange = vi.fn();
+    render(<SearchCriteriaForm {...baseProps()} nearLocations="seattle" onChange={onChange} />);
+
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+
+    expect(onChange).toHaveBeenCalledWith({
+      nearLocations: "seattle",
+      expandMetroAreas: true,
+      remoteOk: false,
+      anyLocationOk: false,
+      commitmentIn: [],
+    });
+  });
+
+  it("renders checked when the caller says it is on", () => {
+    render(<SearchCriteriaForm {...baseProps()} expandMetroAreas={true} />);
+    expect(
+      screen.getByLabelText(/Also include nearby cities in the same metro area/),
+    ).toBeChecked();
+  });
+
+  it("does NOT count as a location signal — it widens the location box, it is not a substitute for it", () => {
+    // Otherwise checking this box with an empty location field would clear
+    // the ticket-b9e6251 warning and unlock the estimate for a search with
+    // no location restriction at all -- the exact silent-unrestricted-search
+    // state that ticket exists to prevent.
+    render(<SearchCriteriaForm {...baseProps()} expandMetroAreas={true} />);
+
+    expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveClass(
+      "search-criteria-input-invalid",
+    );
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
 });

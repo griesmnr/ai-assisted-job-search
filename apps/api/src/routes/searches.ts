@@ -167,6 +167,12 @@ const searchCriteriaSchema = {
     titleInclude: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
     titleExclude: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
     nearLocations: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 20 },
+    // Ticket 410e1a2. Listed here because `additionalProperties: false` above
+    // is enforced (not merely stripped -- see the round-3/F1 test in
+    // searches.test.ts), so a field the schema does not name is a 400, not a
+    // silently-ignored flag: the checkbox would fail the whole search rather
+    // than quietly do nothing.
+    expandMetroAreas: { type: "boolean" },
     remoteOk: { type: "boolean" },
     // Ticket 807561c: `@app/shared`'s `SearchCriteria.commitmentIn` (added by
     // ticket 18c9f18, and already wired all the way through

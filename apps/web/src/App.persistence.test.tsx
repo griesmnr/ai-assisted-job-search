@@ -337,18 +337,20 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // No resume means nothing worth restoring; the empty screen IS the
     // right state, and no record should have been written to resurrect.
     expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("jobsearch.web.appState.v4")).toBeNull();
+    expect(sessionStorage.getItem("jobsearch.web.appState.v5")).toBeNull();
   });
 
   it("ignores a corrupt record and starts clean rather than crashing", async () => {
     // Ticket b9e6251 bumped this key from .v1 to .v2 (CriteriaFormState
     // gained `anyLocationOk`); ticket ffbf9fb bumped it again to .v3
     // (PersistedAppState gained `scoreFloor`); ticket 38a7598 bumped it
-    // again to .v4 (PersistedAppState gained `resumeNickname`) -- must set
+    // again to .v4 (PersistedAppState gained `resumeNickname`); ticket
+    // 410e1a2 bumped it to .v5 (CriteriaFormState gained
+    // `expandMetroAreas`) -- must set
     // the key the app ACTUALLY reads, or this test would silently pass for
     // the wrong reason (never even attempting to read the "corrupt" data
     // because it's under a key nothing reads anymore).
-    sessionStorage.setItem("jobsearch.web.appState.v4", '{"resumeId": 42}');
+    sessionStorage.setItem("jobsearch.web.appState.v5", '{"resumeId": 42}');
     mockHappyPath();
 
     render(<App />);
@@ -366,7 +368,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // the slider itself renders clamped at 90 (a visible mismatch between
     // what the UI shows and what's actually sent to the server).
     sessionStorage.setItem(
-      "jobsearch.web.appState.v4",
+      "jobsearch.web.appState.v5",
       JSON.stringify({
         resumeId: "resume-1",
         resumeNickname: "Resume 1",
@@ -375,6 +377,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
         titleChips: ["Backend Engineer"],
         criteriaForm: {
           nearLocations: "",
+          expandMetroAreas: false,
           remoteOk: false,
           anyLocationOk: true,
           commitmentIn: [],

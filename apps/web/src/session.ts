@@ -48,13 +48,20 @@ import type { EstimateSearchResponse } from "@app/shared";
 
 /** Bump the `.vN` suffix on any shape change: an old record then simply
  * fails to load and the app starts clean, instead of being hand-migrated. */
-const APP_STATE_KEY = "jobsearch.web.appState.v4";
+const APP_STATE_KEY = "jobsearch.web.appState.v5";
 const ACTIVE_SEARCH_KEY = "jobsearch.web.activeSearch.v1";
 
 export type Commitment = "full-time" | "part-time" | "contract";
 
 export type CriteriaFormState = {
   nearLocations: string;
+  /** Ticket 410e1a2: the explicit "also count nearby cities in the same
+   * metro area" opt-in, off unless the user checks it. Bumped
+   * `APP_STATE_KEY` to `.v5` for this field, per this file's own
+   * version-bump convention above -- a persisted v4 record has no such key,
+   * and starting clean is the intended handling: the safe value for an
+   * opt-in is "not opted in". */
+  expandMetroAreas: boolean;
   remoteOk: boolean;
   /** Ticket b9e6251: the explicit "I'll work anywhere" opt-in -- required
    * before an otherwise-empty location criteria is honored as "search
@@ -164,13 +171,20 @@ const COMMITMENTS: readonly string[] = ["full-time", "part-time", "contract"];
 
 function parseCriteriaForm(value: unknown): CriteriaFormState | undefined {
   if (!isRecord(value)) return undefined;
-  const { nearLocations, remoteOk, anyLocationOk, commitmentIn } = value;
+  const { nearLocations, expandMetroAreas, remoteOk, anyLocationOk, commitmentIn } = value;
   if (typeof nearLocations !== "string") return undefined;
+  if (typeof expandMetroAreas !== "boolean") return undefined;
   if (typeof remoteOk !== "boolean") return undefined;
   if (typeof anyLocationOk !== "boolean") return undefined;
   if (!isStringArray(commitmentIn)) return undefined;
   if (!commitmentIn.every((entry) => COMMITMENTS.includes(entry))) return undefined;
-  return { nearLocations, remoteOk, anyLocationOk, commitmentIn: commitmentIn as Commitment[] };
+  return {
+    nearLocations,
+    expandMetroAreas,
+    remoteOk,
+    anyLocationOk,
+    commitmentIn: commitmentIn as Commitment[],
+  };
 }
 
 export function readAppState(): PersistedAppState | undefined {
