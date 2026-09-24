@@ -47,6 +47,12 @@ vi.mock("./api/client", () => ({
   // always-rejecting stub (treated as "nothing to show" -- see
   // SearchFlow.tsx's startEstimateProgressPolling) is enough.
   getEstimateProgress: () => Promise.reject(new Error("no progress tracked in this test")),
+  // Ticket 303cff0 ("My Resumes" tab): useResumesList fetches this
+  // unconditionally on every App mount now, regardless of which tab is
+  // active -- none of these tests assert on it, so a static empty list
+  // (same pattern as getEstimateProgress above) is enough.
+  listResumes: () => Promise.resolve({ resumes: [] }),
+  getResume: () => Promise.reject(new Error("no resume text fetched in this test")),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));

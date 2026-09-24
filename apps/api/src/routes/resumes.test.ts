@@ -254,6 +254,82 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
   });
 });
 
+// Ticket 303cff0 ("My Resumes" tab): lists every saved resume, cheap
+// (no `resumeText`) and ordered oldest-first to match nickname numbering.
+//
+// Ticket c434a6e: this whole FILE shares one test database with no
+// truncation between tests (see `GET /results`' own comment on this a
+// few describe blocks down) -- every test below asserts against a
+// specific, randomUUID-unique resume it just created rather than
+// against the list's total contents or length, so it's robust to
+// whatever earlier tests in this file have already inserted.
+describe("GET /resumes (ticket 303cff0)", () => {
+  it("responds 200 with a resumes array", async () => {
+    const app = buildTestApp();
+    const response = await app.inject({ method: "GET", url: "/resumes" });
+    expect(response.statusCode).toBe(200);
+    expect(Array.isArray((response.json() as { resumes: unknown }).resumes)).toBe(true);
+  });
+
+  it("returns created resumes with id, nickname, and an ISO createdAt -- no resumeText", async () => {
+    const app = buildTestApp();
+    const resumeText = `Listed resume ${randomUUID()}`;
+    const created = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id, resumeNickname } = created.json() as CreateResumeResponse;
+
+    const response = await app.inject({ method: "GET", url: "/resumes" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { resumes: Array<Record<string, unknown>> };
+    const listed = body.resumes.find((r) => r.id === id);
+    expect(listed).toBeDefined();
+    expect(listed).toMatchObject({ id, resumeNickname });
+    expect(typeof listed?.createdAt).toBe("string");
+    expect(Number.isNaN(Date.parse(listed?.createdAt as string))).toBe(false);
+    expect(listed).not.toHaveProperty("resumeText");
+  });
+
+  it("orders resumes oldest-first, matching their 'Resume N' nickname numbering", async () => {
+    const app = buildTestApp();
+    const first = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Ordering-first resume ${randomUUID()}` },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Ordering-second resume ${randomUUID()}` },
+    });
+    const firstId = (first.json() as CreateResumeResponse).id;
+    const secondId = (second.json() as CreateResumeResponse).id;
+
+    const response = await app.inject({ method: "GET", url: "/resumes" });
+    const ids = (response.json() as { resumes: Array<{ id: string }> }).resumes.map((r) => r.id);
+    expect(ids.indexOf(firstId)).toBeLessThan(ids.indexOf(secondId));
+  });
+
+  it("reflects a rename made via PATCH /resumes/:id", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Renamed-before-listing resume ${randomUUID()}` },
+    });
+    const { id } = created.json() as CreateResumeResponse;
+    await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: "Renamed before listing" },
+    });
+
+    const response = await app.inject({ method: "GET", url: "/resumes" });
+    const listed = (
+      response.json() as { resumes: Array<{ id: string; resumeNickname: string }> }
+    ).resumes.find((r) => r.id === id);
+    expect(listed?.resumeNickname).toBe("Renamed before listing");
+  });
+});
+
 describe("GET /resumes/:id", () => {
   it("returns a previously created resume, including its nickname", async () => {
     const app = buildTestApp();

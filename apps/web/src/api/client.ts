@@ -17,8 +17,10 @@ import type {
   EstimateSearchRequest,
   EstimateSearchResponse,
   GetAllResultsResponse,
+  GetResumeResponse,
   GetResumeResultsResponse,
   GetSourcesResponse,
+  ListResumesResponse,
   SearchCriteria,
   SearchStatusResponse,
   SetJobStatusResponse,
@@ -108,6 +110,23 @@ export function createResume(resumeText: string): Promise<CreateResumeResponse> 
     method: "POST",
     body: JSON.stringify({ resumeText }),
   });
+}
+
+/**
+ * Ticket 303cff0 ("My Resumes" tab): every saved resume's id/nickname/
+ * createdAt, cheap (no `resumeText`) — the tab fetches a resume's full
+ * text on demand, one at a time, via `getResume` below.
+ */
+export function listResumes(): Promise<ListResumesResponse> {
+  return request<ListResumesResponse>("/resumes");
+}
+
+/**
+ * Ticket 303cff0: a single resume's full text, fetched on demand when the
+ * "My Resumes" tab expands one row — never preloaded for the whole list.
+ */
+export function getResume(resumeId: string): Promise<GetResumeResponse> {
+  return request<GetResumeResponse>(`/resumes/${encodeURIComponent(resumeId)}`);
 }
 
 /**

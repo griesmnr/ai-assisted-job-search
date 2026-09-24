@@ -43,6 +43,7 @@ import {
   type GetAllResultsResponse,
   type GetResumeResponse,
   type GetResumeResultsResponse,
+  type ListResumesResponse,
   type UpdateResumeNicknameResponse,
   type UserJobStatus,
   USER_JOB_STATUSES,
@@ -200,6 +201,35 @@ export function registerResumeRoutes(
       return reply.code(200).send(response);
     },
   );
+
+  // Ticket 303cff0 ("My Resumes" tab, Nicole: "there are multiple resumes
+  // going on... I think it's reasonable that if a user's got a resume on
+  // here, they should be able to at least view it"). Deliberately cheap:
+  // `resumeText` is left out (see `ResumeSummary`'s own doc comment) so
+  // this stays fast regardless of how many/how long the saved resumes get
+  // -- the tab fetches a single resume's full text on demand via the
+  // existing `GET /resumes/:id`, not by preloading every one here.
+  //
+  // Ordered oldest-first: nicknames are assigned "Resume 1", "Resume 2",
+  // ... in creation order (ticket 38a7598), so this keeps list order and
+  // nickname order in agreement rather than fighting each other. `id` is a
+  // `randomUUID()` (not time-ordered) so it's only a tiebreak, not the
+  // primary sort.
+  app.get("/resumes", async (_request, reply) => {
+    const rows = await db
+      .select({
+        id: resumes.id,
+        resumeNickname: resumes.resumeNickname,
+        createdAt: resumes.createdAt,
+      })
+      .from(resumes)
+      .orderBy(asc(resumes.createdAt), asc(resumes.id));
+
+    const response: ListResumesResponse = {
+      resumes: rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() })),
+    };
+    return reply.send(response);
+  });
 
   app.get<{ Params: { id: string } }>("/resumes/:id", async (request, reply) => {
     const rows = await db
