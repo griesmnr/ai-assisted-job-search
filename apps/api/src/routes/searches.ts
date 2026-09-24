@@ -134,7 +134,7 @@
  * `survivedFilter === 0` (and `status !== "error"` — an error means "we
  * don't know," not "we know it's empty," and must never be cached as a
  * zero); `POST /searches` READS it per selected source, keyed on the EXACT
- * `(resumeId, criteria, sourceId)` triple, before deciding whether to
+ * `(resumeId, criteria, sourceId, selection)` combination, before deciding whether to
  * publish a `fetch.source` message for that source at all. A source hitting
  * the cache gets its `search_sources` row written `complete`/`linkedJobCount:
  * 0` directly, in the SAME insert that writes every other source's `pending`
