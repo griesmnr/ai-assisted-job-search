@@ -36,10 +36,20 @@ const SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "3-6 concise job title keywords (e.g. 'Backend Engineer', 'Technical Writer') this " +
-        "person would plausibly search for, based on their real experience in the resume. " +
-        "Prefer the level/seniority actually evidenced in the resume -- do not default to " +
-        "entry-level or omit senior/staff/principal titles if the resume supports them.",
+        "3-6 short job title keywords (e.g. 'Backend Engineer', 'Full Stack Engineer', " +
+        "'Technical Writer') this person would plausibly search for, based on their real " +
+        "experience in the resume. Prefer the level/seniority actually evidenced in the " +
+        "resume -- do not default to entry-level or omit senior/staff/principal titles if " +
+        "the resume supports them. Each title must be a short role phrase ONLY: no " +
+        "parentheses, no slashes, and no bolted-on technology, framework, or language names " +
+        "(no 'Java', 'Node.js', 'React', 'Cloud', 'Microservices', etc. in the title text " +
+        "itself) -- these are the exact titles a real job board uses, not a summary of the " +
+        "resume's tech stack. Good: 'Backend Engineer', 'Full Stack Engineer', 'Software " +
+        "Engineer', 'Data Scientist', 'Product Manager'. Bad: 'Backend Software Engineer " +
+        "(Java/Node.js)' (parenthetical + slash + tech names), 'React/Angular Frontend " +
+        "Developer' (slash + tech names), 'Software Developer - Cloud & Microservices' " +
+        "(tech names bolted on after a dash). If the resume's tech stack matters, it belongs " +
+        "in the person's evidenced experience, not folded into the title string.",
     },
   },
   required: ["titles"],
@@ -49,7 +59,11 @@ const SCHEMA = {
 const PROMPT_PREFIX =
   "You are helping someone search for jobs. Read their resume below and suggest job title " +
   "keywords they would plausibly search for -- grounded in their actual experience and " +
-  "seniority as shown in the resume, not a generic guess. Return ONLY the JSON the schema " +
+  "seniority as shown in the resume, not a generic guess. Each suggested title must be a " +
+  "short phrase that could appear verbatim on a real job board (employers title postings " +
+  "'Backend Engineer', not 'Backend Software Engineer (Java/Node.js)') -- never include " +
+  "parentheses, slashes, or specific technology/framework/language names as part of the " +
+  "title text itself, even when the resume is full of them. Return ONLY the JSON the schema " +
   "asks for.\n\n--- RESUME ---\n\n";
 
 /**
