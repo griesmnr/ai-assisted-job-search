@@ -97,10 +97,39 @@ describe("inferTitleKeywords prompt/schema content (ticket 5ba5cca)", () => {
     // Concrete good/bad examples pulled from this exact incident (git-bug
     // 5ba5cca's root cause: zero of three of Nicole's real saved postings
     // passed `compileFilter` against her actual chips; see the
-    // compileFilter round-trip tests below for the live proof).
-    expect(schemaDescription).toContain("Backend Engineer");
+    // compileFilter round-trip tests below for the live proof). "Backend
+    // Engineer" alone is NOT asserted here -- the OLD prompt already
+    // contained it as an example, so it wouldn't catch a regression back
+    // to the old wording. These two only appear after the fix.
     expect(schemaDescription).toContain("Backend Software Engineer (Java/Node.js)");
     expect(schemaDescription).toContain("React/Angular Frontend Developer");
+  });
+
+  it("forbids a technology name bolted on as a QUALIFIER but explicitly allows one that IS the title's head (review round 1, F2)", async () => {
+    // The first draft of this fix banned 'Cloud'/'Microservices' as bare
+    // words, which would also suppress real, common board titles like
+    // "Cloud Engineer" and "Machine Learning Engineer" for a cloud/ML
+    // resume -- reintroducing the same under-matching bug for a different
+    // profession. The schema must state the qualifier-vs-head distinction
+    // explicitly, not just list forbidden words.
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Cloud Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+
+    expect(schemaDescription).toContain("Cloud Engineer");
+    expect(schemaDescription).toMatch(/machine learning engineer/i);
+    expect(schemaDescription).toMatch(/qualifier/i);
+    // The old, over-broad wording blanket-forbade these as bare words --
+    // confirm that specific phrasing is gone.
+    expect(schemaDescription).not.toMatch(/'Cloud', 'Microservices'/);
+  });
+
+  it("keeps a seniority-prefixed phrase in the good examples so 'short' doesn't get read as 'strip seniority' (review round 1, F3)", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Senior Full Stack Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+
+    expect(schemaDescription).toMatch(/senior full stack engineer/i);
   });
 
   it("keeps the existing, correct instructions intact: 3-6 titles and preserving evidenced seniority", async () => {
@@ -176,9 +205,12 @@ describe("compileFilter round-trip proof (ticket 5ba5cca root cause, re-run at t
     expect(filter(REAL_LIVE_POSTINGS)).toHaveLength(0);
   });
 
-  it("NEW, clean-shaped titles ('Backend Engineer', 'Full Stack Engineer') match both real live postings -- proving the fix closes the loop, not just changes prompt text", () => {
-    const newChips = ["Backend Engineer", "Full Stack Engineer"];
-    const filter = compileFilter({ titleInclude: newChips });
+  it("a NEW, clean-shaped chip ('Backend Engineer') matches both real live postings -- the matcher accepts the fixed shape", () => {
+    // Only "Backend Engineer" is asserted here, deliberately: neither
+    // posting's title contains "Full Stack" anywhere, so including it in
+    // titleInclude wouldn't test anything extra -- it would just ride
+    // along on the OR-filter and make the test claim more than it shows.
+    const filter = compileFilter({ titleInclude: ["Backend Engineer"] });
     expect(
       filter(REAL_LIVE_POSTINGS)
         .map((j) => j.externalId)

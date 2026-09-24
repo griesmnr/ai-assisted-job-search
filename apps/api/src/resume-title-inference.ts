@@ -36,20 +36,27 @@ const SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "3-6 short job title keywords (e.g. 'Backend Engineer', 'Full Stack Engineer', " +
+        "3-6 short job title keywords (e.g. 'Backend Engineer', 'Senior Full Stack Engineer', " +
         "'Technical Writer') this person would plausibly search for, based on their real " +
         "experience in the resume. Prefer the level/seniority actually evidenced in the " +
         "resume -- do not default to entry-level or omit senior/staff/principal titles if " +
-        "the resume supports them. Each title must be a short role phrase ONLY: no " +
-        "parentheses, no slashes, and no bolted-on technology, framework, or language names " +
-        "(no 'Java', 'Node.js', 'React', 'Cloud', 'Microservices', etc. in the title text " +
-        "itself) -- these are the exact titles a real job board uses, not a summary of the " +
-        "resume's tech stack. Good: 'Backend Engineer', 'Full Stack Engineer', 'Software " +
-        "Engineer', 'Data Scientist', 'Product Manager'. Bad: 'Backend Software Engineer " +
-        "(Java/Node.js)' (parenthetical + slash + tech names), 'React/Angular Frontend " +
-        "Developer' (slash + tech names), 'Software Developer - Cloud & Microservices' " +
-        "(tech names bolted on after a dash). If the resume's tech stack matters, it belongs " +
-        "in the person's evidenced experience, not folded into the title string.",
+        "the resume supports them. Each title must be a short role phrase that could appear " +
+        "VERBATIM as a real job posting's title: no parentheses, no slashes, and no title " +
+        "built by bolting a technology/framework/language onto a role word as a qualifier " +
+        "(not 'Backend Engineer (Java/Node.js)', not 'React/Angular Frontend Developer', not " +
+        "'Software Developer - Cloud & Microservices'). This does NOT forbid a technology or " +
+        "domain word that is itself the standard head of a real posted title -- 'Cloud " +
+        "Engineer', 'Machine Learning Engineer', 'Data Engineer', and 'Android Developer' are " +
+        "all real, common board titles and are fine to suggest exactly as written. The line " +
+        "is qualifier vs. head: a technology name tacked on to narrow or describe another " +
+        "role ('X Engineer (Y)', 'X/Y Developer') is bad; a technology or domain name that " +
+        "simply IS the role is fine. Good: 'Backend Engineer', 'Senior Full Stack Engineer', " +
+        "'Cloud Engineer', 'Data Scientist', 'Product Manager'. Bad: 'Backend Software " +
+        "Engineer (Java/Node.js)' (parenthetical + slash + qualifier), 'React/Angular " +
+        "Frontend Developer' (slash + qualifiers), 'Software Developer - Cloud & " +
+        "Microservices' (qualifiers bolted on after a dash). If the resume's specific tech " +
+        "stack matters beyond what a standard title already conveys, it belongs in the " +
+        "person's evidenced experience, not folded into the title string.",
     },
   },
   required: ["titles"],
@@ -61,10 +68,13 @@ const PROMPT_PREFIX =
   "keywords they would plausibly search for -- grounded in their actual experience and " +
   "seniority as shown in the resume, not a generic guess. Each suggested title must be a " +
   "short phrase that could appear verbatim on a real job board (employers title postings " +
-  "'Backend Engineer', not 'Backend Software Engineer (Java/Node.js)') -- never include " +
-  "parentheses, slashes, or specific technology/framework/language names as part of the " +
-  "title text itself, even when the resume is full of them. Return ONLY the JSON the schema " +
-  "asks for.\n\n--- RESUME ---\n\n";
+  "'Backend Engineer', not 'Backend Software Engineer (Java/Node.js)') -- never bolt a " +
+  "technology, framework, or language onto a role word as a parenthetical, a slash, or a " +
+  "dash-qualifier, even when the resume is full of them. This is about how the title is " +
+  "STRUCTURED, not about avoiding technology words entirely: a technology or domain name " +
+  "that is itself the standard head of a real posted title ('Cloud Engineer', 'Machine " +
+  "Learning Engineer', 'Android Developer') is fine to suggest exactly as written. Return " +
+  "ONLY the JSON the schema asks for.\n\n--- RESUME ---\n\n";
 
 /**
  * Returns `[]` (never throws) if the call fails for any reason -- network
