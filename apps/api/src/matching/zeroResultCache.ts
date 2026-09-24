@@ -38,19 +38,49 @@
  * on the whole object side-steps that: it can never drift from what the two
  * routes actually received, because it never looks past "did the caller
  * send an identical object."
+ *
+ * THE SAME EXACTNESS APPLIES TO SOURCE SELECTION, NOT JUST CRITERIA (opus
+ * review round 1, F2, added after this cache's first draft shipped without
+ * it). `criteria` alone is not the whole query: `runDemoMatch`'s `filter`
+ * runs against the UNION of every SELECTED source's jobs and ends in a
+ * cross-source dedupe, so a source's `survivedFilter === 0` can be an
+ * artifact of which OTHER sources were selected alongside it in that same
+ * estimate, not a property of that source in isolation. `ZeroResultCacheKey`
+ * therefore also carries `selectedSourceIds` — the full, exact source
+ * selection the estimate or search ran with — and a zero is only ever
+ * replayed for a request with the IDENTICAL selection, never a subset,
+ * superset, or different one. See `ZeroResultCacheKey`'s own doc comment for
+ * the concrete failure case this closes.
  */
 import type { SearchCriteria } from "@app/shared";
 
 /** What identifies one cache entry — the exact combination the ticket
- * requires: which resume, which source, and the caller's FULL, unmodified
+ * requires: which resume, which source, the caller's FULL, unmodified
  * criteria object (`undefined` when the request omitted `criteria`
  * entirely — see `canonicalize`, which treats that the same as an explicit
  * `{}` would be treated DIFFERENTLY: an omitted `criteria` and an explicit
- * `{}` are NOT the same request and must not collide as the same key). */
+ * `{}` are NOT the same request and must not collide as the same key), AND
+ * `selectedSourceIds` — every source id included in the SAME estimate or
+ * search run as `sourceId` (order-independent; see `toCacheKey`).
+ *
+ * `selectedSourceIds` is load-bearing, not decoration (opus review round 1,
+ * F2). `runDemoMatch`'s `filter` runs against the UNION of every selected
+ * source's jobs and ends in a cross-source `${company}|${title}` dedupe
+ * (criteria.ts) — so a source's `survivedFilter === 0` in one estimate is
+ * NOT purely a property of `(resumeId, sourceId, criteria)` alone, it can
+ * also be an artifact of which OTHER sources were selected alongside it
+ * (a cross-posted job counted against a different source in the same
+ * union). The queue path (`fetchSourceWorker.ts`) dedupes PER SOURCE, not
+ * across the whole selection, so that same source, searched ALONE or with
+ * a different selection, can genuinely have real jobs survive the filter.
+ * A zero recorded under one source selection must only ever be reused by
+ * a request with the IDENTICAL selection — never a subset, superset, or
+ * different selection entirely. */
 export type ZeroResultCacheKey = {
   resumeId: string;
   sourceId: string;
   criteria: SearchCriteria | undefined;
+  selectedSourceIds: readonly string[];
 };
 
 /**
@@ -135,10 +165,19 @@ function toCacheKey(key: ZeroResultCacheKey): string {
   // own doc comment (fetchSourceWorker.ts) already warns about elsewhere in
   // this codebase. Made explicit here as a real `null` so "no criteria in
   // the request" and "an explicit empty {}" can never collide.
+  //
+  // `selectedSourceIds` is sorted before joining -- unlike `criteria`'s
+  // array fields (title/location phrase order is preserved deliberately,
+  // see `canonicalize`), source SELECTION is a set: `["a","b"]` and
+  // `["b","a"]` are the same request, and treating them as different keys
+  // would just be a lower hit rate for no safety benefit, since nothing
+  // about which id came first in the array affects `runDemoMatch`'s
+  // cross-source union/dedupe.
   return JSON.stringify({
     resumeId: key.resumeId,
     sourceId: key.sourceId,
     criteria: key.criteria === undefined ? null : canonicalize(key.criteria),
+    selectedSourceIds: [...key.selectedSourceIds].sort(),
   });
 }
 

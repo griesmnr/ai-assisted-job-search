@@ -3387,6 +3387,174 @@ describe("estimate-to-search zero-result cache (ticket 447e210)", () => {
     expect(expiredResponse.statusCode).toBe(202);
     expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
   });
+
+  it("a source selection change since the estimate is a cache MISS, even with the same resume/criteria/source (opus review round 1, F2)", async () => {
+    // The real bug this pins: runDemoMatch's filter runs against the UNION
+    // of every SELECTED source's jobs and ends in a cross-source
+    // `${company}|${title}` dedupe (criteria.ts) -- so a source's
+    // `survivedFilter === 0` in a multi-source estimate can be an artifact
+    // of what ELSE was selected, not a property of that source alone. Two
+    // sources here return a job with the SAME company+title: greenhouse's
+    // copy is the one that survives the cross-source dedupe (whichever
+    // wins is an implementation detail of the union order); usajobs' copy
+    // loses, so usajobs legitimately shows survivedFilter === 0 for THIS
+    // 2-source estimate. The queue path dedupes PER SOURCE
+    // (fetchSourceWorker.ts), so usajobs searched ALONE has a real,
+    // filter-passing job -- a stale cache-hit here would silently lose it.
+    const crossPostedTitle = "Staff Backend Engineer";
+    const crossPostedCompany = "Acme Corp";
+    const usajobsCopy = fakeJob("cross-usajobs", crossPostedTitle, {
+      company: crossPostedCompany,
+      dataSource: "usajobs",
+    });
+    const greenhouseCopy = fakeJob("cross-greenhouse", crossPostedTitle, {
+      company: crossPostedCompany,
+      dataSource: "greenhouse",
+    });
+    const publisher = fakePublisher();
+    const cache = new ZeroResultEstimateCache();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource({
+        usajobs: [usajobsCopy],
+        greenhouse: [greenhouseCopy],
+      }),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    // Estimate over BOTH sources -- confirms the premise: one of the two
+    // duplicate postings is filtered out by the cross-source dedupe.
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+    expect(
+      (estimateResponse.json() as { candidatesNeedingScore: number }).candidatesNeedingScore,
+    ).toBe(1);
+
+    // Same resume, same criteria, same TWO sources: this must be a cache
+    // hit for whichever source's estimate outcome was zero -- the control
+    // for the miss case below.
+    const sameSelectionResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(sameSelectionResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId).sort()).toHaveLength(1);
+
+    // A DIFFERENT resume, searching usajobs ALONE (a strict subset of the
+    // estimate's selection): usajobs' zero must NOT be replayed here, since
+    // alone it has no greenhouse copy to lose the dedupe against -- its
+    // real job must be fetched and found.
+    const secondResumeId = await createResume(app);
+    const aloneResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: secondResumeId, sourceIds: ["usajobs"], criteria },
+    });
+    expect(aloneResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId)).toContain("usajobs");
+  });
+
+  it("an errored source is never cached as a zero — a transient failure must still be retried live next time (F3)", async () => {
+    class ThrowingSource implements JobSource {
+      readonly dataSource = DATA_SOURCE;
+      async search(): Promise<SourceSearchResult> {
+        throw new Error("simulated transient source failure");
+      }
+    }
+    const publisher = fakePublisher();
+    const cache = new ZeroResultEstimateCache();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: () => ({ sources: [new ThrowingSource()], skipped: [] }),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // If the "status !== 'error'" guard were missing or broken, this
+    // source's genuine error would be cached as a fabricated zero, and the
+    // search below would silently skip it instead of retrying live.
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+    expect(publisher.published.map((m) => m.sourceId)).toEqual([DATA_SOURCE]);
+  });
+
+  it("a partial cache hit whose remaining live source fails to dispatch is NOT reported as a total outage (opus review round 1, F1)", async () => {
+    // The bug this pins: comparing failures against `messages.length`
+    // instead of `resolved.sources.length` misreads a partially-cached
+    // search as a total dispatch failure the moment even one LIVE source
+    // fails to publish, even though the cached source already terminated
+    // correctly.
+    const cache = new ZeroResultEstimateCache();
+    const publisher = fakePublisher({ failFor: new Set(["greenhouse"]) });
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolverPerSource({
+        usajobs: [],
+        greenhouse: [matchingJob(`f1-${randomUUID()}`, "greenhouse")],
+      }),
+      publishFetchSource: publisher.publish,
+      zeroResultCache: cache,
+    });
+    const resumeId = await createResume(app);
+    const criteria = {};
+
+    // usajobs comes back empty in the estimate -> cached as a zero.
+    const estimateResponse = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(estimateResponse.statusCode).toBe(200);
+
+    // usajobs is cache-served (no message published for it); greenhouse's
+    // publish genuinely fails. Before F1's fix this read as
+    // `failures.length === messages.length` (1 === 1) and 502'd the whole
+    // search. After the fix it correctly reflects a PARTIAL failure: the
+    // request still succeeds (202), with usajobs complete/0 and greenhouse
+    // marked failed individually.
+    const searchResponse = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: ["usajobs", "greenhouse"], criteria },
+    });
+    expect(searchResponse.statusCode).toBe(202);
+    const { searchId } = searchResponse.json() as { searchId: string };
+
+    const status = await getStatus(app, searchId);
+    expect(status.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceId: "usajobs", status: "complete", linkedJobCount: 0 }),
+        expect.objectContaining({ sourceId: "greenhouse", status: "failed" }),
+      ]),
+    );
+  });
 });
 
 /**

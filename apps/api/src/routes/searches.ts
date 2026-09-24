@@ -819,9 +819,21 @@ export function registerSearchRoutes(
       // whole "the UI shows that source as unavailable, and the other
       // sources still return" behavior CLAUDE.md asks for by silently
       // turning a transient error into a fabricated success.
+      // `selectedSourceIds` is this ESTIMATE's own full selection (opus
+      // review round 1, F2) -- required because `outcome.survivedFilter`
+      // reflects filtering against the UNION of every source selected
+      // here, cross-source dedupe included, not this one source in
+      // isolation. A zero recorded under this selection must not be
+      // replayed for a search with a different one.
+      const estimateSourceIds = resolved.sources.map((source) => source.dataSource);
       for (const outcome of result.sourceOutcomes) {
         if (outcome.status !== "error" && outcome.survivedFilter === 0) {
-          zeroResultCache.record({ resumeId, sourceId: outcome.dataSource, criteria });
+          zeroResultCache.record({
+            resumeId,
+            sourceId: outcome.dataSource,
+            criteria,
+            selectedSourceIds: estimateSourceIds,
+          });
         }
       }
 
@@ -969,10 +981,21 @@ export function registerSearchRoutes(
       // once to decide each source's INITIAL `search_sources` row (a cache
       // hit is written `complete` from the start, never `pending`), and
       // once to decide which sources actually get a `fetch.source` message.
+      // `selectedSourceIds` is THIS search's own full selection (opus
+      // review round 1, F2) -- a zero only counts if it was recorded under
+      // this EXACT selection; a search with a different source selection
+      // (even a subset or superset) always misses and falls through to a
+      // real fetch. See `ZeroResultCacheKey`'s doc comment for why.
+      const searchSourceIds = resolved.sources.map((source) => source.dataSource);
       const cachedZeroSourceIds = new Set(
         resolved.sources
           .filter((source) =>
-            zeroResultCache.hasZeroResult({ resumeId, sourceId: source.dataSource, criteria }),
+            zeroResultCache.hasZeroResult({
+              resumeId,
+              sourceId: source.dataSource,
+              criteria,
+              selectedSourceIds: searchSourceIds,
+            }),
           )
           .map((source) => source.dataSource),
       );
@@ -1171,18 +1194,28 @@ export function registerSearchRoutes(
         }
       }
 
-      // `messages.length > 0` guards ticket 447e210's all-cached case: with
-      // every selected source served from the zero-result cache,
-      // `messages` and `failures` are both legitimately empty arrays, and
-      // `0 === 0` must NOT read as "every source failed to dispatch" — this
-      // search is a genuine, immediate success (every source terminal at
-      // `complete`/0, nothing outstanding), not an outage.
-      if (messages.length > 0 && failures.length === messages.length) {
+      // Compares against `resolved.sources.length`, NOT `messages.length`
+      // (opus review round 1, ticket 447e210, F1): once the zero-result
+      // cache can serve some sources without publishing a message for
+      // them at all, `messages` no longer covers every source in this
+      // search, so `failures.length === messages.length` stops meaning
+      // "every source failed" the moment even one source is cache-served.
+      // Reproduced: a 2-source search where source A is cache-served and
+      // source B's publish genuinely fails — the old check saw
+      // `failures.length === messages.length` (1 === 1) and 502'd the
+      // whole search as a total outage, even though A had already
+      // terminated `complete`/0 correctly. `resolved.sources.length` is
+      // the right denominator in every case: it equals `messages.length`
+      // exactly when nothing was cache-served (today's existing,
+      // unchanged behavior), and is always >= it otherwise, so a genuine
+      // total outage (nothing published, nothing cached, every source
+      // failed) still 502s while a partial cache-hit no longer can.
+      if (resolved.sources.length > 0 && failures.length === resolved.sources.length) {
         await markSearchFailed(searchId);
         return reply.code(502).send({
           error:
-            `Could not dispatch this search: none of its ${messages.length} source message(s) ` +
-            `could be published. Is RabbitMQ running and has setupTopology() been run?`,
+            `Could not dispatch this search: none of its ${resolved.sources.length} source(s) ` +
+            `could be started. Is RabbitMQ running and has setupTopology() been run?`,
           searchId,
           skippedSources: resolved.skipped,
         });
