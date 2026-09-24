@@ -12,9 +12,20 @@ type ResumeTextState =
  * One row of the "My Resumes" tab (ticket 303cff0). A native `<details>`
  * so expand/collapse needs no state of its own beyond the fetch itself --
  * `onToggle` fires on both open AND close, so it's guarded to fetch only
- * on the open transition, and only once per row (`textState.status ===
- * "idle"`): re-collapsing and re-expanding the same row re-shows the
- * already-fetched text instead of re-fetching it.
+ * on the open transition, and to skip re-fetching once a fetch is already
+ * in flight or has already succeeded (`loading`/`ready`):
+ * re-collapsing and re-expanding the same row re-shows the already-fetched
+ * text instead of re-fetching it.
+ *
+ * Opus review (ticket 303cff0, required fix): the FIRST version of this
+ * guard excluded every non-`idle` status, including `error` -- a single
+ * transient failure (API restart, dropped connection) permanently latched
+ * that row's text as unrecoverable for the rest of the session, with no
+ * retry path (collapsing and re-expanding did nothing; `refreshResumesList`
+ * doesn't touch this per-row state either, since rows stay mounted across
+ * a resumes-list refresh, keyed by `resume.id`). Excluding only
+ * `loading`/`ready` (not `error`) makes the next expand after a failure
+ * retry the fetch, same as if it had never been attempted.
  */
 function ResumeRow({ resume }: { resume: ResumeSummary }) {
   const [textState, setTextState] = useState<ResumeTextState>({ status: "idle" });
@@ -24,7 +35,7 @@ function ResumeRow({ resume }: { resume: ResumeSummary }) {
       <details
         onToggle={(e) => {
           if (!e.currentTarget.open) return;
-          if (textState.status !== "idle") return;
+          if (textState.status === "loading" || textState.status === "ready") return;
           setTextState({ status: "loading" });
           getResume(resume.id)
             .then((data) => setTextState({ status: "ready", resumeText: data.resumeText }))

@@ -98,4 +98,34 @@ describe("MyResumes (ticket 303cff0)", () => {
       expect(screen.getByText("Could not load resume text: network down")).toBeInTheDocument();
     });
   });
+
+  // Opus review, required fix: a failed fetch used to latch the row as
+  // permanently broken for the rest of the session -- re-collapsing and
+  // re-expanding kept showing the same stale error forever, with no way
+  // to recover short of a full page reload. Collapsing and re-expanding
+  // must retry.
+  it("retries the fetch on a later expand after a failure, rather than latching the error forever", async () => {
+    getResume.mockRejectedValueOnce(new Error("network down"));
+    getResume.mockResolvedValueOnce({
+      id: "resume-1",
+      resumeText: "Recovered text.",
+      resumeNickname: "Resume 1",
+    });
+    render(<MyResumes resumes={[makeSummary()]} />);
+
+    const summaryEl = screen.getByText("Resume 1");
+    fireEvent.click(summaryEl); // expand -- fails
+    await waitFor(() => {
+      expect(screen.getByText("Could not load resume text: network down")).toBeInTheDocument();
+    });
+
+    fireEvent.click(summaryEl); // collapse
+    fireEvent.click(summaryEl); // expand again -- should retry, not stay latched
+
+    await waitFor(() => {
+      expect(screen.getByText("Recovered text.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Could not load resume text: network down")).not.toBeInTheDocument();
+    expect(getResume).toHaveBeenCalledTimes(2);
+  });
 });
