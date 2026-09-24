@@ -599,8 +599,11 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
 // through to `ResultCard` with no test proving it actually reaches it --
 // TypeScript catches a MISSING prop, not a WRONG one, so a passthrough
 // that silently dropped or ignored the real callback (e.g. `() => {}`)
-// would have shipped with a fully green suite. GroupedResultsList.test.tsx
-// already had the equivalent coverage; this is ResultsList's own.
+// would have shipped with a fully green suite. The click-through itself
+// was already covered elsewhere (ResultCard.test.tsx's own "calls
+// onViewResume..." test, and App.viewResume.test.tsx exercising the
+// GroupedResultsList path end to end) -- this is ResultsList's own,
+// previously-missing link in that chain.
 describe("ResultsList — onViewResume passthrough (ticket 1e183a4)", () => {
   it("calls onViewResume with the clicked card's resumeId", () => {
     const onViewResume = vi.fn();
