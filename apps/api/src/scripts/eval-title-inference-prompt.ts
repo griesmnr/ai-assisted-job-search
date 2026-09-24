@@ -24,11 +24,17 @@
  * shapes reproducing tonight's specific live finding (Nicole's fresh
  * resume edit produced "Software Engineer, Microservices" as one
  * comma-joined chip, plus "Backend Software Engineer" and "Cloud Software
- * Engineer" as over-qualified variants of otherwise-standard titles). The
- * flagging logic below is also widened: it used to only flag parens/slash
- * (5ba5cca's failure mode); it now also flags the join-punctuation and
- * over-qualification shapes this round exists to close, and reports
- * whether each of the three exact incident chips reproduced.
+ * Engineer" as over-qualified variants of otherwise-standard titles).
+ *
+ * ROUND 2's OWN review (round 1 of ITS fixes) found this script's first
+ * draft checked the wrong thing: it flagged punctuation on the POST-split
+ * `titles` result, but `splitConjoinedTitles` had already removed every
+ * comma/semicolon from that result by construction -- so the comma/
+ * semicolon flags, and the reported-bad-chip check (every reported chip
+ * contains a comma), were unreachable no matter what the model actually
+ * did. Fixed by checking the RAW, pre-split model output via the newly
+ * exported `fetchRawTitleSuggestions` -- see that function's own doc
+ * comment in resume-title-inference.ts.
  *
  * COST: real, billed Anthropic calls, but tiny -- 5 resumes x
  * MAX_OUTPUT_TOKENS (300) each, same call this app already makes once per
@@ -43,7 +49,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { loadEnvFile } from "../load-env.js";
-import { inferTitleKeywords } from "../resume-title-inference.js";
+import { fetchRawTitleSuggestions, splitConjoinedTitles } from "../resume-title-inference.js";
 
 const RESUME_SHAPES: { label: string; text: string }[] = [
   {
@@ -100,20 +106,40 @@ async function main(): Promise<void> {
     }
 
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const titles = await inferTitleKeywords(anthropic, text);
-    console.log(JSON.stringify(titles, null, 2));
+    // RAW output first (opus review round 1, F1): checking the model's own
+    // compliance with "no comma/semicolon joining" against the POST-split
+    // result is vacuously true, since splitConjoinedTitles has already
+    // removed every comma/semicolon by construction -- that was this
+    // script's own first-draft bug. The flag below runs against what the
+    // model actually returned, before any code touches it.
+    const rawTitles = await fetchRawTitleSuggestions(anthropic, text);
+    console.log(`RAW MODEL TITLES: ${JSON.stringify(rawTitles)}`);
 
-    const flaggedPunctuation = titles.filter((t) => /[()/,;&]/.test(t));
-    if (flaggedPunctuation.length > 0) {
+    const flaggedRawPunctuation = rawTitles.filter((t) => /[()/,;]/.test(t));
+    if (flaggedRawPunctuation.length > 0) {
       console.log(
-        `  FLAGGED (parens/slash/comma/semicolon/ampersand): ${JSON.stringify(flaggedPunctuation)}`,
+        `  MODEL STILL JOINED WITH COMMA/SEMICOLON/PARENS/SLASH: ${JSON.stringify(flaggedRawPunctuation)}`,
       );
     }
+
+    const titles = splitConjoinedTitles(rawTitles);
+    console.log(`FINAL CHIPS (after split): ${JSON.stringify(titles)}`);
+
     const reproducedBadChips = REPORTED_BAD_CHIPS.filter((bad) =>
-      titles.some((t) => t.toLowerCase() === bad.toLowerCase()),
+      rawTitles.some((t) => t.toLowerCase() === bad.toLowerCase()),
     );
     if (reproducedBadChips.length > 0) {
-      console.log(`  REPRODUCED REPORTED BAD CHIP(S): ${JSON.stringify(reproducedBadChips)}`);
+      console.log(
+        `  MODEL REPRODUCED A REPORTED BAD CHIP (pre-split): ${JSON.stringify(reproducedBadChips)}`,
+      );
+    }
+
+    const degenerateChips = titles.filter((t) => !/\s/.test(t));
+    if (degenerateChips.length > 0) {
+      // Should be structurally impossible after the 2+-word floor in
+      // splitConjoinedTitles -- checked anyway so a regression there is
+      // visible here too, not just in the unit tests.
+      console.log(`  DEGENERATE ONE-WORD CHIP SURVIVED SPLIT: ${JSON.stringify(degenerateChips)}`);
     }
     console.log();
   }

@@ -153,7 +153,7 @@ describe("inferTitleKeywords prompt/schema content (ticket 5ba5cca)", () => {
  * describe block below.
  */
 describe("inferTitleKeywords prompt/schema content (ticket 976a782)", () => {
-  it("explicitly forbids joining two role concepts into one entry with a comma, semicolon, or ampersand, naming the exact incident chip", async () => {
+  it("explicitly forbids joining two role concepts into one entry with a comma or semicolon, naming the exact incident chip, without over-forbidding a real 'and' compound title", async () => {
     const { anthropic, capturedParams } = makeFakeAnthropicClient(["Software Engineer"]);
     await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
 
@@ -163,10 +163,15 @@ describe("inferTitleKeywords prompt/schema content (ticket 976a782)", () => {
 
     expect(combined).toMatch(/comma/i);
     expect(combined).toMatch(/semicolon/i);
-    expect(combined).toMatch(/ampersand/i);
     // Nicole's actual reported bad chip, named directly -- same tactic
     // 5ba5cca used for its own incident's bad examples.
     expect(schemaDescription).toContain("Software Engineer, Microservices");
+    // Round 1 review, F3: the prompt must NOT tell the model to avoid "and"/
+    // "&" entirely, since splitConjoinedTitles no longer splits on either
+    // (real compound titles like "Health and Safety Engineer" need to
+    // survive) -- confirm the prompt explicitly carves this out rather than
+    // silently contradicting the code.
+    expect(combined).toMatch(/health and safety engineer/i);
   });
 
   it("guides toward the shortest common phrasing, naming the exact over-qualified chips from tonight's incident", async () => {
@@ -189,33 +194,50 @@ describe("splitConjoinedTitles behavior via inferTitleKeywords (ticket 976a782)"
     ]);
     const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
 
-    expect(titles).toEqual(["Software Engineer", "Microservices", "Backend Engineer"]);
+    // "Microservices" is dropped, not kept as its own chip (opus review
+    // round 1, F2): it's a single word, and a bare single-word chip split
+    // out of a qualifier is exactly the false-positive risk
+    // titleSynonyms.ts's qualifier rule exists to prevent for expansion --
+    // splitConjoinedTitles must not reintroduce it for a different reason.
+    expect(titles).toEqual(["Software Engineer", "Backend Engineer"]);
     for (const title of titles) {
       expect(title).not.toMatch(/,/);
     }
   });
 
-  it("splits a semicolon- and ampersand-joined chip into standalone chips", async () => {
+  it("splits a semicolon-joined chip into standalone chips, dropping any single-word fragment", async () => {
     const { anthropic } = makeFakeAnthropicClient([
       "Backend Engineer; DevOps Engineer",
+      "Data Platform; Analytics Engineer",
+    ]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(titles).toEqual([
+      "Backend Engineer",
+      "DevOps Engineer",
+      "Data Platform",
+      "Analytics Engineer",
+    ]);
+  });
+
+  it("does NOT split on '&' or the word 'and' -- a real compound title containing either survives whole (opus review round 1, F3)", async () => {
+    // An earlier version of this function also split on "&"/"and", which
+    // review found genuinely destructive on real job titles that legitimately
+    // contain them: "Health and Safety Engineer" -> ["Health", "Safety
+    // Engineer"], both wrong. The actual reported incident never involved
+    // "and"/"&" at all -- only a comma.
+    const { anthropic } = makeFakeAnthropicClient([
+      "Health and Safety Engineer",
+      "Research and Development Engineer",
       "Data & Analytics Engineer",
     ]);
     const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
 
-    expect(titles).toEqual(["Backend Engineer", "DevOps Engineer", "Data", "Analytics Engineer"]);
-  });
-
-  it("splits an 'and'-joined chip on the whitespace-bounded word, deduping repeats case-insensitively", async () => {
-    const { anthropic } = makeFakeAnthropicClient([
+    expect(titles).toEqual([
+      "Health and Safety Engineer",
       "Research and Development Engineer",
-      "development engineer",
+      "Data & Analytics Engineer",
     ]);
-    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
-
-    // "development engineer" (lowercase, from the second chip) is a
-    // case-insensitive duplicate of the fragment already produced by
-    // splitting the first chip, so it is deduped rather than appended twice.
-    expect(titles).toEqual(["Research", "Development Engineer"]);
   });
 
   it("does NOT split a word that merely contains 'and' with no surrounding whitespace, e.g. 'Android'", async () => {
@@ -223,6 +245,40 @@ describe("splitConjoinedTitles behavior via inferTitleKeywords (ticket 976a782)"
     const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
 
     expect(titles).toEqual(["Android Developer", "Brand Manager"]);
+  });
+
+  it("drops a fragment shorter than two words entirely -- never surfaces a bare one-word chip (opus review round 1, F2)", async () => {
+    // Live, unprompted, review found the FIRST version of this fix produce
+    // bare chips like "Billing" and "Data" from a real model response --
+    // each one then literal-matches (criteria.ts's makePhraseMatcher)
+    // against ANY posting containing that word anywhere in its title
+    // ("Billing Specialist", "Medical Billing Clerk"), not just the
+    // compound qualifier it came from.
+    const { anthropic } = makeFakeAnthropicClient(["Product Manager, Billing", "Product Manager"]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(titles).toEqual(["Product Manager"]);
+    expect(titles).not.toContain("Billing");
+  });
+
+  it("drops BOTH halves when a comma-joined chip splits into two single words -- never surfaces either as a bare chip", async () => {
+    const { anthropic } = makeFakeAnthropicClient(["Backend, Cloud"]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(titles).toEqual([]);
+  });
+
+  it("dedupes a fragment produced by splitting against an existing chip, case-insensitively", async () => {
+    const { anthropic } = makeFakeAnthropicClient([
+      "Backend Engineer, Platform Engineer",
+      "platform engineer",
+    ]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    // "platform engineer" (lowercase, its own separate chip) is a
+    // case-insensitive duplicate of the fragment already produced by
+    // splitting the first chip, so it is deduped rather than appended twice.
+    expect(titles).toEqual(["Backend Engineer", "Platform Engineer"]);
   });
 });
 
@@ -313,8 +369,12 @@ describe("inferTitleKeywords with a realistic post-fix mocked response (ticket 9
     const { anthropic } = makeFakeAnthropicClient(["Software Engineer, Microservices"]);
     const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
 
-    expect(titles).toEqual(["Software Engineer", "Microservices"]);
+    // "Microservices" is dropped, not kept as a bare one-word chip (opus
+    // review round 1, F2) -- see the splitConjoinedTitles describe block
+    // above for the false-positive risk that would reintroduce.
+    expect(titles).toEqual(["Software Engineer"]);
     expect(titles).not.toContain("Software Engineer, Microservices");
+    expect(titles).not.toContain("Microservices");
   });
 });
 

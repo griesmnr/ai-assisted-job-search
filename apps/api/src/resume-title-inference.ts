@@ -56,20 +56,33 @@
  *    prompt instruction is exactly the kind of rule 410e1a2 warned against:
  *    5ba5cca already asked the model not to bolt qualifiers on with parens
  *    or slashes, and the model complied with THAT wording while producing
- *    a comma instead -- the next round would find a semicolon or an "and."
- *    So this round does not add "no commas" to a growing forbidden-symbol
- *    list in the prompt and call it done; it makes the invariant true BY
- *    CONSTRUCTION in code: any title Claude returns that contains a comma,
- *    semicolon, ampersand, or the word "and" joining two chunks is split
- *    into separate standalone chips before this function returns. This is
- *    guaranteed to hold for every future prompt drift, not just the
- *    separators anticipated today. It is also directionally safe for this
- *    specific field: `titleInclude` chips are OR'd in `compileFilter` (see
- *    criteria.ts), so splitting a chip into two can only ADD candidate
- *    matches, never remove one that the unsplit chip would have found --
- *    there is no over-broadening risk symmetric to the one titleSynonyms.ts
- *    worries about for `titleExclude`, because this function's output only
- *    ever feeds `titleInclude`.
+ *    a comma instead. So this round does not add "no commas" to a growing
+ *    forbidden-symbol list in the prompt and call it done; it makes the
+ *    invariant true BY CONSTRUCTION in code: any title Claude returns that
+ *    contains a comma or semicolon joining two chunks is split into
+ *    separate standalone chips before this function returns, and any
+ *    resulting fragment under two words is dropped rather than kept as its
+ *    own chip -- see `splitConjoinedTitles`'s own doc comment for why (round
+ *    1 review found the FIRST version of this fix, which also split on "&"/
+ *    "and" and kept every fragment regardless of length, itself introduced
+ *    two new bugs: mangling real compound titles that legitimately contain
+ *    "and", like "Health and Safety Engineer", and manufacturing bare
+ *    one-word chips like "Billing"/"Data" that `makePhraseMatcher`
+ *    literal-matches against unrelated postings). This is guaranteed to
+ *    hold for every future prompt drift on a comma/semicolon, not just the
+ *    exact shape reported today.
+ *
+ *    Directional safety here is narrower than the first draft of this
+ *    comment claimed (round 1 review, F2): splitting a chip can only ADD
+ *    candidate matches WITHIN `compileFilter` itself, since `titleInclude`
+ *    is OR'd (criteria.ts) -- but more chips is not unconditionally free
+ *    elsewhere in the pipeline. `sources/usajobs.ts` caps live keyword
+ *    searches at `MAX_KEYWORD_SEARCHES` and silently drops the rest, and
+ *    `DEFAULT_SCORE_THRESHOLD` caps how many candidates get scored per
+ *    search in list order -- so an extra chip, even a narrow one, can in
+ *    principle still cost coverage or spend elsewhere. The 2+-word floor on
+ *    split fragments is what keeps this unlikely to matter in practice, not
+ *    a claim that splitting is free everywhere.
  *
  * 2. EXTRA QUALIFIER WORDS ("Backend Software Engineer" instead of "Backend
  *    Engineer"; "Cloud Software Engineer" instead of "Cloud Engineer", even
@@ -137,12 +150,14 @@ const SCHEMA = {
         "Microservices' (qualifiers bolted on after a dash). If the resume's specific tech " +
         "stack matters beyond what a standard title already conveys, it belongs in the " +
         "person's evidenced experience, not folded into the title string.\n\n" +
-        "NEVER join two role or domain concepts into ONE array entry with a comma, a " +
-        "semicolon, an ampersand, or the word 'and' -- not 'Software Engineer, " +
-        "Microservices', not 'Backend Engineer; DevOps', not 'Data & Analytics Engineer'. If " +
-        "two distinct concepts both apply, return them as two SEPARATE entries in the array " +
-        "instead of joining them into one string. A single entry must be one role phrase " +
-        "only.\n\n" +
+        "NEVER join two role or domain concepts into ONE array entry with a comma or a " +
+        "semicolon -- not 'Software Engineer, Microservices', not 'Backend Engineer; " +
+        "DevOps'. If two distinct concepts both apply, return them as two SEPARATE entries " +
+        "in the array instead of joining them into one string. A single entry must be one " +
+        "role phrase only. A real compound title that genuinely contains 'and' as part of " +
+        "its own name ('Health and Safety Engineer') is fine exactly as written -- this rule " +
+        "is about joining two SEPARATE concepts together, not about avoiding the word 'and' " +
+        "itself.\n\n" +
         "Also avoid EXTRA QUALIFYING WORDS that turn a standard, commonly-posted title into a " +
         "phrase that rarely appears on a real job board, even with no punctuation at all: " +
         "prefer 'Backend Engineer' over 'Backend Software Engineer', and 'Cloud Engineer' " +
@@ -176,9 +191,12 @@ const PROMPT_PREFIX =
   "STRUCTURED, not about avoiding technology words entirely: a technology or domain name " +
   "that is itself the standard head of a real posted title ('Cloud Engineer', 'Machine " +
   "Learning Engineer', 'Android Developer') is fine to suggest exactly as written. Each " +
-  "array entry must be exactly ONE role phrase: never combine two role or domain concepts " +
-  "into one entry with a comma, semicolon, ampersand, or 'and' (not 'Software Engineer, " +
-  "Microservices') -- return them as two separate entries instead. Also avoid stacking " +
+  "array entry must be exactly ONE role phrase: never combine a role with an unrelated " +
+  "qualifier using a comma or semicolon (not 'Software Engineer, Microservices') -- return " +
+  "them as two separate entries instead. A real compound title that genuinely contains " +
+  "'and' as part of its own name ('Health and Safety Engineer') is fine exactly as written " +
+  "-- this rule is about joining two SEPARATE concepts together, not about avoiding the " +
+  "word 'and' itself. Also avoid stacking " +
   "extra qualifying words onto a role word when a shorter, more common phrasing already " +
   "covers the same role on real job boards ('Backend Engineer', not 'Backend Software " +
   "Engineer'; 'Cloud Engineer', not 'Cloud Software Engineer') -- prefer the shortest " +
@@ -187,39 +205,92 @@ const PROMPT_PREFIX =
   "not only specific variants. Return ONLY the JSON the schema asks for.\n\n--- RESUME ---\n\n";
 
 /**
- * Splits any string containing a comma, semicolon, ampersand, or the word
- * "and" joining two chunks into separate standalone chips (ticket 976a782 --
- * see this module's doc comment for why this is a CODE-level fix rather
- * than another prompt instruction).
+ * Splits any string containing a comma or semicolon joining two chunks into
+ * separate standalone chips (ticket 976a782 -- see this module's doc
+ * comment for why this is a CODE-level fix rather than another prompt
+ * instruction).
  *
- * The join operators require whitespace on both sides for "&" and "and"
- * specifically (comma/semicolon never need it -- a comma always sits
- * directly against the preceding word, e.g. "Engineer, Microservices"),
- * which is what keeps this from mangling a word that merely CONTAINS
- * "and" with no whitespace around it ("Android Developer", "Brand
- * Manager" are untouched -- there is no `\s` adjacent to the "and"/"and"
- * substring inside either word). A bare, space-free "R&D" is likewise left
- * intact for the same reason. This is a plain string transform, not a
- * user-supplied regex -- same "no raw user input as a pattern" discipline
- * `criteria.ts`'s `escapeForRegex` documents for a different field.
+ * ONLY comma and semicolon (opus review round 1, F3) -- an earlier version
+ * of this function also split on "&"/"and", which round 1 found genuinely
+ * destructive on real compound titles that legitimately contain "and":
+ * "Health and Safety Engineer" -> ["Health", "Safety Engineer"], "Learning
+ * and Development Manager" -> ["Learning", "Development Manager"], "Sales
+ * and Marketing Coordinator" -> ["Sales", "Marketing Coordinator"] -- all
+ * real job titles, all wrongly mangled. The actual reported incident
+ * ("Software Engineer, Microservices") never involved "and"/"&" at all.
+ * Comma and semicolon carry no equivalent risk: neither is a normal part of
+ * a real job title's own text, so splitting on them has no legitimate title
+ * to damage.
+ *
+ * Fragments shorter than two words are DROPPED, not kept as their own chip
+ * (opus review round 1, F2). An earlier version kept every non-empty
+ * fragment, which let a comma-joined qualifier survive splitting AS a
+ * standalone one-word chip instead of being removed -- "Product Manager,
+ * Billing" produced a bare "Billing" chip, which `makePhraseMatcher`
+ * (criteria.ts) then matches against ANY posting containing that word
+ * anywhere in its title ("Billing Specialist", "Medical Billing Clerk"),
+ * not just the compound qualifier it came from. That is the exact class of
+ * false positive `titleSynonyms.ts`'s qualifier rule exists to prevent for
+ * title EXPANSION; this function was reintroducing it through splitting.
+ * Requiring 2+ words keeps "Software Engineer" (from "Software Engineer,
+ * Microservices") while dropping the bare "Microservices" half, and drops
+ * BOTH halves of a title that splits into two single words entirely (rare,
+ * and the discarded halves would have been exactly this same false-positive
+ * risk, so losing them is the safe outcome, not a loss).
  *
  * Fragments are trimmed, empty/whitespace-only pieces are dropped, and the
  * result is deduped case-insensitively (a resume with several similar
  * qualifiers could otherwise produce the same fragment twice, e.g. "Cloud
- * Engineer" surviving from two different chips). Splitting can only ADD
- * chips relative to the unsplit input, never remove the original meaning of
- * a chip that had no join operator at all -- see the module doc comment for
- * why widening is safe specifically for this function's callers (this
- * feeds `titleInclude` only, which is OR'd in `compileFilter`).
+ * Engineer" surviving from two different chips). This is a plain string
+ * transform, not a user-supplied regex -- same "no raw user input as a
+ * pattern" discipline `criteria.ts`'s `escapeForRegex` documents for a
+ * different field.
+ *
+ * SAFETY CLAIM, NARROWED (round 1 also found the original, broader claim
+ * false): splitting can only ADD chips relative to the unsplit input within
+ * `compileFilter` itself, since this feeds `titleInclude` only, which is
+ * OR'd. It is NOT safe in an unqualified sense outside that: `usajobs.ts`
+ * caps live keyword searches at `MAX_KEYWORD_SEARCHES` and silently drops
+ * the rest, and `DEFAULT_SCORE_THRESHOLD` caps how many candidates get
+ * scored per search in list order -- so MORE chips, including a genuinely
+ * broad one, can still cost real coverage or spend elsewhere in the
+ * pipeline even though `compileFilter` alone never loses a match from it.
+ * The 2+-word filter above is what keeps the added chips narrow enough that
+ * this is very unlikely to matter in practice, not a claim that adding
+ * chips is free.
+ *
+ * KNOWN RESIDUAL WEAKNESS, recorded rather than chased with another rule:
+ * the 2+-word floor filters GARBAGE SHAPE (a lone word), not GARBAGE
+ * MEANING -- a two-word fragment that isn't actually a job title can still
+ * survive. Observed live (2026-09-24, this ticket's own eval runs): a
+ * product-manager resume produced "Senior Product Manager, B2B SaaS",
+ * which split into the correct "Senior Product Manager" plus a spurious
+ * "B2B SaaS" chip -- two words, but a domain descriptor, not a role. Left
+ * unfixed on purpose: a real fix here would mean maintaining a curated list
+ * of "role-indicating words" (Engineer, Manager, Developer, ...) to require
+ * in a survivor, which is exactly the kind of hand-curated, ever-growing
+ * rule this ticket's own Context explicitly warned against reaching for.
+ * Low-cost either way: like the dropped "Microservices"/"Billing" chips
+ * this fix already had to reckon with, a chip like "B2B SaaS" essentially
+ * never appears verbatim in a real posting's title, so it functions as dead
+ * weight in the OR'd `titleInclude` list -- unlike THOSE chips, it does not
+ * appear to collide with common English words the way "Billing"/"Data" did,
+ * so the false-positive risk this whole function exists to avoid is much
+ * lower here, closer to "wastes one array slot" than "matches the wrong
+ * postings." Revisit if a real search is ever measurably hurt by it.
  */
-function splitConjoinedTitles(titles: string[]): string[] {
-  const JOIN_PATTERN = /\s*,\s*|\s*;\s*|\s+&\s+|\s+and\s+/gi;
+export function splitConjoinedTitles(titles: string[]): string[] {
+  const JOIN_PATTERN = /\s*,\s*|\s*;\s*/g;
   const seen = new Set<string>();
   const result: string[] = [];
   for (const title of titles) {
     for (const fragment of title.split(JOIN_PATTERN)) {
       const trimmed = fragment.trim();
       if (trimmed.length === 0) continue;
+      // Drop single-word fragments -- see the doc comment above for why a
+      // bare word split out of a qualifier is a false-positive risk, not a
+      // useful chip.
+      if (!/\s/.test(trimmed)) continue;
       const key = trimmed.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -238,8 +309,20 @@ function splitConjoinedTitles(titles: string[]): string[] {
  * not a broken page. The caller (routes/resumes.ts) is responsible for
  * logging the failure; this function stays silent on purpose so it has
  * exactly one return shape (a string array) for every outcome.
+ *
+ * Exported separately from `inferTitleKeywords` (ticket 976a782, opus
+ * review round 1, F1) so a caller that needs to inspect what the MODEL
+ * actually returned, before `splitConjoinedTitles` runs, can do so without
+ * re-implementing the API call and risking drift from the real, shipped
+ * request shape -- the same "import the live schema, don't re-type it"
+ * discipline `scripts/validate-level-fit.ts` documents for a different
+ * field. `scripts/eval-title-inference-prompt.ts` is the actual consumer:
+ * checking the model's compliance with the "no comma/semicolon joining"
+ * instruction only means anything against this RAW, pre-split output --
+ * the split step makes that check vacuously true on its own output, which
+ * is exactly the bug round 1 found in this eval script's first draft.
  */
-export async function inferTitleKeywords(
+export async function fetchRawTitleSuggestions(
   anthropic: Anthropic,
   resumeText: string,
 ): Promise<string[]> {
@@ -255,11 +338,15 @@ export async function inferTitleKeywords(
     if (!text || text.type !== "text") return [];
     const parsed = JSON.parse(text.text) as { titles?: unknown };
     if (!Array.isArray(parsed.titles)) return [];
-    const titles = parsed.titles.filter(
-      (t): t is string => typeof t === "string" && t.trim().length > 0,
-    );
-    return splitConjoinedTitles(titles);
+    return parsed.titles.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
   } catch {
     return [];
   }
+}
+
+export async function inferTitleKeywords(
+  anthropic: Anthropic,
+  resumeText: string,
+): Promise<string[]> {
+  return splitConjoinedTitles(await fetchRawTitleSuggestions(anthropic, resumeText));
 }
