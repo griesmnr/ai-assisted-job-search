@@ -115,29 +115,179 @@ describe("POST /resumes", () => {
       expect(secondNickname).not.toBe(firstNickname);
     });
 
-    it("a resubmission of identical text returns the SAME existing nickname, not a fresh one", async () => {
+    // Ticket 7701534: resubmitting a resume's OWN unchanged text (e.g.
+    // re-editing just to fix something else) must keep working exactly
+    // as before -- `currentResumeId` set to the first response's own id
+    // is what tells the server this is that case, not a genuine
+    // duplicate. See the "duplicate resume text" describe block below
+    // for what happens WITHOUT it.
+    it("a resubmission of identical text, with currentResumeId set to itself, returns the SAME existing nickname", async () => {
       const app = buildTestApp();
       const resumeText = `Idempotent nickname resume ${randomUUID()}`;
 
       const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-      const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const { id: firstId, resumeNickname: firstNickname } = first.json() as CreateResumeResponse;
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText, currentResumeId: firstId },
+      });
 
-      const firstNickname = (first.json() as CreateResumeResponse).resumeNickname;
+      expect(second.statusCode).toBe(200);
       const secondNickname = (second.json() as CreateResumeResponse).resumeNickname;
       expect(secondNickname).toBe(firstNickname);
     });
   });
 
-  it("is content-addressed: posting identical text twice returns the same id", async () => {
+  it("is content-addressed: posting identical text twice with currentResumeId set to itself returns the same id", async () => {
     const app = buildTestApp();
     const resumeText = `Repeated resume text ${randomUUID()}`;
 
     const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-
     const firstId = (first.json() as { id: string }).id;
+    const second = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText, currentResumeId: firstId },
+    });
+
+    expect(second.statusCode).toBe(200);
     const secondId = (second.json() as { id: string }).id;
     expect(secondId).toBe(firstId);
+  });
+
+  // Ticket 7701534, Nicole: "if it so happens that the pasted resume is
+  // the same text as another already saved resume... not allow them to
+  // continue... This resume has the exact same text as Resume 8. Please
+  // use Resume 8... you can't save an identical resume."
+  describe("duplicate resume text (ticket 7701534)", () => {
+    it("rejects a fresh paste (no currentResumeId) whose text already belongs to an existing resume", async () => {
+      const app = buildTestApp();
+      const resumeText = `Already-saved resume ${randomUUID()}`;
+
+      const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const { id: firstId, resumeNickname: firstNickname } = first.json() as CreateResumeResponse;
+
+      const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+      expect(second.statusCode).toBe(409);
+      const body = second.json() as {
+        error: string;
+        duplicateResumeId: string;
+        duplicateResumeNickname: string;
+      };
+      expect(body.duplicateResumeId).toBe(firstId);
+      expect(body.duplicateResumeNickname).toBe(firstNickname);
+      expect(body.error).toContain(firstNickname);
+    });
+
+    it("rejects text that matches a DIFFERENT resume than the one named by currentResumeId", async () => {
+      const app = buildTestApp();
+      const resumeTextA = `Resume A text ${randomUUID()}`;
+      const resumeTextB = `Resume B text ${randomUUID()}`;
+
+      const respA = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: resumeTextA },
+      });
+      const { id: idA, resumeNickname: nicknameA } = respA.json() as CreateResumeResponse;
+      const respB = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: resumeTextB },
+      });
+      const { id: idB } = respB.json() as CreateResumeResponse;
+
+      // Currently "editing" resume B, but the pasted text is actually A's.
+      const attempt = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: resumeTextA, currentResumeId: idB },
+      });
+
+      expect(attempt.statusCode).toBe(409);
+      const body = attempt.json() as { duplicateResumeId: string; duplicateResumeNickname: string };
+      expect(body.duplicateResumeId).toBe(idA);
+      expect(body.duplicateResumeNickname).toBe(nicknameA);
+
+      // And no phantom row was created for the rejected attempt.
+      const rows = await db.select().from(resumes).where(eq(resumes.resumeText, resumeTextA));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(idA);
+    });
+
+    it("does not reject a genuinely new resume's first-ever submission", async () => {
+      const app = buildTestApp();
+      const response = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Brand new resume ${randomUUID()}` },
+      });
+      expect(response.statusCode).toBe(200);
+    });
+
+    // Opus review round 1 (N2): the primary reason `currentResumeId`
+    // exists at all -- editing an existing resume's text into something
+    // genuinely DIFFERENT (not matching any other saved resume) -- had no
+    // direct API test. This is boundary case (e) from the review's own
+    // enumeration: currentResumeId set to A, text now matches nothing.
+    it("accepts genuinely new text submitted WITH a currentResumeId set (the real edit-and-resubmit case)", async () => {
+      const app = buildTestApp();
+      const first = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Edit-original resume ${randomUUID()}` },
+      });
+      const { id: originalId } = first.json() as CreateResumeResponse;
+
+      const edited = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: {
+          resumeText: `Edit-rewritten resume ${randomUUID()}`,
+          currentResumeId: originalId,
+        },
+      });
+
+      expect(edited.statusCode).toBe(200);
+      const { id: editedId } = edited.json() as CreateResumeResponse;
+      // A real, DISTINCT new resume -- editing into different text is not
+      // the same resume renamed in place (content-addressing, ticket
+      // 620ca30), and must not be treated as a duplicate of anything.
+      expect(editedId).not.toBe(originalId);
+    });
+
+    // Opus review round 1 (N3): the original version of this test asserted
+    // only a call COUNT, which stayed 0 for a reason unrelated to the
+    // thing being tested -- ticket 39b4a48's suggestedTitles cache already
+    // prevents a second inferTitles call for ANY resubmission of the same
+    // text, duplicate-rejected or not, so the count alone can't tell "the
+    // duplicate check ran first" apart from "the cache did its normal
+    // job." Asserting the REJECTED response's shape (no suggestedTitles
+    // field at all, since it's a 409 error body, not a 200
+    // CreateResumeResponse) is what actually distinguishes them.
+    it("does not run title inference for a rejected duplicate, and the 409 body carries no suggestedTitles", async () => {
+      let calls = 0;
+      const inferTitles = async () => {
+        calls++;
+        return ["Should never be called"];
+      };
+      const app = buildTestApp(inferTitles);
+      const resumeText = `Duplicate-inference-guard resume ${randomUUID()}`;
+
+      await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      calls = 0; // reset -- only the SECOND (rejected) call matters here
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+
+      expect(second.statusCode).toBe(409);
+      expect(calls).toBe(0);
+      expect(second.json()).not.toHaveProperty("suggestedTitles");
+    });
   });
 
   it("rejects an empty resumeText with 400, not 500", async () => {
@@ -202,7 +352,7 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     expect(body.suggestedTitles).toEqual(["Technical Writer", "Documentation Engineer"]);
   });
 
-  it("calls inferTitles at most once per resume: a resubmission of identical text reuses the cached suggestions", async () => {
+  it("calls inferTitles at most once per resume: a resubmission of its own identical text (currentResumeId set) reuses the cached suggestions", async () => {
     let calls = 0;
     const inferTitles = async () => {
       calls++;
@@ -212,7 +362,12 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     const resumeText = `Resume text ${randomUUID()}`;
 
     const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const firstId = (first.json() as CreateResumeResponse).id;
+    const second = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText, currentResumeId: firstId },
+    });
 
     expect(calls).toBe(1);
     expect((first.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
@@ -238,7 +393,7 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     expect(rows[0]?.resumeText).toBe(resumeText);
   });
 
-  it("an empty inference result ([]) is itself cached, not retried on resubmission", async () => {
+  it("an empty inference result ([]) is itself cached, not retried on a legitimate resubmission", async () => {
     let calls = 0;
     const inferTitles = async () => {
       calls++;
@@ -247,9 +402,15 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     const app = buildTestApp(inferTitles);
     const resumeText = `Resume text ${randomUUID()}`;
 
-    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const firstId = (first.json() as CreateResumeResponse).id;
+    const second = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText, currentResumeId: firstId },
+    });
 
+    expect(second.statusCode).toBe(200);
     expect(calls).toBe(1);
   });
 });
@@ -442,6 +603,158 @@ describe("PATCH /resumes/:id (ticket 38a7598)", () => {
       payload: { resumeNickname: "New name" },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  // Ticket 7701534, Nicole: "if they try to make a nickname that's
+  // already been used for that user, it should have an error... This
+  // resume nickname is already in use."
+  describe("nickname collision (ticket 7701534)", () => {
+    it("rejects a nickname already used by a DIFFERENT resume, 409, with the exact requested message", async () => {
+      const app = buildTestApp();
+      const first = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Collision-first resume ${randomUUID()}` },
+      });
+      const { id: firstId } = first.json() as CreateResumeResponse;
+      await app.inject({
+        method: "PATCH",
+        url: `/resumes/${firstId}`,
+        payload: { resumeNickname: "Taken Nickname" },
+      });
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Collision-second resume ${randomUUID()}` },
+      });
+      const { id: secondId } = second.json() as CreateResumeResponse;
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${secondId}`,
+        payload: { resumeNickname: "Taken Nickname" },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = response.json() as { error: string; reason: string };
+      expect(body.error).toBe("This resume nickname is already in use.");
+      expect(body.reason).toBe("nickname_conflict");
+
+      // And the second resume's nickname was NOT changed by the rejected attempt.
+      const refetched = await app.inject({ method: "GET", url: `/resumes/${secondId}` });
+      expect((refetched.json() as { resumeNickname: string }).resumeNickname).not.toBe(
+        "Taken Nickname",
+      );
+    });
+
+    it("collision is case-insensitive", async () => {
+      const app = buildTestApp();
+      const first = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Case-first resume ${randomUUID()}` },
+      });
+      const { id: firstId } = first.json() as CreateResumeResponse;
+      await app.inject({
+        method: "PATCH",
+        url: `/resumes/${firstId}`,
+        payload: { resumeNickname: "MixedCase Nickname" },
+      });
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Case-second resume ${randomUUID()}` },
+      });
+      const { id: secondId } = second.json() as CreateResumeResponse;
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${secondId}`,
+        payload: { resumeNickname: "mixedcase nickname" },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it("does NOT reject renaming a resume to its OWN current nickname (no-op case)", async () => {
+      const app = buildTestApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Self-rename resume ${randomUUID()}` },
+      });
+      const { id } = created.json() as CreateResumeResponse;
+      await app.inject({
+        method: "PATCH",
+        url: `/resumes/${id}`,
+        payload: { resumeNickname: "My Own Nickname" },
+      });
+
+      // Re-saving the exact same nickname it already has must not
+      // self-collide.
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${id}`,
+        payload: { resumeNickname: "My Own Nickname" },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does NOT reject renaming a resume to a nickname only IT has ever had, changing only case", async () => {
+      const app = buildTestApp();
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Case-change resume ${randomUUID()}` },
+      });
+      const { id } = created.json() as CreateResumeResponse;
+      await app.inject({
+        method: "PATCH",
+        url: `/resumes/${id}`,
+        payload: { resumeNickname: "lowercase nickname" },
+      });
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${id}`,
+        payload: { resumeNickname: "LOWERCASE NICKNAME" },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does NOT reject two DIFFERENT nicknames that merely aren't taken", async () => {
+      const app = buildTestApp();
+      const first = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Distinct-first resume ${randomUUID()}` },
+      });
+      const { id: firstId } = first.json() as CreateResumeResponse;
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Distinct-second resume ${randomUUID()}` },
+      });
+      const { id: secondId } = second.json() as CreateResumeResponse;
+
+      const responseA = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${firstId}`,
+        payload: { resumeNickname: `Unique A ${randomUUID()}` },
+      });
+      const responseB = await app.inject({
+        method: "PATCH",
+        url: `/resumes/${secondId}`,
+        payload: { resumeNickname: `Unique B ${randomUUID()}` },
+      });
+
+      expect(responseA.statusCode).toBe(200);
+      expect(responseB.statusCode).toBe(200);
+    });
   });
 });
 

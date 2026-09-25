@@ -103,6 +103,16 @@ export type SourceDescriptor = {
 
 export type CreateResumeRequest = {
   resumeText: string;
+  /**
+   * Ticket 7701534: the resume already active THIS session, if any --
+   * lets `POST /resumes` tell "resubmitting my own unchanged text" (e.g.
+   * re-editing just to fix a typo elsewhere) apart from "this text
+   * already belongs to a DIFFERENT saved resume" (a real duplicate).
+   * Omitted on a genuinely first-ever submission this session. See
+   * `CreateResumeDuplicateError`'s doc comment for what happens on the
+   * latter.
+   */
+  currentResumeId?: string;
 };
 
 export type CreateResumeResponse = {
@@ -119,16 +129,21 @@ export type CreateResumeResponse = {
   suggestedTitles: string[];
   /**
    * A real, distinct default ("Resume 1", "Resume 2", ...) assigned by
-   * `getOrCreateResumeId` (apps/api/src/demo-match.ts) at insert time for a
-   * genuinely new resume, or the resume's EXISTING nickname when this
-   * submission matched a resume that already existed (content-addressed
-   * find-or-create, ticket 620ca30) — including one the user already
-   * renamed via `PATCH /resumes/:id`. Ticket 38a7598: this is what
-   * `ResumeInput.tsx` shows/pre-fills right in the submission flow, per
-   * Nicole's explicit "at that moment... choosing the resume nickname" —
-   * never a value the frontend invents itself, so a resubmission of
-   * identical text is guaranteed to show the SAME real nickname the
-   * resume already carries, never a fresh guess that could drift from it.
+   * `getOrCreateResumeId` (apps/api/src/matching/pipeline.ts) at insert
+   * time for a genuinely new resume, or the resume's EXISTING nickname
+   * when this submission matched `currentResumeId` itself resubmitting
+   * its own unchanged text (content-addressed find-or-create, ticket
+   * 620ca30) — including one the user already renamed via `PATCH
+   * /resumes/:id`. Ticket 38a7598: this is what `ResumeInput.tsx`
+   * shows/pre-fills right in the submission flow, per Nicole's explicit
+   * "at that moment... choosing the resume nickname" — never a value the
+   * frontend invents itself.
+   *
+   * Ticket 7701534: text matching a DIFFERENT existing resume (not
+   * `currentResumeId`) no longer reaches this success response at all —
+   * see `CreateResumeDuplicateError`. This field's own "resubmission
+   * resolves to the same real nickname" guarantee now only covers the
+   * one case it still applies to: `currentResumeId` resubmitting itself.
    */
   resumeNickname: string;
 };
@@ -159,6 +174,39 @@ export type ListResumesResponse = {
   /** Oldest first -- matches the "Resume 1", "Resume 2", ... nickname
    * numbering (ticket 38a7598), so list order and nickname order agree. */
   resumes: ResumeSummary[];
+};
+
+/**
+ * `POST /resumes`'s `409` body (ticket 7701534) when the submitted text
+ * exactly matches an EXISTING resume other than `currentResumeId` --
+ * Nicole: "This resume has the exact same text as Resume 8... you can't
+ * save an identical resume." Mirrors `POST /searches`'s own `{error,
+ * searchId}` 409 pattern (ApiError's doc comment, apps/web/src/api/
+ * client.ts) -- extra structured fields alongside the plain message, read
+ * off `ApiError.body` the same structural way that one already is (see
+ * `apiErrorStatus`/`inFlightSearchIdFromError` in SearchFlow.tsx).
+ *
+ * Deliberately does NOT fire for a resubmission of `currentResumeId`'s
+ * OWN unchanged text -- that keeps succeeding exactly as before (ticket
+ * 620ca30's content-addressed find-or-create, unchanged for that case).
+ */
+export type CreateResumeDuplicateError = {
+  error: string;
+  duplicateResumeId: string;
+  duplicateResumeNickname: string;
+};
+
+/**
+ * `PATCH /resumes/:id`'s `409` body (ticket 7701534) when `resumeNickname`
+ * collides (case-insensitively) with a DIFFERENT resume's current
+ * nickname. A `reason` discriminator, not just a message string, so the
+ * frontend can react specifically (leave the user's typed value in place
+ * rather than reverting it, per `handleNicknameCommit`'s ticket 38a7598
+ * revert-on-any-other-failure behavior) without parsing English text.
+ */
+export type UpdateResumeNicknameConflictError = {
+  error: string;
+  reason: "nickname_conflict";
 };
 
 /**

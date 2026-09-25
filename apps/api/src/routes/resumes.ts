@@ -39,11 +39,13 @@
  * identical Drizzle query for one conditional clause's difference.
  */
 import {
+  type CreateResumeDuplicateError,
   type CreateResumeResponse,
   type GetAllResultsResponse,
   type GetResumeResponse,
   type GetResumeResultsResponse,
   type ListResumesResponse,
+  type UpdateResumeNicknameConflictError,
   type UpdateResumeNicknameResponse,
   type UserJobStatus,
   USER_JOB_STATUSES,
@@ -100,6 +102,9 @@ const createResumeBodySchema = {
   required: ["resumeText"],
   properties: {
     resumeText: { type: "string" },
+    // Ticket 7701534: optional -- see CreateResumeRequest's own doc
+    // comment (@app/shared) for what this distinguishes.
+    currentResumeId: { type: "string" },
   },
   additionalProperties: false,
 } as const;
@@ -125,11 +130,11 @@ export function registerResumeRoutes(
    */
   inferTitles: (resumeText: string) => Promise<string[]>,
 ): void {
-  app.post<{ Body: { resumeText: string } }>(
+  app.post<{ Body: { resumeText: string; currentResumeId?: string } }>(
     "/resumes",
     { schema: { body: createResumeBodySchema } },
     async (request, reply) => {
-      const { resumeText } = request.body;
+      const { resumeText, currentResumeId } = request.body;
       const trimmed = resumeText.trim();
 
       if (trimmed.length === 0) {
@@ -145,7 +150,46 @@ export function registerResumeRoutes(
       // text twice returns the same id rather than duplicating a row, and a
       // genuinely new resume gets a new id whose scores start empty (no
       // job_matches rows exist for it yet — see GET /resumes/:id/results).
-      const id = await getOrCreateResumeId(db, resumeText);
+      const { id, isNew } = await getOrCreateResumeId(db, resumeText);
+
+      // Ticket 7701534, Nicole: "if it so happens that the pasted resume
+      // is the same text as another already saved resume... not allow
+      // them to continue... This resume has the exact same text as
+      // Resume 8. Please use Resume 8." `!isNew` means this text already
+      // belonged to SOME resume before this request; `id !== currentResumeId`
+      // means that resume ISN'T the one the client was already editing --
+      // i.e. this is a genuinely different resume's text, not the user
+      // resubmitting their own unchanged text (which must keep working
+      // exactly as before, per this ticket's own acceptance criteria).
+      if (!isNew && id !== currentResumeId) {
+        const existing = await db
+          .select({ resumeNickname: resumes.resumeNickname })
+          .from(resumes)
+          .where(eq(resumes.id, id))
+          .limit(1);
+        const duplicateResumeNickname = existing[0]?.resumeNickname;
+        if (duplicateResumeNickname === undefined) {
+          // Should be impossible: getOrCreateResumeId just guaranteed
+          // this row exists, and every row has had a NOT NULL
+          // resume_nickname since migration 0010.
+          throw new Error(`resume ${id} has no resume_nickname after getOrCreateResumeId`);
+        }
+        // Review round 1 (F2): the ORIGINAL wording ("Please use Resume 8
+        // instead") told the user to do something this app cannot
+        // actually do -- there is no "activate an existing resume for a
+        // new search" action anywhere (My Resumes, ticket 303cff0, is
+        // view-only; see this ticket's own Notes on git-bug for the
+        // tracked follow-up). Promising an unavailable remedy is worse
+        // than the silent-reuse behavior this ticket replaces, so the
+        // message now states the fact (it's already saved, under this
+        // name) without instructing an action the UI can't fulfill.
+        const duplicateResponse: CreateResumeDuplicateError = {
+          error: `This resume has the exact same text as an already-saved resume, "${duplicateResumeNickname}". You can't save it again as a new resume.`,
+          duplicateResumeId: id,
+          duplicateResumeNickname,
+        };
+        return reply.code(409).send(duplicateResponse);
+      }
 
       // Ticket 39b4a48: suggested title keywords, computed at most ONCE per
       // resume and cached on the row — `suggestedTitles === null` means
@@ -269,6 +313,33 @@ export function registerResumeRoutes(
         return reply.code(400).send({
           error: `resumeNickname exceeds the ${MAX_RESUME_NICKNAME_LENGTH}-character limit (got ${trimmed.length}).`,
         });
+      }
+
+      // Ticket 7701534, Nicole: "if they try to make a nickname that's
+      // already been used... it should have an error... This resume
+      // nickname is already in use." Case-insensitive (`lower(...)`, not
+      // Postgres `ILIKE` -- `ILIKE`'s pattern argument treats `%`/`_` as
+      // wildcards, which a real nickname could easily contain literally,
+      // e.g. "50% remote resume"; a plain lower-cased equality has no such
+      // false-positive risk) and excludes THIS resume's own current
+      // nickname (`ne(resumes.id, ...)`), so re-saving a nickname
+      // unchanged, or changing only its case, never self-collides.
+      const collision = await db
+        .select({ id: resumes.id })
+        .from(resumes)
+        .where(
+          and(
+            eq(sql<string>`lower(${resumes.resumeNickname})`, trimmed.toLowerCase()),
+            ne(resumes.id, request.params.id),
+          ),
+        )
+        .limit(1);
+      if (collision.length > 0) {
+        const conflictResponse: UpdateResumeNicknameConflictError = {
+          error: "This resume nickname is already in use.",
+          reason: "nickname_conflict",
+        };
+        return reply.code(409).send(conflictResponse);
       }
 
       const rows = await db

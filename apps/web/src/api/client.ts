@@ -12,6 +12,7 @@
  * `http://localhost:3000` for the common case.
  */
 import type {
+  CreateResumeRequest,
   CreateResumeResponse,
   EstimateProgressResponse,
   EstimateSearchRequest,
@@ -105,10 +106,21 @@ export function getSources(): Promise<GetSourcesResponse> {
   return request<GetSourcesResponse>("/sources");
 }
 
-export function createResume(resumeText: string): Promise<CreateResumeResponse> {
+/**
+ * Ticket 7701534: `currentResumeId` -- the resume already active THIS
+ * session, if any -- lets the server tell "resubmitting my own unchanged
+ * text" apart from "this text already belongs to a DIFFERENT saved
+ * resume" (a real duplicate, rejected with a `409`). See
+ * `CreateResumeRequest`'s own doc comment (@app/shared).
+ */
+export function createResume(
+  resumeText: string,
+  currentResumeId?: string,
+): Promise<CreateResumeResponse> {
+  const body: CreateResumeRequest = { resumeText, currentResumeId };
   return request<CreateResumeResponse>("/resumes", {
     method: "POST",
-    body: JSON.stringify({ resumeText }),
+    body: JSON.stringify(body),
   });
 }
 

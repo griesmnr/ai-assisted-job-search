@@ -96,12 +96,33 @@ section {
   width: 16rem;
 }
 
+/* Ticket 7701534, Nicole: "it should do the red outline on the field."
+   Driven by `aria-invalid` (ResumeInput.tsx), which the field carries for
+   as long as `nicknameError` is set. `outline`, not `border` -- it draws
+   outside the box without changing the element's size, so the field (and
+   everything laid out after it) doesn't shift the instant an error
+   appears the way changing `border` would. */
+.resume-nickname-field input[aria-invalid="true"] {
+  outline: 2px solid #c0392b;
+  outline-offset: 1px;
+}
+
 .resume-nickname-status {
   color: var(--muted);
   font-size: 0.85rem;
 }
 
 .resume-nickname-error {
+  color: #c0392b;
+  font-size: 0.9rem;
+}
+
+/* Ticket 7701534: same red-text treatment as `.resume-nickname-error`
+   above, now shared by the general resume-submission error too --
+   previously unstyled, which undersold what can now be a real blocking
+   validation error (duplicate resume text), not just an occasional
+   network hiccup. */
+.resume-error {
   color: #c0392b;
   font-size: 0.9rem;
 }
