@@ -14,11 +14,13 @@ import {
   sourceDescriptors,
   userJobStatuses,
 } from "../db/schema.js";
-import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { createPooledTestDatabase, createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import {
   countDependents,
   countTotalResumes,
+  findCleanupCandidates,
+  findResumeIdsWithLiveSearch,
   findResumesWithNoScoredJobs,
   parseArgs,
   runCleanup,
@@ -70,12 +72,17 @@ async function seedResume(nickname = "Seeded resume"): Promise<string> {
   return id;
 }
 
-/** A resume that ran a real search (searches/search_sources/search_results
- * all exist) but has NO job_matches -- either every job scoring attempt
- * failed (jobMatchFailures rows, if `withFailures`) or nothing was ever
- * scored at all. This is the case that distinguishes this script's actual
- * criterion ("zero job_matches") from the looser "zero searches" reading
- * of Nicole's own words -- both must count as cleanup candidates. */
+/** A resume that ran a real search that has FINISHED (searches/
+ * search_sources/search_results all exist, `status: "complete"`,
+ * `completedAt` set -- so it does NOT count as a live search, ticket
+ * 25eac27's own F2 exclusion) but has NO job_matches -- either every job
+ * scoring attempt failed (jobMatchFailures rows, if `withFailures`) or
+ * nothing was ever scored at all. This is the case that distinguishes
+ * this script's actual criterion ("zero job_matches") from the looser
+ * "zero searches" reading of Nicole's own words -- both must count as
+ * cleanup candidates. See `seedResumeWithLiveSearch` below for the
+ * DIFFERENT case (a search still running) this must NOT be confused
+ * with. */
 async function seedSearchedButUnscoredResume(withFailures: boolean): Promise<{
   resumeId: string;
   jobId: string;
@@ -83,7 +90,13 @@ async function seedSearchedButUnscoredResume(withFailures: boolean): Promise<{
   const resumeId = await seedResume();
   const jobId = await seedJob();
   const searchId = randomUUID();
-  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+  await db.insert(searches).values({
+    id: searchId,
+    resumeId,
+    searchedAt: new Date(),
+    status: "complete",
+    completedAt: new Date(),
+  });
   await db.insert(searchSources).values({
     id: randomUUID(),
     searchId,
@@ -145,6 +158,35 @@ async function seedScoredResume(nickname = "Scored resume"): Promise<{
     expiresAt: new Date(Date.now() + 60_000),
   });
   return { resumeId, jobId, userJobStatusId };
+}
+
+/** A resume with a search that is genuinely LIVE right now -- `status:
+ * "running"`, no `completedAt`, `searchedAt` recent -- and, deliberately,
+ * zero `job_matches` (scoring hasn't landed one yet). Opus review, ticket
+ * 25eac27, required F2: this must be EXCLUDED from cleanup even though it
+ * matches the raw "zero job_matches" criterion, because it is not junk --
+ * it's a search Nicole is actively running. `stalledMs`, when given, backs
+ * `searchedAt` off far enough to simulate a STALLED (not live) search
+ * instead. */
+async function seedResumeWithLiveSearch(stalledMs?: number): Promise<{
+  resumeId: string;
+  searchId: string;
+}> {
+  const resumeId = await seedResume();
+  const searchId = randomUUID();
+  const searchedAt = stalledMs === undefined ? new Date() : new Date(Date.now() - stalledMs);
+  await db.insert(searches).values({
+    id: searchId,
+    resumeId,
+    searchedAt,
+    status: "running",
+  });
+  await db.insert(searchSources).values({
+    id: randomUUID(),
+    searchId,
+    sourceDescriptorId: DATA_SOURCE,
+  });
+  return { resumeId, searchId };
 }
 
 describe("parseArgs", () => {
@@ -351,5 +393,139 @@ describe("runCleanup", () => {
     const after = await runCleanup(db, { live: false });
 
     expect(after.totalResumeCount).toBe(totalBefore + 1);
+  });
+});
+
+// Opus review, ticket 25eac27, required F2: a resume with a search
+// genuinely live right now must not read as junk just because scoring
+// hasn't landed a job_matches row for it yet.
+describe("live-search exclusion (ticket 25eac27, opus review F2)", () => {
+  it("findResumeIdsWithLiveSearch finds a resume with a running, uncompleted, recent search", async () => {
+    const { resumeId } = await seedResumeWithLiveSearch();
+    const found = await findResumeIdsWithLiveSearch(db, [resumeId]);
+    expect(found.has(resumeId)).toBe(true);
+  });
+
+  it("findResumeIdsWithLiveSearch does NOT find a STALLED search (past the stall window)", async () => {
+    const { resumeId } = await seedResumeWithLiveSearch(60 * 60 * 1000); // 1h old
+    const found = await findResumeIdsWithLiveSearch(db, [resumeId]);
+    expect(found.has(resumeId)).toBe(false);
+  });
+
+  it("findResumeIdsWithLiveSearch does NOT find a COMPLETED search", async () => {
+    const { resumeId } = await seedSearchedButUnscoredResume(false);
+    const found = await findResumeIdsWithLiveSearch(db, [resumeId]);
+    expect(found.has(resumeId)).toBe(false);
+  });
+
+  it("findCleanupCandidates excludes a resume with a live search, even though it has zero job_matches", async () => {
+    const { resumeId } = await seedResumeWithLiveSearch();
+    const candidates = await findCleanupCandidates(db);
+    expect(candidates.map((r) => r.id)).not.toContain(resumeId);
+  });
+
+  it("findCleanupCandidates INCLUDES a resume whose search has STALLED (not live, just stuck)", async () => {
+    const { resumeId } = await seedResumeWithLiveSearch(60 * 60 * 1000);
+    const candidates = await findCleanupCandidates(db);
+    expect(candidates.map((r) => r.id)).toContain(resumeId);
+  });
+
+  it("a live run does NOT delete a resume with a currently live search", async () => {
+    const { resumeId, searchId } = await seedResumeWithLiveSearch();
+
+    const result = await runCleanup(db, { live: true });
+
+    expect(result.candidates.map((r) => r.id)).not.toContain(resumeId);
+    expect(await db.select().from(resumes).where(eq(resumes.id, resumeId))).toHaveLength(1);
+    expect(await db.select().from(searches).where(eq(searches.id, searchId))).toHaveLength(1);
+  });
+});
+
+// Opus review, ticket 25eac27, required F1: the FIRST version of this
+// script deleted job_matches as its own dependent-delete step, which
+// mutation-tested as SAFE in isolation but was proven, against a real
+// concurrent connection, to convert a race into silent data loss (see
+// the module doc comment's full incident writeup). These tests exercise
+// the fix -- the lock-then-recheck sequence -- against a REAL second
+// connection, not just this file's single shared client: a single
+// `pg.Client` cannot hold two transactions at once, so a broken lock and
+// a correct one would be indistinguishable on it (same reasoning
+// `searches.test.ts`'s own advisory-lock concurrency tests already
+// documented for `createPooledTestDatabase`).
+describe("concurrency: a job scored mid-run must not be lost (ticket 25eac27, opus review F1)", () => {
+  it("a job_matches row committed by ANOTHER connection, after this run's lock is held, blocks until this run finishes -- and the resume survives", async () => {
+    const resumeId = await seedResume();
+    const jobId = await seedJob();
+
+    const pooled = createPooledTestDatabase(testDb.testDbName, 4);
+    try {
+      // A second, independent connection -- this is the "concurrent
+      // search scoring a job" the module doc comment describes. It waits
+      // until told to actually attempt its insert, so the test controls
+      // exactly when the race happens relative to this run's own lock.
+      let releaseConcurrentInsert: () => void = () => {};
+      const concurrentInsertGate = new Promise<void>((resolve) => {
+        releaseConcurrentInsert = resolve;
+      });
+      let concurrentInsertSettled = false;
+      const concurrentInsert = pooled.db
+        .transaction(async (concurrentTx) => {
+          await concurrentInsertGate;
+          await concurrentTx.insert(jobMatches).values({
+            id: randomUUID(),
+            resumeId,
+            jobId,
+            matchScore: 80,
+            rationale: "landed mid-cleanup",
+            strengths: [],
+            gaps: [],
+          });
+        })
+        .then(() => {
+          concurrentInsertSettled = true;
+        });
+
+      // The actual cleanup run. `runCleanup` itself doesn't expose a hook
+      // to pause mid-transaction, so this reimplements just enough of its
+      // LIVE path by hand to prove the lock is real: lock the candidate,
+      // signal the concurrent insert to proceed WHILE the lock is held,
+      // confirm it has NOT settled yet, then recheck/delete as
+      // `runCleanup` itself does.
+      await pooled.db.transaction(async (tx) => {
+        await tx
+          .select({ id: resumes.id })
+          .from(resumes)
+          .where(eq(resumes.id, resumeId))
+          .for("update");
+
+        releaseConcurrentInsert();
+        // Give the concurrent transaction a real chance to run if it were
+        // somehow NOT blocked -- if the lock didn't work, this is enough
+        // time for its INSERT to land.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(concurrentInsertSettled).toBe(false);
+
+        const stillUnscored = await tx
+          .select({ resumeId: jobMatches.resumeId })
+          .from(jobMatches)
+          .where(eq(jobMatches.resumeId, resumeId));
+        expect(stillUnscored).toHaveLength(0); // not visible yet -- still locked out
+
+        // Simulates runCleanup finding zero matches and proceeding to
+        // delete -- but this test does NOT actually delete, so the
+        // concurrent insert (released above, still pending on the lock)
+        // can be observed succeeding once this transaction ends.
+      });
+
+      await concurrentInsert;
+      expect(concurrentInsertSettled).toBe(true);
+      const landed = await pooled.db
+        .select()
+        .from(jobMatches)
+        .where(eq(jobMatches.resumeId, resumeId));
+      expect(landed).toHaveLength(1);
+    } finally {
+      await pooled.close();
+    }
   });
 });
