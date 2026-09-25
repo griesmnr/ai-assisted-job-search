@@ -212,9 +212,12 @@ export function SearchFlow({
    * component's own real-search phase (`"starting"` -- the `POST
    * /searches` request is in flight -- or `"running"` -- it's adopted a
    * searchId and is polling) starts or stops, so App.tsx can disable the
-   * locked "Change" button for exactly that window. Deliberately keyed on
-   * the SAME two phases the persisted-run effect above already treats as
-   * "a real run genuinely exists" (see that effect's own "starting is
+   * collapsed bar's action button for exactly that window -- "Edit"
+   * exactly as much as "Change" (review fix F1: an earlier version gated
+   * only "Change" on this, which left a real window where "Edit" could
+   * still reopen the paste form mid-search). Deliberately keyed on the
+   * SAME two phases the persisted-run effect above already treats as "a
+   * real run genuinely exists" (see that effect's own "starting is
    * excluded from BOTH branches" comment) -- `"estimating"`/`"estimated"`
    * are NOT included: Nicole's own resolution was explicit that
    * re-estimating, unlike a real run, should stay unrestricted. Optional

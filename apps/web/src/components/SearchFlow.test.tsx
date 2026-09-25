@@ -1185,7 +1185,8 @@ describe("SearchFlow — estimate progress feedback (ticket bf2dd0a)", () => {
 // Ticket 88f11d7 (Nicole: "I don't think that we should allow a change of
 // resume while a search is in progress"): App.tsx needs to know when a
 // REAL run (as opposed to a mere estimate) is in progress, to disable the
-// locked "Change" button for exactly that window.
+// collapsed bar's action button -- "Edit" exactly as much as "Change" --
+// for exactly that window.
 describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
   it("reports false on mount, with no run in progress", () => {
     const onRunningChange = vi.fn();
