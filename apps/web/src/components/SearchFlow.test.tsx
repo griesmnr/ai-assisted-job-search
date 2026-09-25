@@ -1181,3 +1181,130 @@ describe("SearchFlow — estimate progress feedback (ticket bf2dd0a)", () => {
     await screen.findByRole("button", { name: "Run search" });
   });
 });
+
+// Ticket 88f11d7 (Nicole: "I don't think that we should allow a change of
+// resume while a search is in progress"): App.tsx needs to know when a
+// REAL run (as opposed to a mere estimate) is in progress, to disable the
+// locked "Change" button for exactly that window.
+describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
+  it("reports false on mount, with no run in progress", () => {
+    const onRunningChange = vi.fn();
+    render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        onSearchComplete={() => {}}
+        onRunningChange={onRunningChange}
+      />,
+    );
+
+    expect(onRunningChange).toHaveBeenCalledWith(false);
+    expect(onRunningChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it("does NOT report true while merely estimating -- only a real run counts", async () => {
+    const onRunningChange = vi.fn();
+    const { promise, resolve } = deferred<EstimateSearchResponse>();
+    estimateSearch.mockReturnValue(promise);
+
+    render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        onSearchComplete={() => {}}
+        onRunningChange={onRunningChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("status");
+
+    expect(onRunningChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      resolve(makeEstimate());
+      await promise;
+    });
+    await screen.findByRole("button", { name: "Run search" });
+    // Still not true -- an "estimated" cost preview, not yet confirmed,
+    // is not a run in progress either.
+    expect(onRunningChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it("reports true the moment 'Run search' is clicked (starting), and stays true while running", async () => {
+    const onRunningChange = vi.fn();
+    estimateSearch.mockResolvedValue(makeEstimate());
+    const { promise: startPromise, resolve: resolveStart } = deferred<{
+      searchId: string;
+      status: "pending";
+      skippedSources: string[];
+    }>();
+    startSearch.mockReturnValue(startPromise);
+    getSearchStatus.mockResolvedValue({
+      status: "pending",
+      scoredSoFar: 0,
+      linked: 1,
+      cappedForBudget: 0,
+      sources: [],
+      stalledSince: undefined,
+    });
+
+    render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        onSearchComplete={() => {}}
+        onRunningChange={onRunningChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    // "starting": the POST /searches request is in flight.
+    await waitFor(() => expect(onRunningChange).toHaveBeenLastCalledWith(true));
+
+    await act(async () => {
+      resolveStart({ searchId: "search-1", status: "pending", skippedSources: [] });
+      await startPromise;
+    });
+
+    // "running": still true, now polling.
+    await screen.findByRole("heading", { name: "Search running..." });
+    expect(onRunningChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("reports false again once the search completes", async () => {
+    const onRunningChange = vi.fn();
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      status: "complete",
+      scored: 1,
+      permanentlyFailed: 0,
+      cappedForBudget: 0,
+      linked: 1,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        onSearchComplete={() => {}}
+        onRunningChange={onRunningChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+    await act(async () => {
+      await vi.waitFor(() => expect(getSearchStatus).toHaveBeenCalled(), { timeout: 3000 });
+    });
+
+    await screen.findByRole("heading", { name: "Search complete" });
+    expect(onRunningChange).toHaveBeenLastCalledWith(false);
+  });
+});

@@ -169,6 +169,7 @@ export function SearchFlow({
   onEstimateStart,
   onInvalidEstimateAttempt,
   onSearchComplete,
+  onRunningChange,
 }: {
   resumeId: string;
   sourceIds: string[];
@@ -205,6 +206,20 @@ export function SearchFlow({
    * (none of which care about scrolling) keeps working unchanged. */
   onInvalidEstimateAttempt?: () => void;
   onSearchComplete: () => void;
+  /** Ticket 88f11d7 (Nicole: "I don't think that we should allow a change
+   * of resume while a search is in progress"): fired whenever this
+   * component's own real-search phase (`"starting"` -- the `POST
+   * /searches` request is in flight -- or `"running"` -- it's adopted a
+   * searchId and is polling) starts or stops, so App.tsx can disable the
+   * locked "Change" button for exactly that window. Deliberately keyed on
+   * the SAME two phases the persisted-run effect above already treats as
+   * "a real run genuinely exists" (see that effect's own "starting is
+   * excluded from BOTH branches" comment) -- `"estimating"`/`"estimated"`
+   * are NOT included: Nicole's own resolution was explicit that
+   * re-estimating, unlike a real run, should stay unrestricted. Optional
+   * so every existing caller/test that doesn't care keeps working
+   * unchanged. */
+  onRunningChange?: (running: boolean) => void;
 }) {
   // Ticket 3f05144: the first thing this component does on EVERY mount is
   // ask `sessionStorage` whether a real, already-paid-for run is still in
@@ -328,6 +343,14 @@ export function SearchFlow({
     // linger, inert, until the tab closes.
     clearActiveSearchFor(phase.kind === "done" ? phase.result.resumeId : resumeId);
   }, [phase, resumeId]);
+
+  // Ticket 88f11d7: reports "a real run is in progress" on every phase
+  // transition -- see `onRunningChange`'s own doc comment above for why
+  // `"starting"`/`"running"` specifically, and not `"estimating"`/
+  // `"estimated"`.
+  useEffect(() => {
+    onRunningChange?.(phase.kind === "starting" || phase.kind === "running");
+  }, [phase.kind, onRunningChange]);
 
   /**
    * Ticket bf2dd0a: starts polling `GET /searches/estimate/:id/progress` on

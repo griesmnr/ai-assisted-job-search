@@ -84,6 +84,34 @@ import { useState } from "react";
  * an editable name should be in the collapse-expand") -- renaming only
  * happens through the expanded form's nickname field, same as it
  * always has.
+ *
+ * Ticket 88f11d7 (Nicole: "once that has happened [a real search], then
+ * a user can't change the text on the resume anymore... if they hit
+ * change, I want them to have the option somehow of... toggle buttons.
+ * One toggle button says like Use an old resume, and then there's a
+ * list of their resumes underneath there... and then there's like
+ * something that says Or, and then it says Paste a new resume"). Once
+ * `isLocked` is true, the collapsed bar's button becomes "Change"
+ * instead of "Edit" and, instead of reopening the paste form directly,
+ * opens a THIRD branch: the picker (`changingResume`) -- one button per
+ * existing saved resume (`resumes`) plus "Paste a new resume", which is
+ * the only path back into the ordinary expanded form for a locked
+ * resume. Picking an existing resume fires `onActivateResume` -- a pure
+ * client-side "pick, not paste" (Nicole: "already exists in full, use
+ * resume 8... it just needs to say the active resume is now 8"), never
+ * `onSubmit`/`POST /resumes` -- so it can never trip the ticket
+ * 7701534 duplicate-text guardrail (that check only fires on a real
+ * POST body). An UNLOCKED resume's "Edit" is completely unchanged:
+ * still goes straight to the expanded form, no picker involved.
+ *
+ * `searching` (Nicole, resolving her own open question: "I don't think
+ * that we should allow a change of resume while a search is in
+ * progress"): disables the locked "Change" button specifically -- an
+ * unlocked resume's "Edit" is never gated on this, since App.tsx's
+ * `isLocked` flips true the instant a real search STARTS (see
+ * schema.ts's `searches.isEstimate` doc comment: set at insert time,
+ * not on completion), so by the time a search is actually running the
+ * resume is already locked and "Edit" was already unreachable for it.
  */
 export function ResumeInput({
   onSubmit,
@@ -98,6 +126,16 @@ export function ResumeInput({
   editingResume,
   onEditResume,
   onCancelEdit,
+  isLocked,
+  changingResume,
+  onChangeResume,
+  onCancelChange,
+  onStartPasteNew,
+  onActivateResume,
+  resumes,
+  activating,
+  activateError,
+  searching,
 }: {
   onSubmit: (resumeText: string) => void;
   submitting: boolean;
@@ -162,8 +200,109 @@ export function ResumeInput({
    * since this ticket also hides sources/criteria/search while
    * editing -- no way out of the screen at all short of a reload. */
   onCancelEdit?: () => void;
+  /** Ticket 88f11d7: `GetResumeResponse.isLocked`/`CreateResumeResponse.
+   * isLocked`, carried straight through from App.tsx's own state -- picks
+   * which word the collapsed bar's button shows ("Change" vs "Edit") and
+   * which callback a click fires. `undefined`/falsy behaves exactly like
+   * the pre-ticket "Edit" behavior, so every existing caller/test that
+   * doesn't pass this keeps working unchanged. */
+  isLocked?: boolean;
+  /** Ticket 88f11d7: true between a "Change" click and either activating
+   * an existing resume, choosing "Paste a new resume", or Cancel -- picks
+   * the THIRD branch (the picker) below. Deliberately separate from
+   * `editingResume`, same reasoning as that prop's own separation from
+   * `resumeId` (see this file's top-of-file doc comment): App.tsx needs
+   * to tell "showing the picker" apart from "showing the paste form"
+   * without conflating either with "a resume exists". */
+  changingResume?: boolean;
+  /** Fires on a "Change" click (the locked collapsed bar) -- App.tsx sets
+   * `changingResume` true. Mirrors `onEditResume` for the unlocked case. */
+  onChangeResume?: () => void;
+  /** Fires on the picker's "Cancel" -- App.tsx sets `changingResume` back
+   * to false without touching the active resume. */
+  onCancelChange?: () => void;
+  /** Fires on the picker's "Paste a new resume" -- App.tsx closes the
+   * picker and opens the ordinary expanded form (`editingResume = true`),
+   * same form an unlocked "Edit" already opens. */
+  onStartPasteNew?: () => void;
+  /** Fires with an existing resume's id when its picker button is
+   * clicked -- App.tsx's `handleActivateResume` fetches it via `GET
+   * /resumes/:id` and adopts it directly. Deliberately NOT `onSubmit`:
+   * this is a pick of an already-complete record, never a paste (Nicole:
+   * "it just needs to say the active resume is now 8... it's a pick, not
+   * a paste"), so it can never trip the ticket 7701534 duplicate-text
+   * guardrail, which only fires on a real `POST /resumes` body. */
+  onActivateResume?: (resumeId: string) => void;
+  /** Every other saved resume, for the picker's toggle buttons (ticket
+   * 303cff0's `ResumeSummary` shape -- id/nickname only, no text). The
+   * currently-active resume is filtered out of this list below (picking
+   * "Use Resume 16" while already using Resume 16 has nothing to do).
+   * Defaults to `[]` so every existing caller/test that doesn't pass this
+   * keeps working unchanged. */
+  resumes?: { id: string; resumeNickname: string }[];
+  /** True while `onActivateResume`'s `GET /resumes/:id` is in flight --
+   * disables the picker's buttons rather than letting a second click race
+   * the first. */
+  activating?: boolean;
+  activateError?: string | null;
+  /** Ticket 88f11d7 (Nicole: "I don't think that we should allow a
+   * change of resume while a search is in progress"): disables the
+   * locked collapsed bar's "Change" button specifically -- see this
+   * file's top-of-file doc comment for why an unlocked "Edit" never
+   * needs this same gate. */
+  searching?: boolean;
 }) {
   const [text, setText] = useState(initialText);
+
+  // Ticket 88f11d7: the picker branch -- takes priority over the
+  // collapsed bar below when `changingResume` is set (only reachable via
+  // a "Change" click, which only exists once `isLocked` is true).
+  if (resumeId !== undefined && changingResume) {
+    const otherResumes = (resumes ?? []).filter((r) => r.id !== resumeId);
+    return (
+      <div className="resume-input resume-picker">
+        <p className="resume-picker-heading">Use an old resume, or paste a new one:</p>
+        {otherResumes.length > 0 && (
+          <div className="resume-picker-options">
+            {otherResumes.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                className="resume-picker-option"
+                disabled={activating}
+                onClick={() => onActivateResume?.(r.id)}
+              >
+                Use {r.resumeNickname}
+              </button>
+            ))}
+          </div>
+        )}
+        {otherResumes.length > 0 && <p className="resume-picker-or">Or</p>}
+        <div className="resume-input-actions">
+          <button
+            type="button"
+            className="resume-picker-paste-new"
+            disabled={activating}
+            onClick={() => onStartPasteNew?.()}
+          >
+            Paste a new resume
+          </button>
+          <button
+            type="button"
+            className="resume-cancel-edit-button"
+            onClick={() => onCancelChange?.()}
+          >
+            Cancel
+          </button>
+        </div>
+        {activateError && (
+          <p role="alert" className="resume-error">
+            Could not load that resume: {activateError}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   // Ticket ac141d0: the whole reason this is a branch, not a readOnly
   // toggle -- the collapsed bar is a DIFFERENT, smaller render, not the
@@ -177,16 +316,26 @@ export function ResumeInput({
             moved it back inside one (as cdc2c39's earlier "Edit resume"
             button briefly was) should not silently regain the implicit
             submit-on-click hazard that ticket's own review had to catch.
-            aria-label keeps the visible text short ("Edit") while still
-            telling a screen reader what it edits. */}
+            aria-label keeps the visible text short ("Edit"/"Change")
+            while still telling a screen reader what it acts on. */}
         <button
           type="button"
           className="resume-edit-button"
-          aria-label="Edit resume"
-          onClick={() => onEditResume?.()}
+          aria-label={isLocked ? "Change resume" : "Edit resume"}
+          disabled={isLocked && searching}
+          onClick={() => (isLocked ? onChangeResume?.() : onEditResume?.())}
         >
-          Edit
+          {isLocked ? "Change" : "Edit"}
         </button>
+        {/* Ticket 88f11d7: only ever shown for the disabled locked case --
+            an unlocked "Edit" is never gated on `searching` at all (see
+            this file's top-of-file doc comment), so there is nothing to
+            explain there. */}
+        {isLocked && searching && (
+          <span className="resume-change-note">
+            Can't change resumes while a search is running.
+          </span>
+        )}
       </div>
     );
   }

@@ -127,6 +127,39 @@ section {
   font-size: 0.9rem;
 }
 
+/* Ticket 88f11d7: the "Change" picker -- one toggle button per existing
+   saved resume, plus "Paste a new resume". */
+.resume-picker-heading {
+  font-weight: 600;
+  margin: 0;
+}
+
+.resume-picker-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.resume-picker-option {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.resume-picker-or {
+  color: var(--muted);
+  margin: 0;
+}
+
+.resume-change-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .search-pitch {
   font-size: 0.9rem;
   max-width: 40rem;
