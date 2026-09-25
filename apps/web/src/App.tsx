@@ -211,6 +211,20 @@ function App() {
   const [resumeChanging, setResumeChanging] = useState(false);
   const [resumeActivating, setResumeActivating] = useState(false);
   const [resumeActivateError, setResumeActivateError] = useState<string | null>(null);
+  // Review fix (F2, ticket 88f11d7): a generation counter guarding
+  // `handleActivateResume`'s async `getResume` against being applied AFTER
+  // the user has already left the picker (Cancel or "Paste a new resume")
+  // -- without this, a slow `getResume` that resolves after Cancel already
+  // returned the UI to "Using Resume 1" would silently overwrite it with
+  // Resume 8 anyway the instant the response landed, including yanking
+  // `resumeId` out from under an already-mounted `SearchFlow`. Every
+  // caller that leaves the picker without an activation actually
+  // completing (`handleCancelChange`, `handleStartPasteNew`) bumps this;
+  // `handleActivateResume` captures the value at its OWN start and only
+  // applies its result if nothing bumped it in between -- the same
+  // "snapshot a token, compare on resolve" shape `estimateRequestId`
+  // already uses (SearchFlow.tsx) for an analogous stale-response problem.
+  const activationTokenRef = useRef(0);
   // Ticket 88f11d7 (Nicole: "I don't think that we should allow a change
   // of resume while a search is in progress"): mirrors SearchFlow's own
   // `"starting"`/`"running"` phases via its `onRunningChange` callback --
@@ -751,18 +765,28 @@ function App() {
   }
 
   // Fires from the picker's "Cancel" -- a pure discard, same shape as
-  // `handleCancelEdit`: nothing about the active resume changes.
+  // `handleCancelEdit`: nothing about the active resume changes. Review
+  // fix (F2): bumps `activationTokenRef` so a still-in-flight
+  // `handleActivateResume` call this Cancel is walking away from can
+  // never apply its result after the fact -- see that ref's own doc
+  // comment.
   function handleCancelChange() {
+    activationTokenRef.current++;
     setResumeChanging(false);
+    setResumeActivating(false);
     setResumeActivateError(null);
   }
 
   // Fires from the picker's "Paste a new resume" -- hands off from the
   // picker straight into the ordinary expanded form, the same one an
   // unlocked "Edit" already opens (ResumeInput.tsx renders identically
-  // either way once `editingResume` is true).
+  // either way once `editingResume` is true). Review fix (F2): same
+  // in-flight-activation invalidation as `handleCancelChange` -- this is
+  // also a way to leave the picker without an activation completing.
   function handleStartPasteNew() {
+    activationTokenRef.current++;
     setResumeChanging(false);
+    setResumeActivating(false);
     setResumeEditing(true);
     setNicknameError(null);
     setResumeError(null);
@@ -777,10 +801,19 @@ function App() {
   // Resume 8's own text while Resume 16 is `currentResumeId` would 409 --
   // this path never submits anything at all).
   async function handleActivateResume(id: string) {
+    // Review fix (F2): snapshot BEFORE the network call, so a later bump
+    // (Cancel, "Paste a new resume", or a second activation click) is
+    // unambiguously detectable once this resolves.
+    const token = ++activationTokenRef.current;
     setResumeActivating(true);
     setResumeActivateError(null);
     try {
       const data = await getResume(id);
+      // Superseded -- the user left the picker (or started a DIFFERENT
+      // activation) while this was in flight. Applying it now would
+      // silently resurrect a resume the user already walked away from;
+      // a no-op is the correct behavior, not an error.
+      if (activationTokenRef.current !== token) return;
       setResumeId(data.id);
       // Captured the same way a submit captures it (ticket 3f05144): the
       // text this resumeId actually resolves to, so a reload restores the
@@ -799,9 +832,15 @@ function App() {
       setResumeChanging(false);
       setResumeError(null);
     } catch (err) {
-      setResumeActivateError(err instanceof Error ? err.message : String(err));
+      // Same supersession guard as the success path above -- a failure
+      // for an activation the user already cancelled/replaced must not
+      // resurrect an error banner for a picker that may no longer even
+      // be showing.
+      if (activationTokenRef.current === token) {
+        setResumeActivateError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setResumeActivating(false);
+      if (activationTokenRef.current === token) setResumeActivating(false);
     }
   }
 
@@ -1024,6 +1063,17 @@ function App() {
                 onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
                 onRunningChange={setSearchRunning}
+                // Review fix (F1, ticket 88f11d7): fires the moment
+                // SearchFlow itself confirms a real run exists (its
+                // `onRealSearchStarted` doc comment has the full story) --
+                // this is what makes `resumeLocked` become true THIS
+                // SESSION for a resume that was unlocked when the run
+                // started, instead of only ever learning about it from a
+                // later reload's hydration fetch. `true` is always the
+                // correct write here: a locked resume staying locked is a
+                // no-op, and there is no unlock path this could wrongly
+                // clobber.
+                onRealSearchStarted={() => setResumeLocked(true)}
               />
             </section>
 

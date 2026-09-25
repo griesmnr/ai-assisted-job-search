@@ -614,7 +614,16 @@ describe("ResumeInput — locked 'Change' button (ticket 88f11d7)", () => {
     expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
   });
 
-  it("does not disable 'Edit' for an unlocked resume even when searching is true", () => {
+  // Review fix (F1, ticket 88f11d7): an earlier version of this exempted
+  // an unlocked resume's "Edit" from the `searching` gate, on the theory
+  // that `isLocked` always flips true before a real search starts
+  // polling -- false in practice (App.tsx's `resumeLocked` only updates
+  // once SearchFlow confirms the run, which is strictly AFTER
+  // `onRunningChange` already reports `searching = true` for the
+  // `POST /searches` request itself being in flight). "Edit" must be
+  // gated on `searching` exactly like "Change" is, with no `isLocked`
+  // exemption, to actually close that window.
+  it("also disables 'Edit' for an UNLOCKED resume while searching is true -- no isLocked exemption", () => {
     render(
       <ResumeInput
         onSubmit={() => {}}
@@ -625,10 +634,25 @@ describe("ResumeInput — locked 'Change' button (ticket 88f11d7)", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Edit resume" })).not.toBeDisabled();
-    expect(
-      screen.queryByText("Can't change resumes while a search is running."),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit resume" })).toBeDisabled();
+    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+  });
+
+  it("ties the disabled reason to the button via aria-describedby", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        isLocked={true}
+        searching={true}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Change resume" });
+    const note = screen.getByText("Can't change resumes while a search is running.");
+    expect(button).toHaveAttribute("aria-describedby", note.id);
   });
 });
 
@@ -722,7 +746,7 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     expect(onCancelChange).toHaveBeenCalledTimes(1);
   });
 
-  it("disables the picker's buttons while activating is true", () => {
+  it("disables the 'Use Resume N' buttons while activating is true, to prevent a second competing activation", () => {
     render(
       <ResumeInput
         onSubmit={() => {}}
@@ -736,7 +760,26 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     );
 
     expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Paste a new resume" })).toBeDisabled();
+  });
+
+  // Review fix (F2, ticket 88f11d7): unlike "Use Resume N" above, these
+  // two are ways to ABANDON a pending activation, not compete with it --
+  // same reasoning "Cancel" already had, extended to "Paste a new resume".
+  it("does NOT disable 'Paste a new resume' or 'Cancel' while activating is true -- both are valid ways to abandon it", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+        activating={true}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Paste a new resume" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).not.toBeDisabled();
   });
 
   it("shows activateError as a blocking alert", () => {

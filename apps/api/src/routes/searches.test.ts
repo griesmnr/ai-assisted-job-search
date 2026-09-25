@@ -463,6 +463,33 @@ describe("POST /searches/estimate", () => {
     expect(body.searchId).toBeUndefined();
   });
 
+  // Ticket 88f11d7 review fix (F3): this route's own real INSERT — not a
+  // hand-written one — must carry `isEstimate: true`. See the matching
+  // "POST /searches — fan-out" test for the real-run counterpart, which
+  // asserts `false` for the same resume's OTHER row.
+  it("ticket 88f11d7: this route's own inserted searches row has isEstimate = true", async () => {
+    const jobs = [matchingJob(`lock-estimate-${randomUUID()}`)];
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+    });
+    const resumeId = await createResume(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    const rows = await db.select().from(searchesTable).where(eq(searchesTable.resumeId, resumeId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.isEstimate).toBe(true);
+  });
+
   it("reports a CAP-AWARE cost estimate — priced at scoreThreshold, not the full pool", async () => {
     // Ticket 59fdc52 review round 2: the estimate used to price the whole
     // pool needing a score, while a real run only ever scores
@@ -764,6 +791,50 @@ describe("POST /searches — fan-out (ticket 4f88339, design c54b9e0 §4.1)", ()
     const searchRow = await db.select().from(searchesTable).where(eq(searchesTable.id, searchId));
     expect(searchRow[0]?.status).toBe("running");
     expect(searchRow[0]?.completedAt).toBeNull();
+  });
+
+  // Ticket 88f11d7 review fix (F3): the backend's own `isEstimate` tests
+  // (apps/api/src/routes/resumes.test.ts) only ever hand-insert `searches`
+  // rows directly — never exercised via the real ROUTE that actually
+  // writes one. This is the one gap that let review's F1 (the frontend
+  // never actually locking a resume in-session) go unnoticed: if THIS
+  // route had ever written `isEstimate: true` by mistake, every hand-
+  // inserted-row test would still pass. Asserted against a resume that
+  // ALSO has a prior real `POST /searches/estimate` row for it — the exact
+  // ambiguity `isEstimate` exists to resolve (see schema.ts's own doc
+  // comment: both converge to `status: "complete"`, and an estimate row
+  // exists here too, same resumeId) — so this can't pass by accident of
+  // there being only one row to find.
+  it("ticket 88f11d7: this route's own real run writes isEstimate = false, distinct from a prior estimate for the same resume", async () => {
+    const publisher = fakePublisher();
+    const job = matchingJob(`lock-real-${randomUUID()}`);
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [job]),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    const rows = await db.select().from(searchesTable).where(eq(searchesTable.resumeId, resumeId));
+    expect(rows).toHaveLength(2);
+    const realRow = rows.find((r) => r.id === searchId);
+    const estimateRow = rows.find((r) => r.id !== searchId);
+    expect(realRow?.isEstimate).toBe(false);
+    expect(estimateRow?.isEstimate).toBe(true);
   });
 
   it("VACUOUS-TRUTH GUARD: a search with zero linked jobs yet reports pending, never complete (design §2)", async () => {

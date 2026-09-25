@@ -104,14 +104,19 @@ import { useState } from "react";
  * POST body). An UNLOCKED resume's "Edit" is completely unchanged:
  * still goes straight to the expanded form, no picker involved.
  *
- * `searching` (Nicole, resolving her own open question: "I don't think
- * that we should allow a change of resume while a search is in
- * progress"): disables the locked "Change" button specifically -- an
- * unlocked resume's "Edit" is never gated on this, since App.tsx's
- * `isLocked` flips true the instant a real search STARTS (see
- * schema.ts's `searches.isEstimate` doc comment: set at insert time,
- * not on completion), so by the time a search is actually running the
- * resume is already locked and "Edit" was already unreachable for it.
+ * `searching` (Nicole: "I don't think that we should allow a change of
+ * resume while a search is in progress"): disables the collapsed bar's
+ * action button UNCONDITIONALLY while true -- "Edit" exactly as much as
+ * "Change". Review fix (F1, ticket 88f11d7): an earlier version of this
+ * gated `searching` behind `isLocked` on the theory that `isLocked`
+ * always flips true before a real search actually starts polling — false
+ * in practice, since `isLocked` only updates once SearchFlow's
+ * `onRealSearchStarted` callback fires (the searchId is adopted into the
+ * `"running"` phase), which is strictly AFTER `onRunningChange` already
+ * reported `searching = true` for the `"starting"` window (the `POST
+ * /searches` request itself in flight). Gating on `searching` alone,
+ * with no `isLocked` condition, closes that window for BOTH an
+ * already-locked resume and one this very run is about to lock.
  */
 export function ResumeInput({
   onSubmit,
@@ -279,10 +284,17 @@ export function ResumeInput({
         )}
         {otherResumes.length > 0 && <p className="resume-picker-or">Or</p>}
         <div className="resume-input-actions">
+          {/* Review fix (F2, ticket 88f11d7): NOT disabled by `activating`,
+              unlike the "Use Resume N" buttons above -- this is a way to
+              ABANDON a pending activation (same as "Cancel" below, which
+              was already left enabled for exactly this reason), not a
+              competing one. App.tsx's `handleStartPasteNew` invalidates
+              the in-flight `getResume` the same way `handleCancelChange`
+              does, so a click here is always safe regardless of what's
+              still in flight. */}
           <button
             type="button"
             className="resume-picker-paste-new"
-            disabled={activating}
             onClick={() => onStartPasteNew?.()}
           >
             Paste a new resume
@@ -322,17 +334,20 @@ export function ResumeInput({
           type="button"
           className="resume-edit-button"
           aria-label={isLocked ? "Change resume" : "Edit resume"}
-          disabled={isLocked && searching}
+          aria-describedby={searching ? "resume-change-note" : undefined}
+          disabled={searching}
           onClick={() => (isLocked ? onChangeResume?.() : onEditResume?.())}
         >
           {isLocked ? "Change" : "Edit"}
         </button>
-        {/* Ticket 88f11d7: only ever shown for the disabled locked case --
-            an unlocked "Edit" is never gated on `searching` at all (see
-            this file's top-of-file doc comment), so there is nothing to
-            explain there. */}
-        {isLocked && searching && (
-          <span className="resume-change-note">
+        {/* Review fix (F1, ticket 88f11d7): gated on `searching` alone,
+            regardless of `isLocked` -- see this file's top-of-file doc
+            comment for why an unlocked "Edit" needs this gate too now.
+            `aria-describedby` above ties the disabled reason to the
+            button itself for a screen-reader user, not just a sighted
+            one. */}
+        {searching && (
+          <span id="resume-change-note" className="resume-change-note">
             Can't change resumes while a search is running.
           </span>
         )}

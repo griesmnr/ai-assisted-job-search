@@ -170,6 +170,7 @@ export function SearchFlow({
   onInvalidEstimateAttempt,
   onSearchComplete,
   onRunningChange,
+  onRealSearchStarted,
 }: {
   resumeId: string;
   sourceIds: string[];
@@ -220,6 +221,22 @@ export function SearchFlow({
    * so every existing caller/test that doesn't care keeps working
    * unchanged. */
   onRunningChange?: (running: boolean) => void;
+  /** Ticket 88f11d7 review fix (F1): fired synchronously from
+   * `enterRunning` -- the ONE place a real run's `searchId` is actually
+   * adopted (a fresh `POST /searches` success or a 409-adoption of an
+   * already-running search; see that function's own doc comment) -- so
+   * App.tsx can flip its `resumeLocked` state true THIS SESSION, the
+   * moment a real search row is confirmed to exist, rather than only
+   * learning about it on a later reload's hydration fetch. Deliberately
+   * NOT derived from `onRunningChange`/`phase.kind` in an effect: this
+   * needs to fire exactly once per confirmed run, synchronously with the
+   * state transition, not on a later render pass keyed on a phase whose
+   * `"starting"` value already overlaps `onRunningChange`'s own `true`
+   * (which — unlike this — intentionally also covers the brief window
+   * before a searchId exists at all, see that callback's own doc
+   * comment). Optional so every existing caller/test keeps working
+   * unchanged. */
+  onRealSearchStarted?: () => void;
 }) {
   // Ticket 3f05144: the first thing this component does on EVERY mount is
   // ask `sessionStorage` whether a real, already-paid-for run is still in
@@ -495,6 +512,9 @@ export function SearchFlow({
     });
     if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => void poll(searchId, estimate), POLL_INTERVAL_MS);
+    // Ticket 88f11d7 review fix (F1): see `onRealSearchStarted`'s own doc
+    // comment -- this is the one call site.
+    onRealSearchStarted?.();
   }
 
   // F1: an estimate becomes stale the instant what it was computed for
