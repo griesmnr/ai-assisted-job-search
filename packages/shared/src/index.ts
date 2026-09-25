@@ -146,6 +146,11 @@ export type CreateResumeResponse = {
    * one case it still applies to: `currentResumeId` resubmitting itself.
    */
   resumeNickname: string;
+  /** See `GetResumeResponse.isLocked`'s doc comment -- same meaning,
+   * carried here too since a resubmission of `currentResumeId`'s own
+   * text (the one case that still reaches this response) needs to know
+   * immediately whether IT is now locked, without a second round-trip. */
+  isLocked: boolean;
 };
 
 export type GetResumeResponse = {
@@ -153,6 +158,27 @@ export type GetResumeResponse = {
   resumeText: string;
   /** See `CreateResumeResponse.resumeNickname`'s doc comment. */
   resumeNickname: string;
+  /**
+   * Ticket 88f11d7 (Nicole: "once that has happened, then a user can't
+   * change the text on the resume anymore"). `true` once this resume has
+   * EVER had a real, non-estimate search run against it -- see
+   * schema.ts's `searches.isEstimate` doc comment for exactly what
+   * distinguishes "real" from "just an estimate", and why that
+   * distinction needed its own column rather than being inferred from
+   * `job_matches`/`job_match_failures` existing. Re-estimating never
+   * sets this; nickname stays editable regardless of this value.
+   */
+  isLocked: boolean;
+  /**
+   * Ticket 88f11d7: needed so "Change" -> "Use Resume N" can repopulate
+   * title chips from the picked resume's OWN cached suggestions, the
+   * same way a fresh submission already does via
+   * `CreateResumeResponse.suggestedTitles` -- without this, activating
+   * an existing resume would either lose its title chips or require a
+   * second call. See that field's own doc comment for the array's
+   * semantics ("[] means ran and found nothing", never absent).
+   */
+  suggestedTitles: string[];
 };
 
 /**

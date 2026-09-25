@@ -1,0 +1,1 @@
+ALTER TABLE "searches" ADD COLUMN "is_estimate" boolean DEFAULT false NOT NULL;

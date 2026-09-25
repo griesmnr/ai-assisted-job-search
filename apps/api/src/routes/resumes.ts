@@ -54,7 +54,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { SQL } from "drizzle-orm";
 import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
+import { jobMatches, jobs as jobsTable, resumes, searches, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 import { getOrCreateResumeId } from "../matching/index.js";
 import { looksLikeContractOrTemp } from "../matching/swe-filter.js";
@@ -117,6 +117,28 @@ const updateResumeNicknameBodySchema = {
   },
   additionalProperties: false,
 } as const;
+
+/**
+ * Ticket 88f11d7: `true` once `resumeId` has ever had a real (non-
+ * estimate) search run against it -- see schema.ts's `searches
+ * .isEstimate` doc comment for exactly what that distinguishes and why.
+ * A plain existence check, not a count: the FIRST real search is what
+ * locks a resume, permanently -- there is no "unlock" path, so beyond
+ * "at least one" nothing else about this query needs to change if more
+ * real searches happen later.
+ */
+async function isResumeLocked(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+  resumeId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: searches.id })
+    .from(searches)
+    .where(and(eq(searches.resumeId, resumeId), eq(searches.isEstimate, false)))
+    .limit(1);
+  return rows.length > 0;
+}
 
 export function registerResumeRoutes(
   app: FastifyInstance,
@@ -241,7 +263,8 @@ export function registerResumeRoutes(
         }
       }
 
-      const response: CreateResumeResponse = { id, suggestedTitles, resumeNickname };
+      const isLocked = await isResumeLocked(db, id);
+      const response: CreateResumeResponse = { id, suggestedTitles, resumeNickname, isLocked };
       return reply.code(200).send(response);
     },
   );
@@ -281,6 +304,7 @@ export function registerResumeRoutes(
         id: resumes.id,
         resumeText: resumes.resumeText,
         resumeNickname: resumes.resumeNickname,
+        suggestedTitles: resumes.suggestedTitles,
       })
       .from(resumes)
       .where(eq(resumes.id, request.params.id))
@@ -289,7 +313,21 @@ export function registerResumeRoutes(
     if (rows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${request.params.id}".` });
     }
-    const response: GetResumeResponse = rows[0]!;
+    const row = rows[0]!;
+    const isLocked = await isResumeLocked(db, row.id);
+    // Ticket 88f11d7: same "no suggestions yet" vs "ran, found nothing"
+    // distinction `CreateResumeResponse.suggestedTitles` already
+    // documents -- `null` on the row (inference never ran for this
+    // resume, e.g. a very old row from before ticket 39b4a48) degrades
+    // to `[]` here rather than leaking a nullable field the frontend
+    // would have to special-case.
+    const response: GetResumeResponse = {
+      id: row.id,
+      resumeText: row.resumeText,
+      resumeNickname: row.resumeNickname,
+      isLocked,
+      suggestedTitles: row.suggestedTitles ?? [],
+    };
     return reply.send(response);
   });
 

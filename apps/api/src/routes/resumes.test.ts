@@ -8,6 +8,7 @@ import {
   jobMatches,
   jobs as jobsTable,
   resumes,
+  searches,
   sourceDescriptors,
   userJobStatuses,
 } from "../db/schema.js";
@@ -500,13 +501,129 @@ describe("GET /resumes/:id", () => {
 
     const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ id, resumeText, resumeNickname });
+    expect(response.json()).toEqual({
+      id,
+      resumeText,
+      resumeNickname,
+      isLocked: false,
+      suggestedTitles: [],
+    });
   });
 
   it("404s for an unknown id", async () => {
     const app = buildTestApp();
     const response = await app.inject({ method: "GET", url: "/resumes/does-not-exist" });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+// Ticket 88f11d7, Nicole: "once that has happened, then a user can't
+// change the text on the resume anymore." `isLocked` is `true` once a
+// resume has ever had a REAL (non-estimate) search run against it --
+// see schema.ts's `searches.isEstimate` doc comment for exactly what
+// distinguishes the two and why re-estimating must never lock a resume.
+describe("isLocked (ticket 88f11d7)", () => {
+  it("is false for a resume with no searches at all", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Never-searched resume ${randomUUID()}` },
+    });
+    const { id } = created.json() as CreateResumeResponse;
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
+    expect((response.json() as { isLocked: boolean }).isLocked).toBe(false);
+  });
+
+  it("is false for a resume with only ESTIMATE searches, however many", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Estimate-only resume ${randomUUID()}` },
+    });
+    const { id } = created.json() as CreateResumeResponse;
+
+    for (let i = 0; i < 3; i++) {
+      await db.insert(searches).values({
+        id: randomUUID(),
+        resumeId: id,
+        searchedAt: new Date(),
+        status: "complete",
+        isEstimate: true,
+      });
+    }
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
+    expect((response.json() as { isLocked: boolean }).isLocked).toBe(false);
+  });
+
+  it("is true once a resume has at least one REAL (non-estimate) search, regardless of status", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Really-searched resume ${randomUUID()}` },
+    });
+    const { id } = created.json() as CreateResumeResponse;
+
+    await db.insert(searches).values({
+      id: randomUUID(),
+      resumeId: id,
+      searchedAt: new Date(),
+      status: "running",
+      isEstimate: false,
+    });
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
+    expect((response.json() as { isLocked: boolean }).isLocked).toBe(true);
+  });
+
+  it("stays true even after that real search settles to 'complete' -- there is no unlock path", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Settled-search resume ${randomUUID()}` },
+    });
+    const { id } = created.json() as CreateResumeResponse;
+
+    await db.insert(searches).values({
+      id: randomUUID(),
+      resumeId: id,
+      searchedAt: new Date(),
+      status: "complete",
+      completedAt: new Date(),
+      isEstimate: false,
+    });
+
+    const response = await app.inject({ method: "GET", url: `/resumes/${id}` });
+    expect((response.json() as { isLocked: boolean }).isLocked).toBe(true);
+  });
+
+  it("POST /resumes also reports isLocked, for a resubmission of the currently-active resume's own text", async () => {
+    const app = buildTestApp();
+    const resumeText = `Resubmit-after-search resume ${randomUUID()}`;
+    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const { id } = first.json() as CreateResumeResponse;
+    expect((first.json() as CreateResumeResponse).isLocked).toBe(false);
+
+    await db.insert(searches).values({
+      id: randomUUID(),
+      resumeId: id,
+      searchedAt: new Date(),
+      status: "running",
+      isEstimate: false,
+    });
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText, currentResumeId: id },
+    });
+    expect(second.statusCode).toBe(200);
+    expect((second.json() as CreateResumeResponse).isLocked).toBe(true);
   });
 });
 

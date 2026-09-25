@@ -1139,7 +1139,15 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // row (and its per-source links) are created here instead, before either
   // of those can throw.
   const searchId = providedSearchId ?? randomUUID();
-  await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+  // Ticket 88f11d7: `isEstimate` set straight from this call's OWN
+  // `estimateOnly` flag -- the same one signal below (:1454) already
+  // uses to decide whether to stop before scoring. Every caller of
+  // `runDemoMatch` is either the estimate endpoint (`estimateOnly:
+  // true`) or the CLI/a real search (`estimateOnly` defaults to
+  // `false`), so this is never a guess.
+  await db
+    .insert(searches)
+    .values({ id: searchId, resumeId, searchedAt: new Date(), isEstimate: estimateOnly });
   // One row per CONFIGURED source, not per source that actually returned
   // jobs this run — this records what the search covered; success/failure
   // per source lives in `sourceOutcomes`, not here. `search_sources` has

@@ -1208,9 +1208,20 @@ export function registerSearchRoutes(
         const racerId = racerRows[0]?.id;
         if (racerId !== undefined) return racerId;
 
-        await tx
-          .insert(searchesTable)
-          .values({ id: searchId, resumeId, searchedAt: new Date(), status: "running" });
+        // Ticket 88f11d7: `isEstimate: false` explicit, not left to the
+        // column default -- this IS the real search, the one that locks
+        // the resume's text going forward (see schema.ts's own doc
+        // comment on `isEstimate` for why every write site says so on
+        // purpose rather than relying on a default that could silently
+        // stop matching reality if this route ever grows a second
+        // insert site).
+        await tx.insert(searchesTable).values({
+          id: searchId,
+          resumeId,
+          searchedAt: new Date(),
+          status: "running",
+          isEstimate: false,
+        });
         await tx.insert(searchSources).values(
           resolved.sources.map((source) => {
             const base = { id: randomUUID(), searchId, sourceDescriptorId: source.dataSource };
