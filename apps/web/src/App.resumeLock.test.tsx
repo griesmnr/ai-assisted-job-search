@@ -255,6 +255,39 @@ describe("App — the 'Change' picker (ticket 88f11d7)", () => {
     // Still on the picker, still showing Resume 1 as active underneath.
     expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeInTheDocument();
   });
+
+  // Review fix (N1, ticket 88f11d7): reproduced live -- "Change" -> "Use
+  // Resume 8" -> "Change" -> "Paste a new resume" rendered the textarea
+  // still showing Resume 1's OWN text, because ResumeInput's local `text`
+  // state is seeded once at mount and nothing forced a remount when
+  // `resumeId` changed via activation (as opposed to a submission, the
+  // only path that used to change it). Fixed via `key={resumeId}` on
+  // App.tsx's `<ResumeInput>`.
+  it("shows the ACTIVATED resume's own text, not the previous resume's, after activating then reopening the paste form", async () => {
+    await getToLockedResumeWithPicker();
+    getResume.mockResolvedValue({
+      id: "resume-8",
+      resumeText: "resume 8's own distinct full text",
+      resumeNickname: "Resume 8",
+      isLocked: true,
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({
+      resumeId: "resume-8",
+      resumeNickname: "Resume 8",
+      results: [],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 8" }));
+    expect(await screen.findByText("Using Resume 8")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
+
+    expect(screen.getByLabelText("Paste your resume")).toHaveValue(
+      "resume 8's own distinct full text",
+    );
+  });
 });
 
 describe("App — 'Change' unavailable during an active search (ticket 88f11d7)", () => {

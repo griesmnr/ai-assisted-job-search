@@ -206,6 +206,20 @@ export const searches = pgTable("searches", {
    * set this column at all fails safe -- it reads as a REAL search
    * (locks the resume) rather than silently exempting itself from
    * locking.
+   *
+   * HISTORICAL ROWS (review round 2, N2): the column default above only
+   * governs what a NEW write does when it forgets to set this. Every row
+   * that existed BEFORE this migration would, unless corrected, read that
+   * same default -- but for THOSE rows `false` is not a fail-safe, it is
+   * a guess, and the wrong one for any historical row that was only ever
+   * an estimate (a real, pre-existing gap this migration found: 3 of 5
+   * resumes in an actual sandbox check at review time). The migration
+   * itself (`0014_big_thunderball.sql`) backfills historical rows using
+   * `job_matches`/`search_results`/`job_match_failures` as the best
+   * available evidence of which ones were real -- see that file's own
+   * comment for exactly why that ONE-TIME backfill is a different,
+   * narrower call than the ongoing-inference gap this doc comment
+   * rejects two paragraphs up.
    */
   isEstimate: boolean("is_estimate").notNull().default(false),
 });

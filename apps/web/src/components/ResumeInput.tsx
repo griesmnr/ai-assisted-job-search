@@ -252,9 +252,11 @@ export function ResumeInput({
   activateError?: string | null;
   /** Ticket 88f11d7 (Nicole: "I don't think that we should allow a
    * change of resume while a search is in progress"): disables the
-   * locked collapsed bar's "Change" button specifically -- see this
-   * file's top-of-file doc comment for why an unlocked "Edit" never
-   * needs this same gate. */
+   * collapsed bar's action button UNCONDITIONALLY while true -- "Edit"
+   * exactly as much as "Change" (review fix F1: an earlier version of
+   * this exempted an unlocked "Edit" from the gate, which left a real
+   * window open — see this file's top-of-file doc comment for the full
+   * story). */
   searching?: boolean;
 }) {
   const [text, setText] = useState(initialText);

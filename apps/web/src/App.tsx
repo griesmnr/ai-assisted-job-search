@@ -229,9 +229,11 @@ function App() {
   // of resume while a search is in progress"): mirrors SearchFlow's own
   // `"starting"`/`"running"` phases via its `onRunningChange` callback --
   // see that prop's doc comment (SearchFlow.tsx) for exactly which phases
-  // count and why. Used only to disable the locked "Change" button below;
-  // an unlocked "Edit" is never gated on this (see ResumeInput.tsx's
-  // top-of-file doc comment for why that's still correct).
+  // count and why. Passed straight through as ResumeInput's `searching`
+  // prop, which disables the collapsed bar's action button
+  // UNCONDITIONALLY while true -- "Edit" exactly as much as "Change" (see
+  // that prop's own doc comment, ResumeInput.tsx, for why an unlocked
+  // "Edit" needs this gate too).
   const [searchRunning, setSearchRunning] = useState(false);
   // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
   // creation time (CreateResumeResponse.resumeNickname), or restored from a
@@ -937,6 +939,33 @@ function App() {
       <div hidden={activeTab !== "search"}>
         <section className="resume-section">
           <ResumeInput
+            // Review fix (N1, ticket 88f11d7): `key={resumeId}` forces a
+            // remount whenever the ACTIVE resumeId itself changes --
+            // needed now that `handleActivateResume` ("Change" -> "Use
+            // Resume N") is a second way `resumeId` can change without a
+            // submission, alongside the existing resubmit-new-text path.
+            // Without this, ResumeInput's own `text` local state (seeded
+            // ONCE from `initialText` at mount, by design -- see this
+            // component's own doc comment on that prop) stays whatever it
+            // held for the PREVIOUS resume: reproduced live -- "Change" ->
+            // "Use Resume 8" -> "Change" -> "Paste a new resume" rendered
+            // the textarea still showing Resume 1's text while every
+            // other piece of state (the collapsed bar, resumeId,
+            // resumeNickname) already said Resume 8. Submitting it
+            // unchanged would harmlessly 409 against the ticket 7701534
+            // duplicate-text guardrail, but editing it even slightly would
+            // silently create a new resume derived from the WRONG base
+            // text. A remount re-seeds `text` from the current
+            // `initialText`, which by then is always the activated
+            // resume's own real text (`handleActivateResume` sets
+            // `resumeText` from the same `GET /resumes/:id` response).
+            // Safe against the OTHER thing a key change can break --
+            // losing an in-progress, uncommitted edit -- because `resumeId`
+            // never changes mid-edit on its own; it only ever changes at
+            // the SAME moment a submission or activation lands, both of
+            // which make discarding any stale local `text` the correct
+            // behavior, not a loss.
+            key={resumeId}
             onSubmit={(text) => void handleResumeSubmit(text)}
             submitting={resumeSubmitting}
             initialText={resumeText}
