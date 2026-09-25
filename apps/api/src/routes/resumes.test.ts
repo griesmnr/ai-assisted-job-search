@@ -227,7 +227,47 @@ describe("POST /resumes", () => {
       expect(response.statusCode).toBe(200);
     });
 
-    it("does not run title inference or write suggestedTitles for a rejected duplicate", async () => {
+    // Opus review round 1 (N2): the primary reason `currentResumeId`
+    // exists at all -- editing an existing resume's text into something
+    // genuinely DIFFERENT (not matching any other saved resume) -- had no
+    // direct API test. This is boundary case (e) from the review's own
+    // enumeration: currentResumeId set to A, text now matches nothing.
+    it("accepts genuinely new text submitted WITH a currentResumeId set (the real edit-and-resubmit case)", async () => {
+      const app = buildTestApp();
+      const first = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `Edit-original resume ${randomUUID()}` },
+      });
+      const { id: originalId } = first.json() as CreateResumeResponse;
+
+      const edited = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: {
+          resumeText: `Edit-rewritten resume ${randomUUID()}`,
+          currentResumeId: originalId,
+        },
+      });
+
+      expect(edited.statusCode).toBe(200);
+      const { id: editedId } = edited.json() as CreateResumeResponse;
+      // A real, DISTINCT new resume -- editing into different text is not
+      // the same resume renamed in place (content-addressing, ticket
+      // 620ca30), and must not be treated as a duplicate of anything.
+      expect(editedId).not.toBe(originalId);
+    });
+
+    // Opus review round 1 (N3): the original version of this test asserted
+    // only a call COUNT, which stayed 0 for a reason unrelated to the
+    // thing being tested -- ticket 39b4a48's suggestedTitles cache already
+    // prevents a second inferTitles call for ANY resubmission of the same
+    // text, duplicate-rejected or not, so the count alone can't tell "the
+    // duplicate check ran first" apart from "the cache did its normal
+    // job." Asserting the REJECTED response's shape (no suggestedTitles
+    // field at all, since it's a 409 error body, not a 200
+    // CreateResumeResponse) is what actually distinguishes them.
+    it("does not run title inference for a rejected duplicate, and the 409 body carries no suggestedTitles", async () => {
       let calls = 0;
       const inferTitles = async () => {
         calls++;
@@ -238,9 +278,15 @@ describe("POST /resumes", () => {
 
       await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
       calls = 0; // reset -- only the SECOND (rejected) call matters here
-      await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const second = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
 
+      expect(second.statusCode).toBe(409);
       expect(calls).toBe(0);
+      expect(second.json()).not.toHaveProperty("suggestedTitles");
     });
   });
 

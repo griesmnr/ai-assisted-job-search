@@ -89,13 +89,13 @@ describe("App — duplicate resume text (ticket 7701534)", () => {
     createResume.mockRejectedValue(
       Object.assign(
         new Error(
-          'This resume has the exact same text as "Resume 8". Please use Resume 8 instead — you can\'t save an identical resume.',
+          'This resume has the exact same text as an already-saved resume, "Resume 8". You can\'t save it again as a new resume.',
         ),
         {
           status: 409,
           body: {
             error:
-              'This resume has the exact same text as "Resume 8". Please use Resume 8 instead — you can\'t save an identical resume.',
+              'This resume has the exact same text as an already-saved resume, "Resume 8". You can\'t save it again as a new resume.',
             duplicateResumeId: "resume-8",
             duplicateResumeNickname: "Resume 8",
           },
@@ -108,7 +108,7 @@ describe("App — duplicate resume text (ticket 7701534)", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(
-      'Could not save resume: This resume has the exact same text as "Resume 8"',
+      'Could not save resume: This resume has the exact same text as an already-saved resume, "Resume 8"',
     );
     expect(alert).toHaveClass("resume-error");
 
@@ -181,6 +181,40 @@ describe("App — nickname collision (ticket 7701534)", () => {
     // The offending value stays, visible and fixable -- not reverted.
     expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Taken Nickname");
     expect(screen.getByLabelText("Resume Nickname")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  // Opus review round 1, required F1: Cancelling out of a rejected
+  // nickname collision used to strand it -- the collapsed summary bar
+  // confidently read "Using Taken Nickname" (a value the server never
+  // accepted), with the error gone too (it only renders inside the
+  // expanded form, which Cancel unmounts). Cancel must discard the
+  // unsaved nickname exactly as it already discards unsaved resume text.
+  it("Cancel after a rejected nickname collision reverts to the last SAVED nickname, not the rejected one", async () => {
+    await getToNicknameField();
+    updateResumeNickname.mockRejectedValue(
+      Object.assign(new Error("This resume nickname is already in use."), {
+        status: 409,
+        body: { error: "This resume nickname is already in use.", reason: "nickname_conflict" },
+      }),
+    );
+
+    const input = screen.getByLabelText("Resume Nickname");
+    fireEvent.change(input, { target: { value: "Taken Nickname" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // Collapsed bar shows the real, server-confirmed nickname -- never
+    // the rejected attempt.
+    expect(screen.getByText("Using Resume 1")).toBeInTheDocument();
+    expect(screen.queryByText(/Taken Nickname/)).not.toBeInTheDocument();
+
+    // And re-opening for another edit starts clean -- no stale error, no
+    // stale rejected value sitting in the field.
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    expect(screen.getByLabelText("Resume Nickname")).toHaveValue("Resume 1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("DOES revert the field on a non-collision nickname failure (e.g. a network error)", async () => {

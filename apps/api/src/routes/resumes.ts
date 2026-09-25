@@ -174,8 +174,17 @@ export function registerResumeRoutes(
           // resume_nickname since migration 0010.
           throw new Error(`resume ${id} has no resume_nickname after getOrCreateResumeId`);
         }
+        // Review round 1 (F2): the ORIGINAL wording ("Please use Resume 8
+        // instead") told the user to do something this app cannot
+        // actually do -- there is no "activate an existing resume for a
+        // new search" action anywhere (My Resumes, ticket 303cff0, is
+        // view-only; see this ticket's own Notes on git-bug for the
+        // tracked follow-up). Promising an unavailable remedy is worse
+        // than the silent-reuse behavior this ticket replaces, so the
+        // message now states the fact (it's already saved, under this
+        // name) without instructing an action the UI can't fulfill.
         const duplicateResponse: CreateResumeDuplicateError = {
-          error: `This resume has the exact same text as "${duplicateResumeNickname}". Please use ${duplicateResumeNickname} instead — you can't save an identical resume.`,
+          error: `This resume has the exact same text as an already-saved resume, "${duplicateResumeNickname}". You can't save it again as a new resume.`,
           duplicateResumeId: id,
           duplicateResumeNickname,
         };

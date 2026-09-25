@@ -621,16 +621,31 @@ function App() {
   // needs -- see its own doc comment for why it exists (clearing the
   // textarea mid-edit was otherwise a genuine dead end, with no Edit
   // button in that branch and, now, sources/criteria/search hidden
-  // too). Only sets `resumeEditing` back to false; `resumeId`,
-  // `resumeNickname`, `resumeText` are all untouched -- this is a
-  // discard, not a submit, so nothing about the resume actually changes.
+  // too). `resumeId`, `resumeText` are untouched -- this is a discard,
+  // not a submit, so nothing about the SAVED resume actually changes.
   // Also clears a stale resume-submission error (review round 2, N1): a
   // failed resubmit shows "Could not save resume: ..." while expanded;
   // giving up via Cancel rather than fixing and resubmitting shouldn't
   // leave that error sitting, orphaned, under the collapsed bar.
+  //
+  // Ticket 7701534 review round 1 (F1): `resumeNickname`/`nicknameError`
+  // ARE reverted/cleared now, unlike the claim this comment used to make.
+  // A rejected nickname-collision attempt (handleNicknameCommit) is the
+  // one case that deliberately leaves the OFFENDING value sitting in
+  // `resumeNickname` uncommitted, with `nicknameError` still set, so the
+  // user can see and fix it in place. Cancelling out of the form instead
+  // of fixing it used to strand that state: the form unmounts (so
+  // `nicknameError` -- rendered only inside it -- vanishes with no trace),
+  // while the collapsed bar kept showing the REJECTED value as "Using
+  // {nickname}" -- confidently wrong, since the server never accepted it.
+  // Reverting here, the same way a failed PATCH already reverts on every
+  // OTHER path, makes Cancel a true discard of everything unsaved,
+  // nickname included.
   function handleCancelEdit() {
     setResumeEditing(false);
     setResumeError(null);
+    setResumeNickname(lastSavedNickname);
+    setNicknameError(null);
   }
 
   // Review fix, ticket 3f0883f: `resumeId` is now a REQUIRED parameter,
