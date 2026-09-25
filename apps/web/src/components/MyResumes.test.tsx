@@ -141,6 +141,36 @@ describe("MyResumes (ticket 303cff0)", () => {
   });
 });
 
+// Ticket 7da6904, Nicole: "the numbers are seriously hopping around
+// weirdly for me... go ahead and make them alphanumeric on the resume
+// page too" (same fix ticket 336f1e6 already made to the "Change" picker,
+// via the shared `sortResumesByNickname` helper).
+describe("MyResumes — natural/numeric sort order (ticket 7da6904)", () => {
+  it("renders resumes in natural/numeric nickname order, regardless of the input (createdAt) order", () => {
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-14", resumeNickname: "Resume 14" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+          makeSummary({ id: "resume-10", resumeNickname: "Resume 10" }),
+        ]}
+      />,
+    );
+
+    const nicknames = document.querySelectorAll(".resume-nickname");
+    // Numeric order (1, 2, 10, 14) -- NOT the input order above, and NOT
+    // plain string order, which would put "Resume 10"/"Resume 14" before
+    // "Resume 2".
+    expect(Array.from(nicknames, (el) => el.textContent)).toEqual([
+      "Resume 1",
+      "Resume 2",
+      "Resume 10",
+      "Resume 14",
+    ]);
+  });
+});
+
 // Ticket 1e183a4, Nicole: "the resume 13 should now become a link to the
 // My Resumes page with that resume highlighted and the text already
 // expanded." These tests exercise the `focusResume` prop a result card's

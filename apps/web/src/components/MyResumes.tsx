@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ResumeSummary } from "@app/shared";
 import { getResume } from "../api/client";
+import { sortResumesByNickname } from "../resumeSort";
 
 type ResumeTextState =
   | { status: "idle" }
@@ -169,6 +170,13 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
  * resume a result card's "Searched with:" link just asked to jump to --
  * passed straight through to every row, which only the matching one acts
  * on (see `ResumeRow`'s own comment).
+ *
+ * Ticket 7da6904 (Nicole, after the "Change" picker got the same fix in
+ * ticket 336f1e6: "go ahead and make them alphanumeric on the resume page
+ * too"): sorted via `sortResumesByNickname` rather than left in `resumes`'
+ * own oldest-created-first order (`ListResumesResponse`'s doc comment) --
+ * the same natural/numeric sort the picker uses, from the same shared
+ * helper, so the two never drift out of sync with each other again.
  */
 export function MyResumes({
   resumes,
@@ -183,7 +191,7 @@ export function MyResumes({
 
   return (
     <ul className="resume-list">
-      {resumes.map((resume) => (
+      {sortResumesByNickname(resumes).map((resume) => (
         <ResumeRow key={resume.id} resume={resume} focusResume={focusResume} />
       ))}
     </ul>

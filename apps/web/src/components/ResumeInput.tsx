@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { sortResumesByNickname } from "../resumeSort";
 
 /**
  * Paste-only resume input (decided 2026-08-29 on git-bug a217859 — no file
@@ -268,15 +269,11 @@ export function ResumeInput({
     // Ticket 336f1e6 (Nicole, dogfooding 88f11d7's shipped picker: "the
     // numbers are seriously hopping around weirdly"): `resumes` arrives
     // in `ListResumesResponse`'s own order (oldest-created first, per
-    // that type's doc comment) -- NOT alphanumeric. A plain
-    // `.localeCompare` would still sort "Resume 10" before "Resume 2"
-    // (lexicographic), so `numeric: true` is required, not optional --
-    // that's what actually stops the numbers reordering unexpectedly.
-    const otherResumes = (resumes ?? [])
-      .filter((r) => r.id !== resumeId)
-      .sort((a, b) =>
-        a.resumeNickname.localeCompare(b.resumeNickname, undefined, { numeric: true }),
-      );
+    // that type's doc comment) -- NOT alphanumeric. `sortResumesByNickname`
+    // (ticket 7da6904: extracted so MyResumes.tsx can sort the exact same
+    // way) is what actually stops the numbers reordering unexpectedly --
+    // see its own doc comment for why `numeric: true` specifically.
+    const otherResumes = sortResumesByNickname((resumes ?? []).filter((r) => r.id !== resumeId));
     return (
       <div className="resume-input resume-picker">
         {/* Ticket 336f1e6 (Nicole: "the or and Paste a new resume button
