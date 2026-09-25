@@ -685,6 +685,59 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
   });
 
+  // Ticket 336f1e6, Nicole: "the or and Paste a new resume button really
+  // clear that up" -- the heading no longer spells out the "paste a new
+  // one" option itself.
+  it("shows the trimmed heading text, with no 'or paste a new one' clause", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    expect(screen.getByText("Use an old resume:")).toBeInTheDocument();
+    expect(screen.queryByText(/paste a new one/i)).not.toBeInTheDocument();
+  });
+
+  // Ticket 336f1e6, Nicole: "the numbers are seriously hopping around
+  // weirdly for me" -- `resumes` arrives in whatever order the caller
+  // passes (App.tsx passes `ListResumesResponse`'s oldest-created-first
+  // order, NOT alphanumeric), so the picker must sort it itself.
+  it("sorts the picker's resumes in natural/numeric order, regardless of the input order", () => {
+    const outOfOrderResumes = [
+      { id: "resume-1", resumeNickname: "Resume 1" },
+      { id: "resume-14", resumeNickname: "Resume 14" },
+      { id: "resume-2", resumeNickname: "Resume 2" },
+      { id: "resume-10", resumeNickname: "Resume 10" },
+    ];
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={outOfOrderResumes}
+      />,
+    );
+
+    const buttons = screen
+      .getAllByRole("button")
+      .filter((b) => b.textContent?.startsWith("Use Resume"));
+    // Numeric order (2, 10, 14) -- NOT plain string order, which would
+    // put "Resume 10"/"Resume 14" before "Resume 2".
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      "Use Resume 2",
+      "Use Resume 10",
+      "Use Resume 14",
+    ]);
+  });
+
   it("clicking an existing resume's button fires onActivateResume with its id -- never onSubmit", () => {
     const onActivateResume = vi.fn();
     const onSubmit = vi.fn();
