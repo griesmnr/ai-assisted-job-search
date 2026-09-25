@@ -134,9 +134,13 @@ section {
   margin: 0;
 }
 
+/* Ticket 336f1e6 (Nicole, dogfooding: wanted these vertical, one per
+   line, not a horizontal wrapped row -- easier to scan a list of
+   resumes than a wrapped row of pill buttons). */
 .resume-picker-options {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 0.5rem;
 }
 

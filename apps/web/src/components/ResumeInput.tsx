@@ -265,10 +265,26 @@ export function ResumeInput({
   // collapsed bar below when `changingResume` is set (only reachable via
   // a "Change" click, which only exists once `isLocked` is true).
   if (resumeId !== undefined && changingResume) {
-    const otherResumes = (resumes ?? []).filter((r) => r.id !== resumeId);
+    // Ticket 336f1e6 (Nicole, dogfooding 88f11d7's shipped picker: "the
+    // numbers are seriously hopping around weirdly"): `resumes` arrives
+    // in `ListResumesResponse`'s own order (oldest-created first, per
+    // that type's doc comment) -- NOT alphanumeric. A plain
+    // `.localeCompare` would still sort "Resume 10" before "Resume 2"
+    // (lexicographic), so `numeric: true` is required, not optional --
+    // that's what actually stops the numbers reordering unexpectedly.
+    const otherResumes = (resumes ?? [])
+      .filter((r) => r.id !== resumeId)
+      .sort((a, b) =>
+        a.resumeNickname.localeCompare(b.resumeNickname, undefined, { numeric: true }),
+      );
     return (
       <div className="resume-input resume-picker">
-        <p className="resume-picker-heading">Use an old resume, or paste a new one:</p>
+        {/* Ticket 336f1e6 (Nicole: "the or and Paste a new resume button
+            really clear that up"): the heading used to spell out both
+            options ("...or paste a new one:"); the "Or" divider and the
+            "Paste a new resume" button below already say that, so
+            repeating it here was redundant. */}
+        <p className="resume-picker-heading">Use an old resume:</p>
         {otherResumes.length > 0 && (
           <div className="resume-picker-options">
             {otherResumes.map((r) => (
