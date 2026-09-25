@@ -364,9 +364,9 @@ export async function runCleanup(
     const firstPassIds = firstPass.map((r) => r.id);
 
     // Step 2: lock exactly these resumes. From here on, no OTHER
-    // transaction can insert a `job_matches` row against any of them
-    // until this transaction ends (see module doc comment for the
-    // FOR-KEY-SHARE-vs-FOR-UPDATE mechanism this relies on).
+    // transaction can insert a `job_matches` OR `searches` row against
+    // any of them until this transaction ends (see module doc comment
+    // for the FOR-KEY-SHARE-vs-FOR-UPDATE mechanism this relies on).
     await tx
       .select({ id: resumes.id })
       .from(resumes)
