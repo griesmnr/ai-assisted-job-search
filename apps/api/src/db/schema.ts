@@ -1,4 +1,5 @@
 import { pgTable, text } from "drizzle-orm/pg-core";
+import { boolean } from "drizzle-orm/pg-core";
 import { timestamp } from "drizzle-orm/pg-core";
 import { pgEnum } from "drizzle-orm/pg-core";
 import { integer } from "drizzle-orm/pg-core";
@@ -176,6 +177,51 @@ export const searches = pgTable("searches", {
   // POST /searches route sets it to "failed" in its own catch handler when
   // the whole run rejects.
   status: searchStatusEnum("status").notNull().default("running"),
+  /**
+   * Ticket 88f11d7: `true` for a `POST /searches/estimate` row, `false`
+   * for a real `POST /searches` (or CLI `runDemoMatch`) row. Added
+   * because nothing else distinguishes them once both are terminal --
+   * `status` converges to `'complete'` for BOTH (see `status`'s own doc
+   * comment above: "every... `POST /searches/estimate` row has `status =
+   * 'complete'`"), and `runDemoMatch` inserts a full `searches` row (plus
+   * `search_sources` rows) for an estimate too, not just a real search
+   * (routes/searches.ts's `liveSearchPredicate` comment already notes
+   * this same fact for a different reason -- keeping an estimate from
+   * wedging the in-flight guard).
+   *
+   * Exists specifically so "has this resume ever had a REAL search run
+   * against it" (the resume-lock rule ResumeInput.tsx enforces) is a
+   * plain, always-correct column check -- `EXISTS (SELECT 1 FROM
+   * searches WHERE resume_id = X AND is_estimate = false)` -- rather
+   * than inferred indirectly from `job_matches`/`job_match_failures`
+   * existing, which has a real gap: a real search that happens to score
+   * literally nothing (every job filtered out or every attempt failed)
+   * would leave a resume looking unsearched under that approach, even
+   * though a real search -- Nicole's own stated trigger -- did happen.
+   *
+   * Defaults to `false` (a real search) deliberately, not `true`: every
+   * write site that means "this is just an estimate" sets it
+   * explicitly (`matching/pipeline.ts`'s `runDemoMatch`, from its own
+   * `estimateOnly` parameter), so a future write site that forgets to
+   * set this column at all fails safe -- it reads as a REAL search
+   * (locks the resume) rather than silently exempting itself from
+   * locking.
+   *
+   * HISTORICAL ROWS (review round 2, N2): the column default above only
+   * governs what a NEW write does when it forgets to set this. Every row
+   * that existed BEFORE this migration would, unless corrected, read that
+   * same default -- but for THOSE rows `false` is not a fail-safe, it is
+   * a guess, and the wrong one for any historical row that was only ever
+   * an estimate (a real, pre-existing gap this migration found: 3 of 5
+   * resumes in an actual sandbox check at review time). The migration
+   * itself (`0014_big_thunderball.sql`) backfills historical rows using
+   * `job_matches`/`search_results`/`job_match_failures` as the best
+   * available evidence of which ones were real -- see that file's own
+   * comment for exactly why that ONE-TIME backfill is a different,
+   * narrower call than the ongoing-inference gap this doc comment
+   * rejects two paragraphs up.
+   */
+  isEstimate: boolean("is_estimate").notNull().default(false),
 });
 
 export const searchResults = pgTable(

@@ -5,7 +5,13 @@ import {
   type SearchCriteria,
   type UserJobStatus,
 } from "@app/shared";
-import { clearJobStatus, createResume, setJobStatus, updateResumeNickname } from "./api/client";
+import {
+  clearJobStatus,
+  createResume,
+  getResume,
+  setJobStatus,
+  updateResumeNickname,
+} from "./api/client";
 import {
   GroupedResultsList,
   groupKeyForStatus,
@@ -48,6 +54,21 @@ import { splitPhrases } from "./criteriaText";
  * then a fully ordinary, user-owned, removable chip like any other.
  */
 const EXTRA_TITLE_CHIPS = ["Program Analyst", "IT Specialist", "Computer Scientist"];
+
+/**
+ * Ticket 88f11d7: factored out of `handleResumeSubmit` so
+ * `handleActivateResume` ("Change" -> "Use Resume N") can build the exact
+ * same title-chip set from a DIFFERENT response shape
+ * (`GetResumeResponse.suggestedTitles` instead of `CreateResumeResponse.
+ * suggestedTitles`) without the two call sites drifting out of sync. Same
+ * "resume-inferred titles, then EXTRA_TITLE_CHIPS appended, case-
+ * insensitively deduped against them" behavior either way (ticket 8a403ee).
+ */
+function mergeTitleChips(inferredTitles: string[]): string[] {
+  const inferredLower = new Set(inferredTitles.map((t) => t.toLowerCase()));
+  const extras = EXTRA_TITLE_CHIPS.filter((t) => !inferredLower.has(t.toLowerCase()));
+  return [...inferredTitles, ...extras];
+}
 
 /**
  * Derives the actual `SearchCriteria` to send from the current title chips
@@ -170,6 +191,50 @@ function App() {
   // text sessionStorage never captured anyway (ResumeInput's `text` is
   // its own uncommitted local state, never written out).
   const [resumeEditing, setResumeEditing] = useState(false);
+  // Ticket 88f11d7: `GetResumeResponse.isLocked`/`CreateResumeResponse.
+  // isLocked` for the CURRENTLY active resume -- starts `false` (the
+  // honest answer for a session with no resume yet), set from the real
+  // server response on every path that can change which resume is active
+  // (a fresh/resubmitted `createResume` below, `handleActivateResume`'s
+  // `getResume`, and the mount-only hydration effect further down for a
+  // resumeId restored from a PRIOR session/reload, which otherwise has no
+  // way to learn this without a network call).
+  const [resumeLocked, setResumeLocked] = useState(false);
+  // Ticket 88f11d7: true between a "Change" click (only reachable once
+  // `resumeLocked`) and either activating an existing resume, choosing
+  // "Paste a new resume" (which flips this to `resumeEditing` instead --
+  // see `handleStartPasteNew`), or Cancel. Deliberately separate from
+  // `resumeEditing`, same reasoning ResumeInput.tsx's own doc comment
+  // gives for keeping `editingResume` separate from `resumeId`: conflating
+  // "showing the picker" with "a resume exists" (or with "showing the
+  // paste form") would reproduce that same class of bug.
+  const [resumeChanging, setResumeChanging] = useState(false);
+  const [resumeActivating, setResumeActivating] = useState(false);
+  const [resumeActivateError, setResumeActivateError] = useState<string | null>(null);
+  // Review fix (F2, ticket 88f11d7): a generation counter guarding
+  // `handleActivateResume`'s async `getResume` against being applied AFTER
+  // the user has already left the picker (Cancel or "Paste a new resume")
+  // -- without this, a slow `getResume` that resolves after Cancel already
+  // returned the UI to "Using Resume 1" would silently overwrite it with
+  // Resume 8 anyway the instant the response landed, including yanking
+  // `resumeId` out from under an already-mounted `SearchFlow`. Every
+  // caller that leaves the picker without an activation actually
+  // completing (`handleCancelChange`, `handleStartPasteNew`) bumps this;
+  // `handleActivateResume` captures the value at its OWN start and only
+  // applies its result if nothing bumped it in between -- the same
+  // "snapshot a token, compare on resolve" shape `estimateRequestId`
+  // already uses (SearchFlow.tsx) for an analogous stale-response problem.
+  const activationTokenRef = useRef(0);
+  // Ticket 88f11d7 (Nicole: "I don't think that we should allow a change
+  // of resume while a search is in progress"): mirrors SearchFlow's own
+  // `"starting"`/`"running"` phases via its `onRunningChange` callback --
+  // see that prop's doc comment (SearchFlow.tsx) for exactly which phases
+  // count and why. Passed straight through as ResumeInput's `searching`
+  // prop, which disables the collapsed bar's action button
+  // UNCONDITIONALLY while true -- "Edit" exactly as much as "Change" (see
+  // that prop's own doc comment, ResumeInput.tsx, for why an unlocked
+  // "Edit" needs this gate too).
+  const [searchRunning, setSearchRunning] = useState(false);
   // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
   // creation time (CreateResumeResponse.resumeNickname), or restored from a
   // prior reload. Empty string (not undefined) before any resume has been
@@ -221,6 +286,37 @@ function App() {
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
     [titleChips, criteriaForm],
   );
+
+  // Ticket 88f11d7: hydrates `resumeLocked` for a resumeId RESTORED from a
+  // prior session/reload -- every other path that can set an active
+  // resumeId (a fresh/resubmitted `createResume`, `handleActivateResume`'s
+  // `getResume`) already carries the real server-computed `isLocked` on its
+  // own response and sets it directly; a plain reload is the one path with
+  // no such response to read, since sessionStorage never persisted this
+  // field. Mount-only (`restored` is `useState`'s initializer value, read
+  // once at first render per its own doc comment above, so it's safe as an
+  // effectively-constant dependency) and a genuine no-op for a fresh
+  // session (`restored` is `undefined`). Best-effort: a failed fetch here
+  // just leaves `resumeLocked` at its honest `false` default rather than
+  // blocking anything else on this page.
+  useEffect(() => {
+    if (restored?.resumeId === undefined) return;
+    let cancelled = false;
+    getResume(restored.resumeId)
+      .then((data) => {
+        if (!cancelled) setResumeLocked(data.isLocked);
+      })
+      .catch(() => {
+        // Best-effort hydration only -- see comment above.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Mount-only by design, empty deps kept deliberately empty -- this repo
+    // has no react-hooks lint plugin configured (SearchFlow.tsx's own
+    // mount-only effects make the same note), so nothing enforces this
+    // either way.
+  }, []);
   // Ticket b9e6251: an empty location (no nearLocations, no remoteOk) used
   // to mean "no restriction, search anywhere" SILENTLY -- the same shape
   // of never-explicitly-chosen default Nicole's own principle already
@@ -329,7 +425,14 @@ function App() {
 
   useEffect(() => {
     setHasFreshSearchResults(false);
-  }, [selectedSourceIds, criteria]);
+    // Ticket 88f11d7: `resumeId` joins the deps -- switching which resume
+    // is active (a resubmitted new paste, or now "Change" -> "Use Resume
+    // N") must clear a PREVIOUS resume's "fresh search results" the same
+    // way toggling a source or editing criteria already does; otherwise a
+    // completed run's results could briefly keep showing under a
+    // just-activated, unrelated resume the instant its own (empty) results
+    // fetch resolves.
+  }, [selectedSourceIds, criteria, resumeId]);
 
   // Ticket 3f0883f: the snapshot below (and its fallback) used to key by
   // bare `jobId` -- safe only because a single resume's results can never
@@ -488,8 +591,14 @@ function App() {
         id,
         suggestedTitles,
         resumeNickname: defaultNickname,
+        isLocked,
       } = await createResume(resumeText, resumeId);
       setResumeId(id);
+      // Ticket 88f11d7: the server's real, just-computed answer -- a
+      // resubmission of `currentResumeId`'s own text is the one case that
+      // can land here already locked (every other path through this
+      // function is a genuinely new resume, never locked yet).
+      setResumeLocked(isLocked);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
       // resumeId, and persisting a half-typed draft on each character
@@ -518,9 +627,7 @@ function App() {
       // already has (a resubmit already fully replaces titleChips from
       // the server's fresh suggestedTitles; this follows that same reset,
       // per Nicole's "behave the same as every other chip").
-      const inferredLower = new Set(inferredTitles.map((t) => t.toLowerCase()));
-      const extras = EXTRA_TITLE_CHIPS.filter((t) => !inferredLower.has(t.toLowerCase()));
-      setTitleChips([...inferredTitles, ...extras]);
+      setTitleChips(mergeTitleChips(inferredTitles));
       // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
       // a submission actually lands -- not on the Edit click itself (see
       // `resumeEditing`'s own doc comment above). A no-op on the
@@ -648,6 +755,97 @@ function App() {
     setNicknameError(null);
   }
 
+  // Ticket 88f11d7: fires from the collapsed summary bar's "Change" (the
+  // locked counterpart to `handleEditResume`) -- opens the picker, not the
+  // paste form. Same error-clearing as `handleEditResume`, plus the
+  // picker's own `resumeActivateError`.
+  function handleChangeResume() {
+    setResumeChanging(true);
+    setNicknameError(null);
+    setResumeError(null);
+    setResumeActivateError(null);
+  }
+
+  // Fires from the picker's "Cancel" -- a pure discard, same shape as
+  // `handleCancelEdit`: nothing about the active resume changes. Review
+  // fix (F2): bumps `activationTokenRef` so a still-in-flight
+  // `handleActivateResume` call this Cancel is walking away from can
+  // never apply its result after the fact -- see that ref's own doc
+  // comment.
+  function handleCancelChange() {
+    activationTokenRef.current++;
+    setResumeChanging(false);
+    setResumeActivating(false);
+    setResumeActivateError(null);
+  }
+
+  // Fires from the picker's "Paste a new resume" -- hands off from the
+  // picker straight into the ordinary expanded form, the same one an
+  // unlocked "Edit" already opens (ResumeInput.tsx renders identically
+  // either way once `editingResume` is true). Review fix (F2): same
+  // in-flight-activation invalidation as `handleCancelChange` -- this is
+  // also a way to leave the picker without an activation completing.
+  function handleStartPasteNew() {
+    activationTokenRef.current++;
+    setResumeChanging(false);
+    setResumeActivating(false);
+    setResumeEditing(true);
+    setNicknameError(null);
+    setResumeError(null);
+  }
+
+  // Ticket 88f11d7 (Nicole: "already exists in full, use resume 8...
+  // doesn't need to submit anything or check anything. It just needs to
+  // say the active resume is now 8... it's a pick, not a paste"). Fires
+  // from the picker's "Use Resume N" -- a pure `GET /resumes/:id`, NEVER
+  // `createResume`/`POST /resumes`: that's what keeps this from ever
+  // tripping the ticket 7701534 duplicate-text guardrail (submitting
+  // Resume 8's own text while Resume 16 is `currentResumeId` would 409 --
+  // this path never submits anything at all).
+  async function handleActivateResume(id: string) {
+    // Review fix (F2): snapshot BEFORE the network call, so a later bump
+    // (Cancel, "Paste a new resume", or a second activation click) is
+    // unambiguously detectable once this resolves.
+    const token = ++activationTokenRef.current;
+    setResumeActivating(true);
+    setResumeActivateError(null);
+    try {
+      const data = await getResume(id);
+      // Superseded -- the user left the picker (or started a DIFFERENT
+      // activation) while this was in flight. Applying it now would
+      // silently resurrect a resume the user already walked away from;
+      // a no-op is the correct behavior, not an error.
+      if (activationTokenRef.current !== token) return;
+      setResumeId(data.id);
+      // Captured the same way a submit captures it (ticket 3f05144): the
+      // text this resumeId actually resolves to, so a reload restores the
+      // same activated resume rather than an empty box.
+      setResumeText(data.resumeText);
+      setResumeNickname(data.resumeNickname);
+      setLastSavedNickname(data.resumeNickname);
+      setResumeLocked(data.isLocked);
+      setNicknameError(null);
+      // Ticket 88f11d7: same "resume-inferred titles + EXTRA_TITLE_CHIPS"
+      // rebuild a fresh submit already does (`mergeTitleChips`) -- an
+      // activated resume's OWN cached suggestions, not whatever chips
+      // happened to be showing for the resume being switched away from.
+      setTitleChips(mergeTitleChips(data.suggestedTitles ?? []));
+      setResumeEditing(false);
+      setResumeChanging(false);
+      setResumeError(null);
+    } catch (err) {
+      // Same supersession guard as the success path above -- a failure
+      // for an activation the user already cancelled/replaced must not
+      // resurrect an error banner for a picker that may no longer even
+      // be showing.
+      if (activationTokenRef.current === token) {
+        setResumeActivateError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (activationTokenRef.current === token) setResumeActivating(false);
+    }
+  }
+
   // Review fix, ticket 3f0883f: `resumeId` is now a REQUIRED parameter,
   // supplied by the caller (ResultCard, via `result.resumeId`) -- not
   // this function closing over the session's own active `resumeId`
@@ -741,6 +939,33 @@ function App() {
       <div hidden={activeTab !== "search"}>
         <section className="resume-section">
           <ResumeInput
+            // Review fix (N1, ticket 88f11d7): `key={resumeId}` forces a
+            // remount whenever the ACTIVE resumeId itself changes --
+            // needed now that `handleActivateResume` ("Change" -> "Use
+            // Resume N") is a second way `resumeId` can change without a
+            // submission, alongside the existing resubmit-new-text path.
+            // Without this, ResumeInput's own `text` local state (seeded
+            // ONCE from `initialText` at mount, by design -- see this
+            // component's own doc comment on that prop) stays whatever it
+            // held for the PREVIOUS resume: reproduced live -- "Change" ->
+            // "Use Resume 8" -> "Change" -> "Paste a new resume" rendered
+            // the textarea still showing Resume 1's text while every
+            // other piece of state (the collapsed bar, resumeId,
+            // resumeNickname) already said Resume 8. Submitting it
+            // unchanged would harmlessly 409 against the ticket 7701534
+            // duplicate-text guardrail, but editing it even slightly would
+            // silently create a new resume derived from the WRONG base
+            // text. A remount re-seeds `text` from the current
+            // `initialText`, which by then is always the activated
+            // resume's own real text (`handleActivateResume` sets
+            // `resumeText` from the same `GET /resumes/:id` response).
+            // Safe against the OTHER thing a key change can break --
+            // losing an in-progress, uncommitted edit -- because `resumeId`
+            // never changes mid-edit on its own; it only ever changes at
+            // the SAME moment a submission or activation lands, both of
+            // which make discarding any stale local `text` the correct
+            // behavior, not a loss.
+            key={resumeId}
             onSubmit={(text) => void handleResumeSubmit(text)}
             submitting={resumeSubmitting}
             initialText={resumeText}
@@ -753,6 +978,16 @@ function App() {
             editingResume={resumeEditing}
             onEditResume={handleEditResume}
             onCancelEdit={handleCancelEdit}
+            isLocked={resumeLocked}
+            changingResume={resumeChanging}
+            onChangeResume={handleChangeResume}
+            onCancelChange={handleCancelChange}
+            onStartPasteNew={handleStartPasteNew}
+            onActivateResume={(id) => void handleActivateResume(id)}
+            resumes={resumesListState.status === "ready" ? resumesListState.data.resumes : []}
+            activating={resumeActivating}
+            activateError={resumeActivateError}
+            searching={searchRunning}
           />
           {/* Ticket 0308d7e: the "Resume ready." paragraph that used to
               sit here is gone -- Nicole, dogfooding ac141d0: "I don't
@@ -796,7 +1031,14 @@ function App() {
             (selectedSourceIds, criteriaForm, titleChips) were always
             untouched by this either way. */}
         {resumeId && (
-          <div hidden={resumeEditing}>
+          // Ticket 88f11d7: `resumeChanging` joins `resumeEditing` in this
+          // gate -- the picker (ResumeInput's third branch) hides
+          // sources/criteria/search for exactly the same reason the
+          // expanded paste form already does (ac141d0's comment below is
+          // otherwise unchanged: SearchFlow stays MOUNTED underneath
+          // either way, so an in-flight run's poll is never interrupted by
+          // opening the picker).
+          <div hidden={resumeEditing || resumeChanging}>
             <section className="sources-section">
               <h2>Which sources do you want to search?</h2>
               {sourcesState.status === "loading" && <p>Loading sources...</p>}
@@ -849,6 +1091,18 @@ function App() {
                 onEstimateStart={() => setHasFreshSearchResults(false)}
                 onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
+                onRunningChange={setSearchRunning}
+                // Review fix (F1, ticket 88f11d7): fires the moment
+                // SearchFlow itself confirms a real run exists (its
+                // `onRealSearchStarted` doc comment has the full story) --
+                // this is what makes `resumeLocked` become true THIS
+                // SESSION for a resume that was unlocked when the run
+                // started, instead of only ever learning about it from a
+                // later reload's hydration fetch. `true` is always the
+                // correct write here: a locked resume staying locked is a
+                // no-op, and there is no unlock path this could wrongly
+                // clobber.
+                onRealSearchStarted={() => setResumeLocked(true)}
               />
             </section>
 

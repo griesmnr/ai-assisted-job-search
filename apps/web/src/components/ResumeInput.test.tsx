@@ -554,3 +554,248 @@ describe("ResumeInput — 'Cancel' escape hatch during a re-edit (review fix, ti
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 });
+
+// Ticket 88f11d7 (Nicole: "once that has happened [a real search], then a
+// user can't change the text on the resume anymore... if they hit change,
+// I want them to have the option somehow of... toggle buttons"). The
+// collapsed bar's "Edit"/"Change" swap and the picker's own rendering --
+// App.tsx's own tests (App.resumeLock.test.tsx) cover the end-to-end
+// wiring (GET vs POST, title-chip repopulation, the search-running gate);
+// these are the component-level cases for ResumeInput's own branching.
+describe("ResumeInput — locked 'Change' button (ticket 88f11d7)", () => {
+  it("shows 'Edit', not 'Change', when isLocked is not set -- unchanged default behavior", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Edit resume" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change resume" })).not.toBeInTheDocument();
+  });
+
+  it("shows 'Change', not 'Edit', once isLocked is true, and clicking it calls onChangeResume (not onEditResume)", () => {
+    const onChangeResume = vi.fn();
+    const onEditResume = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        isLocked={true}
+        onChangeResume={onChangeResume}
+        onEditResume={onEditResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+
+    expect(onChangeResume).toHaveBeenCalledTimes(1);
+    expect(onEditResume).not.toHaveBeenCalled();
+  });
+
+  it("disables 'Change' and shows an explanatory note while searching is true", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        isLocked={true}
+        searching={true}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Change resume" })).toBeDisabled();
+    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+  });
+
+  // Review fix (F1, ticket 88f11d7): an earlier version of this exempted
+  // an unlocked resume's "Edit" from the `searching` gate, on the theory
+  // that `isLocked` always flips true before a real search starts
+  // polling -- false in practice (App.tsx's `resumeLocked` only updates
+  // once SearchFlow confirms the run, which is strictly AFTER
+  // `onRunningChange` already reports `searching = true` for the
+  // `POST /searches` request itself being in flight). "Edit" must be
+  // gated on `searching` exactly like "Change" is, with no `isLocked`
+  // exemption, to actually close that window.
+  it("also disables 'Edit' for an UNLOCKED resume while searching is true -- no isLocked exemption", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        searching={true}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Edit resume" })).toBeDisabled();
+    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+  });
+
+  it("ties the disabled reason to the button via aria-describedby", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        isLocked={true}
+        searching={true}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Change resume" });
+    const note = screen.getByText("Can't change resumes while a search is running.");
+    expect(button).toHaveAttribute("aria-describedby", note.id);
+  });
+});
+
+describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
+  const RESUMES = [
+    { id: "resume-1", resumeNickname: "Resume 1" },
+    { id: "resume-8", resumeNickname: "Resume 8" },
+    { id: "resume-14", resumeNickname: "Resume 14" },
+  ];
+
+  it("renders one toggle button per OTHER saved resume, excluding the currently active one, plus 'Paste a new resume' and 'Cancel'", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Use Resume 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 14" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Paste a new resume" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    // The picker, not the paste form or the collapsed bar.
+    expect(screen.queryByLabelText("Paste your resume")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument();
+  });
+
+  it("clicking an existing resume's button fires onActivateResume with its id -- never onSubmit", () => {
+    const onActivateResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 8" }));
+
+    expect(onActivateResume).toHaveBeenCalledWith("resume-8");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("clicking 'Paste a new resume' fires onStartPasteNew, not onActivateResume", () => {
+    const onStartPasteNew = vi.fn();
+    const onActivateResume = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+        onStartPasteNew={onStartPasteNew}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
+
+    expect(onStartPasteNew).toHaveBeenCalledTimes(1);
+    expect(onActivateResume).not.toHaveBeenCalled();
+  });
+
+  it("clicking 'Cancel' fires onCancelChange", () => {
+    const onCancelChange = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        onCancelChange={onCancelChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCancelChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the 'Use Resume N' buttons while activating is true, to prevent a second competing activation", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+        activating={true}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeDisabled();
+  });
+
+  // Review fix (F2, ticket 88f11d7): unlike "Use Resume N" above, these
+  // two are ways to ABANDON a pending activation, not compete with it --
+  // same reasoning "Cancel" already had, extended to "Paste a new resume".
+  it("does NOT disable 'Paste a new resume' or 'Cancel' while activating is true -- both are valid ways to abandon it", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        resumes={RESUMES}
+        activating={true}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Paste a new resume" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).not.toBeDisabled();
+  });
+
+  it("shows activateError as a blocking alert", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        changingResume={true}
+        activateError="Could not reach the API"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load that resume: Could not reach the API",
+    );
+  });
+});

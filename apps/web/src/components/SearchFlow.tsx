@@ -169,6 +169,8 @@ export function SearchFlow({
   onEstimateStart,
   onInvalidEstimateAttempt,
   onSearchComplete,
+  onRunningChange,
+  onRealSearchStarted,
 }: {
   resumeId: string;
   sourceIds: string[];
@@ -205,6 +207,39 @@ export function SearchFlow({
    * (none of which care about scrolling) keeps working unchanged. */
   onInvalidEstimateAttempt?: () => void;
   onSearchComplete: () => void;
+  /** Ticket 88f11d7 (Nicole: "I don't think that we should allow a change
+   * of resume while a search is in progress"): fired whenever this
+   * component's own real-search phase (`"starting"` -- the `POST
+   * /searches` request is in flight -- or `"running"` -- it's adopted a
+   * searchId and is polling) starts or stops, so App.tsx can disable the
+   * collapsed bar's action button for exactly that window -- "Edit"
+   * exactly as much as "Change" (review fix F1: an earlier version gated
+   * only "Change" on this, which left a real window where "Edit" could
+   * still reopen the paste form mid-search). Deliberately keyed on the
+   * SAME two phases the persisted-run effect above already treats as "a
+   * real run genuinely exists" (see that effect's own "starting is
+   * excluded from BOTH branches" comment) -- `"estimating"`/`"estimated"`
+   * are NOT included: Nicole's own resolution was explicit that
+   * re-estimating, unlike a real run, should stay unrestricted. Optional
+   * so every existing caller/test that doesn't care keeps working
+   * unchanged. */
+  onRunningChange?: (running: boolean) => void;
+  /** Ticket 88f11d7 review fix (F1): fired synchronously from
+   * `enterRunning` -- the ONE place a real run's `searchId` is actually
+   * adopted (a fresh `POST /searches` success or a 409-adoption of an
+   * already-running search; see that function's own doc comment) -- so
+   * App.tsx can flip its `resumeLocked` state true THIS SESSION, the
+   * moment a real search row is confirmed to exist, rather than only
+   * learning about it on a later reload's hydration fetch. Deliberately
+   * NOT derived from `onRunningChange`/`phase.kind` in an effect: this
+   * needs to fire exactly once per confirmed run, synchronously with the
+   * state transition, not on a later render pass keyed on a phase whose
+   * `"starting"` value already overlaps `onRunningChange`'s own `true`
+   * (which — unlike this — intentionally also covers the brief window
+   * before a searchId exists at all, see that callback's own doc
+   * comment). Optional so every existing caller/test keeps working
+   * unchanged. */
+  onRealSearchStarted?: () => void;
 }) {
   // Ticket 3f05144: the first thing this component does on EVERY mount is
   // ask `sessionStorage` whether a real, already-paid-for run is still in
@@ -328,6 +363,14 @@ export function SearchFlow({
     // linger, inert, until the tab closes.
     clearActiveSearchFor(phase.kind === "done" ? phase.result.resumeId : resumeId);
   }, [phase, resumeId]);
+
+  // Ticket 88f11d7: reports "a real run is in progress" on every phase
+  // transition -- see `onRunningChange`'s own doc comment above for why
+  // `"starting"`/`"running"` specifically, and not `"estimating"`/
+  // `"estimated"`.
+  useEffect(() => {
+    onRunningChange?.(phase.kind === "starting" || phase.kind === "running");
+  }, [phase.kind, onRunningChange]);
 
   /**
    * Ticket bf2dd0a: starts polling `GET /searches/estimate/:id/progress` on
@@ -472,6 +515,9 @@ export function SearchFlow({
     });
     if (pollRef.current !== undefined) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(() => void poll(searchId, estimate), POLL_INTERVAL_MS);
+    // Ticket 88f11d7 review fix (F1): see `onRealSearchStarted`'s own doc
+    // comment -- this is the one call site.
+    onRealSearchStarted?.();
   }
 
   // F1: an estimate becomes stale the instant what it was computed for
