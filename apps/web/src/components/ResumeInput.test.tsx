@@ -181,6 +181,39 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not save nickname: Network error");
   });
 
+  // Ticket 7701534, Nicole: "it should do the red outline on the field."
+  // `aria-invalid` is what index.css's red-outline rule keys on.
+  describe("aria-invalid (ticket 7701534)", () => {
+    it("marks the nickname field invalid when there's a nicknameError", () => {
+      render(
+        <ResumeInput
+          onSubmit={() => {}}
+          submitting={false}
+          resumeId="resume-1"
+          nickname="Resume 1"
+          nicknameError="This resume nickname is already in use."
+          editingResume={true}
+        />,
+      );
+
+      expect(screen.getByLabelText("Resume Nickname")).toHaveAttribute("aria-invalid", "true");
+    });
+
+    it("does not mark the nickname field invalid when there's no nicknameError", () => {
+      render(
+        <ResumeInput
+          onSubmit={() => {}}
+          submitting={false}
+          resumeId="resume-1"
+          nickname="Resume 1"
+          editingResume={true}
+        />,
+      );
+
+      expect(screen.getByLabelText("Resume Nickname")).not.toHaveAttribute("aria-invalid");
+    });
+  });
+
   it("still submits the pasted resume text via onSubmit, unaffected by the nickname field's presence", () => {
     const onSubmit = vi.fn();
     render(<ResumeInput onSubmit={onSubmit} submitting={false} />);

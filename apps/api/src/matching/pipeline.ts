@@ -799,17 +799,31 @@ function hashResumeText(resumeText: string): string {
  * sequence or a serializable transaction around both statements, which is
  * more machinery than this feature's actual usage pattern justifies.
  */
+/**
+ * Ticket 7701534: `isNew` tells the caller whether THIS call is the one
+ * that created the row, vs. found one that already existed. `POST
+ * /resumes` needs this to tell "a genuinely new resume" apart from
+ * "this text already belongs to some other resume" (a duplicate, per
+ * Nicole's own ask) -- the `id` alone can't distinguish those, since
+ * find-or-create returns a real id either way. Determined from whether
+ * the upsert's own `RETURNING` came back non-empty (this call's insert
+ * really landed), not from a second, separate existence check -- no
+ * extra query, and no race between "check" and "insert" for a different
+ * caller to land in.
+ */
+export type GetOrCreateResumeResult = { id: string; isNew: boolean };
+
 export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeText: string,
-): Promise<string> {
+): Promise<GetOrCreateResumeResult> {
   const resumeHash = hashResumeText(resumeText);
 
   const countRows = await db.select({ count: sql<number>`count(*)::int` }).from(resumes);
   const nextResumeNumber = (countRows[0]?.count ?? 0) + 1;
 
-  await db
+  const inserted = await db
     .insert(resumes)
     .values({
       id: randomUUID(),
@@ -817,7 +831,12 @@ export async function getOrCreateResumeId(
       resumeHash,
       resumeNickname: `Resume ${nextResumeNumber}`,
     })
-    .onConflictDoNothing({ target: resumes.resumeHash });
+    .onConflictDoNothing({ target: resumes.resumeHash })
+    .returning({ id: resumes.id });
+
+  if (inserted.length > 0) {
+    return { id: inserted[0]!.id, isNew: true };
+  }
 
   const rows = await db
     .select({ id: resumes.id })
@@ -831,7 +850,7 @@ export async function getOrCreateResumeId(
       `getOrCreateResumeId: no resumes row found for hash "${resumeHash}" after upsert`,
     );
   }
-  return rows[0]!.id;
+  return { id: rows[0]!.id, isNew: false };
 }
 
 /** The subset of a `jobs` row needed to build a `NormalizedJob` for
@@ -1098,7 +1117,12 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // database.
   await seedSourceDescriptors(db);
 
-  const resumeId = await getOrCreateResumeId(db, resumeText);
+  // Ticket 7701534: `getOrCreateResumeId` now also reports `isNew`, which
+  // only `POST /resumes` (routes/resumes.ts) needs to distinguish "a
+  // genuinely new resume" from "this text already belongs to another
+  // resume" -- irrelevant here, this CLI/worker path has always treated
+  // find-or-create as a single outcome either way.
+  const { id: resumeId } = await getOrCreateResumeId(db, resumeText);
 
   // Ticket 59fdc52 review round 3, N2: the `searches` row (and its
   // `search_sources` links) used to be inserted AFTER fetch+filter below —

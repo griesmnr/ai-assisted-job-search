@@ -67,6 +67,31 @@ const EXTRA_TITLE_CHIPS = ["Program Analyst", "IT Specialist", "Computer Scienti
  * object, which is what "no restriction" already means to compileFilter)
  * -- never a silent fallback to the hidden default a user never chose.
  */
+/**
+ * True when `err` is the `409` `PATCH /resumes/:id` answers a nickname
+ * collision with (ticket 7701534, `UpdateResumeNicknameConflictError` in
+ * @app/shared). Structural, not `instanceof ApiError` -- same reasoning as
+ * SearchFlow.tsx's `apiErrorStatus`/`inFlightSearchIdFromError`: this
+ * component's own tests mock `./api/client` wholesale, so the `ApiError`
+ * class identity a mocked rejection carries is not guaranteed to be the
+ * same one this module imports.
+ *
+ * `handleNicknameCommit` below uses this to skip its normal revert-to-
+ * last-saved-value behavior specifically for a collision -- Nicole: "it
+ * should highlight... red outline on the field" only makes sense if the
+ * OFFENDING value stays visible to fix, unlike a generic failure (network
+ * error, etc.), where reverting is still correct (nothing wrong with the
+ * value itself, just the request).
+ */
+function isNicknameConflictError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const status = (err as { status?: unknown }).status;
+  if (status !== 409) return false;
+  const body = (err as { body?: unknown }).body;
+  if (typeof body !== "object" || body === null) return false;
+  return (body as { reason?: unknown }).reason === "nickname_conflict";
+}
+
 function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] }): SearchCriteria {
   const nearLocations = splitPhrases(form.nearLocations);
   const criteria: SearchCriteria = {};
@@ -450,11 +475,20 @@ function App() {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
+      // Ticket 7701534: `resumeId` (this component's OWN current state, not
+      // a fresh value) is what lets the server tell "resubmitting my own
+      // unchanged text" apart from "this text already belongs to a
+      // DIFFERENT saved resume" -- see createResume's own doc comment. A
+      // duplicate rejects with a 409 whose message already names the
+      // colliding resume; caught below like any other failure, no special
+      // handling needed here (unlike the nickname-collision case, this one
+      // has no in-progress value to preserve -- the paste box already
+      // holds exactly what the user typed, untouched either way).
       const {
         id,
         suggestedTitles,
         resumeNickname: defaultNickname,
-      } = await createResume(resumeText);
+      } = await createResume(resumeText, resumeId);
       setResumeId(id);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
@@ -548,7 +582,17 @@ function App() {
       refreshResumesList();
     } catch (err) {
       setNicknameError(err instanceof Error ? err.message : String(err));
-      setResumeNickname(lastSavedNickname);
+      // Ticket 7701534: a nickname COLLISION is the one failure that does
+      // NOT revert -- Nicole wants the offending value visible, red-
+      // outlined, and fixable in place, not silently swapped back to
+      // whatever it was before. Every other failure (network error, a
+      // future validation this route adds, ...) keeps the original
+      // revert: there's nothing wrong with THAT value, only the request,
+      // so parking a "failed" value in state as though it had taken
+      // effect would be the wrong call there.
+      if (!isNicknameConflictError(err)) {
+        setResumeNickname(lastSavedNickname);
+      }
     } finally {
       setNicknameSaving(false);
     }
@@ -700,7 +744,16 @@ function App() {
               think we need the resume-ready words anymore." Redundant
               once the collapsed "Using Resume N" bar (ac141d0) already
               says the same thing. */}
-          {resumeError && <p role="alert">Could not save resume: {resumeError}</p>}
+          {/* Ticket 7701534: `.resume-error` gives this the same red-text
+              treatment `.resume-nickname-error` already has -- previously
+              unstyled plain text, which undersold what is now sometimes a
+              real blocking validation error (duplicate resume text), not
+              just an occasional network hiccup. */}
+          {resumeError && (
+            <p role="alert" className="resume-error">
+              Could not save resume: {resumeError}
+            </p>
+          )}
         </section>
 
         {/* Ticket ac141d0: `hidden`, not conditional rendering -- an

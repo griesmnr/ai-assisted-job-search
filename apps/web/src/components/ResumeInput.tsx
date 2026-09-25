@@ -4,9 +4,15 @@ import { useState } from "react";
  * Paste-only resume input (decided 2026-08-29 on git-bug a217859 — no file
  * upload; see `POST /resumes`'s actual accepted shape,
  * apps/api/src/routes/resumes.ts, which takes raw `resumeText`, nothing
- * else). Content-addressed server-side, so re-submitting identical text is
- * cheap and idempotent (returns the same resumeId) — this component doesn't
- * need to guard against double-submission for correctness, only for UX.
+ * else). Content-addressed server-side, so re-submitting THIS SAME
+ * resume's own unchanged text is cheap and idempotent (returns the same
+ * resumeId) — this component doesn't need to guard against accidental
+ * double-submission for correctness, only for UX. Ticket 7701534: text
+ * that instead matches a DIFFERENT already-saved resume is no longer
+ * silently accepted as if new — `App.tsx`'s `handleResumeSubmit` sends
+ * along the currently-active `resumeId` specifically so the server can
+ * tell those two cases apart, and surfaces the DIFFERENT-resume case as a
+ * real, blocking `resumeError` this component just renders like any other.
  *
  * Ticket 38a7598 (Nicole: "right next to the 'use this resume' button...
  * when they use this resume, they should be at that moment... choosing the
@@ -210,6 +216,12 @@ export function ResumeInput({
               type="text"
               value={nickname ?? ""}
               disabled={nicknameSaving}
+              // Ticket 7701534, Nicole: "it should highlight... red
+              // outline on the field." `aria-invalid` is both the
+              // standard accessible way to flag an invalid field (a
+              // screen reader announces it) and, per index.css, what
+              // actually drives the red outline -- one prop does both.
+              aria-invalid={nicknameError ? true : undefined}
               onChange={(e) => onNicknameChange?.(e.target.value)}
               onBlur={(e) => onNicknameCommit?.(e.target.value)}
               // Ticket 38a7598 review fix: this input sits INSIDE the resume
