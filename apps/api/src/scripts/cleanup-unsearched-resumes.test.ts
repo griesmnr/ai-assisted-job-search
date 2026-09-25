@@ -441,89 +441,146 @@ describe("live-search exclusion (ticket 25eac27, opus review F2)", () => {
   });
 });
 
-// Opus review, ticket 25eac27, required F1: the FIRST version of this
-// script deleted job_matches as its own dependent-delete step, which
-// mutation-tested as SAFE in isolation but was proven, against a real
-// concurrent connection, to convert a race into silent data loss (see
-// the module doc comment's full incident writeup). These tests exercise
-// the fix -- the lock-then-recheck sequence -- against a REAL second
-// connection, not just this file's single shared client: a single
-// `pg.Client` cannot hold two transactions at once, so a broken lock and
-// a correct one would be indistinguishable on it (same reasoning
-// `searches.test.ts`'s own advisory-lock concurrency tests already
-// documented for `createPooledTestDatabase`).
-describe("concurrency: a job scored mid-run must not be lost (ticket 25eac27, opus review F1)", () => {
-  it("a job_matches row committed by ANOTHER connection, after this run's lock is held, blocks until this run finishes -- and the resume survives", async () => {
+// Opus review, ticket 25eac27, required F1 (and F4, round 2): the FIRST
+// version of this script deleted job_matches as its own dependent-delete
+// step, proven against a real concurrent connection to convert a race
+// into silent data loss (see the module doc comment's full incident
+// writeup). The FIRST version of these tests hand-rolled a copy of the
+// lock sequence instead of calling the real `runCleanup` -- proven
+// vacuous: deleting `.for("update")` from the real live path left every
+// test in this file green, since none of them actually exercised it.
+// These now drive `runCleanup` itself, against a REAL second connection
+// (a single `pg.Client` cannot hold two transactions at once, so a
+// broken lock and a correct one would be indistinguishable on it -- same
+// reasoning `searches.test.ts`'s own advisory-lock concurrency tests
+// already documented for `createPooledTestDatabase`).
+describe("concurrency: a job scored mid-run must not be lost (ticket 25eac27, opus review F1/F4)", () => {
+  it("runCleanup itself blocks on an uncommitted concurrent job_matches insert, then correctly spares the resume once it commits", async () => {
     const resumeId = await seedResume();
     const jobId = await seedJob();
 
     const pooled = createPooledTestDatabase(testDb.testDbName, 4);
     try {
-      // A second, independent connection -- this is the "concurrent
-      // search scoring a job" the module doc comment describes. It waits
-      // until told to actually attempt its insert, so the test controls
-      // exactly when the race happens relative to this run's own lock.
-      let releaseConcurrentInsert: () => void = () => {};
-      const concurrentInsertGate = new Promise<void>((resolve) => {
-        releaseConcurrentInsert = resolve;
+      // A second, independent connection holding an UNCOMMITTED insert --
+      // this is the "concurrent search scoring a job" the module doc
+      // comment describes, caught in the act, not yet durable.
+      let releaseConcurrentTx: () => void = () => {};
+      const concurrentTxGate = new Promise<void>((resolve) => {
+        releaseConcurrentTx = resolve;
       });
-      let concurrentInsertSettled = false;
-      const concurrentInsert = pooled.db
-        .transaction(async (concurrentTx) => {
-          await concurrentInsertGate;
-          await concurrentTx.insert(jobMatches).values({
+      let concurrentTxSettled = false;
+      const concurrentTx = pooled.db
+        .transaction(async (tx) => {
+          await tx.insert(jobMatches).values({
             id: randomUUID(),
             resumeId,
             jobId,
             matchScore: 80,
-            rationale: "landed mid-cleanup",
+            rationale: "landed mid-cleanup, held open until released",
             strengths: [],
             gaps: [],
           });
+          // Holds this transaction (and its FOR KEY SHARE lock on the
+          // resume, taken by the insert above) open until released.
+          await concurrentTxGate;
         })
         .then(() => {
-          concurrentInsertSettled = true;
+          concurrentTxSettled = true;
         });
+      // Give the insert above a real chance to actually land before
+      // racing runCleanup's own first pass against it.
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // The actual cleanup run. `runCleanup` itself doesn't expose a hook
-      // to pause mid-transaction, so this reimplements just enough of its
-      // LIVE path by hand to prove the lock is real: lock the candidate,
-      // signal the concurrent insert to proceed WHILE the lock is held,
-      // confirm it has NOT settled yet, then recheck/delete as
-      // `runCleanup` itself does.
-      await pooled.db.transaction(async (tx) => {
-        await tx
-          .select({ id: resumes.id })
-          .from(resumes)
-          .where(eq(resumes.id, resumeId))
-          .for("update");
-
-        releaseConcurrentInsert();
-        // Give the concurrent transaction a real chance to run if it were
-        // somehow NOT blocked -- if the lock didn't work, this is enough
-        // time for its INSERT to land.
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        expect(concurrentInsertSettled).toBe(false);
-
-        const stillUnscored = await tx
-          .select({ resumeId: jobMatches.resumeId })
-          .from(jobMatches)
-          .where(eq(jobMatches.resumeId, resumeId));
-        expect(stillUnscored).toHaveLength(0); // not visible yet -- still locked out
-
-        // Simulates runCleanup finding zero matches and proceeding to
-        // delete -- but this test does NOT actually delete, so the
-        // concurrent insert (released above, still pending on the lock)
-        // can be observed succeeding once this transaction ends.
+      // The REAL function under test, against the SAME pooled db. Its
+      // first pass reads zero job_matches (the insert above is still
+      // uncommitted and therefore invisible to it under READ COMMITTED),
+      // so it proceeds to lock the resume -- which must now block on the
+      // concurrent transaction's own uncommitted FOR KEY SHARE.
+      let cleanupSettled = false;
+      const cleanupRun = runCleanup(pooled.db, { live: true }).then((result) => {
+        cleanupSettled = true;
+        return result;
       });
 
-      await concurrentInsert;
-      expect(concurrentInsertSettled).toBe(true);
-      const landed = await pooled.db
-        .select()
-        .from(jobMatches)
-        .where(eq(jobMatches.resumeId, resumeId));
-      expect(landed).toHaveLength(1);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(cleanupSettled).toBe(false); // still blocked on the lock
+
+      releaseConcurrentTx();
+      await concurrentTx;
+      expect(concurrentTxSettled).toBe(true);
+
+      const result = await cleanupRun;
+      expect(cleanupSettled).toBe(true);
+
+      // runCleanup's own re-check, now under its granted lock, saw the
+      // just-committed match and correctly excluded the resume.
+      expect(result.candidates.map((r) => r.id)).not.toContain(resumeId);
+      expect(await pooled.db.select().from(resumes).where(eq(resumes.id, resumeId))).toHaveLength(
+        1,
+      );
+      expect(
+        await pooled.db.select().from(jobMatches).where(eq(jobMatches.resumeId, resumeId)),
+      ).toHaveLength(1);
+    } finally {
+      await pooled.close();
+    }
+  });
+
+  // Opus review round 2, required F3: the live-search exclusion was
+  // racy in exactly the same class of bug as F1 -- a POST /searches
+  // insert of its `searches` row (uncommitted) left a resume looking
+  // like plain junk to runCleanup's own unlocked first pass, and its
+  // FOR UPDATE lock then proceeded on that stale read the instant the
+  // poster committed, unless the live-search check is ALSO re-run
+  // under the lock (not just job_matches).
+  it("runCleanup blocks on an uncommitted concurrent searches insert too, then correctly spares the resume once it commits", async () => {
+    const resumeId = await seedResume();
+
+    const pooled = createPooledTestDatabase(testDb.testDbName, 4);
+    try {
+      let releaseConcurrentTx: () => void = () => {};
+      const concurrentTxGate = new Promise<void>((resolve) => {
+        releaseConcurrentTx = resolve;
+      });
+      let concurrentTxSettled = false;
+      const concurrentTx = pooled.db
+        .transaction(async (tx) => {
+          // Simulates POST /searches inserting its searches row --
+          // uncommitted, but already holding the FOR KEY SHARE lock on
+          // the resume that makes the race possible.
+          await tx
+            .insert(searches)
+            .values({ id: randomUUID(), resumeId, searchedAt: new Date(), status: "running" });
+          await concurrentTxGate;
+        })
+        .then(() => {
+          concurrentTxSettled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      let cleanupSettled = false;
+      const cleanupRun = runCleanup(pooled.db, { live: true }).then((result) => {
+        cleanupSettled = true;
+        return result;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(cleanupSettled).toBe(false);
+
+      releaseConcurrentTx();
+      await concurrentTx;
+      expect(concurrentTxSettled).toBe(true);
+
+      const result = await cleanupRun;
+      expect(cleanupSettled).toBe(true);
+
+      expect(result.candidates.map((r) => r.id)).not.toContain(resumeId);
+      expect(await pooled.db.select().from(resumes).where(eq(resumes.id, resumeId))).toHaveLength(
+        1,
+      );
+      expect(
+        await pooled.db.select().from(searches).where(eq(searches.resumeId, resumeId)),
+      ).toHaveLength(1);
     } finally {
       await pooled.close();
     }

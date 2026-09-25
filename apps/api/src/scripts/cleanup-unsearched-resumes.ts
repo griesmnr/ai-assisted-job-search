@@ -70,20 +70,32 @@
  *      enforces referential integrity concurrently) -- `FOR UPDATE`
  *      conflicts with `FOR KEY SHARE`, so from the instant this
  *      statement returns, no OTHER transaction can insert a new
- *      `job_matches` row against any of these specific resumes until
- *      THIS transaction commits or rolls back. Verified directly: a
- *      concurrent session's `INSERT INTO job_matches` against a locked
- *      candidate blocks and only proceeds after this transaction ends.
- *   3. RE-CHECK `job_matches` for exactly those now-locked ids. This
- *      closes the one gap step 2 alone does not: something could have
- *      landed a match in the window BEFORE the lock was acquired (step 1
- *      is a plain, unlocked read). Anything that shows up here is
- *      dropped from the deletion set -- proof, not assumption, that it's
- *      still genuinely unscored.
+ *      `job_matches` OR `searches` row against any of these specific
+ *      resumes until THIS transaction commits or rolls back (both
+ *      `job_matches.resume_id` and `searches.resume_id` are FKs to
+ *      `resumes.id`, so both kinds of insert need the same FOR KEY SHARE
+ *      this blocks). Verified directly: a concurrent session's INSERT
+ *      against a locked candidate blocks and only proceeds after this
+ *      transaction ends.
+ *   3. RE-CHECK **both** exclusion conditions for exactly those now-
+ *      locked ids -- `job_matches` AND live-search (opus review round 2,
+ *      required F3: the FIRST version of this fix only re-checked
+ *      `job_matches`, leaving the live-search exclusion itself racy in
+ *      the SAME way F1 was -- a `POST /searches` insert that hadn't
+ *      committed yet when step 1's unlocked read ran left a resume
+ *      looking like plain junk, and this transaction's own `FOR UPDATE`
+ *      then blocked on that poster's FOR KEY SHARE and proceeded the
+ *      instant it committed, acting on stale, pre-commit information).
+ *      This closes the gap step 2 alone does not: something could have
+ *      landed in the window BEFORE the lock was acquired (step 1 is a
+ *      plain, unlocked read). Anything that shows up in either re-check
+ *      is dropped from the deletion set -- proof, not assumption, that
+ *      it's still genuinely safe to delete.
  *   4. Delete. `job_matches` is deliberately NOT one of the dependent
- *      deletes anymore (it was the bug) -- every surviving candidate is
- *      now PROVEN to have zero matches, and the lock held since step 2
- *      guarantees nothing can add one before this transaction commits.
+ *      deletes anymore (it was the original bug) -- every surviving
+ *      candidate is now PROVEN to have zero matches and no live search,
+ *      and the lock held since step 2 guarantees neither can appear
+ *      before this transaction commits.
  *
  * SAFETY GATE, same shape as ticket 12fd73d's sibling script otherwise:
  *
@@ -361,16 +373,32 @@ export async function runCleanup(
       .where(inArray(resumes.id, firstPassIds))
       .for("update");
 
-    // Step 3: re-check, now that the lock is held, closing the one gap
-    // step 2 alone doesn't -- a match landing in the window BEFORE the
-    // lock was acquired. Anything that shows up here is proof this
-    // candidate is no longer genuinely unscored; it's dropped.
+    // Step 3: re-check BOTH exclusion conditions, now that the lock is
+    // held, closing the gap step 2 alone doesn't -- something landing in
+    // the window BEFORE the lock was acquired. Anything that shows up
+    // here is proof this candidate is no longer genuinely safe to
+    // delete; it's dropped.
+    //
+    // Opus review round 2 (required F3): the FIRST version of this fix
+    // re-checked job_matches only, leaving the live-search exclusion
+    // itself racy in exactly the class of bug F1 was -- proven with a
+    // real second connection: `POST /searches` inserts its `searches`
+    // row (taking a FOR KEY SHARE lock on the resume) in a transaction
+    // that hasn't committed yet when step 1's unlocked read runs, so the
+    // resume looks like plain junk (no live search, no matches) at that
+    // moment. This transaction's `FOR UPDATE` then BLOCKS on the
+    // poster's FOR KEY SHARE (making the race MORE reliably hit, not
+    // less) and proceeds the instant the poster commits -- acting on
+    // now-stale, pre-commit information unless the live-search check is
+    // ALSO re-run here, under the same lock that makes job_matches's
+    // re-check trustworthy.
     const stillUnscored = await tx
       .select({ resumeId: jobMatches.resumeId })
       .from(jobMatches)
       .where(inArray(jobMatches.resumeId, firstPassIds));
     const nowScored = new Set(stillUnscored.map((r) => r.resumeId));
-    const candidates = firstPass.filter((r) => !nowScored.has(r.id));
+    const nowLiveSearch = await findResumeIdsWithLiveSearch(tx, firstPassIds);
+    const candidates = firstPass.filter((r) => !nowScored.has(r.id) && !nowLiveSearch.has(r.id));
 
     if (candidates.length === 0) {
       return {
