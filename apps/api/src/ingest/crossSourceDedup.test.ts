@@ -1,6 +1,13 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { jobs, resumes, searches, searchResults, sourceDescriptors } from "../db/schema.js";
+import {
+  jobs,
+  LEGACY_USER_ID,
+  resumes,
+  searches,
+  searchResults,
+  sourceDescriptors,
+} from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import type { NormalizedJob } from "../sources/types.js";
@@ -75,6 +82,7 @@ beforeAll(async () => {
   ]);
   await db.insert(resumes).values({
     id: RESUME_ID,
+    userId: LEGACY_USER_ID,
     resumeText: "resume text",
     resumeHash: "dedup-test-resume-hash",
     resumeNickname: "Resume 1",

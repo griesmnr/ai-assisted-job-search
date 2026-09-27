@@ -7,6 +7,7 @@ import {
   jobMatches,
   jobMatchFailures,
   jobs as jobsTable,
+  LEGACY_USER_ID,
   resumes,
   searches,
   searchResults,
@@ -65,6 +66,7 @@ async function seedResume(nickname = "Seeded resume"): Promise<string> {
   const id = randomUUID();
   await db.insert(resumes).values({
     id,
+    userId: LEGACY_USER_ID,
     resumeText: `Resume text ${randomUUID()}`,
     resumeHash: randomUUID(),
     resumeNickname: nickname,

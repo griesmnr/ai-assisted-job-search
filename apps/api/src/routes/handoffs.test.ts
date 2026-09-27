@@ -3,7 +3,13 @@ import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
-import { handoffs, jobs as jobsTable, resumes, sourceDescriptors } from "../db/schema.js";
+import {
+  handoffs,
+  jobs as jobsTable,
+  LEGACY_USER_ID,
+  resumes,
+  sourceDescriptors,
+} from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 
@@ -59,6 +65,7 @@ async function seedResume(resumeText = "A real resume.") {
   const resumeId = randomUUID();
   await db.insert(resumes).values({
     id: resumeId,
+    userId: LEGACY_USER_ID,
     resumeText,
     resumeHash: randomUUID(),
     resumeNickname: "Resume 1",

@@ -56,6 +56,7 @@ import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { jobMatches, jobs as jobsTable, resumes, searches, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
+import { requireUserId } from "../identity.js";
 import { getOrCreateResumeId } from "../matching/index.js";
 import { looksLikeContractOrTemp } from "../matching/swe-filter.js";
 
@@ -156,6 +157,7 @@ export function registerResumeRoutes(
     "/resumes",
     { schema: { body: createResumeBodySchema } },
     async (request, reply) => {
+      const userId = requireUserId(request);
       const { resumeText, currentResumeId } = request.body;
       const trimmed = resumeText.trim();
 
@@ -168,11 +170,12 @@ export function registerResumeRoutes(
         });
       }
 
-      // Content-addressed find-or-create (ticket 620ca30): posting the same
-      // text twice returns the same id rather than duplicating a row, and a
-      // genuinely new resume gets a new id whose scores start empty (no
-      // job_matches rows exist for it yet — see GET /resumes/:id/results).
-      const { id, isNew } = await getOrCreateResumeId(db, resumeText);
+      // Content-addressed find-or-create (ticket 620ca30, now per-user as
+      // of ticket b2f9dfd): posting the same text twice returns the same
+      // id rather than duplicating a row, and a genuinely new resume gets
+      // a new id whose scores start empty (no job_matches rows exist for
+      // it yet — see GET /resumes/:id/results).
+      const { id, isNew } = await getOrCreateResumeId(db, resumeText, userId);
 
       // Ticket 7701534, Nicole: "if it so happens that the pasted resume
       // is the same text as another already saved resume... not allow
@@ -282,7 +285,19 @@ export function registerResumeRoutes(
   // nickname order in agreement rather than fighting each other. `id` is a
   // `randomUUID()` (not time-ordered) so it's only a tiebreak, not the
   // primary sort.
-  app.get("/resumes", async (_request, reply) => {
+  //
+  // Ticket b2f9dfd: scoped to the requesting user -- this is the one read
+  // path this ticket scopes itself (it's a full, unfiltered list, and
+  // returning every user's nicknames/created-dates to anyone would be a
+  // glaring, self-inflicted gap the moment resumes became per-user at
+  // all). A single resume's own `GET /resumes/:id` by-id lookup is
+  // deliberately left AS IS for now -- that's the general "does this id
+  // in the URL belong to request.userId" access-control question spanning
+  // every by-id route in this app (searches, jobs, ...), which ticket
+  // 3fc1e5e's audit is the right place to decide consistently, not
+  // something to improvise ad hoc just for this one route.
+  app.get("/resumes", async (request, reply) => {
+    const userId = requireUserId(request);
     const rows = await db
       .select({
         id: resumes.id,
@@ -290,6 +305,7 @@ export function registerResumeRoutes(
         createdAt: resumes.createdAt,
       })
       .from(resumes)
+      .where(eq(resumes.userId, userId))
       .orderBy(asc(resumes.createdAt), asc(resumes.id));
 
     const response: ListResumesResponse = {
@@ -343,6 +359,7 @@ export function registerResumeRoutes(
     "/resumes/:id",
     { schema: { body: updateResumeNicknameBodySchema } },
     async (request, reply) => {
+      const userId = requireUserId(request);
       const trimmed = request.body.resumeNickname.trim();
       if (trimmed.length === 0) {
         return reply.code(400).send({ error: "resumeNickname must not be empty." });
@@ -362,6 +379,19 @@ export function registerResumeRoutes(
       // false-positive risk) and excludes THIS resume's own current
       // nickname (`ne(resumes.id, ...)`), so re-saving a nickname
       // unchanged, or changing only its case, never self-collides.
+      //
+      // Ticket b2f9dfd: scoped `WHERE user_id = ...` -- two different
+      // users can each have their own "Resume 8". NOTE, flagged for
+      // ticket 3fc1e5e's audit: this scopes the COLLISION CHECK to the
+      // REQUESTING user, but the UPDATE below still targets
+      // `request.params.id` with no ownership check of its own -- if that
+      // id happens to belong to a DIFFERENT user, this route currently
+      // lets the rename proceed anyway (checking uniqueness against the
+      // wrong user's namespace). Same class of gap as `GET /resumes/:id`
+      // and every other by-id route in this app today; not new here, but
+      // worth naming precisely since the collision check's own scoping
+      // makes the mismatch less obvious than it would be for HERE than
+      // for an unscoped check.
       const collision = await db
         .select({ id: resumes.id })
         .from(resumes)
@@ -369,6 +399,7 @@ export function registerResumeRoutes(
           and(
             eq(sql<string>`lower(${resumes.resumeNickname})`, trimmed.toLowerCase()),
             ne(resumes.id, request.params.id),
+            eq(resumes.userId, userId),
           ),
         )
         .limit(1);

@@ -188,6 +188,7 @@ import type {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import { requireUserId } from "../identity.js";
 import { runDemoMatch, type ScoreJobFn } from "../matching/index.js";
 import {
   jobMatchFailures,
@@ -883,6 +884,16 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
+        // Ticket b2f9dfd: the requester's own identity, so a genuinely
+        // new resume this estimate happens to create/touch is attributed
+        // correctly. NOTE, flagged for ticket 3fc1e5e's audit: this route
+        // does not yet VERIFY that `resumeId` (looked up via
+        // `loadResumeText` above) actually belongs to this same user --
+        // that's the general "does resumeId in the request body belong to
+        // request.userId" access-control question spanning every by-id
+        // route in this app, out of scope for this ticket, which only
+        // covers the `resumes` table's own uniqueness/numbering.
+        userId: requireUserId(request),
         criteria: buildFetchCriteria(criteria),
         scoreJob: NEVER_SCORE,
         filter: compileFilter(criteria),

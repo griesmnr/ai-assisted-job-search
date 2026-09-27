@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
+import { LEGACY_USER_ID } from "./db/schema.js";
 import {
   excludedForMissingWorkArrangement as excludedForMissingWorkArrangementFilter,
   filterSoftwareEngineeringJobs,
@@ -112,6 +113,11 @@ async function main() {
       db,
       sources,
       resumeText,
+      // Ticket b2f9dfd: explicit, not relying on runDemoMatch's own
+      // default -- see schema.ts's LEGACY_USER_ID doc comment for why
+      // this CLI bypass tool attributes its resumes to that shared
+      // bucket rather than a real per-run identity.
+      userId: LEGACY_USER_ID,
       scoreJob: makeClaudeScorer(anthropic),
       criteria: {},
       filter: filterSoftwareEngineeringJobs,

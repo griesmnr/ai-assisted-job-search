@@ -28,7 +28,7 @@
  * fails.
  */
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { users } from "./db/schema.js";
 
 export const USER_ID_HEADER = "x-user-id";
@@ -98,4 +98,24 @@ export function registerIdentity(
     await db.insert(users).values({ id: userId }).onConflictDoNothing({ target: users.id });
     request.userId = userId;
   });
+}
+
+/**
+ * Ticket b2f9dfd: the one place a route handler reads `request.userId` as
+ * a guaranteed-present `string` instead of the raw, technically-optional
+ * field `registerIdentity`'s own module augmentation declares (see B1's
+ * fix above for why it's optional at the type level at all). Throws --
+ * a genuine bug, not a 400 -- if ever called from a route that's one of
+ * `registerIdentity`'s own two exemptions (`OPTIONS`, `GET
+ * /handoffs/:id`): neither has any reason to call this, and a route that
+ * does need a real user id must not be added to that exemption list
+ * without also reconsidering every call to this function.
+ */
+export function requireUserId(request: FastifyRequest): string {
+  if (request.userId === undefined) {
+    throw new Error(
+      "requireUserId called on a request with no userId -- this route must not be one of registerIdentity's own exemptions (OPTIONS, GET /handoffs/:id).",
+    );
+  }
+  return request.userId;
 }

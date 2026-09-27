@@ -3,7 +3,7 @@ import type { CreateResumeResponse, UpdateResumeNicknameResponse } from "@app/sh
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
+import { buildTestApp as buildApp, injectAs } from "../test-support/build-test-app.js";
 import {
   jobMatches,
   jobs as jobsTable,
@@ -288,6 +288,141 @@ describe("POST /resumes", () => {
       expect(second.statusCode).toBe(409);
       expect(calls).toBe(0);
       expect(second.json()).not.toHaveProperty("suggestedTitles");
+    });
+  });
+
+  // Ticket b2f9dfd (epic 2b9e9dd): resume-text uniqueness, nickname
+  // uniqueness, and "Resume N" numbering are all now scoped PER USER, not
+  // global -- Nicole's own motivating case: using a friend's resume as
+  // test data must never collide with that friend's own later, real
+  // usage. `injectAs` (test-support/build-test-app.js, from ticket
+  // dba885e) is the casing-proof way to act as a specific user within one
+  // test.
+  describe("per-user scoping (ticket b2f9dfd)", () => {
+    it("two different users can submit byte-identical resume text with no collision", async () => {
+      const app = buildTestApp();
+      const resumeText = `Shared test resume ${randomUUID()}`;
+      const userA = randomUUID();
+      const userB = randomUUID();
+
+      const respA = await injectAs(app, userA, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const respB = await injectAs(app, userB, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+
+      expect(respA.statusCode).toBe(200);
+      expect(respB.statusCode).toBe(200);
+      const { id: idA } = respA.json() as CreateResumeResponse;
+      const { id: idB } = respB.json() as CreateResumeResponse;
+      expect(idA).not.toBe(idB);
+
+      // Two REAL rows, not one silently shared or one rejected.
+      const rows = await db.select().from(resumes).where(eq(resumes.resumeText, resumeText));
+      expect(rows).toHaveLength(2);
+      expect(new Set(rows.map((r) => r.userId))).toEqual(new Set([userA, userB]));
+    });
+
+    it("the SAME user resubmitting their own unchanged text still resolves to the one existing row (unchanged behavior)", async () => {
+      const app = buildTestApp();
+      const userId = randomUUID();
+      const resumeText = `Same user resubmit ${randomUUID()}`;
+
+      const first = await injectAs(app, userId, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const { id: firstId } = first.json() as CreateResumeResponse;
+      const second = await injectAs(app, userId, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText, currentResumeId: firstId },
+      });
+
+      expect(second.statusCode).toBe(200);
+      expect((second.json() as CreateResumeResponse).id).toBe(firstId);
+    });
+
+    it("a nickname collision is only rejected within the SAME user -- a different user can reuse it freely", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+
+      const respA = await injectAs(app, userA, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `User A resume ${randomUUID()}` },
+      });
+      const { resumeNickname: nicknameA } = respA.json() as CreateResumeResponse;
+
+      await injectAs(app, userB, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `User B resume ${randomUUID()}` },
+      });
+      const bList = await injectAs(app, userB, { method: "GET", url: "/resumes" });
+      const bResumeId = (bList.json() as { resumes: { id: string }[] }).resumes[0]!.id;
+
+      // User B renames their OWN resume to the exact nickname user A
+      // already has -- must succeed, since uniqueness is now per-user.
+      const rename = await injectAs(app, userB, {
+        method: "PATCH",
+        url: `/resumes/${bResumeId}`,
+        payload: { resumeNickname: nicknameA },
+      });
+
+      expect(rename.statusCode).toBe(200);
+      expect((rename.json() as UpdateResumeNicknameResponse).resumeNickname).toBe(nicknameA);
+    });
+
+    it("'Resume N' numbering restarts at 1 for each new user, independent of how many resumes other users already have", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+
+      for (let i = 0; i < 3; i++) {
+        await injectAs(app, userA, {
+          method: "POST",
+          url: "/resumes",
+          payload: { resumeText: `User A resume ${i} ${randomUUID()}` },
+        });
+      }
+
+      // User B's very first resume must still be "Resume 1", not "Resume 4".
+      const respB = await injectAs(app, userB, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `User B first resume ${randomUUID()}` },
+      });
+
+      expect((respB.json() as CreateResumeResponse).resumeNickname).toBe("Resume 1");
+    });
+
+    it("GET /resumes only lists the requesting user's own resumes", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+
+      await injectAs(app, userA, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `User A own resume ${randomUUID()}` },
+      });
+      await injectAs(app, userB, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `User B own resume ${randomUUID()}` },
+      });
+
+      const listA = await injectAs(app, userA, { method: "GET", url: "/resumes" });
+
+      expect((listA.json() as { resumes: unknown[] }).resumes).toHaveLength(1);
     });
   });
 
