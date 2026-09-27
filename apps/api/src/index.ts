@@ -151,7 +151,39 @@ export function buildApp(deps: BuildAppDeps) {
   // often when 5173 is taken — while closing the arbitrary-origin gap:
   // only pages actually served from this machine's loopback address can
   // call this API at all.
-  void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
+  //
+  // Ticket 17d14b1 (deploy scaffolding) added the `CORS_ALLOWED_ORIGIN`
+  // branch: a deployed frontend lives on a real domain, not localhost, so
+  // the regex above alone would lock it out there. It names that one real
+  // origin explicitly when set (never a second `origin: true`-style
+  // wildcard — the drive-by-spend reasoning above applies just as much to
+  // a real domain as to localhost) and falls back to the regex when unset,
+  // which is the default dev/test posture.
+  //
+  // Opus review round 1, F2 (BLOCKER): `??` alone treats a set-but-BLANK
+  // `CORS_ALLOWED_ORIGIN=` (not the same as unset) as a real value —
+  // verified live to make @fastify/cors 500 EVERY request, not just fail
+  // CORS, since `origin: ""` isn't a value it accepts. This is not a
+  // contrived input: the README's own Railway walkthrough has Nicole set
+  // this variable before `web`'s real URL exists yet ("circular on the
+  // very first deploy"), and creating-it-blank-then-filling-it-in-later
+  // is the natural reading of that instruction. `.trim()` + a truthiness
+  // check treats blank the same as unset (falls back to the dev regex).
+  //
+  // F9: also strips a trailing slash a value copy-pasted from a browser's
+  // address bar commonly carries, which a browser's own `Origin` header
+  // never has. Round 2 review measured the UNSTRIPPED failure mode
+  // precisely, correcting round 1's guess here: a trailing slash does NOT
+  // 500 (`@fastify/cors` happily echoes `"https://x.com/"` as a static
+  // string) — it silently fails the BROWSER's own same-string comparison
+  // instead, since the response header then never matches the page's real
+  // Origin. Same practical outcome either way (the frontend can't call
+  // this API), different mechanism — worth stripping regardless, but not
+  // for the reason round 1 first wrote here.
+  const configuredOrigin = process.env.CORS_ALLOWED_ORIGIN?.trim().replace(/\/+$/, "");
+  void app.register(cors, {
+    origin: configuredOrigin ? configuredOrigin : /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
+  });
 
   // Ticket dba885e (epic 2b9e9dd): every route below now requires the
   // anonymous `x-user-id` header -- registered before any route so the

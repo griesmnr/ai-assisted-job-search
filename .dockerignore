@@ -7,3 +7,29 @@
 node_modules/
 prep/
 .env
+
+# Ticket 17d14b1, opus review F7: the patterns above were written for the
+# dev compose file (repo-root Dockerfile) and had two gaps that only
+# matter now that this file is also load-bearing for PRODUCTION images
+# (deploy/api.Dockerfile, deploy/web.Dockerfile):
+#
+#   - `node_modules/` and a bare `.env` only match the TOP LEVEL of the
+#     build context, not `apps/api/node_modules`, `apps/web/node_modules`,
+#     `packages/shared/node_modules`, or `.env.prod` -- every one of those
+#     can exist locally (a worktree that already ran `pnpm install`, or
+#     `deploy/README.md`'s own `.env.prod` for the self-host path) and, if
+#     present, gets copied into the build context and `COPY . .`'d into
+#     the build stage regardless. `.env`/`.env.prod` there means real
+#     secrets (a real POSTGRES_PASSWORD, ANTHROPIC_API_KEY) enter the
+#     build layer even though the runtime stage's explicit COPY list never
+#     reads them back out.
+#   - a stray per-package `node_modules` copied into the build context can
+#     also be a LEFTOVER, differently-versioned tree from a previous local
+#     install -- `pnpm install --frozen-lockfile` inside the image should
+#     still repair it correctly (it always resolves against the lockfile,
+#     not whatever's already on disk), but there's no reason to ship that
+#     risk or the wasted context size for free.
+**/node_modules/
+**/dist/
+.env*
+!.env.example

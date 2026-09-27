@@ -1,0 +1,157 @@
+# Platform-agnostic self-host fallback (ticket 17d14b1). Railway (see
+# deploy/README.md) is the recommended path -- it needs no compose file at
+# all, each service deploys from the Dockerfiles below directly -- but a
+# VPS or any other Docker host can run the whole stack from this one file
+# instead. Unlike the repo-root docker-compose.yml (dev container + local
+# Postgres/RabbitMQ, source bind-mounted, git-bug/rtk baked into the `dev`
+# service), every service here runs a built production image with no bind
+# mounts and no dev tooling.
+#
+# Usage, from the repo root:
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# .env.prod is NOT .env.example's local-dev shape -- see deploy/README.md
+# for the full list of required production values (real passwords, a real
+# ANTHROPIC_API_KEY, CORS_ALLOWED_ORIGIN set to wherever `web` is actually
+# reachable, VITE_API_BASE_URL set to wherever `api` is actually reachable).
+
+services:
+  postgres:
+    image: postgres:16.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set in .env.prod}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set in .env.prod}"
+      POSTGRES_DB: "${POSTGRES_DB:?set in .env.prod}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [jobsearch-net]
+
+  rabbitmq:
+    image: rabbitmq:3.13.7-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?set in .env.prod}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?set in .env.prod}"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks: [jobsearch-net]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set in .env.prod}"
+      CORS_ALLOWED_ORIGIN: "${CORS_ALLOWED_ORIGIN:?set in .env.prod -- the real https:// origin apps/web is served from}"
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [jobsearch-net]
+
+  worker-fetch-source:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    # Overrides api.Dockerfile's CMD -- this service doesn't serve HTTP or
+    # run migrations (the `api` service already did, and running
+    # `drizzle-kit migrate` from three containers on every restart is
+    # needless, not incorrect -- see api.Dockerfile's own migration note).
+    command: ["node", "dist/worker/run-fetch-source-worker.js"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS}"
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks: [jobsearch-net]
+
+  worker-score-job:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    command: ["node", "dist/worker/run-score-job-worker.js"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks: [jobsearch-net]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      args:
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:?set in .env.prod -- the real https:// origin api is served from}"
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks: [jobsearch-net]
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+
+networks:
+  jobsearch-net:
+    driver: bridge

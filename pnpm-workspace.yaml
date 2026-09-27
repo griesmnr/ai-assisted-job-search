@@ -1,3 +1,13 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# Ticket 17d14b1, opus review F12: pnpm 10 no longer reads
+# `onlyBuiltDependencies` from package.json's "pnpm" field (every install
+# has been printing a warning saying so) -- this is its actual home now.
+# Moved rather than just silenced: a completely fresh `pnpm install
+# --frozen-lockfile`, which is exactly what every Docker image build in
+# deploy/ does, is the one case where esbuild's install script silently
+# not running would be new and untested, not just a cosmetic warning.
+onlyBuiltDependencies:
+  - esbuild
