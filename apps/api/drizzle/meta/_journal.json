@@ -127,6 +127,13 @@
       "when": 1790480373749,
       "tag": "0017_scope_user_job_statuses_to_user",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790486739594,
+      "tag": "0018_magic_link_tokens",
+      "breakpoints": true
     }
   ]
 }

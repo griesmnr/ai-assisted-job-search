@@ -6,11 +6,13 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadEnvFile } from "./load-env.js";
+import { makeResendSenderFromEnv, type SendEmailFn } from "./email/sender.js";
 import { registerIdentity } from "./identity.js";
 import { EstimateProgressTracker } from "./matching/estimateProgress.js";
 import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
 import { ZeroResultEstimateCache } from "./matching/zeroResultCache.js";
 import { inferTitleKeywords } from "./resume-title-inference.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerHandoffRoutes } from "./routes/handoffs.js";
 import { registerJobStatusRoutes } from "./routes/job-status.js";
 import { registerResumeRoutes } from "./routes/resumes.js";
@@ -48,6 +50,28 @@ export type BuildAppDeps = {
    * between this and `getScoreJob` rather than constructing two.
    */
   inferTitles: (resumeText: string) => Promise<string[]>;
+  /**
+   * Overrides how `POST /auth/magic-link` sends its email (ticket 9f06f8f).
+   * A FACTORY, for exactly the reason `getScoreJob` above is one: the real
+   * sender needs `RESEND_API_KEY` and `MAGIC_LINK_FROM_EMAIL`
+   * (email/sender.ts's `makeResendSenderFromEnv` throws without them), and
+   * nothing else in this app may be made to depend on those existing --
+   * `pnpm build`, `rtk vitest`, and every other route must keep working on a
+   * machine that has never configured email.
+   *
+   * OPTIONAL rather than required, unlike `getScoreJob`: the ~10 existing
+   * route-test files all construct `buildApp({ db, inferTitles, getScoreJob
+   * })`, and making this mandatory would be pure mechanical churn across
+   * every one of them for no test value. The default below is still the real
+   * sender, so production gets it with no wiring, and because the default is
+   * itself lazy, the missing-key throw still only happens on an actual send.
+   *
+   * Tests for this route pass a fake that records what WOULD have been sent
+   * -- the same shape route tests already use for the Anthropic scorer and
+   * the AMQP publisher. A test that exercises `POST /auth/magic-link`
+   * WITHOUT injecting one would attempt a real network call, so don't.
+   */
+  getSendEmail?: () => SendEmailFn;
   /**
    * Overrides how `POST /searches` and `POST /searches/estimate` resolve
    * requested source ids into real `JobSource`s. Defaults to the real
@@ -172,6 +196,11 @@ export function buildApp(deps: BuildAppDeps) {
   );
   registerJobStatusRoutes(app, deps.db);
   registerHandoffRoutes(app, deps.db);
+  // Ticket 9f06f8f: `?? makeResendSenderFromEnv` keeps the real sender the
+  // default without constructing it here -- passing the FUNCTION, not a call
+  // of it, is what preserves the "no RESEND_API_KEY needed until an actual
+  // send" property this whole seam exists for (see BuildAppDeps.getSendEmail).
+  registerAuthRoutes(app, deps.db, deps.getSendEmail ?? makeResendSenderFromEnv);
 
   return app;
 }

@@ -454,6 +454,110 @@ export type SetJobStatusResponse = {
   updatedAt: string;
 };
 
+/**
+ * `POST /auth/magic-link` (ticket 9f06f8f, epic 2b9e9dd child 4). The email
+ * the user typed into the post-results prompt.
+ *
+ * The server normalizes this (trims, lowercases) before storing or comparing
+ * it -- see `normalizeEmail` in apps/api/src/routes/auth.ts -- so the client
+ * does not have to, and two visitors typing `Alice@Example.com` and
+ * `alice@example.com` are the same account.
+ */
+export type RequestMagicLinkRequest = {
+  email: string;
+};
+
+/**
+ * Deliberately says NOTHING about whether this email already has an account.
+ * The response is byte-identical for a brand-new address and for one that
+ * already owns resumes and results, because anything else would make this
+ * route an account-enumeration oracle for any caller who can type an address
+ * (a stranger asking "does alice@ use this app?" must not be able to tell).
+ * `email` echoes the NORMALIZED address so the "check your inbox" state can
+ * show exactly where the mail went.
+ */
+export type RequestMagicLinkResponse = {
+  email: string;
+  /** ISO 8601. What the "this link expires in N minutes" copy is derived
+   * from, rather than the frontend hardcoding a TTL the server owns. */
+  expiresAt: string;
+};
+
+/** `POST /auth/magic-link/verify` (ticket 9f06f8f). The raw token from the
+ * emailed link's `?magicLinkToken=` query parameter. POST, not GET, and
+ * sent in a body rather than a URL -- see routes/auth.ts's own reasoning
+ * (a GET is consumed by link prefetchers and lands the credential in
+ * server logs and `Referer` headers). */
+export type VerifyMagicLinkRequest = {
+  token: string;
+};
+
+/**
+ * Which of the two identity-resolution branches a verification took (ticket
+ * 9f06f8f). Both are normal, expected outcomes, not a success/degraded pair:
+ *
+ *  - `"attached"` -- no `users` row had this email, so the email was attached
+ *    to the anonymous user that REQUESTED the link. "Claiming my anonymous
+ *    session": `userId` is unchanged, and everything the visitor already had
+ *    is already theirs -- there is no data to migrate, because there were
+ *    never two identities, only one gaining an email.
+ *  - `"adopted"` -- a `users` row already had this email, so the verifying
+ *    browser adopts THAT user. "Logging in from a second device": `userId` is
+ *    a DIFFERENT id than the caller sent, and the caller must start sending
+ *    the returned one.
+ */
+export type MagicLinkOutcome = "attached" | "adopted";
+
+/**
+ * The identity the verifying browser must use from now on.
+ *
+ * `userId` IS the credential this app's anonymous identity scheme runs on
+ * (`x-user-id`, apps/api/src/identity.ts) -- so this response is the one
+ * place in the API that hands out a bearer value, and it does so only in
+ * exchange for a single-use token that was mailed to the address on the
+ * account. Clients must persist it the same way they persist a minted one
+ * (apps/web/src/identity.ts's `setUserId`) and must not log it.
+ */
+export type VerifyMagicLinkResponse = {
+  userId: string;
+  email: string;
+  outcome: MagicLinkOutcome;
+};
+
+/**
+ * Why a verification was refused (ticket 9f06f8f). Carried as a stable
+ * `reason` code beside the human-readable `error` message, following this
+ * API's existing convention for a machine-readable refusal
+ * (`UpdateResumeNicknameConflictError.reason`), so the frontend can offer the
+ * right recovery without string-matching a message:
+ *
+ *  - `"invalid"` -- no such token. Deliberately does not confirm or deny that
+ *    the token ever existed.
+ *  - `"expired"` -- the token was real and unredeemed, but `expiresAt` has
+ *    passed. Recovery: request a new link.
+ *  - `"already_used"` -- the token was already redeemed. Recovery: request a
+ *    new link (and note the earlier redemption may well have been this same
+ *    user, on this same device, a moment ago).
+ *  - `"browser_already_claimed"` -- this browser's anonymous identity already
+ *    carries a DIFFERENT email, so attaching this one would silently relabel
+ *    an existing account. See routes/auth.ts's own doc comment for the full
+ *    reasoning; recovery is to use the other address's link, or a fresh
+ *    browser profile.
+ *
+ * Telling `expired` apart from `already_used` is a deliberate, narrow
+ * disclosure: both are only ever reachable by someone who already holds the
+ * 256-bit token, so neither tells an attacker anything they could not already
+ * infer, while the difference is exactly what a confused real user needs to
+ * see.
+ */
+export type MagicLinkRejectionReason =
+  "invalid" | "expired" | "already_used" | "browser_already_claimed";
+
+export type VerifyMagicLinkError = {
+  error: string;
+  reason: MagicLinkRejectionReason;
+};
+
 export type SourceHealth = {
   id: Job["dataSource"];
   displayName: string;
