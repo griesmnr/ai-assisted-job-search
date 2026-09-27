@@ -3,7 +3,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { NormalizedJob } from "../sources/types.js";
 import type { CostEstimate, JobDescriptionRow, ScoredJob, UsageStats } from "../matching/index.js";
 import { estimateScoringCost, toNormalizedJob } from "../matching/index.js";
-import { jobMatches, jobs, resumes, sourceDescriptors, userJobStatuses } from "../db/schema.js";
+import {
+  jobMatches,
+  jobs,
+  LEGACY_USER_ID,
+  resumes,
+  sourceDescriptors,
+  userJobStatuses,
+} from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import {
@@ -420,6 +427,7 @@ describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", ()
       .values({ id: DATA_SOURCE, displayName: "Rescore Test Source" });
     await db.insert(resumes).values({
       id: RESUME_ID,
+      userId: LEGACY_USER_ID,
       resumeText: "resume text",
       resumeHash: "rescore-test-resume-hash",
       resumeNickname: "Resume 1",

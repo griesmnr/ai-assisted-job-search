@@ -19,6 +19,7 @@ import { seedSourceDescriptors } from "../db/seed.js";
 import {
   jobMatches,
   jobs as jobsTable,
+  LEGACY_USER_ID,
   resumes,
   searches,
   searchSources,
@@ -144,6 +145,20 @@ export type RunDemoMatchOptions = {
    */
   sources: JobSource[];
   resumeText: string;
+  /**
+   * Ticket b2f9dfd: which user this resume belongs to, for
+   * `getOrCreateResumeId`'s now-per-user find-or-create. Defaults to
+   * `LEGACY_USER_ID` -- deliberately, and ONLY at this level: this
+   * function's two real (non-test) callers are `demo-match.ts`'s CLI
+   * (which explicitly passes `LEGACY_USER_ID` itself, per that file's own
+   * comment on why) and `POST /searches/estimate` (which explicitly
+   * passes the requesting user's own `request.userId`) -- neither relies
+   * on this default. It exists purely so this function's ~30 existing
+   * test callers (demo-match.test.ts, db/user-job-statuses.test.ts), none
+   * of which are testing per-user behavior, don't need a mechanical
+   * one-line addition apiece for a concern they don't care about.
+   */
+  userId?: string;
   scoreJob: ScoreJobFn;
   /**
    * Defaults to `{}` (no criteria). Deliberately NOT `{ location:
@@ -813,25 +828,47 @@ function hashResumeText(resumeText: string): string {
  */
 export type GetOrCreateResumeResult = { id: string; isNew: boolean };
 
+/**
+ * Ticket b2f9dfd: `userId` is REQUIRED, deliberately with no default at
+ * this level -- this is the low-level primitive; `runDemoMatch` below is
+ * the one place a convenience default exists, for its many test callers
+ * that don't care about per-user behavior at all. Every real (non-test)
+ * caller must always know and pass its own real user.
+ *
+ * Find-or-create is now scoped PER USER: the count that derives "Resume
+ * N", the insert, and the upsert's conflict target (`(user_id,
+ * resume_hash)`, not `resume_hash` alone) all key off `userId` --
+ * Nicole's own motivating case is two different users legitimately
+ * sharing byte-identical resume text (using a friend's resume as test
+ * data) without colliding. The fallback SELECT below is scoped the same
+ * way, and deliberately does NOT fall back to searching by hash alone: a
+ * DIFFERENT user's row with a matching hash must never be returned here,
+ * or a request for "my resume" could silently resolve to a stranger's.
+ */
 export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeText: string,
+  userId: string,
 ): Promise<GetOrCreateResumeResult> {
   const resumeHash = hashResumeText(resumeText);
 
-  const countRows = await db.select({ count: sql<number>`count(*)::int` }).from(resumes);
+  const countRows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(resumes)
+    .where(eq(resumes.userId, userId));
   const nextResumeNumber = (countRows[0]?.count ?? 0) + 1;
 
   const inserted = await db
     .insert(resumes)
     .values({
       id: randomUUID(),
+      userId,
       resumeText,
       resumeHash,
       resumeNickname: `Resume ${nextResumeNumber}`,
     })
-    .onConflictDoNothing({ target: resumes.resumeHash })
+    .onConflictDoNothing({ target: [resumes.userId, resumes.resumeHash] })
     .returning({ id: resumes.id });
 
   if (inserted.length > 0) {
@@ -841,13 +878,13 @@ export async function getOrCreateResumeId(
   const rows = await db
     .select({ id: resumes.id })
     .from(resumes)
-    .where(eq(resumes.resumeHash, resumeHash))
+    .where(and(eq(resumes.resumeHash, resumeHash), eq(resumes.userId, userId)))
     .limit(1);
   if (rows.length === 0) {
     // Should be impossible: the insert above either created this row or
-    // no-opped because a row with this hash already existed.
+    // no-opped because a row with this (userId, hash) already existed.
     throw new Error(
-      `getOrCreateResumeId: no resumes row found for hash "${resumeHash}" after upsert`,
+      `getOrCreateResumeId: no resumes row found for user "${userId}", hash "${resumeHash}" after upsert`,
     );
   }
   return { id: rows[0]!.id, isNew: false };
@@ -1092,6 +1129,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     db,
     sources,
     resumeText,
+    userId = LEGACY_USER_ID,
     scoreJob,
     criteria = {},
     filter = (jobs: NormalizedJob[]) => jobs,
@@ -1122,7 +1160,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // genuinely new resume" from "this text already belongs to another
   // resume" -- irrelevant here, this CLI/worker path has always treated
   // find-or-create as a single outcome either way.
-  const { id: resumeId } = await getOrCreateResumeId(db, resumeText);
+  const { id: resumeId } = await getOrCreateResumeId(db, resumeText, userId);
 
   // Ticket 59fdc52 review round 3, N2: the `searches` row (and its
   // `search_sources` links) used to be inserted AFTER fetch+filter below —

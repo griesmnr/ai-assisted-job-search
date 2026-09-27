@@ -7,6 +7,7 @@ import {
   jobMatches,
   jobMatchFailures,
   jobs as jobsTable,
+  LEGACY_USER_ID,
   resumes,
   searches,
   searchResults,
@@ -74,6 +75,7 @@ async function seedResumeWithFullDependents(
   const resumeId = randomUUID();
   await db.insert(resumes).values({
     id: resumeId,
+    userId: LEGACY_USER_ID,
     resumeText,
     resumeHash: randomUUID(),
     resumeNickname: nickname,

@@ -79,52 +79,97 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const resumes = pgTable("resumes", {
-  id: text("id").primaryKey(),
-  resumeText: text("resume_text").notNull(),
-  // Content hash (sha256 hex) of resumeText, used as the find-or-create key
-  // in demo-match.ts's getOrCreateResumeId. NOT `unique()` on resumeText
-  // itself: a real resume's text can exceed Postgres's ~2704-byte btree
-  // index row limit, which would fail at insert time for a long resume.
-  // Hashing first keeps the unique key small and fixed-size regardless of
-  // resume length, while still making "two identical resumes" resolve to
-  // one row under concurrent inserts (ON CONFLICT (resume_hash) DO
-  // NOTHING). See ticket 620ca30.
-  resumeHash: text("resume_hash").notNull().unique(),
-  // Ticket 39b4a48: job title keywords Claude infers from this resume,
-  // computed ONCE per resume (find-or-create already dedupes identical
-  // resume text to one row -- this is what makes inference cache-able at
-  // all: re-submitting the same text never re-pays for it). Nullable, not
-  // an empty array by default: null means "inference hasn't run yet or
-  // failed", [] means "ran, found nothing to suggest" -- the route
-  // distinguishes these to decide whether to retry. See routes/resumes.ts.
-  suggestedTitles: jsonb("suggested_titles").$type<string[]>(),
-  // Ticket 38a7598: when this row was created. Added alongside
-  // `resumeNickname` below purely so a deterministic backfill order
-  // ("Resume 1", "Resume 2", ... in creation order) exists at all --
-  // `id` is a `randomUUID()` (demo-match.ts's `getOrCreateResumeId`),
-  // not time-ordered, so there was previously no column that could answer
-  // "which of these rows came first." NOT NULL with `defaultNow()`: every
-  // row from this migration forward gets a real creation time for free;
-  // migration 0010 backfills existing rows to the single instant the
-  // migration ran (Postgres evaluates a volatile ALTER ... DEFAULT once for
-  // pre-existing rows), which is honest -- their real creation time was
-  // never recorded -- and still gives a stable, deterministic tiebreak
-  // (`created_at, id`) for that migration's own nickname backfill.
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  // Ticket 38a7598 (Nicole: "when they use this resume, they should be at
-  // that moment... choosing the resume nickname"): a real, distinct label
-  // per resume ("Resume 1", "Resume 2", ...), chosen/confirmed in the
-  // resume-submission flow (ResumeInput.tsx) rather than a separate
-  // settings screen, and shown on every job card ("Searched with: ...") so
-  // results from different resumes are never mixed up on sight. NOT NULL:
-  // `getOrCreateResumeId` always assigns a real default at insert time (see
-  // that function's own comment), and migration 0010 backfills every
-  // pre-existing row before adding this constraint -- there is never a
-  // window where a real row has a blank nickname. Editable after creation
-  // via `PATCH /resumes/:id` (routes/resumes.ts).
-  resumeNickname: text("resume_nickname").notNull(),
-});
+/**
+ * Ticket b2f9dfd (epic 2b9e9dd, child 2): the well-known id every resume
+ * row that existed BEFORE real per-user identity did gets backfilled to
+ * (migration 0016), and the id `demo-match.ts`'s CLI path uses going
+ * forward -- that tool is an explicit bypass of the queue and the API
+ * (its own header comment), never a real end user, so attributing its
+ * output to a shared "no real account" bucket is honest rather than
+ * inventing a fake per-run identity that would break its own documented
+ * "running this twice doesn't re-pay for identical work" guarantee (a
+ * fresh random id per CLI run would make every run look like a different
+ * user, and the resume-hash uniqueness this ticket makes PER-USER would
+ * then never find the previous run's cached resume row). The nil UUID is
+ * used deliberately for recognizability, not because it needs to be a
+ * real `crypto.randomUUID()` -- nothing validates a `users.id` value's
+ * shape at the database layer; only `apps/api/src/identity.ts`'s HTTP
+ * header check does that, and this id is never sent as that header.
+ */
+export const LEGACY_USER_ID = "00000000-0000-0000-0000-000000000000";
+
+export const resumes = pgTable(
+  "resumes",
+  {
+    id: text("id").primaryKey(),
+    // Ticket b2f9dfd: which user owns this resume. NOT NULL -- migration
+    // 0016 backfills every pre-existing row to LEGACY_USER_ID above before
+    // adding this constraint, the same "nullable, backfill, then NOT NULL"
+    // shape migrations 0010/0013 already used for an identical reason.
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    resumeText: text("resume_text").notNull(),
+    // Content hash (sha256 hex) of resumeText, used as the find-or-create
+    // key in matching/pipeline.ts's getOrCreateResumeId. NOT `unique()` on
+    // resumeText itself: a real resume's text can exceed Postgres's
+    // ~2704-byte btree index row limit, which would fail at insert time
+    // for a long resume. Hashing first keeps the unique key small and
+    // fixed-size regardless of resume length, while still making "two
+    // identical resumes FROM THE SAME USER" resolve to one row under
+    // concurrent inserts (ON CONFLICT (user_id, resume_hash) DO NOTHING).
+    // See ticket 620ca30.
+    //
+    // Ticket b2f9dfd: the uniqueness constraint moved from a bare
+    // `.unique()` on this column alone (global) to the COMPOSITE
+    // `unique(userId, resumeHash)` below (per-user) -- Nicole's own
+    // motivating case: she wants to use a friend's resume as test data
+    // without that friend's own later, real usage of the identical text
+    // ever colliding with hers. Two different users can now share
+    // byte-identical resume text; the SAME user resubmitting their own
+    // unchanged text still resolves to the one existing row, unchanged.
+    resumeHash: text("resume_hash").notNull(),
+    // Ticket 39b4a48: job title keywords Claude infers from this resume,
+    // computed ONCE per resume (find-or-create already dedupes identical
+    // resume text to one row -- this is what makes inference cache-able at
+    // all: re-submitting the same text never re-pays for it). Nullable, not
+    // an empty array by default: null means "inference hasn't run yet or
+    // failed", [] means "ran, found nothing to suggest" -- the route
+    // distinguishes these to decide whether to retry. See routes/resumes.ts.
+    suggestedTitles: jsonb("suggested_titles").$type<string[]>(),
+    // Ticket 38a7598: when this row was created. Added alongside
+    // `resumeNickname` below purely so a deterministic backfill order
+    // ("Resume 1", "Resume 2", ... in creation order) exists at all --
+    // `id` is a `randomUUID()` (matching/pipeline.ts's `getOrCreateResumeId`),
+    // not time-ordered, so there was previously no column that could answer
+    // "which of these rows came first." NOT NULL with `defaultNow()`: every
+    // row from this migration forward gets a real creation time for free;
+    // migration 0010 backfills existing rows to the single instant the
+    // migration ran (Postgres evaluates a volatile ALTER ... DEFAULT once for
+    // pre-existing rows), which is honest -- their real creation time was
+    // never recorded -- and still gives a stable, deterministic tiebreak
+    // (`created_at, id`) for that migration's own nickname backfill.
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    // Ticket 38a7598 (Nicole: "when they use this resume, they should be at
+    // that moment... choosing the resume nickname"): a real, distinct label
+    // per resume ("Resume 1", "Resume 2", ...), chosen/confirmed in the
+    // resume-submission flow (ResumeInput.tsx) rather than a separate
+    // settings screen, and shown on every job card ("Searched with: ...") so
+    // results from different resumes are never mixed up on sight. NOT NULL:
+    // `getOrCreateResumeId` always assigns a real default at insert time (see
+    // that function's own comment), and migration 0010 backfills every
+    // pre-existing row before adding this constraint -- there is never a
+    // window where a real row has a blank nickname. Editable after creation
+    // via `PATCH /resumes/:id` (routes/resumes.ts).
+    //
+    // Ticket b2f9dfd: uniqueness/collision-checking on this field (routes/
+    // resumes.ts) and the "Resume N" numbering scheme (getOrCreateResumeId)
+    // are now both scoped `WHERE user_id = ...` -- two different users can
+    // each have their own "Resume 1".
+    resumeNickname: text("resume_nickname").notNull(),
+  },
+  (table) => [unique().on(table.userId, table.resumeHash)],
+);
 
 export const jobMatches = pgTable(
   "job_matches",

@@ -12,6 +12,7 @@ import {
   jobMatchFailures,
   jobMatches,
   jobs,
+  LEGACY_USER_ID,
   resumes,
   searchResults,
   searches,
@@ -136,6 +137,7 @@ async function insertResume(text = "resume text"): Promise<string> {
   const id = randomUUID();
   await db.insert(resumes).values({
     id,
+    userId: LEGACY_USER_ID,
     resumeText: text,
     resumeHash: `hash-${id}`,
     resumeNickname: `Resume ${id.slice(0, 6)}`,

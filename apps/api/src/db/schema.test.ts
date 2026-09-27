@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { jobMatches, jobs, resumes, sourceDescriptors } from "./schema";
+import { jobMatches, jobs, LEGACY_USER_ID, resumes, sourceDescriptors } from "./schema";
 import { createTestDatabase, type TestDatabase } from "./test-db";
 import { loadEnvFile } from "../load-env.js";
 
@@ -51,6 +51,7 @@ describe("job_matches table", () => {
       .insert(resumes)
       .values({
         id: RESUME_ID,
+        userId: LEGACY_USER_ID,
         resumeText: "some resume text",
         resumeHash: "schema-test-resume-hash",
         resumeNickname: "Resume 1",

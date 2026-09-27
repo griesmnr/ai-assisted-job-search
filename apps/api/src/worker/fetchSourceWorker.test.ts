@@ -4,7 +4,7 @@ import type { ChannelModel, ConfirmChannel } from "amqplib";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { jobs, resumes, searches, sourceDescriptors } from "../db/schema.js";
+import { jobs, LEGACY_USER_ID, resumes, searches, sourceDescriptors } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import { FETCH_SOURCE_RETRY_TIERS, setupTopology } from "../queue/topology.js";
@@ -232,6 +232,7 @@ beforeAll(async () => {
   await db.insert(sourceDescriptors).values({ id: SOURCE_ID, displayName: "Worker Test Source" });
   await db.insert(resumes).values({
     id: RESUME_ID,
+    userId: LEGACY_USER_ID,
     resumeText: "resume text",
     resumeHash: "worker-test-resume-hash",
     resumeNickname: "Resume 1",

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { jobs, resumes, searches, sourceDescriptors } from "../db/schema.js";
+import { jobs, LEGACY_USER_ID, resumes, searches, sourceDescriptors } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import type { NormalizedJob } from "../sources/types.js";
@@ -141,6 +141,7 @@ beforeAll(async () => {
   ]);
   await db.insert(resumes).values({
     id: RESUME_ID,
+    userId: LEGACY_USER_ID,
     resumeText: "resume text",
     resumeHash: "perf-test-resume-hash",
     resumeNickname: "Resume 1",

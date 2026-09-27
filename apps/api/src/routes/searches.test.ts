@@ -7,11 +7,12 @@ import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
+import { buildTestApp as buildApp, injectAs } from "../test-support/build-test-app.js";
 import {
   jobMatchFailures,
   jobMatches,
   jobs as jobsTable,
+  resumes,
   searchResults,
   searchSources,
   searches as searchesTable,
@@ -488,6 +489,57 @@ describe("POST /searches/estimate", () => {
     const rows = await db.select().from(searchesTable).where(eq(searchesTable.resumeId, resumeId));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.isEstimate).toBe(true);
+  });
+
+  // Review fix (F1, ticket b2f9dfd, blocking -- opus review round 1
+  // proved this live against a real migrated database). Before the fix,
+  // an unscoped `loadResumeText` fed straight into `getOrCreateResumeId`,
+  // which -- now that find-or-create is per-user -- silently INSERTED A
+  // NEW ROW, owned by the caller, containing a verbatim copy of whoever
+  // actually owns `resumeId`'s real resume text. Not an access-control
+  // gap ticket 3fc1e5e's later audit could clean up after the fact: the
+  // copy is a real row the caller legitimately owns forever.
+  it("ticket b2f9dfd (F1): does not leak another user's resume text into the caller's own account", async () => {
+    const jobs = [matchingJob(`f1-leak-${randomUUID()}`)];
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+    });
+
+    const bob = randomUUID();
+    const bobResumeText = "BOB'S PRIVATE RESUME -- home address, phone, employer history";
+    const bobResumeResp = await injectAs(app, bob, {
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: bobResumeText },
+    });
+    const bobResumeId = (bobResumeResp.json() as { id: string }).id;
+
+    const alice = randomUUID();
+    const attempt = await injectAs(app, alice, {
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId: bobResumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    // Scoped lookup: Alice's request for Bob's resumeId reads as "doesn't
+    // exist" -- a 404, never a 403, so it can't be used to distinguish
+    // "not yours" from "never existed".
+    expect(attempt.statusCode).toBe(404);
+
+    // The real assertion: Alice's account must not now contain a copy of
+    // Bob's resume text under a NEW id.
+    const aliceRows = await db.select().from(resumes).where(eq(resumes.userId, alice));
+    expect(aliceRows).toHaveLength(0);
+
+    // And Bob's own resume is untouched -- still exactly one row, his own.
+    const bobRows = await db.select().from(resumes).where(eq(resumes.userId, bob));
+    expect(bobRows).toHaveLength(1);
+    expect(bobRows[0]?.resumeText).toBe(bobResumeText);
   });
 
   it("reports a CAP-AWARE cost estimate — priced at scoreThreshold, not the full pool", async () => {
