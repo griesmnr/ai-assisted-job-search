@@ -3,7 +3,11 @@ import type { CreateResumeResponse, UpdateResumeNicknameResponse } from "@app/sh
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp, injectAs } from "../test-support/build-test-app.js";
+import {
+  buildTestApp as buildApp,
+  DEFAULT_TEST_USER_ID,
+  injectAs,
+} from "../test-support/build-test-app.js";
 import {
   jobMatches,
   jobs as jobsTable,
@@ -423,6 +427,263 @@ describe("POST /resumes", () => {
       const listA = await injectAs(app, userA, { method: "GET", url: "/resumes" });
 
       expect((listA.json() as { resumes: unknown[] }).resumes).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Ticket 3fc1e5e: cross-user isolation for every read/write path this
+   * file's routes expose, written as "user A must never see or mutate user
+   * B's data" rather than as "the query has a WHERE clause" -- each test
+   * below asserts the BEHAVIOR that was broken before the fix, so it fails
+   * if the scoping is removed for any reason (including a rewritten query
+   * that keeps the clause but loses its effect, e.g. an unscoped join).
+   */
+  describe("cross-user isolation (ticket 3fc1e5e)", () => {
+    /** One scored job for `resumeId`, owned by whoever owns that resume. */
+    async function seedScoredJobFor(
+      resumeId: string,
+      matchScore: number,
+      title: string,
+    ): Promise<string> {
+      const jobId = randomUUID();
+      await db.insert(jobsTable).values({
+        id: jobId,
+        externalId: `xuser-test-${jobId}`,
+        dataSource: DATA_SOURCE,
+        title,
+        description: "a job description",
+        company: "Test Co",
+        linkToApply: `https://example.com/${jobId}`,
+        postedAt: new Date("2026-01-01T00:00:00Z"),
+      });
+      await db.insert(jobMatches).values({
+        id: randomUUID(),
+        resumeId,
+        jobId,
+        matchScore,
+        rationale: "fake rationale",
+        strengths: [],
+        gaps: [],
+      });
+      return jobId;
+    }
+
+    /** Creates a resume through the real route as `userId`, returning its id. */
+    async function createResumeAs(
+      app: ReturnType<typeof buildTestApp>,
+      userId: string,
+      label: string,
+    ): Promise<string> {
+      const response = await injectAs(app, userId, {
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: `${label} ${randomUUID()}` },
+      });
+      expect(response.statusCode).toBe(200);
+      return (response.json() as CreateResumeResponse).id;
+    }
+
+    it("GET /resumes/:id does not return another user's resume text (404, not 403)", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const resumeA = await createResumeAs(app, userA, "User A private resume");
+
+      const asB = await injectAs(app, userB, { method: "GET", url: `/resumes/${resumeA}` });
+
+      // 404 specifically, NOT 403: a caller must not be able to use the
+      // status code to confirm that an id they guessed is real.
+      expect(asB.statusCode).toBe(404);
+      // And the text itself must not appear anywhere in the body.
+      expect(asB.body).not.toContain("User A private resume");
+
+      // The owner still reads it perfectly well -- proving the 404 above is
+      // the scoping, not a broken route.
+      const asA = await injectAs(app, userA, { method: "GET", url: `/resumes/${resumeA}` });
+      expect(asA.statusCode).toBe(200);
+      expect((asA.json() as { resumeText: string }).resumeText).toContain("User A private resume");
+    });
+
+    it("PATCH /resumes/:id cannot rename another user's resume", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const resumeA = await createResumeAs(app, userA, "User A resume");
+
+      const before = await db.select().from(resumes).where(eq(resumes.id, resumeA));
+      const originalNickname = before[0]!.resumeNickname;
+
+      const attempt = await injectAs(app, userB, {
+        method: "PATCH",
+        url: `/resumes/${resumeA}`,
+        payload: { resumeNickname: "Renamed by a stranger" },
+      });
+
+      expect(attempt.statusCode).toBe(404);
+      // The decisive assertion is the DATABASE, not the status code: the
+      // pre-fix bug returned 200 and really did write the new nickname.
+      const after = await db.select().from(resumes).where(eq(resumes.id, resumeA));
+      expect(after[0]!.resumeNickname).toBe(originalNickname);
+    });
+
+    it("PATCH /resumes/:id checks nickname collisions against the OWNER's namespace, so it cannot create a duplicate for them", async () => {
+      // The precise pre-fix failure: the collision check was scoped to the
+      // REQUESTING user (b2f9dfd) while the UPDATE matched on id alone, so
+      // user B could rename user A's "Resume 1" to a name A already used --
+      // the check passed (B has no such nickname), the write landed, and A
+      // was left with two identically-named resumes.
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const firstA = await createResumeAs(app, userA, "User A first");
+      const secondA = await createResumeAs(app, userA, "User A second");
+
+      const secondName = (await db.select().from(resumes).where(eq(resumes.id, secondA)))[0]!
+        .resumeNickname;
+
+      const attempt = await injectAs(app, userB, {
+        method: "PATCH",
+        url: `/resumes/${firstA}`,
+        payload: { resumeNickname: secondName },
+      });
+
+      expect(attempt.statusCode).toBe(404);
+      const rowsA = await db.select().from(resumes).where(eq(resumes.userId, userA));
+      const names = rowsA.map((r) => r.resumeNickname);
+      expect(new Set(names).size).toBe(names.length);
+    });
+
+    it("GET /resumes/:id/results does not serve another user's resume's results", async () => {
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const resumeA = await createResumeAs(app, userA, "User A resume");
+      await seedScoredJobFor(resumeA, 90, "User A only job");
+
+      const asB = await injectAs(app, userB, {
+        method: "GET",
+        url: `/resumes/${resumeA}/results`,
+      });
+
+      expect(asB.statusCode).toBe(404);
+      expect(asB.body).not.toContain("User A only job");
+
+      const asA = await injectAs(app, userA, {
+        method: "GET",
+        url: `/resumes/${resumeA}/results`,
+      });
+      expect(asA.statusCode).toBe(200);
+      expect((asA.json() as { results: { title: string }[] }).results).toHaveLength(1);
+    });
+
+    it("GET /results returns only the caller's own scored jobs, across their own resumes", async () => {
+      // THE ticket's named case. Pre-fix this route had no scoping at all,
+      // so it returned every job_matches row in the database -- other
+      // users' job titles, companies, scores, rationales and resume
+      // nicknames -- to any caller, with no id to guess.
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+
+      const resumeA1 = await createResumeAs(app, userA, "User A resume one");
+      const resumeA2 = await createResumeAs(app, userA, "User A resume two");
+      const resumeB = await createResumeAs(app, userB, "User B resume");
+
+      await seedScoredJobFor(resumeA1, 90, "A job from resume one");
+      await seedScoredJobFor(resumeA2, 80, "A job from resume two");
+      await seedScoredJobFor(resumeB, 95, "B secret job");
+
+      const asA = await injectAs(app, userA, { method: "GET", url: "/results" });
+      expect(asA.statusCode).toBe(200);
+      const titlesA = (asA.json() as { results: { title: string }[] }).results.map((r) => r.title);
+
+      // Still CROSS-RESUME for the caller (ticket 3f0883f's whole point is
+      // preserved) -- both of A's resumes are represented...
+      expect(new Set(titlesA)).toEqual(new Set(["A job from resume one", "A job from resume two"]));
+      // ...and B's job is absent, along with any trace of B's resume.
+      expect(asA.body).not.toContain("B secret job");
+
+      // Symmetric check: B sees only B's.
+      const asB = await injectAs(app, userB, { method: "GET", url: "/results" });
+      const titlesB = (asB.json() as { results: { title: string }[] }).results.map((r) => r.title);
+      expect(titlesB).toEqual(["B secret job"]);
+    });
+
+    it("GET /results' hiddenBelowFloor count does not count another user's below-floor jobs", async () => {
+      // The count queries were the subtlest part of this fix: they are
+      // separate SQL statements from the main SELECT, and one of them had
+      // deliberately dropped the `resumes` join as unnecessary (ticket
+      // e9a82f3). An unscoped count leaks a real aggregate fact about other
+      // users' data even when no row is returned.
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const resumeA = await createResumeAs(app, userA, "User A resume");
+      const resumeB = await createResumeAs(app, userB, "User B resume");
+
+      await seedScoredJobFor(resumeA, 90, "A above floor");
+      await seedScoredJobFor(resumeA, 10, "A below floor");
+      // Three of B's jobs are below the floor; none may be counted for A.
+      await seedScoredJobFor(resumeB, 11, "B below floor one");
+      await seedScoredJobFor(resumeB, 12, "B below floor two");
+      await seedScoredJobFor(resumeB, 13, "B below floor three");
+
+      const asA = await injectAs(app, userA, { method: "GET", url: "/results?minScore=50" });
+
+      expect(asA.statusCode).toBe(200);
+      const body = asA.json() as { results: unknown[]; hiddenBelowFloor?: number };
+      expect(body.results).toHaveLength(1);
+      expect(body.hiddenBelowFloor).toBe(1);
+    });
+
+    it("another user's job status neither leaks into nor duplicates the caller's results", async () => {
+      // Two failures in one, both caused by joining `user_job_statuses` on
+      // job_id alone once its key became (user_id, job_id):
+      //   - the caller would see a STRANGER's status on their own job card;
+      //   - the row would be DUPLICATED once per other user holding a
+      //     status on that job (a left join that can match many rows
+      //     multiplies its left side).
+      // Both users hold a status on the SAME job here, which is exactly the
+      // shape that was impossible under the old unique(job_id) key.
+      const app = buildTestApp();
+      const userA = randomUUID();
+      const userB = randomUUID();
+      const resumeA = await createResumeAs(app, userA, "User A resume");
+      const resumeB = await createResumeAs(app, userB, "User B resume");
+
+      const sharedJob = await seedScoredJobFor(resumeA, 88, "A shared posting");
+      // B has scored the same posting against their own resume, and
+      // DISMISSED it. A has saved it.
+      await db.insert(jobMatches).values({
+        id: randomUUID(),
+        resumeId: resumeB,
+        jobId: sharedJob,
+        matchScore: 70,
+        rationale: "fake rationale",
+        strengths: [],
+        gaps: [],
+      });
+      await db.insert(userJobStatuses).values([
+        { id: randomUUID(), userId: userA, jobId: sharedJob, status: "saved" },
+        { id: randomUUID(), userId: userB, jobId: sharedJob, status: "dismissed" },
+      ]);
+
+      const asA = await injectAs(app, userA, { method: "GET", url: "/results" });
+      const resultsA = (asA.json() as { results: { jobId: string; status: string | null }[] })
+        .results;
+
+      // Exactly ONE row for that job (no multiplication), carrying A's OWN
+      // status. Pre-fix: two rows, and one of them said "dismissed".
+      const forSharedJob = resultsA.filter((r) => r.jobId === sharedJob);
+      expect(forSharedJob).toHaveLength(1);
+      expect(forSharedJob[0]!.status).toBe("saved");
+
+      // And B's dismissal must not remove the job from B's OWN default
+      // view's counterpart for A -- while B, who really did dismiss it,
+      // still has it excluded by default.
+      const asB = await injectAs(app, userB, { method: "GET", url: "/results" });
+      const resultsB = (asB.json() as { results: { jobId: string }[] }).results;
+      expect(resultsB.filter((r) => r.jobId === sharedJob)).toHaveLength(0);
     });
   });
 
@@ -1239,6 +1500,7 @@ describe("GET /resumes/:id/results", () => {
       await db.insert(userJobStatuses).values([
         {
           id: randomUUID(),
+          userId: DEFAULT_TEST_USER_ID,
           jobId: savedId,
           status: "saved",
           createdAt: new Date(),
@@ -1246,6 +1508,7 @@ describe("GET /resumes/:id/results", () => {
         },
         {
           id: randomUUID(),
+          userId: DEFAULT_TEST_USER_ID,
           jobId: dismissedId,
           status: "dismissed",
           createdAt: new Date(),
@@ -1303,6 +1566,7 @@ describe("GET /resumes/:id/results", () => {
       await db.insert(userJobStatuses).values([
         {
           id: randomUUID(),
+          userId: DEFAULT_TEST_USER_ID,
           jobId: savedId,
           status: "saved",
           createdAt: new Date(),
@@ -1310,6 +1574,7 @@ describe("GET /resumes/:id/results", () => {
         },
         {
           id: randomUUID(),
+          userId: DEFAULT_TEST_USER_ID,
           jobId: dismissedId,
           status: "dismissed",
           createdAt: new Date(),
@@ -1359,6 +1624,7 @@ describe("GET /resumes/:id/results", () => {
     await db.insert(userJobStatuses).values([
       {
         id: randomUUID(),
+        userId: DEFAULT_TEST_USER_ID,
         jobId: savedId,
         status: "saved",
         createdAt: new Date(),
@@ -1366,6 +1632,7 @@ describe("GET /resumes/:id/results", () => {
       },
       {
         id: randomUUID(),
+        userId: DEFAULT_TEST_USER_ID,
         jobId: dismissedId,
         status: "dismissed",
         createdAt: new Date(),
@@ -1948,6 +2215,7 @@ describe("GET /results (ticket 3f0883f)", () => {
     await db.insert(userJobStatuses).values([
       {
         id: randomUUID(),
+        userId: DEFAULT_TEST_USER_ID,
         jobId: dismissedUnderFirst,
         status: "dismissed",
         createdAt: new Date(),
@@ -1955,6 +2223,7 @@ describe("GET /results (ticket 3f0883f)", () => {
       },
       {
         id: randomUUID(),
+        userId: DEFAULT_TEST_USER_ID,
         jobId: dismissedUnderSecond,
         status: "dismissed",
         createdAt: new Date(),

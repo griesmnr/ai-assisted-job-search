@@ -461,6 +461,11 @@ describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", ()
     if (status !== null) {
       await db.insert(userJobStatuses).values({
         id: randomUUID(),
+        // Ticket 3fc1e5e: the seeded resume is owned by LEGACY_USER_ID, and
+        // `fetchExistingMatches` now joins statuses on (user_id, job_id) --
+        // so a row filed under any other user would no longer be seen by
+        // the dismissed-exclusion this test exercises.
+        userId: LEGACY_USER_ID,
         jobId,
         status,
         createdAt: new Date(),
@@ -475,7 +480,7 @@ describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", ()
     const savedId = await seedJobMatch("saved");
     const dismissedId = await seedJobMatch("dismissed");
 
-    const result = await fetchExistingMatches(testDb.db, RESUME_ID, false);
+    const result = await fetchExistingMatches(testDb.db, RESUME_ID, false, LEGACY_USER_ID);
     const ids = new Set(result.map((r) => r.jobId));
 
     expect(ids.has(untouchedId)).toBe(true);
@@ -486,10 +491,10 @@ describe("fetchExistingMatches — dismissed-job exclusion (ticket ccc3d6e)", ()
   it("--include-dismissed restores the dismissed job", async () => {
     const dismissedId = await seedJobMatch("dismissed");
 
-    const excluded = await fetchExistingMatches(testDb.db, RESUME_ID, false);
+    const excluded = await fetchExistingMatches(testDb.db, RESUME_ID, false, LEGACY_USER_ID);
     expect(excluded.some((r) => r.jobId === dismissedId)).toBe(false);
 
-    const included = await fetchExistingMatches(testDb.db, RESUME_ID, true);
+    const included = await fetchExistingMatches(testDb.db, RESUME_ID, true, LEGACY_USER_ID);
     expect(included.some((r) => r.jobId === dismissedId)).toBe(true);
   });
 });

@@ -5,11 +5,22 @@
  * The scenario this table exists for — apply with resume v1, rewrite to v2,
  * re-search, "I applied" must survive — is proved end to end against real
  * Postgres in `user-job-statuses.test.ts`. That test is the real one. This
- * file exists because the single property that whole feature rests on (the
- * uniqueness key is `job_id` ALONE, never `(resume_id, job_id)`) is
- * statically checkable, and a regression that silently reintroduces the
- * `job_matches`-shaped key should not be able to hide behind "no Postgres
- * reachable, DB tests skipped".
+ * file exists because the single property that whole feature rests on
+ * (`resume_id` is NEVER part of the uniqueness key) is statically checkable,
+ * and a regression that silently reintroduces the `job_matches`-shaped key
+ * should not be able to hide behind "no Postgres reachable, DB tests
+ * skipped".
+ *
+ * UPDATED (ticket 3fc1e5e): the key is now `(user_id, job_id)`, not `job_id`
+ * alone -- schema.ts's own doc comment had carried that instruction since
+ * ticket dba885e ("widen this to `unique().on(table.userId, table.jobId)`
+ * and add the `user_id` column -- do NOT add `resume_id` to it at that
+ * time"), and migration 0017 applies it. The INVARIANT this file guards is
+ * unchanged and is the second half of that instruction: `resume_id` must
+ * stay out of the key. The `migration 0006` describe block below still
+ * asserts what 0006 ITSELF wrote (`UNIQUE("job_id")`) -- that migration is
+ * history and its text does not change; 0017 is what drops that constraint
+ * and adds the wider one.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -29,16 +40,27 @@ function readMigration0006(): string {
 describe("user_job_statuses schema (ticket 0c319b2)", () => {
   const config = getTableConfig(userJobStatuses);
 
-  it("is keyed on job_id ALONE — resume_id is never part of the uniqueness key", () => {
+  it("is keyed on (user_id, job_id) — resume_id is never part of the uniqueness key", () => {
     const uniqueColumnSets = config.uniqueConstraints.map((c) => c.columns.map((col) => col.name));
-    expect(uniqueColumnSets).toEqual([["job_id"]]);
+    expect(uniqueColumnSets).toEqual([["user_id", "job_id"]]);
 
     // Stated separately from the equality above so a future edit that adds
     // a second unique constraint still trips on the actual invariant, not
-    // just on the array shape.
+    // just on the array shape. This is the half of the key's design that
+    // ticket 3fc1e5e's widening deliberately did NOT change: "I applied to
+    // X" is a fact about (person, job) and must survive every resume
+    // rewrite, which it does exactly when the resume is not in the key.
     for (const columns of uniqueColumnSets) {
       expect(columns).not.toContain("resume_id");
     }
+  });
+
+  it("records user_id as a NOT NULL owning reference (ticket 3fc1e5e)", () => {
+    // The column the pre-3fc1e5e table lacked entirely, which is why one
+    // status row per job was shared by every user in the database.
+    const userId = config.columns.find((c) => c.name === "user_id");
+    expect(userId).toBeDefined();
+    expect(userId!.notNull).toBe(true);
   });
 
   it("records resume_id as a nullable attribute, not a key", () => {

@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { LEGACY_USER_ID, resumes, users } from "../db/schema.js";
+import {
+  jobs as jobsTable,
+  LEGACY_USER_ID,
+  resumes,
+  sourceDescriptors,
+  userJobStatuses,
+  users,
+} from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import {
@@ -138,5 +145,97 @@ describe("runReassign", () => {
 
     expect(result.candidates).toHaveLength(0);
     expect(result.reassigned).toBe(false);
+  });
+});
+
+/**
+ * Ticket 3fc1e5e: `user_job_statuses` gained its own `user_id` column
+ * (migration 0017), so this script has to move those rows too -- otherwise
+ * reassigning the resumes strands every saved/dismissed/applied marker under
+ * `LEGACY_USER_ID`, which is the same "looks wiped" failure this script
+ * exists to prevent, one table over and with worse consequences (an
+ * application record is the one fact in this app nothing can reconstruct).
+ */
+describe("runReassign also moves user_job_statuses (ticket 3fc1e5e)", () => {
+  const DATA_SOURCE = "usajobs" as const;
+
+  async function seedLegacyJobStatus(): Promise<string> {
+    const jobId = randomUUID();
+    await db
+      .insert(sourceDescriptors)
+      .values([{ id: DATA_SOURCE, displayName: "USAJOBS" }])
+      .onConflictDoNothing({ target: sourceDescriptors.id });
+    await db.insert(jobsTable).values({
+      id: jobId,
+      externalId: `reassign-test-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title: "A job",
+      description: "a job description",
+      company: "Test Co",
+      linkToApply: `https://example.com/${jobId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    const statusId = randomUUID();
+    await db.insert(userJobStatuses).values({
+      id: statusId,
+      userId: LEGACY_USER_ID,
+      jobId,
+      status: "applied",
+      appliedAt: new Date("2026-08-19T00:00:00Z"),
+    });
+    return statusId;
+  }
+
+  it("moves legacy job-status rows to the target user, preserving the applied timestamp", async () => {
+    const target = randomUUID();
+    await db.insert(users).values({ id: target });
+    const statusId = await seedLegacyJobStatus();
+
+    const result = await runReassign(db, { targetUserId: target, live: true });
+
+    expect(result.reassigned).toBe(true);
+    expect(result.jobStatusCount).toBeGreaterThanOrEqual(1);
+
+    const rows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.id, statusId));
+    expect(rows[0]?.userId).toBe(target);
+    // Ownership moved; the authored fact itself is untouched.
+    expect(rows[0]?.status).toBe("applied");
+    expect(rows[0]?.appliedAt).toEqual(new Date("2026-08-19T00:00:00Z"));
+  });
+
+  it("still reassigns job statuses when there are no legacy RESUMES left (the state a pre-0017 run of this script leaves behind)", async () => {
+    // The specific reason `candidates.length === 0` alone is no longer a
+    // sufficient "nothing to do" test: an earlier version of this script
+    // moved resumes only, so a real deployment can sit in exactly this
+    // state -- legacy statuses, no legacy resumes.
+    const drain = randomUUID();
+    await db.insert(users).values({ id: drain });
+    await runReassign(db, { targetUserId: drain, live: true });
+    expect(await findLegacyResumes(db)).toHaveLength(0);
+
+    const statusId = await seedLegacyJobStatus();
+    const target = randomUUID();
+    await db.insert(users).values({ id: target });
+
+    const result = await runReassign(db, { targetUserId: target, live: true });
+
+    expect(result.candidates).toHaveLength(0);
+    // Pre-fix this returned `reassigned: false` and wrote nothing at all.
+    expect(result.reassigned).toBe(true);
+    const rows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.id, statusId));
+    expect(rows[0]?.userId).toBe(target);
+  });
+
+  it("a dry run reports the job-status count without writing anything", async () => {
+    const statusId = await seedLegacyJobStatus();
+    const target = randomUUID();
+    await db.insert(users).values({ id: target });
+
+    const result = await runReassign(db, { targetUserId: target, live: false });
+
+    expect(result.reassigned).toBe(false);
+    expect(result.jobStatusCount).toBeGreaterThanOrEqual(1);
+    const rows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.id, statusId));
+    expect(rows[0]?.userId).toBe(LEGACY_USER_ID);
   });
 });

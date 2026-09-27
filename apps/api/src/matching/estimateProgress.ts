@@ -128,6 +128,46 @@ type Entry = {
 };
 
 /**
+ * Ticket 3fc1e5e: entries are keyed by (userId, requestId), not by
+ * `requestId` alone.
+ *
+ * WHY, given the payload here is only "which sources, how many settled":
+ * `requestId` is CALLER-MINTED (`estimateRequestId`, a request-body field
+ * accepting any string of length 1-200), so unlike every other id in this
+ * app it is not an unguessable UUID unless the client chooses to make it
+ * one. Two clients sending `"1"` is enough. Keyed by `requestId` alone that
+ * produced two distinct cross-user effects, both real:
+ *
+ *   1. A READ: user B's poll of `"1"` returned user A's record -- which
+ *      sources A had selected for an estimate, and A's live progress
+ *      through them.
+ *   2. A CLOBBER: B's `start("1", ...)` OVERWROTE A's entry outright, so
+ *      A's own poller began reporting B's source list and progress as if it
+ *      were A's own estimate, mid-flight. That is a wrong answer to the
+ *      user who owns the request, not merely a leak of someone else's.
+ *
+ * Composing the key removes both at once, and it is strictly better than
+ * storing `userId` on the entry and comparing it on read (the obvious
+ * alternative): a comparison-on-read would still let B's `start()` evict
+ * A's entry, degrading A's poller to a 404. With a composite key the two
+ * users' records simply coexist. The cost is nothing -- no call site can
+ * reach this map without a `userId` (both routes that touch it are outside
+ * `registerIdentity`'s exemptions, so `requireUserId` always succeeds).
+ *
+ * The separator is a NUL byte, written as the escape `\u0000` rather than
+ * as a raw byte so this file stays plain ASCII (a literal NUL would make
+ * the source count as binary to `grep` and friends). `userId` is a
+ * validated UUID today (identity.ts's `UUID_RE`) and so could not contain
+ * `:` or `|` either, but NUL cannot appear in a URL path segment or
+ * survive as a JSON string field in practice, so no future loosening of
+ * that validation can make two different (userId, requestId) pairs
+ * collide into one key.
+ */
+function entryKey(userId: string, requestId: string): string {
+  return `${userId}\u0000${requestId}`;
+}
+
+/**
  * The tracker itself. One instance is shared across every request via
  * `registerSearchRoutes`'s default parameter (routes/searches.ts) — a fresh
  * instance per process, exactly like `ZeroResultEstimateCache`.
@@ -158,8 +198,12 @@ export class EstimateProgressTracker {
    * supplies an `estimateRequestId`, before `runDemoMatch` is invoked, so a
    * poll landing the instant after the POST is received already sees a real
    * (all-pending) snapshot rather than a 404.
+   *
+   * Ticket 3fc1e5e: `userId` is the requesting user (`requireUserId`), and
+   * is part of the entry's key -- see `entryKey` for why a caller-minted
+   * `requestId` alone was not a safe key.
    */
-  start(requestId: string, sourceIds: readonly string[]): void {
+  start(requestId: string, userId: string, sourceIds: readonly string[]): void {
     const now = this.#now();
     // Sweeps every expired entry, not just this call's own id -- see the
     // module doc comment's LIFECYCLE section for why `get()`'s
@@ -168,12 +212,12 @@ export class EstimateProgressTracker {
     // sit here for the rest of the process's life. Cheap at this app's real
     // scale (a handful of estimates per session), and `start()` is the one
     // call guaranteed to run once per estimate regardless of polling.
-    for (const [id, entry] of this.#entries) {
-      if (now - entry.createdAt > PROGRESS_RETENTION_MS) this.#entries.delete(id);
+    for (const [key, entry] of this.#entries) {
+      if (now - entry.createdAt > PROGRESS_RETENTION_MS) this.#entries.delete(key);
     }
     const sources = new Map<string, typeof PENDING | typeof DONE>();
     for (const sourceId of sourceIds) sources.set(sourceId, PENDING);
-    this.#entries.set(requestId, { createdAt: now, sources });
+    this.#entries.set(entryKey(userId, requestId), { createdAt: now, sources });
   }
 
   /**
@@ -191,10 +235,15 @@ export class EstimateProgressTracker {
    * registered for this id — e.g. two callers reusing the same client-minted
    * `requestId` for overlapping estimates — would silently inflate `total`
    * for the FIRST run's poller mid-flight instead of being the no-op this
-   * method's own doc comment already promised.
+   * method's own doc comment already promised. Ticket 3fc1e5e narrows that
+   * particular scenario further: two callers reusing one `requestId` no
+   * longer share an entry at all (see `entryKey`), so cross-caller
+   * interference here is now impossible rather than merely defended
+   * against. The check stays -- it still guards the ordinary
+   * same-caller/stale-id cases it was written for.
    */
-  markSourceSettled(requestId: string, sourceId: string): void {
-    const entry = this.#entries.get(requestId);
+  markSourceSettled(requestId: string, userId: string, sourceId: string): void {
+    const entry = this.#entries.get(entryKey(userId, requestId));
     if (entry?.sources.has(sourceId)) entry.sources.set(sourceId, DONE);
   }
 
@@ -206,12 +255,20 @@ export class EstimateProgressTracker {
    * (routes/searches.ts) answers 404 on `undefined`: this is a side channel,
    * so "nothing to report" is an entirely normal, expected outcome for a
    * caller that never sent (or already finished polling) an estimate.
+   *
+   * Ticket 3fc1e5e: a record started by a DIFFERENT user is invisible here,
+   * because `userId` is part of the key -- and it is invisible as
+   * `undefined`, i.e. the ordinary 404 this method already documents as a
+   * normal outcome, so the scoping needs no new error path and leaks
+   * nothing (a caller cannot tell "that id is someone else's" from "that id
+   * was never started").
    */
-  get(requestId: string): EstimateProgressSnapshot | undefined {
-    const entry = this.#entries.get(requestId);
+  get(requestId: string, userId: string): EstimateProgressSnapshot | undefined {
+    const key = entryKey(userId, requestId);
+    const entry = this.#entries.get(key);
     if (!entry) return undefined;
     if (this.#now() - entry.createdAt > PROGRESS_RETENTION_MS) {
-      this.#entries.delete(requestId);
+      this.#entries.delete(key);
       return undefined;
     }
     const sources: EstimateSourceProgress[] = [...entry.sources].map(([sourceId, status]) => ({

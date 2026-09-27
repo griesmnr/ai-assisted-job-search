@@ -2,14 +2,12 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
 import {
-  handoffs,
-  jobs as jobsTable,
-  LEGACY_USER_ID,
-  resumes,
-  sourceDescriptors,
-} from "../db/schema.js";
+  buildTestApp as buildApp,
+  DEFAULT_TEST_USER_ID,
+  injectAs,
+} from "../test-support/build-test-app.js";
+import { handoffs, jobs as jobsTable, resumes, sourceDescriptors, users } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 
@@ -61,14 +59,27 @@ async function seedJob(
   return jobId;
 }
 
-async function seedResume(resumeText = "A real resume.") {
+/**
+ * Ticket 3fc1e5e: `POST /handoffs` now requires the resume to belong to the
+ * REQUESTING user, so a seeded resume has to name an owner that matches the
+ * user the test injects as. Defaults to `DEFAULT_TEST_USER_ID` -- the id
+ * `buildTestApp`'s `.inject()` sends when a test doesn't say otherwise --
+ * which keeps every pre-existing test in this file passing unchanged.
+ *
+ * The `users` upsert is required, not defensive: `resumes.user_id` has a real
+ * FK to `users.id`, and the identity hook only creates a user row when an
+ * actual HTTP request arrives -- this insert happens BEFORE any request, so
+ * nothing else has created it yet.
+ */
+async function seedResume(resumeText = "A real resume.", ownerUserId = DEFAULT_TEST_USER_ID) {
   const resumeId = randomUUID();
+  await db.insert(users).values({ id: ownerUserId }).onConflictDoNothing({ target: users.id });
   await db.insert(resumes).values({
     id: resumeId,
-    userId: LEGACY_USER_ID,
+    userId: ownerUserId,
     resumeText,
     resumeHash: randomUUID(),
-    resumeNickname: "Resume 1",
+    resumeNickname: `Resume ${randomUUID().slice(0, 8)}`,
   });
   return resumeId;
 }
@@ -236,5 +247,72 @@ describe("GET /handoffs/:id", () => {
     // back for a non-localhost origin, so a real browser would refuse to
     // expose the response to a script running on that page.
     expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+/**
+ * Ticket 3fc1e5e: `POST /handoffs` is now scoped to the caller's own resume.
+ *
+ * WHY THIS ONE MATTERS EVEN THOUGH `GET /resumes/:id` IS ALSO FIXED: this
+ * route PERSISTS a copy of the resume text into a `handoffs` row, and that
+ * row is readable through `GET /handoffs/:id`, which is deliberately EXEMPT
+ * from the `x-user-id` requirement (identity.ts) so a separate-origin app
+ * can fetch it. Ownership therefore cannot be enforced on the read side of
+ * the pair at all -- mint time is the only place it can be enforced, which
+ * is what these tests pin.
+ */
+describe("cross-user isolation for handoffs (ticket 3fc1e5e)", () => {
+  const USER_A = "a1111111-1111-4111-8111-111111111111";
+  const USER_B = "b2222222-2222-4222-8222-222222222222";
+
+  it("refuses to snapshot another user's resume, and writes no handoff row", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+    const resumeA = await seedResume("User A's private resume text.", USER_A);
+
+    const attempt = await injectAs(app, USER_B, {
+      method: "POST",
+      url: "/handoffs",
+      payload: { jobId, resumeId: resumeA },
+    });
+
+    // 404, indistinguishable from a resumeId that never existed.
+    expect(attempt.statusCode).toBe(404);
+    expect(attempt.body).not.toContain("User A's private resume text.");
+
+    // The decisive assertion: NO row was created. A created row would be a
+    // durable copy of A's resume text, readable forever (well, for the TTL)
+    // by anyone with the handoff id and no identity header at all.
+    const rows = await db.select().from(handoffs).where(eq(handoffs.resumeId, resumeA));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("lets the resume's own owner mint a handoff for the same job", async () => {
+    // Proves the 404 above is the ownership check, not a broken route -- and
+    // that the identity-exempt GET still serves a legitimately-minted
+    // handoff, which is the whole point of the feature.
+    const app = buildTestApp();
+    const jobId = await seedJob();
+    const resumeA = await seedResume("User A's private resume text.", USER_A);
+
+    const minted = await injectAs(app, USER_A, {
+      method: "POST",
+      url: "/handoffs",
+      payload: { jobId, resumeId: resumeA },
+    });
+    expect(minted.statusCode).toBe(200);
+    const { id } = minted.json() as { id: string };
+
+    // Fetched with NO x-user-id header at all (the documented exemption) --
+    // `headers: { "x-user-id": "" }` is build-test-app's way of omitting it.
+    const fetched = await app.inject({
+      method: "GET",
+      url: `/handoffs/${id}`,
+      headers: { "x-user-id": "" },
+    });
+    expect(fetched.statusCode).toBe(200);
+    expect((fetched.json() as { resumeText: string }).resumeText).toBe(
+      "User A's private resume text.",
+    );
   });
 });

@@ -148,7 +148,7 @@ async function seedScoredResume(nickname = "Scored resume"): Promise<{
   const userJobStatusId = randomUUID();
   await db
     .insert(userJobStatuses)
-    .values({ id: userJobStatusId, jobId, status: "saved", resumeId });
+    .values({ id: userJobStatusId, userId: LEGACY_USER_ID, jobId, status: "saved", resumeId });
   await db.insert(handoffs).values({
     id: randomUUID(),
     jobId,
@@ -362,7 +362,7 @@ describe("runCleanup", () => {
     const userJobStatusId = randomUUID();
     await db
       .insert(userJobStatuses)
-      .values({ id: userJobStatusId, jobId, status: "saved", resumeId });
+      .values({ id: userJobStatusId, userId: LEGACY_USER_ID, jobId, status: "saved", resumeId });
 
     await runCleanup(db, { live: true });
 

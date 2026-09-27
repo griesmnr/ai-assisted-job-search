@@ -45,6 +45,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { and, eq, gt } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { handoffs, jobs as jobsTable, resumes } from "../db/schema.js";
+import { requireUserId } from "../identity.js";
 
 /**
  * Deliberately short — a handoff exists to survive exactly one click
@@ -84,11 +85,59 @@ export function registerHandoffRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
 ): void {
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING ON `resumeId`
+   * -- now scoped. This one was genuinely arguable, so here is the argument
+   * in full, because the case AGAINST scoping it is real and was the
+   * starting assumption.
+   *
+   * THE CASE FOR LEAVING IT: this route grants no capability that a fixed
+   * `GET /resumes/:id` doesn't already deny. If a caller can't read
+   * someone else's resume text directly any more, then minting a handoff to
+   * launder it out is the only remaining path -- and closing `GET
+   * /resumes/:id` (this same ticket) is what actually shuts the front door.
+   * Scoping here could look like belt-on-belt.
+   *
+   * WHY IT IS SCOPED ANYWAY -- three reasons, the third decisive:
+   *
+   *   1. THIS ROUTE PERSISTS A COPY. Every other read path in this audit
+   *      returns bytes and forgets them; this one writes the resume text
+   *      into a NEW `handoffs` row (snapshotted, by design -- see this
+   *      file's header and `handoffs` in schema.ts). An unscoped read that
+   *      leaves a durable copy behind is the same shape of defect as the
+   *      resume-text COPY b2f9dfd's review found in `POST
+   *      /searches/estimate`, and that review's own conclusion was that a
+   *      copy is not a gap a later access-control fix can clean up after
+   *      the fact. The row outlives whatever ownership state `resumes` is
+   *      in later.
+   *   2. THE COPY IS READABLE WITH NO IDENTITY AT ALL. `GET /handoffs/:id`
+   *      is one of exactly two routes exempt from the `x-user-id`
+   *      requirement (identity.ts's `registerIdentity`) -- deliberately,
+   *      because a separate-origin app fetches it. So the text this route
+   *      persists is reachable by a caller presenting no user id
+   *      whatsoever. Ownership therefore CANNOT be enforced on the read
+   *      side of this pair; the only place it can be enforced is here, at
+   *      mint time. That asymmetry is what makes this route different from
+   *      every other by-id route in the audit rather than merely redundant
+   *      with them.
+   *   3. "IT GRANTS NO NEW CAPABILITY" IS AN ARGUMENT ABOUT ANOTHER FILE.
+   *      It holds only while `GET /resumes/:id` stays scoped. Leaving one
+   *      resume-text read deliberately unscoped, with a comment explaining
+   *      that some OTHER route's check is what makes it safe, is exactly
+   *      the coupling this ticket exists to remove -- it is how b2f9dfd's
+   *      deferred gaps became four separate real ones.
+   *
+   * `jobId` is deliberately NOT scoped: `jobs` is a global corpus of
+   * postings with no owner column (schema.ts), shared by every user by
+   * design, and `jobDescription`/`jobTitle`/`company` are public posting
+   * data. Only `resumeId` names something owned.
+   */
   app.post<{ Body: CreateHandoffBody }>(
     "/handoffs",
     { schema: { body: createHandoffBodySchema } },
     async (request, reply) => {
       const { jobId, resumeId } = request.body;
+      const userId = requireUserId(request);
 
       const jobRows = await db
         .select({
@@ -103,10 +152,14 @@ export function registerHandoffRoutes(
         return reply.code(404).send({ error: `No job with id "${jobId}".` });
       }
 
+      // Ticket 3fc1e5e: scoped to the caller's own resume -- see this
+      // route's AUDIT VERDICT above. 404 (not 403) on someone else's id,
+      // the same convention every other by-id route in this app uses, so
+      // "not yours" is indistinguishable from "never existed".
       const resumeRows = await db
         .select({ resumeText: resumes.resumeText })
         .from(resumes)
-        .where(eq(resumes.id, resumeId))
+        .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId)))
         .limit(1);
       if (resumeRows.length === 0) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -135,6 +188,26 @@ export function registerHandoffRoutes(
     },
   );
 
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): DELIBERATELY NOT USER-SCOPED, and it
+   * CANNOT be. This is one of exactly two routes exempt from the
+   * `x-user-id` requirement (identity.ts's `registerIdentity`), so there is
+   * no `request.userId` here to scope BY -- `requireUserId` would throw on
+   * this route by design, and that is precisely what its own doc comment
+   * warns about. The exemption is not an oversight: Nicole's separate
+   * resume-tailoring app runs on another origin, fetches this URL directly,
+   * and has no way to know this app's anonymous-id header scheme.
+   *
+   * Its access control is therefore what it always was, and it is real: an
+   * unguessable 122-bit UUID plus a 10-minute TTL (`HANDOFF_TTL_MS`), the
+   * same trust level identity.ts's own doc comment describes for the
+   * `x-user-id` value itself. What ticket 3fc1e5e changed is the OTHER end
+   * of the pair -- `POST /handoffs` now refuses to snapshot a resume the
+   * caller doesn't own (see its verdict above), so every row this route can
+   * serve was minted by the owner of the resume inside it. That is the
+   * invariant that makes an identity-free read here acceptable, and it is
+   * why the two verdicts in this file have to be read together.
+   */
   app.get<{ Params: { id: string } }>(
     "/handoffs/:id",
     // Route-level CORS override -- see this file's header comment for why

@@ -106,6 +106,8 @@ async function seedResumeWithFullDependents(
   const userJobStatusId = randomUUID();
   await db.insert(userJobStatuses).values({
     id: userJobStatusId,
+    // Ticket 3fc1e5e: matches the seeded resume's own LEGACY_USER_ID owner.
+    userId: LEGACY_USER_ID,
     jobId,
     status: "saved",
     resumeId,

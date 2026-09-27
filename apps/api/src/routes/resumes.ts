@@ -127,6 +127,17 @@ const updateResumeNicknameBodySchema = {
  * locks a resume, permanently -- there is no "unlock" path, so beyond
  * "at least one" nothing else about this query needs to change if more
  * real searches happen later.
+ *
+ * AUDIT VERDICT (ticket 3fc1e5e): COVERED TRANSITIVELY, no `userId`
+ * parameter needed. Takes no user id and needs none: both call sites reach
+ * it with a `resumeId` this request has ALREADY established belongs to the
+ * caller -- `POST /resumes` with the id `getOrCreateResumeId` just
+ * resolved under the caller's own `userId`, and `GET /resumes/:id` after
+ * its ownership-scoped lookup. `searches.resumeId` is
+ * `notNull().references(() => resumes.id)`, so scoping on the resume is
+ * scoping on its owner (b2f9dfd's `resume_id -> user_id` chain). Adding a
+ * `userId` argument here would be a second, redundant copy of a check the
+ * callers already made. A FUTURE call site must make the same check first.
  */
 async function isResumeLocked(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -153,6 +164,20 @@ export function registerResumeRoutes(
    */
   inferTitles: (resumeText: string) => Promise<string[]>,
 ): void {
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): ALREADY SCOPED (ticket b2f9dfd),
+   * unchanged by this ticket. Every write and read here keys off the
+   * `userId` below: `getOrCreateResumeId(db, resumeText, userId)` does the
+   * per-user find-or-create, and the two `eq(resumes.id, id)` lookups
+   * afterwards (the duplicate-nickname message, and the
+   * suggestedTitles/nickname read-back) are by-id on the row that call
+   * JUST resolved FOR THIS USER -- not on a caller-supplied id, so there
+   * is no foreign id for them to reach. `currentResumeId` comes from the
+   * request body but is only ever COMPARED (`id !== currentResumeId`),
+   * never used as a lookup key, so a caller naming a stranger's resume id
+   * there learns nothing: the comparison merely fails and they get the
+   * ordinary 409 about their own duplicate text.
+   */
   app.post<{ Body: { resumeText: string; currentResumeId?: string } }>(
     "/resumes",
     { schema: { body: createResumeBodySchema } },
@@ -290,12 +315,15 @@ export function registerResumeRoutes(
   // path this ticket scopes itself (it's a full, unfiltered list, and
   // returning every user's nicknames/created-dates to anyone would be a
   // glaring, self-inflicted gap the moment resumes became per-user at
-  // all). A single resume's own `GET /resumes/:id` by-id lookup is
-  // deliberately left AS IS for now -- that's the general "does this id
-  // in the URL belong to request.userId" access-control question spanning
-  // every by-id route in this app (searches, jobs, ...), which ticket
-  // 3fc1e5e's audit is the right place to decide consistently, not
-  // something to improvise ad hoc just for this one route.
+  // all).
+  //
+  // AUDIT VERDICT (ticket 3fc1e5e): ALREADY SCOPED, unchanged. The rest of
+  // what b2f9dfd deferred from here -- "the general 'does this id in the
+  // URL belong to request.userId' access-control question spanning every
+  // by-id route in this app (searches, jobs, ...)" -- is now closed, and
+  // closed the same way everywhere: the owning user is a conjunct in the
+  // query, and a row belonging to someone else 404s exactly as a
+  // nonexistent one does. See each route's own AUDIT VERDICT comment.
   app.get("/resumes", async (request, reply) => {
     const userId = requireUserId(request);
     const rows = await db
@@ -314,7 +342,24 @@ export function registerResumeRoutes(
     return reply.send(response);
   });
 
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now scoped.
+   *
+   * This was the worst of the gaps b2f9dfd deferred here, and it was a
+   * direct read of the most sensitive thing this app stores: anyone who
+   * knew or guessed a resume id got back that resume's FULL `resumeText`,
+   * nickname and suggested titles, no matter who owned it. `GET /resumes`
+   * (the list) was already scoped, which made this the one remaining way
+   * to read a stranger's resume text through the resumes surface.
+   *
+   * 404, never 403 -- the same shape as "no such resume", so a caller
+   * cannot use the status code to distinguish "exists but isn't yours"
+   * from "never existed" and probe for valid ids. Same convention
+   * `loadResumeText`'s scoped lookup already established in
+   * routes/searches.ts.
+   */
   app.get<{ Params: { id: string } }>("/resumes/:id", async (request, reply) => {
+    const userId = requireUserId(request);
     const rows = await db
       .select({
         id: resumes.id,
@@ -323,7 +368,7 @@ export function registerResumeRoutes(
         suggestedTitles: resumes.suggestedTitles,
       })
       .from(resumes)
-      .where(eq(resumes.id, request.params.id))
+      .where(and(eq(resumes.id, request.params.id), eq(resumes.userId, userId)))
       .limit(1);
 
     if (rows.length === 0) {
@@ -381,17 +426,21 @@ export function registerResumeRoutes(
       // unchanged, or changing only its case, never self-collides.
       //
       // Ticket b2f9dfd: scoped `WHERE user_id = ...` -- two different
-      // users can each have their own "Resume 8". NOTE, flagged for
-      // ticket 3fc1e5e's audit: this scopes the COLLISION CHECK to the
-      // REQUESTING user, but the UPDATE below still targets
-      // `request.params.id` with no ownership check of its own -- if that
-      // id happens to belong to a DIFFERENT user, this route currently
-      // lets the rename proceed anyway (checking uniqueness against the
-      // wrong user's namespace). Same class of gap as `GET /resumes/:id`
-      // and every other by-id route in this app today; not new here, but
-      // worth naming precisely since the collision check's own scoping
-      // makes this mismatch less obvious HERE than it would be next to a
-      // check that wasn't scoped at all.
+      // users can each have their own "Resume 8".
+      //
+      // AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- the
+      // UPDATE below is now scoped too, and this pair of queries is why
+      // the gap was worth naming precisely. b2f9dfd scoped THIS collision
+      // check to the requesting user but left the UPDATE matching on `id`
+      // alone, so the two disagreed about whose resume was being renamed:
+      // a request naming a DIFFERENT user's resume id renamed that user's
+      // row, having checked the new nickname for uniqueness against the
+      // WRONG namespace (the requester's). Concretely -- user B renames
+      // user A's "Resume 1" to "Resume 2" while A already HAS a "Resume
+      // 2": the check passes (B has no "Resume 2"), the write lands, and A
+      // is left with two identically-named resumes, the exact state the
+      // nickname check exists to prevent. Both halves now name
+      // `resumes.userId`.
       const collision = await db
         .select({ id: resumes.id })
         .from(resumes)
@@ -414,7 +463,7 @@ export function registerResumeRoutes(
       const rows = await db
         .update(resumes)
         .set({ resumeNickname: trimmed })
-        .where(eq(resumes.id, request.params.id))
+        .where(and(eq(resumes.id, request.params.id), eq(resumes.userId, userId)))
         .returning({ id: resumes.id, resumeNickname: resumes.resumeNickname });
 
       if (rows.length === 0) {
@@ -513,9 +562,24 @@ export function registerResumeRoutes(
   END`;
 
   type ResultsFilters = {
+    /**
+     * Ticket 3fc1e5e: the requesting user, REQUIRED and deliberately not
+     * optional. Every caller of `fetchScoredResults` has one
+     * (`requireUserId`), and making it a required field is what makes
+     * "someone forgot to scope this" a compile error rather than a silent
+     * cross-user read -- exactly the failure mode that let `GET /results`
+     * ship unscoped in the first place. Applied unconditionally, even on
+     * the single-resume route whose `resumeId` is already
+     * ownership-checked: uniform is cheaper to verify than
+     * conditionally-correct, and it means both COUNT queries below can
+     * join `resumes` unconditionally too.
+     */
+    userId: string;
     /** Ticket 3f0883f: `undefined` means "every resume" (GET /results) --
      * every condition below that depends on this is built conditionally,
-     * same pattern as `source`/`minScoreNum` already used. */
+     * same pattern as `source`/`minScoreNum` already used. Ticket 3fc1e5e:
+     * "every resume" now means every resume OF `userId`, never every
+     * resume in the database. */
     resumeId?: string;
     source?: string;
     minScoreNum?: number;
@@ -557,11 +621,46 @@ export function registerResumeRoutes(
       return or(isNull(userJobStatuses.status), ne(userJobStatuses.status, "dismissed"))!;
     }
 
+    /**
+     * Ticket 3fc1e5e: the per-user scope, enforced through
+     * `resumes.userId` rather than by listing the caller's resume ids.
+     * Every row this query can return is a `job_matches` row, which is
+     * `notNull().references(() => resumes.id)` (schema.ts), so the
+     * `innerJoin(resumes, ...)` every query below performs is a total
+     * function into exactly one owning user -- b2f9dfd's `resume_id ->
+     * user_id` chain. That makes this ONE condition sufficient for the
+     * whole results surface, with no separate "which resumes are mine"
+     * round trip to drift out of date.
+     */
+    const ownedByUser = eq(resumes.userId, filters.userId);
+
+    /**
+     * Ticket 3fc1e5e: the `user_job_statuses` join predicate, and the
+     * `userId` conjunct in it is a CORRECTNESS fix as much as a privacy
+     * one -- the one change in this file that would have broken these
+     * queries outright if it had been missed.
+     *
+     * While that table was keyed `unique(job_id)`, joining on `job_id`
+     * alone could match AT MOST ONE row, so this left join never changed
+     * the row count. This ticket widens the key to
+     * `unique(user_id, job_id)` (schema.ts, migration 0017), after which
+     * `job_id` alone matches one row PER USER who has ever touched that
+     * job -- so an unscoped join would MULTIPLY the results: one duplicate
+     * job card per other user holding a status on the same posting, each
+     * carrying a stranger's `status` value, and `?status=`/the default
+     * dismissed-exclusion filtering on THEIR status instead of the
+     * caller's. Shared by all three queries below so they cannot drift.
+     */
+    const statusJoinOn = and(
+      eq(userJobStatuses.jobId, jobsTable.id),
+      eq(userJobStatuses.userId, filters.userId),
+    );
+
     // `and()` (drizzle-orm) already filters out `undefined` entries, so
     // `statusCondition()`'s "no restriction" case (includeDismissed, no
     // explicit ?status=) can be spliced in directly here without a separate
     // push-if-defined step.
-    const conditions: (SQL | undefined)[] = [statusCondition()];
+    const conditions: (SQL | undefined)[] = [statusCondition(), ownedByUser];
     if (filters.resumeId !== undefined) conditions.push(eq(jobMatches.resumeId, filters.resumeId));
     if (filters.source !== undefined) conditions.push(eq(jobsTable.dataSource, filters.source));
     if (filters.minScoreNum !== undefined)
@@ -605,7 +704,7 @@ export function registerResumeRoutes(
       .from(jobMatches)
       .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
       .innerJoin(resumes, eq(jobMatches.resumeId, resumes.id))
-      .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
+      .leftJoin(userJobStatuses, statusJoinOn)
       .where(and(...conditions))
       .orderBy(desc(jobMatches.matchScore), levelFitRank, asc(jobsTable.id))
       .limit(RESULTS_LIMIT);
@@ -621,21 +720,26 @@ export function registerResumeRoutes(
     // was trying to return, not just what's below a floor.
     let totalMatchingCount: number | undefined;
     if (rows.length === RESULTS_LIMIT) {
-      // Deliberately NO `.innerJoin(resumes, ...)` here, unlike the main
-      // query above -- opus review, ticket e9a82f3: this count only needs
-      // jobsTable/userJobStatuses because `conditions` never references a
-      // `resumes` column, and it's safe to drop even though `resumes` is
-      // joined above: `jobMatches.resumeId` is `notNull().references(() =>
-      // resumes.id)` and `resumes.id` is the PK, so that join can neither
-      // drop nor multiply rows (schema.ts) -- it exists in the main query
-      // only to read `resumeNickname` for the response, which this COUNT
-      // doesn't need. If `conditions` ever grows a `resumes`-column filter,
-      // this join must be added back or the query will throw.
+      // `.innerJoin(resumes, ...)` IS BACK, and ticket e9a82f3's own
+      // comment here is why it had to come back. That comment (opus review,
+      // e9a82f3) dropped this join as unnecessary -- correct at the time,
+      // since `conditions` referenced no `resumes` column -- and closed with
+      // the exact instruction this ticket is following: "If `conditions`
+      // ever grows a `resumes`-column filter, this join must be added back
+      // or the query will throw." Ticket 3fc1e5e grows precisely that
+      // filter (`ownedByUser`, on `resumes.userId`), so the join returns
+      // here and in the `hiddenBelowFloor` count below. It still cannot
+      // change this COUNT's value for the reason e9a82f3 gave --
+      // `jobMatches.resumeId` is `notNull().references(() => resumes.id)`
+      // and `resumes.id` is the PK, so the join neither drops nor
+      // multiplies rows -- it is purely what makes the new WHERE clause
+      // resolvable.
       const totalRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(jobMatches)
         .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-        .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
+        .innerJoin(resumes, eq(jobMatches.resumeId, resumes.id))
+        .leftJoin(userJobStatuses, statusJoinOn)
         .where(and(...conditions));
       const total = totalRows[0]?.count ?? 0;
       // Boundary: a matching count exactly AT the limit (not over it) is
@@ -654,9 +758,17 @@ export function registerResumeRoutes(
     // hidden for its own reason, not double-counted here as floor-hidden).
     let hiddenBelowFloor: number | undefined;
     if (filters.minScoreNum !== undefined) {
+      // Ticket 3fc1e5e: `ownedByUser` here too, and it is not optional
+      // polish -- this count is reported to the caller as
+      // `hiddenBelowFloor`, so leaving it unscoped would have leaked a
+      // real (if aggregate) fact about OTHER users' scored jobs: "37
+      // results hidden below your floor" computed over the whole
+      // database. Same `resumes` innerJoin as the count above, for the
+      // same reason.
       const hiddenConditions: (SQL | undefined)[] = [
         lt(jobMatches.matchScore, filters.minScoreNum),
         statusCondition(),
+        ownedByUser,
       ];
       if (filters.resumeId !== undefined) {
         hiddenConditions.push(eq(jobMatches.resumeId, filters.resumeId));
@@ -667,7 +779,8 @@ export function registerResumeRoutes(
         .select({ count: sql<number>`count(*)::int` })
         .from(jobMatches)
         .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-        .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id))
+        .innerJoin(resumes, eq(jobMatches.resumeId, resumes.id))
+        .leftJoin(userJobStatuses, statusJoinOn)
         .where(and(...hiddenConditions));
       hiddenBelowFloor = hiddenRows[0]?.count ?? 0;
     }
@@ -705,6 +818,17 @@ export function registerResumeRoutes(
     Querystring: ResultsQuerystring;
   }>("/resumes/:id/results", async (request, reply) => {
     const resumeId = request.params.id;
+    // AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now
+    // scoped in BOTH halves of this handler. The existence check below is
+    // the ownership gate (someone else's resumeId now 404s, identically to
+    // one that never existed), and `fetchScoredResults` carries `userId`
+    // on top of that. Belt and braces deliberately: the existence check
+    // alone would already be sufficient TODAY, since every returned row is
+    // a `job_matches` row for this one verified resumeId -- but that is an
+    // argument about the current query's shape, and the whole reason this
+    // ticket exists is that such arguments stop holding when someone edits
+    // the query later. The scope now lives in the query itself.
+    const userId = requireUserId(request);
 
     const parsed = parseResultsQuery(request.query);
     if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
@@ -712,7 +836,7 @@ export function registerResumeRoutes(
     const resumeRows = await db
       .select({ id: resumes.id, resumeNickname: resumes.resumeNickname })
       .from(resumes)
-      .where(eq(resumes.id, resumeId))
+      .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId)))
       .limit(1);
     if (resumeRows.length === 0) {
       return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -730,6 +854,7 @@ export function registerResumeRoutes(
     const resumeNickname = resumeRows[0]!.resumeNickname;
 
     const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
+      userId,
       resumeId,
       source: parsed.source,
       minScoreNum: parsed.minScoreNum,
@@ -752,16 +877,34 @@ export function registerResumeRoutes(
   // Jobs" is meant to be the browsable history, silently narrowed to one
   // resume today only because every results query happened to be scoped
   // that way, not by deliberate design). Same filters as the single-resume
-  // route above, MINUS any resume scoping at all -- every job_matches row,
-  // for every resume, full stop. Deliberately NOT a 404-able resource (no
-  // resume existence check): "nothing has ever been scored yet" is a real,
-  // valid, empty state here, not an error -- the frontend already renders
-  // that as "No jobs scored yet." (App.tsx).
+  // route above, MINUS any RESUME scoping -- every job_matches row, for
+  // every one of the CALLER'S OWN resumes. Deliberately NOT a 404-able
+  // resource (no resume existence check): "nothing has ever been scored
+  // yet" is a real, valid, empty state here, not an error -- the frontend
+  // already renders that as "No jobs scored yet." (App.tsx).
+  //
+  // AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now scoped,
+  // and this is the case the ticket named as the known big one. Ticket
+  // 3f0883f's design ("every scored job across every resume, shown or
+  // not") was correct reasoning for a single implicit user and became a
+  // full cross-user dump the instant a second real user existed: every
+  // other user's scored job titles, companies, match scores, rationales,
+  // strengths/gaps AND their resume nicknames, to any caller, with no id
+  // to guess -- by far the widest of the gaps this ticket closes, because
+  // unlike the by-id routes it required knowing nothing at all.
+  //
+  // "Across every resume" is preserved exactly as 3f0883f intended; the
+  // only thing that changed is that "every resume" now means the caller's,
+  // which is what it was always understood to mean when there was only
+  // ever one user. `resumes.userId` is the scope (see `ownedByUser` in
+  // `fetchScoredResults`), NOT a list of the caller's resume ids.
   app.get<{ Querystring: ResultsQuerystring }>("/results", async (request, reply) => {
+    const userId = requireUserId(request);
     const parsed = parseResultsQuery(request.query);
     if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
 
     const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
+      userId,
       source: parsed.source,
       minScoreNum: parsed.minScoreNum,
       statusFilter: parsed.statusFilter,

@@ -380,6 +380,34 @@ export const userJobStatuses = pgTable(
   "user_job_statuses",
   {
     id: text("id").primaryKey(),
+    /**
+     * Ticket 3fc1e5e (epic 2b9e9dd, child 3): WHOSE status this is -- the
+     * column the uniqueness comment below had been asking for since ticket
+     * dba885e. NOT NULL, added by migration 0017 in the same "nullable,
+     * backfill, then NOT NULL" three-step migrations 0013/0016 already
+     * used, because no default could be correct (a real user_id must be a
+     * real `users` row).
+     *
+     * The backfill is NOT a blanket LEGACY_USER_ID: where a row has a
+     * `resume_id`, that resume's OWN `user_id` is the honest attribution --
+     * the person who had that resume in hand is the person who recorded the
+     * status -- and only a row with no `resume_id` at all (nullable, see
+     * that column's doc comment) has no evidence to go on and falls back to
+     * `LEGACY_USER_ID`. Same "use the best available evidence for a
+     * one-time backfill" judgement migration 0014 made for `is_estimate`.
+     *
+     * EVERY JOIN ONTO THIS TABLE MUST NOW CARRY A `user_id` CONJUNCT, and
+     * that is a CORRECTNESS requirement, not only a privacy one. While
+     * `unique(job_id)` held, `leftJoin(userJobStatuses, eq(jobId, jobs.id))`
+     * could match at most one row; under `unique(user_id, job_id)` the same
+     * join matches one row PER USER who has touched that job, which
+     * MULTIPLIES the rows of whatever it is joined to. routes/resumes.ts
+     * (three joins) and scripts/rescore-existing-matches.ts were both fixed
+     * accordingly by this ticket.
+     */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
     jobId: text("job_id")
       .notNull()
       .references(() => jobs.id),
@@ -428,17 +456,22 @@ export const userJobStatuses = pgTable(
    * "I applied to X" is a fact about (person, job). It must survive every
    * resume rewrite, and it does exactly when the resume is not in the key.
    *
-   * UPDATE (ticket dba885e, epic 2b9e9dd): a `users` table now exists
-   * (see above) -- but THIS table has not been widened to reference it
-   * yet, deliberately: that's ticket 3fc1e5e's job specifically (the
-   * per-user scoping audit), not a side effect of adding the identity
-   * plumbing itself. Until that lands, `job_id` alone is still the
-   * effective (user, job) key, same as when there was no `users` table
-   * at all. WHEN TICKET 3fc1e5e SCOPES THIS TABLE: widen it to
-   * `unique().on(table.userId, table.jobId)` and add the `user_id`
-   * column — do NOT add `resume_id` to it at that time.
+   * DONE (ticket 3fc1e5e, epic 2b9e9dd, child 3). The instruction this
+   * comment carried from ticket dba885e onward -- "widen this to
+   * `unique().on(table.userId, table.jobId)` and add the `user_id` column
+   * -- do NOT add `resume_id` to it at that time" -- has been applied
+   * exactly as written, and `resume_id` is still deliberately absent from
+   * the key for precisely the reason the failing scenario above gives.
+   *
+   * What the widening fixed, concretely: while the key was `job_id` ALONE,
+   * that single row was shared by every user in the database. Two real
+   * users are all it takes -- user B clicking "Applied" on a job user A had
+   * dismissed did not create a second row, it OVERWROTE A's (routes/
+   * job-status.ts upserts on this key), and `DELETE /jobs/:id/status`
+   * deleted whichever user's row happened to exist. The key is now (person,
+   * job), which is what "I applied to X" was always a fact about.
    */
-  (table) => [unique().on(table.jobId)],
+  (table) => [unique().on(table.userId, table.jobId)],
 );
 
 /**
