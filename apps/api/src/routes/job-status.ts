@@ -33,9 +33,10 @@
 import { randomUUID } from "node:crypto";
 import { type SetJobStatusResponse, type UserJobStatus, USER_JOB_STATUSES } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { jobs as jobsTable, resumes, userJobStatuses } from "../db/schema.js";
+import { requireUserId } from "../identity.js";
 
 const setStatusBodySchema = {
   type: "object",
@@ -60,7 +61,33 @@ export function registerJobStatusRoutes(
     async (request, reply) => {
       const jobId = request.params.id;
       const { status, resumeId } = request.body;
+      /**
+       * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now
+       * scoped, and this was the worst WRITE gap in the audit. While
+       * `user_job_statuses` was keyed `unique(job_id)` there was exactly
+       * ONE status row per job for the entire database, and this upsert
+       * targeted it. So with two real users: A dismisses job X; B clicks
+       * "Applied" on X; the `onConflictDoUpdate` below fires and
+       * OVERWRITES A's row -- A's dismissal silently becomes B's
+       * application, complete with B's `appliedAt`. No id-guessing
+       * required: any job either user can see is enough, and the damage is
+       * a destroyed authored fact, which schema.ts's own doc comment names
+       * as the one thing in this app nothing can reconstruct.
+       *
+       * The fix is the schema's, not this route's: migration 0017 widens
+       * the key to `unique(user_id, job_id)` per schema.ts's own standing
+       * instruction, and the conflict target below follows it. A and B now
+       * have separate rows for the same job, which is what "(person, job)"
+       * always meant.
+       */
+      const userId = requireUserId(request);
 
+      // NOT scoped by user, deliberately: `jobs` is a GLOBAL corpus of
+      // postings shared by every user (schema.ts -- keyed on
+      // `(data_source, external_id)`, with no owner column and nothing
+      // user-specific on it). Two users searching the same board
+      // legitimately see the same job row, so "does this job exist" is a
+      // global question and a per-user check here would be meaningless.
       const jobRows = await db
         .select({ id: jobsTable.id })
         .from(jobsTable)
@@ -71,10 +98,18 @@ export function registerJobStatusRoutes(
       }
 
       if (resumeId !== undefined) {
+        // Ticket 3fc1e5e: scoped, unlike the `jobs` check above, because
+        // `resumes` IS owned. Without this, a caller could stamp a
+        // stranger's resumeId onto their own status row -- which would
+        // then assert "I applied to this job with THAT resume", a false
+        // record of their own history pointing at a resume they cannot
+        // even read, and a foreign id this app would hand back out. 404
+        // (not 403) for the usual reason: it must be indistinguishable
+        // from a resumeId that does not exist.
         const resumeRows = await db
           .select({ id: resumes.id })
           .from(resumes)
-          .where(eq(resumes.id, resumeId))
+          .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId)))
           .limit(1);
         if (resumeRows.length === 0) {
           return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -93,6 +128,7 @@ export function registerJobStatusRoutes(
         .insert(userJobStatuses)
         .values({
           id: randomUUID(),
+          userId,
           jobId,
           status,
           resumeId: resumeId ?? null,
@@ -101,7 +137,14 @@ export function registerJobStatusRoutes(
           appliedAt,
         })
         .onConflictDoUpdate({
-          target: userJobStatuses.jobId,
+          // Ticket 3fc1e5e: the conflict target is the table's new
+          // `unique(user_id, job_id)` key (migration 0017), so a second
+          // user writing a status for the same job INSERTS their own row
+          // instead of updating the first user's. It must stay exactly the
+          // table's unique key -- Postgres resolves `ON CONFLICT` against a
+          // real unique index, so naming a column set that is not one is a
+          // runtime error, not a silently looser match.
+          target: [userJobStatuses.userId, userJobStatuses.jobId],
           set: {
             status,
             updatedAt: now,
@@ -163,8 +206,18 @@ export function registerJobStatusRoutes(
     },
   );
 
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now scoped.
+   * Same root cause as the POST above and, before the fix, a strictly
+   * blunter instrument: `DELETE ... WHERE job_id = $1` deleted THE one row
+   * that existed for that job, whoever owned it. Any user could erase
+   * another user's "applied" record for any job in the corpus, and the
+   * route's own idempotency (deleting nothing is not an error) meant it
+   * reported 204 either way.
+   */
   app.delete<{ Params: { id: string } }>("/jobs/:id/status", async (request, reply) => {
     const jobId = request.params.id;
+    const userId = requireUserId(request);
 
     const jobRows = await db
       .select({ id: jobsTable.id })
@@ -179,8 +232,14 @@ export function registerJobStatusRoutes(
     // or never had one) is not an error — the caller asked for "no status
     // recorded" and that's already true. Drizzle's delete doesn't error on
     // zero matched rows, so no existence check is needed here beyond the
-    // job-id check above.
-    await db.delete(userJobStatuses).where(eq(userJobStatuses.jobId, jobId));
+    // job-id check above. Ticket 3fc1e5e: that idempotency is exactly why
+    // the `userId` conjunct matters so much here -- with it, a delete
+    // aimed at a job only ANOTHER user has a status for now matches zero
+    // rows and is a harmless no-op, where before it silently destroyed
+    // that user's row and reported the same 204.
+    await db
+      .delete(userJobStatuses)
+      .where(and(eq(userJobStatuses.jobId, jobId), eq(userJobStatuses.userId, userId)));
 
     return reply.code(204).send();
   });

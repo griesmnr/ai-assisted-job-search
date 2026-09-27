@@ -18,6 +18,18 @@
  * her browser is actually using (read `jobsearch.web.userId.v1` out of
  * that browser's own localStorage -- identity.ts's own doc comment names
  * the key), and it reassigns every `LEGACY_USER_ID` resume to that id.
+ *
+ * WIDENED (ticket 3fc1e5e, epic 2b9e9dd, child 3): it now also reassigns
+ * `user_job_statuses` rows, in the SAME transaction. That ticket gave that
+ * table its own `user_id` column (migration 0017), so the saved/dismissed/
+ * applied markers have an owner of their own rather than inheriting one
+ * from whatever resume they happen to name -- and moving only the resumes
+ * would leave every marker stranded under `LEGACY_USER_ID`. That failure is
+ * the same shape as the one above ("My Resumes looks wiped") and worse in
+ * consequence: an "I applied to this" record is the one fact in this app
+ * nothing can reconstruct (schema.ts's `user_job_statuses` doc comment), and
+ * a silently-missing one reads as "I never applied", inviting a duplicate
+ * application to the same posting.
  * Deliberately NOT automatic, and deliberately not run as part of any
  * migration: there is no way for server-side code to learn a real
  * browser's client-generated id on its own, and guessing would be far
@@ -63,7 +75,7 @@ import { pathToFileURL } from "node:url";
 import { eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
-import { LEGACY_USER_ID, resumes, users } from "../db/schema.js";
+import { LEGACY_USER_ID, resumes, userJobStatuses, users } from "../db/schema.js";
 import { loadEnvFile } from "../load-env.js";
 
 loadEnvFile();
@@ -128,10 +140,36 @@ export async function userExists(
   return rows.length > 0;
 }
 
+/**
+ * Ticket 3fc1e5e: how many `user_job_statuses` rows this run moved (or
+ * would move). `user_job_statuses` gained its OWN `user_id` column in that
+ * ticket (migration 0017), so ownership of a saved/dismissed/applied marker
+ * is no longer implied by the resume it happens to name -- it is a column of
+ * its own, and reassigning only `resumes` would leave every one of Nicole's
+ * real "I applied to this" markers stranded under `LEGACY_USER_ID` while the
+ * resumes moved out from under them. That is exactly the "My Resumes looks
+ * wiped" failure this whole script exists to prevent, one table over, and
+ * it is worse because an application record is the one thing in this app
+ * nothing can reconstruct (schema.ts's `user_job_statuses` doc comment).
+ */
 export type ReassignResult = {
   candidates: ReassignCandidate[];
+  /** Status rows owned by LEGACY_USER_ID, found the same way `candidates`
+   * is: reported in the dry run, moved by `--live`. */
+  jobStatusCount: number;
   reassigned: boolean;
 };
+
+export async function countLegacyJobStatuses(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: NodePgDatabase<any>,
+): Promise<number> {
+  const rows = await db
+    .select({ id: userJobStatuses.id })
+    .from(userJobStatuses)
+    .where(eq(userJobStatuses.userId, LEGACY_USER_ID));
+  return rows.length;
+}
 
 export async function runReassign(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,16 +186,42 @@ export async function runReassign(
   }
 
   const candidates = await findLegacyResumes(db);
-  if (!opts.live || candidates.length === 0) {
-    return { candidates, reassigned: false };
+  const jobStatusCount = await countLegacyJobStatuses(db);
+  // Ticket 3fc1e5e: `candidates.length === 0` is no longer sufficient as the
+  // "nothing to do" test -- a database can legitimately have legacy STATUS
+  // rows with no legacy resumes left (e.g. this script was run once before
+  // 0017 existed, moving the resumes but not the statuses, which is exactly
+  // the state a real deployment of the previous version leaves behind).
+  if (!opts.live || (candidates.length === 0 && jobStatusCount === 0)) {
+    return { candidates, jobStatusCount, reassigned: false };
   }
 
-  await db
-    .update(resumes)
-    .set({ userId: opts.targetUserId })
-    .where(eq(resumes.userId, LEGACY_USER_ID));
+  // ONE TRANSACTION (ticket 3fc1e5e). The two updates are halves of a single
+  // change of ownership, and a partial application is the specific bad state:
+  // resumes moved but statuses not means the target user sees their resumes
+  // and their scored jobs with every "applied"/"dismissed" marker silently
+  // missing -- which reads as "I never applied to this" and invites a
+  // duplicate application. All or neither.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(resumes)
+      .set({ userId: opts.targetUserId })
+      .where(eq(resumes.userId, LEGACY_USER_ID));
 
-  return { candidates, reassigned: true };
+    // No ON CONFLICT handling needed, for the same reason this file's header
+    // gives for the resume-hash/nickname case: the target is a brand-new
+    // anonymous identity that owns nothing yet, so it cannot already hold a
+    // status for one of these jobs. If it somehow does, the new
+    // `unique(user_id, job_id)` key (migration 0017) raises a loud
+    // constraint violation and this transaction rolls BOTH updates back --
+    // never a silent half-move.
+    await tx
+      .update(userJobStatuses)
+      .set({ userId: opts.targetUserId })
+      .where(eq(userJobStatuses.userId, LEGACY_USER_ID));
+  });
+
+  return { candidates, jobStatusCount, reassigned: true };
 }
 
 async function main(): Promise<void> {
@@ -202,18 +266,29 @@ async function main(): Promise<void> {
     for (const r of result.candidates) {
       console.log(`  ${r.id}  "${r.resumeNickname}"`);
     }
-    if (result.candidates.length === 0) {
+    // Ticket 3fc1e5e: reported alongside the resumes, because these move too
+    // (see `ReassignResult.jobStatusCount`) and an operator reading a dry run
+    // needs to see everything the live run would touch.
+    console.log(
+      `Plus ${result.jobStatusCount} user_job_statuses row(s) (saved/dismissed/applied markers) ` +
+        `owned by the legacy user.`,
+    );
+    if (result.candidates.length === 0 && result.jobStatusCount === 0) {
       console.log("\nNothing to reassign.");
       return;
     }
     if (!live) {
       console.log(
         `\nDry run: stopping here. Nothing was written. Re-run with --live to actually reassign ` +
-          `${result.candidates.length} resume(s) to "${targetUserId}".`,
+          `${result.candidates.length} resume(s) and ${result.jobStatusCount} job-status row(s) ` +
+          `to "${targetUserId}".`,
       );
       return;
     }
-    console.log(`\nReassigned ${result.candidates.length} resume(s) to "${targetUserId}".`);
+    console.log(
+      `\nReassigned ${result.candidates.length} resume(s) and ${result.jobStatusCount} ` +
+        `job-status row(s) to "${targetUserId}".`,
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;

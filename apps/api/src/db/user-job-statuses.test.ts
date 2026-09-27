@@ -26,7 +26,13 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { jobMatches, jobs as jobsTable, resumes, userJobStatuses } from "./schema.js";
+import {
+  jobMatches,
+  jobs as jobsTable,
+  LEGACY_USER_ID,
+  resumes,
+  userJobStatuses,
+} from "./schema.js";
 import { createTestDatabase, type TestDatabase } from "./test-db.js";
 import { fetchAppliedJobIds, runDemoMatch, type ScoreJobFn } from "../matching/index.js";
 import { loadEnvFile } from "../load-env.js";
@@ -141,6 +147,12 @@ describe("user_job_statuses survives a resume rewrite (ticket 0c319b2)", () => {
     const appliedAt = new Date("2026-08-19T00:00:00Z");
     await db.insert(userJobStatuses).values({
       id: randomUUID(),
+      // Ticket 3fc1e5e: `user_job_statuses` is now per-user. Both
+      // runDemoMatch calls in this file leave `userId` at its default, so
+      // every resume here belongs to LEGACY_USER_ID and the status rows
+      // must too -- otherwise the (user_id, job_id) lookups below would
+      // look under a different user and find nothing.
+      userId: LEGACY_USER_ID,
       jobId: appliedJobId,
       status: "applied",
       resumeId: resumeV1Id,
@@ -193,7 +205,7 @@ describe("user_job_statuses survives a resume rewrite (ticket 0c319b2)", () => {
     // --- 4c. The lookup the shortlist path makes — under v2, with no
     // resume in the query — still finds it. This single assertion is what a
     // `(resume_id, job_id)` key would fail.
-    const applied = await fetchAppliedJobIds(db, [appliedJobId, otherJobId]);
+    const applied = await fetchAppliedJobIds(db, [appliedJobId, otherJobId], LEGACY_USER_ID);
     expect([...applied]).toEqual([appliedJobId]);
 
     // --- 4d. ...and so the second run's shown results exclude X while
@@ -222,6 +234,7 @@ describe("user_job_statuses survives a resume rewrite (ticket 0c319b2)", () => {
       .insert(userJobStatuses)
       .values({
         id: randomUUID(),
+        userId: LEGACY_USER_ID,
         jobId: appliedJobId,
         status: "applied",
         resumeId: resumeV2[0]!.id,

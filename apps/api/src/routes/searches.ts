@@ -513,39 +513,40 @@ export function registerSearchRoutes(
   estimateProgress: EstimateProgressTracker = new EstimateProgressTracker(),
 ): void {
   /**
-   * Review fix (F1, ticket b2f9dfd, blocking): `userId`, when given, scopes
-   * the lookup to that user's OWN resume -- someone else's resumeId then
-   * returns `undefined`, the exact same shape as "doesn't exist at all"
-   * (a 404, never a 403, so a caller can't distinguish "not yours" from
-   * "never existed").
+   * Review fix (F1, ticket b2f9dfd, blocking): `userId` scopes the lookup
+   * to that user's OWN resume -- someone else's resumeId returns
+   * `undefined`, the exact same shape as "doesn't exist at all" (a 404,
+   * never a 403, so a caller can't distinguish "not yours" from "never
+   * existed").
    *
-   * Deliberately OPTIONAL, and deliberately still unscoped at the `POST
-   * /searches` call site below (which omits it): that route reads
-   * `resumeText` and hands it straight to a worker, leaving no residue of
-   * its own if the id belongs to someone else -- the general "does this
-   * by-id route verify ownership" question ticket 3fc1e5e's audit is the
-   * right place to close consistently, unchanged from this ticket's
-   * original scope decision.
+   * `userId` IS NOW REQUIRED (ticket 3fc1e5e). b2f9dfd left it optional
+   * because `POST /searches` was deliberately left unscoped pending this
+   * ticket's audit; both call sites pass it now, so the parameter is
+   * mandatory and the "no userId" branch is gone entirely. That is the
+   * point of making it required rather than merely passing it everywhere: a
+   * future call site cannot reintroduce an unscoped resume lookup by
+   * omitting an argument -- it is a compile error, not a silent,
+   * reviewable-only omission. The two historical gaps this closes, for the
+   * record:
    *
-   * `POST /searches/estimate` is different, and NOT deferred: unscoped,
-   * it fed straight into `getOrCreateResumeId`, which -- now that
-   * find-or-create is per-user (this ticket's own change) -- silently
-   * INSERTED A NEW ROW, owned by the caller, containing a verbatim copy
-   * of whoever actually owns `resumeId`'s real resume text. That is not
-   * an access-control gap ticket 3fc1e5e's later fix could clean up
-   * after the fact -- the copy is a real row the caller now legitimately
-   * owns forever. Confirmed live via opus review round 1's own probe
-   * against a real migrated database.
+   *  - `POST /searches/estimate` (fixed in b2f9dfd, not deferred): unscoped,
+   *    it fed straight into `getOrCreateResumeId`, which -- now that
+   *    find-or-create is per-user -- silently INSERTED A NEW ROW, owned by
+   *    the caller, containing a verbatim copy of whoever actually owns
+   *    `resumeId`'s real resume text. Not a gap a later access-control fix
+   *    could clean up after the fact: the copy is a real row the caller
+   *    then legitimately owns forever. Confirmed live via opus review round
+   *    1's own probe against a real migrated database.
+   *  - `POST /searches` (fixed HERE): no resume-text copy, but a real
+   *    `searches` row plus real `fetch.source` messages -- i.e. actual
+   *    money -- authorized against a resumeId the caller may not own. See
+   *    that route's own AUDIT VERDICT comment.
    */
-  async function loadResumeText(resumeId: string, userId?: string): Promise<string | undefined> {
+  async function loadResumeText(resumeId: string, userId: string): Promise<string | undefined> {
     const rows = await db
       .select({ resumeText: resumes.resumeText })
       .from(resumes)
-      .where(
-        userId === undefined
-          ? eq(resumes.id, resumeId)
-          : and(eq(resumes.id, resumeId), eq(resumes.userId, userId)),
-      )
+      .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId)))
       .limit(1);
     return rows[0]?.resumeText;
   }
@@ -875,6 +876,19 @@ export function registerSearchRoutes(
     };
   }
 
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): ALREADY SCOPED (ticket b2f9dfd's own
+   * review round 1, F1), and re-verified against the diff here rather than
+   * taken on trust. Both of this handler's user-scoped touchpoints are
+   * covered: `loadResumeText(resumeId, userId)` gates the resume read, and
+   * `runDemoMatch({ ..., userId })` carries the same id into
+   * `getOrCreateResumeId`. `zeroResultCache` is keyed on `(resumeId,
+   * criteria, sourceId, selection)` with no user id -- correctly, and this
+   * ticket leaves it alone: the only thing it can cause is a source being
+   * SKIPPED for a search whose `(resumeId, ...)` key matches, and `resumeId`
+   * is already proven to belong to the caller before any cache read
+   * happens, so no other user's key is reachable from here.
+   */
   app.post<{ Body: EstimateSearchBody }>(
     "/searches/estimate",
     { schema: { body: estimateSearchBodySchema } },
@@ -882,9 +896,9 @@ export function registerSearchRoutes(
       const { resumeId, sourceIds, criteria, estimateRequestId } = request.body;
       const userId = requireUserId(request);
       // Review fix (F1, ticket b2f9dfd): scoped to the requester's own
-      // resume -- see `loadResumeText`'s own doc comment for why this
-      // route specifically cannot defer ownership checking to ticket
-      // 3fc1e5e the way other by-id routes can.
+      // resume -- see `loadResumeText`'s own doc comment, which records
+      // why this route could not wait for ticket 3fc1e5e's audit the way
+      // `POST /searches` did.
       const resumeText = await loadResumeText(resumeId, userId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
@@ -910,6 +924,10 @@ export function registerSearchRoutes(
       if (estimateRequestId !== undefined) {
         estimateProgress.start(
           estimateRequestId,
+          // Ticket 3fc1e5e: the progress record is keyed by (userId,
+          // requestId) -- see `entryKey` in estimateProgress.ts for why a
+          // caller-minted `estimateRequestId` is not a safe key alone.
+          userId,
           resolved.sources.map((source) => source.dataSource),
         );
       }
@@ -933,7 +951,8 @@ export function registerSearchRoutes(
         outputPath: tempOutputPath(`estimate-${randomUUID()}`),
         onSourceSettled:
           estimateRequestId !== undefined
-            ? (dataSource) => estimateProgress.markSourceSettled(estimateRequestId, dataSource)
+            ? (dataSource) =>
+                estimateProgress.markSourceSettled(estimateRequestId, userId, dataSource)
             : undefined,
       });
 
@@ -1003,11 +1022,23 @@ export function registerSearchRoutes(
    * `PROGRESS_RETENTION_MS`, or a plain typo — not evidence anything is
    * wrong. A frontend poller should treat it as "keep showing the plain
    * spinner", never surface it as an error.
+   *
+   * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now scoped,
+   * and the ONLY route in this audit whose scope lives in memory rather
+   * than in a SQL predicate, because its data does (there is no database
+   * read here at all). The payload is mild -- which sources a run selected
+   * and how many have settled, no resume text, no job data -- but it is
+   * still one user's activity, and this route's id is the one id in this
+   * app a CLIENT mints freely (`estimateRequestId`, any string of length
+   * 1-200), not an unguessable server-minted UUID. Two clients both sending
+   * `"1"` was enough to read, and to clobber, each other's record. See
+   * `entryKey` in matching/estimateProgress.ts for the full reasoning and
+   * why the fix is a composite key rather than a compare-on-read.
    */
   app.get<{ Params: { requestId: string } }>(
     "/searches/estimate/:requestId/progress",
     async (request, reply) => {
-      const snapshot = estimateProgress.get(request.params.requestId);
+      const snapshot = estimateProgress.get(request.params.requestId, requireUserId(request));
       if (snapshot === undefined) {
         return reply.code(404).send({
           error: `No in-progress (or recently finished) estimate tracked under id "${request.params.requestId}".`,
@@ -1023,22 +1054,37 @@ export function registerSearchRoutes(
     { schema: { body: searchBodySchema } },
     async (request, reply) => {
       const { resumeId, sourceIds, criteria } = request.body;
-      // Ticket b2f9dfd: deliberately NOT scoped by userId here, unlike
-      // `/searches/estimate` above -- this route never calls
-      // `getOrCreateResumeId` (it only reads `resumeText` and hands it to
-      // a worker), so an unscoped lookup leaves no COPY of the resume
-      // TEXT the way the estimate route's did (review round 2, N1: an
-      // earlier version of this comment overstated this as "no
-      // persistent residue" -- that's false, this still creates a real
-      // `searches` row and authorizes real scoring spend against a
-      // resumeId the caller may not own). Whether that's acceptable at
-      // all -- and closing the read/spend gap itself -- is the general
-      // by-id access-control question ticket 3fc1e5e's audit covers
-      // consistently across every route with this shape; see
-      // `loadResumeText`'s own doc comment for why `/searches/estimate`
-      // specifically could not wait for it (that route's gap was a
-      // permanent TEXT copy, not just an authorization question).
-      const resumeText = await loadResumeText(resumeId);
+      /**
+       * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now
+       * scoped, closing the gap b2f9dfd deliberately left open here.
+       *
+       * b2f9dfd's reasoning for deferring was that this route never calls
+       * `getOrCreateResumeId`, so an unscoped lookup leaves no COPY of the
+       * resume text the way the estimate route's did. True, and not
+       * sufficient (its own review round 2, N1, had already corrected an
+       * earlier overstatement that there was "no persistent residue"). What
+       * an unscoped lookup here actually bought a caller, with nothing but
+       * a resumeId they don't own:
+       *
+       *   1. REAL MONEY against someone else's resume. This route
+       *      authorizes the spend `scoreJobWorker` performs -- up to
+       *      `DEFAULT_SCORE_THRESHOLD` (200) Claude scoring calls per
+       *      search, charged to this deployment, against a resume the
+       *      caller has no other way to read.
+       *   2. A durable `searches` row FOR THAT RESUME -- which is exactly
+       *      what `isResumeLocked` (routes/resumes.ts) reads, so a stranger
+       *      could PERMANENTLY LOCK the owner's resume text (ticket
+       *      88f11d7: the first real search locks a resume and there is no
+       *      unlock path).
+       *   3. Scored results written under that resumeId, visible to its
+       *      real owner as jobs they never searched for.
+       *
+       * The read itself was the smaller half of this. Scoping the lookup
+       * closes all three at once: no ownership, no `searches` row, no
+       * messages, no spend.
+       */
+      const userId = requireUserId(request);
+      const resumeText = await loadResumeText(resumeId, userId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
       }
@@ -1417,8 +1463,32 @@ export function registerSearchRoutes(
     },
   );
 
+  /**
+   * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- now scoped,
+   * via `searches.resume_id -> resumes.user_id` (b2f9dfd's chain), which is
+   * why this needs an `innerJoin` rather than one more `eq(...)`: `searches`
+   * has no `user_id` column of its own and deliberately does not get one
+   * here. Its owner is a FUNCTION of its resume (`resumeId` is
+   * `notNull().references(() => resumes.id)`), so denormalizing a
+   * `user_id` onto `searches` would add a second place for the same fact to
+   * live and disagree, for a read this join already serves.
+   *
+   * What an unscoped poll handed out, for one guessed/observed searchId:
+   * the search's `resumeId` (usable against every other by-id resume route
+   * before this ticket fixed those too), its live progress, which SOURCES
+   * that user searched and which of them failed with what `errorKind`/
+   * `errorMessage`, how many jobs were linked and scored, and -- in the
+   * stalled branch -- `outstandingJobIds`, an explicit list of job ids from
+   * someone else's search. Read-only, but a clear picture of another user's
+   * activity.
+   *
+   * The inner join is also what makes 404-vs-403 automatic: a search whose
+   * resume belongs to someone else simply produces no row, identical to a
+   * searchId that never existed.
+   */
   app.get<{ Params: { id: string } }>("/searches/:id", async (request, reply) => {
     const searchId = request.params.id;
+    const userId = requireUserId(request);
 
     const rows = await db
       .select({
@@ -1429,7 +1499,8 @@ export function registerSearchRoutes(
         completedAt: searchesTable.completedAt,
       })
       .from(searchesTable)
-      .where(eq(searchesTable.id, searchId))
+      .innerJoin(resumes, eq(searchesTable.resumeId, resumes.id))
+      .where(and(eq(searchesTable.id, searchId), eq(resumes.userId, userId)))
       .limit(1);
     if (rows.length === 0) {
       return reply.code(404).send({ error: `No search with id "${searchId}".` });

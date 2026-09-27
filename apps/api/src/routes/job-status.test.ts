@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
+import { buildTestApp as buildApp, injectAs } from "../test-support/build-test-app.js";
 import { jobs as jobsTable, sourceDescriptors, userJobStatuses } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
@@ -304,5 +304,181 @@ describe("DELETE /jobs/:id/status", () => {
     const bRows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.jobId, jobB));
     expect(bRows).toHaveLength(1);
     expect(bRows[0]?.status).toBe("dismissed");
+  });
+});
+
+/**
+ * Ticket 3fc1e5e: `user_job_statuses` was keyed `unique(job_id)` -- ONE row
+ * per job for the entire database -- so these routes were the sharpest
+ * cross-user WRITE gap in the app: two users could not hold a status on the
+ * same posting at all, and the second writer destroyed the first's row. The
+ * table is now keyed `unique(user_id, job_id)` (migration 0017) and both
+ * routes scope to `request.userId`.
+ *
+ * Every test below asserts against the DATABASE, not just the status code:
+ * the pre-fix behavior returned a perfectly happy 200/204 while silently
+ * overwriting or deleting the other user's authored fact -- which schema.ts
+ * names as the one kind of data in this app that nothing can reconstruct.
+ */
+describe("cross-user isolation for job statuses (ticket 3fc1e5e)", () => {
+  const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+  function rowFor(userId: string, jobId: string) {
+    return db
+      .select()
+      .from(userJobStatuses)
+      .where(and(eq(userJobStatuses.userId, userId), eq(userJobStatuses.jobId, jobId)));
+  }
+
+  it("two users can hold DIFFERENT statuses on the same job, in two separate rows", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "dismissed" },
+    });
+    const bWrite = await injectAs(app, USER_B, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "applied" },
+    });
+    expect(bWrite.statusCode).toBe(200);
+
+    // TWO rows, not one. Pre-fix this was impossible: the unique(job_id)
+    // constraint meant B's upsert conflicted with A's row and updated it.
+    const allRows = await db.select().from(userJobStatuses).where(eq(userJobStatuses.jobId, jobId));
+    expect(allRows).toHaveLength(2);
+
+    const aRow = await rowFor(USER_A, jobId);
+    const bRow = await rowFor(USER_B, jobId);
+    expect(aRow[0]?.status).toBe("dismissed");
+    expect(bRow[0]?.status).toBe("applied");
+  });
+
+  it("user B applying to a job does not erase user A's appliedAt for it", async () => {
+    // The concrete destruction the old key caused: `appliedAt` is the one
+    // question this table exists to answer, and B's write took over A's row
+    // wholesale -- timestamp included.
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "applied" },
+    });
+    const aBefore = await rowFor(USER_A, jobId);
+    const aAppliedAt = aBefore[0]!.appliedAt;
+    expect(aAppliedAt).not.toBeNull();
+
+    await injectAs(app, USER_B, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "saved" },
+    });
+
+    const aAfter = await rowFor(USER_A, jobId);
+    expect(aAfter[0]?.status).toBe("applied");
+    expect(aAfter[0]?.appliedAt).toEqual(aAppliedAt);
+  });
+
+  it("DELETE /jobs/:id/status cannot clear another user's status row", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "applied" },
+    });
+
+    // B clears "their" status for this job. They have none, so this is a
+    // no-op -- but it still reports 204, because the route is deliberately
+    // idempotent. That idempotency is exactly why the pre-fix version was
+    // dangerous: it deleted A's row and looked identical doing it.
+    const bDelete = await injectAs(app, USER_B, {
+      method: "DELETE",
+      url: `/jobs/${jobId}/status`,
+    });
+    expect(bDelete.statusCode).toBe(204);
+
+    const aRow = await rowFor(USER_A, jobId);
+    expect(aRow).toHaveLength(1);
+    expect(aRow[0]?.status).toBe("applied");
+  });
+
+  it("a user deleting their OWN status for a job leaves the other user's row intact", async () => {
+    const app = buildTestApp();
+    const jobId = await seedJob();
+    await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "saved" },
+    });
+    await injectAs(app, USER_B, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "dismissed" },
+    });
+
+    await injectAs(app, USER_A, { method: "DELETE", url: `/jobs/${jobId}/status` });
+
+    expect(await rowFor(USER_A, jobId)).toHaveLength(0);
+    const bRow = await rowFor(USER_B, jobId);
+    expect(bRow).toHaveLength(1);
+    expect(bRow[0]?.status).toBe("dismissed");
+  });
+
+  it("404s when the body names a resumeId belonging to another user, and writes nothing", async () => {
+    // A status row records which resume was in hand. Accepting a stranger's
+    // resumeId would file a false record of the caller's own history,
+    // pointing at a resume they cannot even read.
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    const created = await injectAs(app, USER_A, {
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `User A resume ${randomUUID()}` },
+    });
+    const resumeA = (created.json() as { id: string }).id;
+
+    const attempt = await injectAs(app, USER_B, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "resume_optimized", resumeId: resumeA },
+    });
+
+    // 404, and indistinguishable from a resumeId that never existed.
+    expect(attempt.statusCode).toBe(404);
+    expect(await rowFor(USER_B, jobId)).toHaveLength(0);
+
+    // Sanity: the owner CAN use their own resume id on the same job, which
+    // proves the 404 above is the ownership check and not a broken route.
+    const ok = await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "resume_optimized", resumeId: resumeA },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect((await rowFor(USER_A, jobId))[0]?.resumeId).toBe(resumeA);
+  });
+
+  it("a status write by one user is invisible to the other's read of the same job", async () => {
+    // Guards the pairing with routes/resumes.ts's results join: a row
+    // written here must only ever surface for its own author.
+    const app = buildTestApp();
+    const jobId = await seedJob();
+
+    await injectAs(app, USER_A, {
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "dismissed" },
+    });
+
+    expect(await rowFor(USER_B, jobId)).toHaveLength(0);
   });
 });

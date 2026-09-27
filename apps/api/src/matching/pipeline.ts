@@ -978,7 +978,7 @@ async function markSearchComplete(
  * Read-only; this function never writes a status row — recording an
  * application is a user action, not something a scoring run infers.
  *
- * Keyed on `job_id` alone, with no `resume_id` in the query at ALL. That is
+ * Keyed on `job_id`, with no `resume_id` in the query at ALL. That is
  * deliberate and is the whole reason `user_job_statuses` is keyed the way it
  * is (see its comment in db/schema.ts): this lookup happens during a search
  * run, which is scoped to ONE resume — and the resume in hand today is
@@ -989,17 +989,44 @@ async function markSearchComplete(
  *
  * Only `applied` is excluded, not `dismissed`/`saved`/`resume_optimized` —
  * acting on those is a UI concern and explicitly out of this ticket's scope.
+ *
+ * AUDIT VERDICT (ticket 3fc1e5e): NEEDED PER-USER SCOPING -- `userId` is
+ * now a required parameter. This is the shared helper the ticket's
+ * "anything reachable from a route" instruction is about: it is not a route,
+ * but `POST /searches/estimate` reaches it through `runDemoMatch` ->
+ * `fetchRankedResults`.
+ *
+ * Before this ticket the question it answered was "has ANYONE applied to
+ * this job?", because `user_job_statuses` held one row per job for the whole
+ * database. The consequence was not a leak of data (no other user's rows are
+ * returned -- only the jobIds this run already has in hand) but a WRONG
+ * ANSWER: a stranger's application silently suppressed a job from this
+ * user's own ranked results, and, more expensively in the other direction,
+ * two users who had each applied to different jobs cross-filtered each
+ * other's estimates. `userId` restores the question the name always implied.
+ *
+ * Note the `userId`/`resumeId` asymmetry is intentional and survives this
+ * change untouched: scoping to the PERSON is exactly right, scoping to the
+ * resume is exactly wrong, which is what schema.ts's key
+ * (`unique(user_id, job_id)`, no `resume_id`) now encodes directly.
  */
 export async function fetchAppliedJobIds(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   jobIds: string[],
+  userId: string,
 ): Promise<Set<string>> {
   if (jobIds.length === 0) return new Set();
   const rows = await db
     .select({ jobId: userJobStatuses.jobId })
     .from(userJobStatuses)
-    .where(and(eq(userJobStatuses.status, "applied"), inArray(userJobStatuses.jobId, jobIds)));
+    .where(
+      and(
+        eq(userJobStatuses.status, "applied"),
+        eq(userJobStatuses.userId, userId),
+        inArray(userJobStatuses.jobId, jobIds),
+      ),
+    );
   return new Set(rows.map((r) => r.jobId));
 }
 
@@ -1008,6 +1035,12 @@ async function fetchRankedResults(
   db: NodePgDatabase<any>,
   resumeId: string,
   jobIds: string[],
+  /** Ticket 3fc1e5e: whose `user_job_statuses` rows the applied-job filter
+   * below reads. Passed down from `runDemoMatch`'s own `userId` (which
+   * defaults to `LEGACY_USER_ID` for the CLI path) rather than derived from
+   * `resumeId` -- the resume's owner IS this user, but re-deriving it here
+   * would be a second query for a value the caller already has. */
+  userId: string,
 ): Promise<RankedResult[]> {
   if (jobIds.length === 0) return [];
 
@@ -1031,7 +1064,7 @@ async function fetchRankedResults(
   // database for a future "jobs I applied to" view. This is presentation
   // filtering, not corpus filtering — accept the occasional extra scoring
   // call as the cost of keeping it that way.
-  const appliedJobIds = await fetchAppliedJobIds(db, jobIds);
+  const appliedJobIds = await fetchAppliedJobIds(db, jobIds, userId);
 
   const rows = await db
     .select({
@@ -1502,7 +1535,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
         `this run.`,
     );
-    const fetchedResults = await fetchRankedResults(db, resumeId, [...alreadyScoredIds]);
+    const fetchedResults = await fetchRankedResults(db, resumeId, [...alreadyScoredIds], userId);
     const { displayed: results, belowFloorCount } = applyMatchScoreFloor(fetchedResults);
     if (belowFloorCount > 0) {
       log(`${results.length} shown, ${belowFloorCount} below ${MATCH_SCORE_FLOOR}%`);
@@ -1722,7 +1755,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // Final results come from the database, not from this run's in-memory
   // scores — so a second run, which scores nothing new, still prints the
   // full ranked list instead of almost nothing.
-  const fetchedResults = await fetchRankedResults(db, resumeId, linkedJobIds);
+  const fetchedResults = await fetchRankedResults(db, resumeId, linkedJobIds, userId);
   const { displayed: results, belowFloorCount } = applyMatchScoreFloor(fetchedResults);
 
   fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));

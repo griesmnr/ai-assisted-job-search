@@ -380,16 +380,27 @@ export type ExistingMatchRow = JobDescriptionRow & {
   oldGaps: string[] | null;
 };
 
-async function fetchResumeText(
+/**
+ * Ticket 3fc1e5e: returns the owning `userId` alongside the text, rather
+ * than the text alone. Not an access-control check -- this is an operator
+ * CLI run from a shell with direct database credentials, so there is no
+ * "requesting user" to scope to and nothing here to defend against. It is
+ * needed because `fetchExistingMatches` must now join
+ * `user_job_statuses` on (user_id, job_id) to avoid multiplying rows under
+ * that table's new key (see its doc comment), and `resumes.user_id` is
+ * where the answer lives. One query instead of two, since this lookup was
+ * already happening.
+ */
+async function fetchResumeOwnerAndText(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeId: string,
-): Promise<string | undefined> {
+): Promise<{ resumeText: string; userId: string } | undefined> {
   const rows = await db
-    .select({ resumeText: resumes.resumeText })
+    .select({ resumeText: resumes.resumeText, userId: resumes.userId })
     .from(resumes)
     .where(eq(resumes.id, resumeId));
-  return rows[0]?.resumeText;
+  return rows[0];
 }
 
 /** Every `job_matches` row for `resumeId`, joined with `jobs` for the
@@ -397,21 +408,41 @@ async function fetchResumeText(
  * see `toNormalizedJob`. Scoped to `resumeId` alone: never reads (or later,
  * updates) another resume's rows.
  *
- * By default also LEFT JOINs `user_job_statuses` (keyed on `job_id` ALONE --
- * ticket 0c319b2, a dismissed status is a fact about the job, not about
- * which resume viewed it) and excludes anything dismissed -- ticket ccc3d6e,
- * Nicole: real spend on a job she's already rejected is pure waste. Uses the
- * EXACT same `isNull(status) OR status != 'dismissed'` shape
- * `routes/resumes.ts` already uses for its own default dismissed-exclusion,
- * for consistency with what "dismissed" already means elsewhere in this app,
- * rather than a second, independently-invented filter. `includeDismissed`
- * restores the pre-ccc3d6e behavior (every match for the resume, regardless
- * of status). */
+ * By default also LEFT JOINs `user_job_statuses` and excludes anything
+ * dismissed -- ticket ccc3d6e, Nicole: real spend on a job she's already
+ * rejected is pure waste. Uses the EXACT same `isNull(status) OR status !=
+ * 'dismissed'` shape `routes/resumes.ts` already uses for its own default
+ * dismissed-exclusion, for consistency with what "dismissed" already means
+ * elsewhere in this app, rather than a second, independently-invented
+ * filter. `includeDismissed` restores the pre-ccc3d6e behavior (every match
+ * for the resume, regardless of status).
+ *
+ * TICKET 3fc1e5e -- `ownerUserId` IS REQUIRED, AND THIS JOIN WAS A REAL BUG
+ * WAITING ON THAT TICKET. The join used to be `ON user_job_statuses.job_id =
+ * jobs.id` alone, which was correct only while that table was keyed
+ * `unique(job_id)` -- one status row per job for the whole database, so the
+ * left join could match at most one row and could not change the row count.
+ * Ticket 3fc1e5e widens the key to `unique(user_id, job_id)` (schema.ts,
+ * migration 0017), after which `job_id` alone matches one row PER USER who
+ * has touched that job. Left unfixed, that would have broken this script in
+ * two ways at once: the same `job_matches` row would be returned N times
+ * (N = users with a status on that job), so a live run would have rescored
+ * and re-billed it N times; and the dismissed-exclusion would have filtered
+ * on OTHER users' dismissals, skipping jobs this resume's owner never
+ * dismissed.
+ *
+ * `ownerUserId` is the owner of `resumeId` (`resumes.user_id`, NOT NULL
+ * since migration 0016), which `main()` reads alongside the resume text.
+ * Scoping to the resume's OWNER rather than to the resume is the same
+ * distinction schema.ts's key encodes: a dismissal is a fact about (person,
+ * job), so it must apply across that person's resume rewrites -- which is
+ * exactly the behavior ticket ccc3d6e wanted from this filter. */
 export async function fetchExistingMatches(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   resumeId: string,
   includeDismissed: boolean,
+  ownerUserId: string,
 ): Promise<ExistingMatchRow[]> {
   const query = db
     .select({
@@ -436,7 +467,10 @@ export async function fetchExistingMatches(
     })
     .from(jobMatches)
     .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-    .leftJoin(userJobStatuses, eq(userJobStatuses.jobId, jobsTable.id));
+    .leftJoin(
+      userJobStatuses,
+      and(eq(userJobStatuses.jobId, jobsTable.id), eq(userJobStatuses.userId, ownerUserId)),
+    );
 
   return includeDismissed
     ? query.where(eq(jobMatches.resumeId, resumeId))
@@ -515,8 +549,8 @@ async function main(): Promise<void> {
   const db = drizzle(client);
 
   try {
-    const resumeText = await fetchResumeText(db, resumeId);
-    if (resumeText === undefined) {
+    const resumeRow = await fetchResumeOwnerAndText(db, resumeId);
+    if (resumeRow === undefined) {
       console.error(
         `No resume found with id "${resumeId}" -- refusing to guess a different one. Check the id ` +
           "(`SELECT id FROM resumes;`) and retry.",
@@ -524,8 +558,9 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    const { resumeText, userId: ownerUserId } = resumeRow;
 
-    const existing = await fetchExistingMatches(db, resumeId, includeDismissed);
+    const existing = await fetchExistingMatches(db, resumeId, includeDismissed, ownerUserId);
     if (includeDismissed) {
       console.log(`Found ${existing.length} existing job_matches row(s) for resume "${resumeId}".`);
     } else {
@@ -537,7 +572,7 @@ async function main(): Promise<void> {
       // difference. Harmless here (no API spend, local Postgres, a
       // short-lived CLI run), but a cheap thing to tighten later: counting
       // the LEFT JOIN's dismissed side directly would need only one query.
-      const allMatches = await fetchExistingMatches(db, resumeId, true);
+      const allMatches = await fetchExistingMatches(db, resumeId, true, ownerUserId);
       const dismissedCount = allMatches.length - existing.length;
       console.log(
         `Found ${existing.length} existing job_matches row(s) for resume "${resumeId}" ` +

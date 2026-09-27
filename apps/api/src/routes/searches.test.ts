@@ -4017,3 +4017,143 @@ describe("estimate-to-search zero-result cache (ticket 447e210)", () => {
  *    coverage. It is not a restoration of the deleted tests: those drove
  *    `runDemoMatch` through the route, which this route no longer calls.
  */
+
+/**
+ * Ticket 3fc1e5e: cross-user isolation for this file's routes.
+ *
+ * `POST /searches/estimate` was already scoped by ticket b2f9dfd; the two
+ * gaps closed here are `POST /searches` (which b2f9dfd deliberately left
+ * unscoped, pending this audit) and `GET /searches/:id`. Both tests assert
+ * the real consequence rather than the status code alone -- for the POST,
+ * that NO durable state and NO queue traffic is produced, since the point
+ * of that gap was authorizing real spend against someone else's resume.
+ */
+describe("cross-user isolation for searches (ticket 3fc1e5e)", () => {
+  const USER_A = "a0000000-0000-4000-8000-00000000000a";
+  const USER_B = "b0000000-0000-4000-8000-00000000000b";
+
+  function buildSearchApp(publisher: ReturnType<typeof fakePublisher>) {
+    return buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), [
+        matchingJob(`xuser-${randomUUID()}`),
+      ]),
+      publishFetchSource: publisher.publish,
+    });
+  }
+
+  async function createResumeAs(app: ReturnType<typeof buildApp>, userId: string): Promise<string> {
+    const response = await injectAs(app, userId, {
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `Cross-user search resume ${randomUUID()}` },
+    });
+    expect(response.statusCode).toBe(200);
+    return (response.json() as { id: string }).id;
+  }
+
+  it("POST /searches refuses a resumeId belonging to another user, spending nothing and writing nothing", async () => {
+    const publisher = fakePublisher();
+    const app = buildSearchApp(publisher);
+    const resumeA = await createResumeAs(app, USER_A);
+
+    const attempt = await injectAs(app, USER_B, {
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: resumeA, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    // 404, indistinguishable from a resumeId that never existed.
+    expect(attempt.statusCode).toBe(404);
+
+    // THE POINT OF THE FIX: no `fetch.source` message was published, so no
+    // scoring worker will ever be asked to spend money on A's resume.
+    expect(publisher.published).toHaveLength(0);
+    // And no durable trace either -- crucially no `searches` row, because a
+    // real (non-estimate) `searches` row is what PERMANENTLY LOCKS a resume
+    // (ticket 88f11d7, `isResumeLocked`): the pre-fix gap let a stranger
+    // lock the owner's resume text with no way to unlock it.
+    const searchRows = await db
+      .select()
+      .from(searchesTable)
+      .where(eq(searchesTable.resumeId, resumeA));
+    expect(searchRows).toHaveLength(0);
+  });
+
+  it("POST /searches still works normally for the resume's own owner", async () => {
+    // Proves the 404 above is the ownership check, not a broken route.
+    const publisher = fakePublisher();
+    const app = buildSearchApp(publisher);
+    const resumeA = await createResumeAs(app, USER_A);
+
+    const started = await injectAs(app, USER_A, {
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: resumeA, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    expect(started.statusCode).toBe(202);
+    expect(publisher.published).toHaveLength(1);
+  });
+
+  it("GET /searches/:id does not reveal another user's search", async () => {
+    const publisher = fakePublisher();
+    const app = buildSearchApp(publisher);
+    const resumeA = await createResumeAs(app, USER_A);
+
+    const started = await injectAs(app, USER_A, {
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId: resumeA, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    const { searchId } = started.json() as { searchId: string };
+
+    const asB = await injectAs(app, USER_B, { method: "GET", url: `/searches/${searchId}` });
+
+    expect(asB.statusCode).toBe(404);
+    // Nothing about A's search leaks through the body -- notably not the
+    // resumeId, which every terminal/pending response carries and which was
+    // itself a key into A's data before the rest of this ticket's fixes.
+    expect(asB.body).not.toContain(resumeA);
+
+    // The owner polls it fine.
+    const asA = await injectAs(app, USER_A, { method: "GET", url: `/searches/${searchId}` });
+    expect(asA.statusCode).toBe(200);
+    expect((asA.json() as { resumeId: string }).resumeId).toBe(resumeA);
+  });
+
+  it("GET /searches/estimate/:requestId/progress does not reveal another user's estimate progress", async () => {
+    // The route-level counterpart to estimateProgress.test.ts's own
+    // per-user tests. `estimateRequestId` is CLIENT-minted, so a collision
+    // needs no guessing at all -- both users use the literal same id here.
+    const tracker = new EstimateProgressTracker();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), []),
+      publishFetchSource: fakePublisher().publish,
+      estimateProgress: tracker,
+    });
+    const sharedRequestId = "1";
+    tracker.start(sharedRequestId, USER_A, [DATA_SOURCE]);
+
+    const asB = await injectAs(app, USER_B, {
+      method: "GET",
+      url: `/searches/estimate/${sharedRequestId}/progress`,
+    });
+    // The ordinary "nothing to report" 404 this route already documents --
+    // no new error path, and no way to tell "someone else's" from "never
+    // started".
+    expect(asB.statusCode).toBe(404);
+
+    const asA = await injectAs(app, USER_A, {
+      method: "GET",
+      url: `/searches/estimate/${sharedRequestId}/progress`,
+    });
+    expect(asA.statusCode).toBe(200);
+    expect(asA.json()).toMatchObject({ total: 1, completed: 0 });
+  });
+});
