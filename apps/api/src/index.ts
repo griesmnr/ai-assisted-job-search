@@ -160,7 +160,7 @@ export function buildApp(deps: BuildAppDeps) {
   // a real domain as to localhost) and falls back to the regex when unset,
   // which is the default dev/test posture.
   //
-  // Opus review, F2 (BLOCKER) + F9: `??` alone treats a set-but-BLANK
+  // Opus review round 1, F2 (BLOCKER): `??` alone treats a set-but-BLANK
   // `CORS_ALLOWED_ORIGIN=` (not the same as unset) as a real value —
   // verified live to make @fastify/cors 500 EVERY request, not just fail
   // CORS, since `origin: ""` isn't a value it accepts. This is not a
@@ -168,11 +168,18 @@ export function buildApp(deps: BuildAppDeps) {
   // this variable before `web`'s real URL exists yet ("circular on the
   // very first deploy"), and creating-it-blank-then-filling-it-in-later
   // is the natural reading of that instruction. `.trim()` + a truthiness
-  // check treats blank the same as unset (falls back to the dev regex);
-  // it also strips a trailing slash a value copy-pasted from a browser's
+  // check treats blank the same as unset (falls back to the dev regex).
+  //
+  // F9: also strips a trailing slash a value copy-pasted from a browser's
   // address bar commonly carries, which a browser's own `Origin` header
-  // never has — an un-trimmed `.../` would otherwise silently 500 every
-  // real request in exactly the same way.
+  // never has. Round 2 review measured the UNSTRIPPED failure mode
+  // precisely, correcting round 1's guess here: a trailing slash does NOT
+  // 500 (`@fastify/cors` happily echoes `"https://x.com/"` as a static
+  // string) — it silently fails the BROWSER's own same-string comparison
+  // instead, since the response header then never matches the page's real
+  // Origin. Same practical outcome either way (the frontend can't call
+  // this API), different mechanism — worth stripping regardless, but not
+  // for the reason round 1 first wrote here.
   const configuredOrigin = process.env.CORS_ALLOWED_ORIGIN?.trim().replace(/\/+$/, "");
   void app.register(cors, {
     origin: configuredOrigin ? configuredOrigin : /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,

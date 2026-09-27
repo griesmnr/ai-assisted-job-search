@@ -33,7 +33,13 @@ inside one project/one bill.
    template marketplace ("Deploy RabbitMQ and Wire Up Producers and
    Consumers" in Railway's docs), which recommends image
    `rabbitmq:4-management` — follow that guide rather than a manual
-   deploy. **Cross-service hosts on Railway are not the values shown in
+   deploy. (This intentionally differs from `docker-compose.prod.yml`'s
+   `rabbitmq:3.13.7-management` below — that pin matches this repo's own
+   dev `docker-compose.yml`, already tested against this app's actual
+   queue topology; Railway's guide is the better source for what Railway
+   itself currently recommends. Not a version this app requires either
+   way — nothing in `apps/api` pins a RabbitMQ server version.)
+   **Cross-service hosts on Railway are not the values shown in
    each service's own Variables tab** — reachability between services goes
    over Railway's private network at `<service>.railway.internal`,
    referenced as `${{ServiceName.RAILWAY_PRIVATE_DOMAIN}}` (the same is

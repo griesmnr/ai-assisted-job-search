@@ -57,15 +57,29 @@ EXPOSE 3000
 # port or needs to write to the image, so this costs nothing.
 USER node
 
-# Opus review, F11 (LOW): lets `docker stop`/a Railway redeploy, and
-# anything checking container health, actually observe whether the server
-# is up -- GET /sources needs no request body, no auth header (identity.ts
-# mints one lazily if absent), and touches no external service, so it's a
-# clean liveness probe. Plain `node -e` rather than curl/wget: neither is
-# installed on `node:22-slim`, and adding one just for this is more image
-# than the check is worth.
+# Opus review round 2, R1 (HIGH, verified live -- REQUIRED fix): the round
+# 1 version of this check omitted the `x-user-id` header and claimed
+# GET /sources "needs ... no auth header" -- false. identity.ts's global
+# `onRequest` hook runs on every route with no exemption for this one
+# (only OPTIONS and GET /handoffs/:id are exempt) and 400s a request
+# missing a valid UUID header BEFORE the route handler ever runs --
+# reproduced live: the round-1 check got a permanent 400, so this
+# HEALTHCHECK could never pass, ever. It also claimed "touches no external
+# service" -- also false: that same hook does one `db.insert(users)` per
+# request regardless of route, so this check DOES depend on Postgres
+# being reachable, which is an honest thing for a liveness probe to
+# depend on (if the DB is down, every real route is equally broken) but
+# not something the original comment admitted. Fixed by sending a real,
+# well-known, valid-shaped id (schema.ts's `LEGACY_USER_ID`, the nil
+# UUID) -- `onConflictDoNothing` makes inserting it a harmless no-op
+# whether or not that row already exists. `$PORT` (not a hardcoded 3000)
+# matches how the server itself picks its port (index.ts).
+#
+# Plain `node -e` rather than curl/wget: neither is installed on
+# `node:22-slim`, and adding one just for this is more image than the
+# check is worth.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "require('node:http').get('http://127.0.0.1:3000/sources', (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+  CMD node -e "require('node:http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/sources',headers:{'x-user-id':'00000000-0000-0000-0000-000000000000'}}, (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 # Opus review, F6 (MEDIUM, verified live): `sh -c "a && b"` leaves `node`
 # as a CHILD of `sh`, and `sh` does not forward SIGTERM to a child it's

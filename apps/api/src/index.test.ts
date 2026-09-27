@@ -79,13 +79,30 @@ describe("api entrypoint", () => {
       expect(blocked.headers["access-control-allow-origin"]).toBeUndefined();
     });
 
-    // Opus review, F2 (BLOCKER, verified live): a set-but-blank value is
-    // not the same as unset, and `??` alone let it through as a real
-    // origin string -- @fastify/cors then 500'd every request, since ""
-    // isn't a value it accepts. This is the exact state the README's own
-    // Railway walkthrough invites on the very first deploy (create the
-    // variable before `web`'s real URL exists, fill it in later).
-    it("falls back to the dev regex, rather than 500ing, when set but blank", async () => {
+    // Opus review round 1, F2 (BLOCKER, verified live): a set-but-blank
+    // value is not the same as unset, and `??` alone let it through as a
+    // real origin string -- @fastify/cors then 500'd every request, since
+    // "" isn't a value it accepts. This is the exact state the README's
+    // own Railway walkthrough invites on the very first deploy (create the
+    // variable before `web`'s real URL exists, fill it in later). Round 2
+    // review, R3: the LITERAL empty string is what actually reproduced the
+    // 500 against the pre-fix code (a whitespace-only value happened not
+    // to, by accident of what @fastify/cors does with it) -- both are
+    // covered explicitly below rather than relying on one to stand in for
+    // the other.
+    it("falls back to the dev regex, rather than 500ing, when set to an empty string", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = "";
+      const app = buildAppUnderTest();
+      const response = await app.inject({
+        method: "GET",
+        url: "/sources",
+        headers: { origin: "http://localhost:5173" },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    });
+
+    it("falls back to the dev regex when set to only whitespace", async () => {
       process.env.CORS_ALLOWED_ORIGIN = "   ";
       const app = buildAppUnderTest();
       const response = await app.inject({
@@ -97,10 +114,15 @@ describe("api entrypoint", () => {
       expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
     });
 
-    // Opus review, F9 (verified live): a value copied out of a browser's
-    // address bar commonly carries a trailing slash; a browser's own
-    // `Origin` header never does, so an un-trimmed comparison would 500
-    // every real request in production while looking correctly configured.
+    // Opus review round 1, F9 (verified live), corrected by round 2's
+    // measurement (R2): a value copied out of a browser's address bar
+    // commonly carries a trailing slash, which a browser's own `Origin`
+    // header never has -- but round 2 measured that the UNSTRIPPED value
+    // does NOT 500 (`@fastify/cors` happily echoes it as a static string);
+    // it silently fails the BROWSER's own same-string comparison instead,
+    // since the response header then never matches the page's real
+    // Origin. Same practical failure (frontend can't call the API),
+    // different mechanism than F2's blank-value 500 above.
     it("strips a trailing slash from a configured origin", async () => {
       process.env.CORS_ALLOWED_ORIGIN = "https://jobsearch.example.com/";
       const app = buildAppUnderTest();
