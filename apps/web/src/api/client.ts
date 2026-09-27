@@ -6,11 +6,11 @@
  * 484889d audited apps/api/src/routes/*.ts directly before writing this).
  *
  * Base URL: apps/api has no fixed port config beyond index.ts's
- * `PORT ?? 3000` default, and this is a local single-user dev tool (no
- * accounts, CLAUDE.md's stack table) — so `VITE_API_BASE_URL` overrides it
- * for anyone running the API on a different port, defaulting to
+ * `PORT ?? 3000` default, so `VITE_API_BASE_URL` overrides it for anyone
+ * running the API on a different port, defaulting to
  * `http://localhost:3000` for the common case.
  */
+import { getUserId } from "../identity";
 import type {
   CreateResumeRequest,
   CreateResumeResponse,
@@ -73,7 +73,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      // Ticket dba885e: every request carries the anonymous per-browser
+      // identity (identity.ts) — the API now rejects any request missing
+      // this header. `...init?.headers` still wins if a future caller
+      // ever needs to override it (none do today).
+      headers: {
+        "Content-Type": "application/json",
+        "x-user-id": getUserId(),
+        ...init?.headers,
+      },
     });
   } catch (err) {
     // A network-level failure (API not running, CORS misconfigured, etc.)

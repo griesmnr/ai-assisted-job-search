@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildApp } from "../index.js";
+import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
 import { jobs as jobsTable, sourceDescriptors, userJobStatuses } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";

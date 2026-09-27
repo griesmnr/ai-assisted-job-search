@@ -7,7 +7,7 @@ import type { ConfirmChannel, ConsumeMessage } from "amqplib";
 import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildApp } from "../index.js";
+import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
 import {
   jobMatchFailures,
   jobMatches,

@@ -47,6 +47,38 @@ export const jobs = pgTable(
   (table) => [unique().on(table.dataSource, table.externalId)],
 );
 
+/**
+ * Ticket dba885e (epic 2b9e9dd): every visitor's anonymous, invisible
+ * identity. `id` is NEVER server-generated -- it's a `crypto.randomUUID()`
+ * minted client-side (apps/web/src/identity.ts) the first time a browser
+ * needs one, persisted in `localStorage` (deliberately NOT `session.ts`'s
+ * sessionStorage -- this identity must outlive a tab close, unlike the
+ * rest of that file's app-state restore), and sent as the `x-user-id`
+ * header on every request. `identity.ts` (this package) creates the row
+ * lazily the first time a given id is actually seen -- there is no
+ * separate "register" step, and no UI moment at all until a real login
+ * happens.
+ *
+ * `email` starts NULL for every row and stays that way until ticket
+ * 9f06f8f's magic-link flow attaches one -- see that ticket for why this
+ * is deliberately NOT the login mechanism itself, only what a login
+ * later claims. `.unique()`: two different anonymous ids must never both
+ * claim the same email (multiple NULLs are fine under a standard unique
+ * constraint -- SQL never treats NULL as equal to another NULL).
+ *
+ * WHY THIS TABLE EXISTS AT ALL, AND WHY NOW: resume-lock design
+ * (2026-09-26 conversation, epic 2b9e9dd) needed resume-text/nickname
+ * uniqueness scoped per-person, not globally (Nicole: using a friend's
+ * resume as test data must never collide with that friend's own later,
+ * real usage) -- schema.ts's own `user_job_statuses` doc comment already
+ * anticipated this exact moment years in advance.
+ */
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").unique(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const resumes = pgTable("resumes", {
   id: text("id").primaryKey(),
   resumeText: text("resume_text").notNull(),
