@@ -6,6 +6,7 @@ import {
   createEmptyTestDatabase,
   loadMigrationStatements,
 } from "./test-db.js";
+import { LEGACY_USER_ID } from "./schema.js";
 import { loadEnvFile } from "../load-env.js";
 
 loadEnvFile();
@@ -34,7 +35,6 @@ loadEnvFile();
  */
 
 const MIGRATION_UNDER_TEST = "0016_overjoyed_human_cannonball.sql";
-const LEGACY_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 let db: Client;
 let teardown: () => Promise<void>;
@@ -73,6 +73,20 @@ beforeAll(async () => {
 afterAll(async () => teardown?.());
 
 describe("migration 0016 — resumes becomes per-user", () => {
+  // Review fix (M2): the migration file necessarily hardcodes this id as a
+  // raw SQL string literal (a migration is a frozen historical record, not
+  // code that can import a constant) -- this is the one place that literal
+  // and schema.ts's own `LEGACY_USER_ID` export are checked against each
+  // other, so a future edit to either can't silently drift out of sync
+  // with the other while every other assertion in this file keeps passing
+  // (they'd all still pass against whatever value the migration actually
+  // used, even if it stopped matching the constant the rest of the
+  // codebase imports).
+  it("the migration file's own hardcoded id matches schema.ts's LEGACY_USER_ID constant", () => {
+    const sql = loadMigrationStatements(MIGRATION_UNDER_TEST).join("\n");
+    expect(sql).toContain(LEGACY_USER_ID);
+  });
+
   it("creates the well-known legacy user row", async () => {
     const { rows } = await db.query<{ id: string }>("select id from users where id = $1", [
       LEGACY_USER_ID,

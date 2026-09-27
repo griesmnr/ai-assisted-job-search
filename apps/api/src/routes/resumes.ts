@@ -390,8 +390,8 @@ export function registerResumeRoutes(
       // wrong user's namespace). Same class of gap as `GET /resumes/:id`
       // and every other by-id route in this app today; not new here, but
       // worth naming precisely since the collision check's own scoping
-      // makes the mismatch less obvious than it would be for HERE than
-      // for an unscoped check.
+      // makes this mismatch less obvious HERE than it would be next to a
+      // check that wasn't scoped at all.
       const collision = await db
         .select({ id: resumes.id })
         .from(resumes)

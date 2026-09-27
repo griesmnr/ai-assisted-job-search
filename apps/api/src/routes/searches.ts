@@ -512,11 +512,40 @@ export function registerSearchRoutes(
    */
   estimateProgress: EstimateProgressTracker = new EstimateProgressTracker(),
 ): void {
-  async function loadResumeText(resumeId: string): Promise<string | undefined> {
+  /**
+   * Review fix (F1, ticket b2f9dfd, blocking): `userId`, when given, scopes
+   * the lookup to that user's OWN resume -- someone else's resumeId then
+   * returns `undefined`, the exact same shape as "doesn't exist at all"
+   * (a 404, never a 403, so a caller can't distinguish "not yours" from
+   * "never existed").
+   *
+   * Deliberately OPTIONAL, and deliberately still unscoped at the `POST
+   * /searches` call site below (which omits it): that route reads
+   * `resumeText` and hands it straight to a worker, leaving no residue of
+   * its own if the id belongs to someone else -- the general "does this
+   * by-id route verify ownership" question ticket 3fc1e5e's audit is the
+   * right place to close consistently, unchanged from this ticket's
+   * original scope decision.
+   *
+   * `POST /searches/estimate` is different, and NOT deferred: unscoped,
+   * it fed straight into `getOrCreateResumeId`, which -- now that
+   * find-or-create is per-user (this ticket's own change) -- silently
+   * INSERTED A NEW ROW, owned by the caller, containing a verbatim copy
+   * of whoever actually owns `resumeId`'s real resume text. That is not
+   * an access-control gap ticket 3fc1e5e's later fix could clean up
+   * after the fact -- the copy is a real row the caller now legitimately
+   * owns forever. Confirmed live via opus review round 1's own probe
+   * against a real migrated database.
+   */
+  async function loadResumeText(resumeId: string, userId?: string): Promise<string | undefined> {
     const rows = await db
       .select({ resumeText: resumes.resumeText })
       .from(resumes)
-      .where(eq(resumes.id, resumeId))
+      .where(
+        userId === undefined
+          ? eq(resumes.id, resumeId)
+          : and(eq(resumes.id, resumeId), eq(resumes.userId, userId)),
+      )
       .limit(1);
     return rows[0]?.resumeText;
   }
@@ -851,7 +880,12 @@ export function registerSearchRoutes(
     { schema: { body: estimateSearchBodySchema } },
     async (request, reply) => {
       const { resumeId, sourceIds, criteria, estimateRequestId } = request.body;
-      const resumeText = await loadResumeText(resumeId);
+      const userId = requireUserId(request);
+      // Review fix (F1, ticket b2f9dfd): scoped to the requester's own
+      // resume -- see `loadResumeText`'s own doc comment for why this
+      // route specifically cannot defer ownership checking to ticket
+      // 3fc1e5e the way other by-id routes can.
+      const resumeText = await loadResumeText(resumeId, userId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
       }
@@ -884,16 +918,13 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
-        // Ticket b2f9dfd: the requester's own identity, so a genuinely
-        // new resume this estimate happens to create/touch is attributed
-        // correctly. NOTE, flagged for ticket 3fc1e5e's audit: this route
-        // does not yet VERIFY that `resumeId` (looked up via
-        // `loadResumeText` above) actually belongs to this same user --
-        // that's the general "does resumeId in the request body belong to
-        // request.userId" access-control question spanning every by-id
-        // route in this app, out of scope for this ticket, which only
-        // covers the `resumes` table's own uniqueness/numbering.
-        userId: requireUserId(request),
+        // Ticket b2f9dfd (review fix F1): the requester's own identity --
+        // `loadResumeText` above already verified `resumeId` actually
+        // belongs to this same user, so `getOrCreateResumeId` inside
+        // `runDemoMatch` can never mistake "an estimate that happens to
+        // create/touch a resume row" for "silently copying someone else's
+        // resume text into this user's account."
+        userId,
         criteria: buildFetchCriteria(criteria),
         scoreJob: NEVER_SCORE,
         filter: compileFilter(criteria),
@@ -992,6 +1023,15 @@ export function registerSearchRoutes(
     { schema: { body: searchBodySchema } },
     async (request, reply) => {
       const { resumeId, sourceIds, criteria } = request.body;
+      // Ticket b2f9dfd: deliberately NOT scoped by userId here, unlike
+      // `/searches/estimate` above -- this route never calls
+      // `getOrCreateResumeId` (it only reads `resumeText` and hands it to
+      // a worker), so an unscoped lookup leaves no persistent residue if
+      // `resumeId` belongs to someone else. Verifying that ownership at
+      // all is the general by-id access-control question ticket 3fc1e5e's
+      // audit covers consistently across every route with this shape --
+      // see `loadResumeText`'s own doc comment for the full reasoning and
+      // why `/searches/estimate` specifically could not wait for it.
       const resumeText = await loadResumeText(resumeId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
