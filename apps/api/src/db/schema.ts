@@ -383,10 +383,15 @@ export const userJobStatuses = pgTable(
    * "I applied to X" is a fact about (person, job). It must survive every
    * resume rewrite, and it does exactly when the resume is not in the key.
    *
-   * There is no `users` table yet (single-user app today), so `job_id`
-   * alone IS the effective (user, job) key. WHEN A `users` TABLE LANDS:
-   * widen this to `unique().on(table.userId, table.jobId)` and add the
-   * `user_id` column — do NOT add `resume_id` to it at that time.
+   * UPDATE (ticket dba885e, epic 2b9e9dd): a `users` table now exists
+   * (see above) -- but THIS table has not been widened to reference it
+   * yet, deliberately: that's ticket 3fc1e5e's job specifically (the
+   * per-user scoping audit), not a side effect of adding the identity
+   * plumbing itself. Until that lands, `job_id` alone is still the
+   * effective (user, job) key, same as when there was no `users` table
+   * at all. WHEN TICKET 3fc1e5e SCOPES THIS TABLE: widen it to
+   * `unique().on(table.userId, table.jobId)` and add the `user_id`
+   * column — do NOT add `resume_id` to it at that time.
    */
   (table) => [unique().on(table.jobId)],
 );

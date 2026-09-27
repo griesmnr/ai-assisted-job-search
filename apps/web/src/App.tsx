@@ -148,9 +148,14 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
  *      (useResults.ts), since a lower floor can surface jobs the server
  *      never sent to the client at the old one.
  *
- * Single-user, no accounts, no login (decision #2 on the 2026-08-29
- * comment) -- there is exactly one implicit "user" and no session/auth
- * concept anywhere in this file or the API it talks to.
+ * UPDATE (ticket dba885e, epic 2b9e9dd): every request now carries a
+ * real, anonymous per-browser identity (identity.ts) -- the original
+ * "single-user, no accounts, no login" decision (#2, 2026-08-29) is
+ * being deliberately walked back, in stages, starting with that
+ * identity plumbing. Nothing in THIS file reads or branches on it yet
+ * (that starts with ticket b2f9dfd); every resume/result/status this
+ * component renders is still, for now, whatever the API returns
+ * unscoped, same as before this ticket.
  */
 type Tab = "search" | "scored" | "resumes";
 

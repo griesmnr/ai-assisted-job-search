@@ -1,10 +1,12 @@
 /**
  * Ticket dba885e (epic 2b9e9dd, child 1): the anonymous per-browser
- * identity every route now requires. Every request carries an
- * `x-user-id` header -- a `crypto.randomUUID()` minted client-side
- * (apps/web/src/identity.ts) the first time a browser needs one, never a
- * server-generated value -- and this hook is the ONE place that turns
- * that header into `request.userId` for every route handler to read.
+ * identity every route (with two narrow exemptions -- see
+ * `registerIdentity`'s own doc comment) now requires. Every other
+ * request carries an `x-user-id` header -- a `crypto.randomUUID()`
+ * minted client-side (apps/web/src/identity.ts) the first time a browser
+ * needs one, never a server-generated value -- and this hook is the ONE
+ * place that turns that header into `request.userId` for a route handler
+ * to read.
  *
  * Deliberately a plain, unsigned UUID, not a signed session token: at
  * this stage nothing behind it is more sensitive than "which browser is
@@ -40,10 +42,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 declare module "fastify" {
   interface FastifyRequest {
     /** Set by `registerIdentity`'s `onRequest` hook -- see that function's
-     * own doc comment. Present on every request that reaches a route
-     * handler; requests missing/failing the `x-user-id` check never get
-     * that far (rejected with 400 in the hook itself). */
-    userId: string;
+     * own doc comment. Present on every request that goes through the
+     * normal header check. Review fix (B1): genuinely `undefined`, not
+     * merely "never happens", on this hook's own two exemptions --
+     * `OPTIONS` and `GET /handoffs/:id` both return from the hook BEFORE
+     * this is ever assigned, and both DO reach a route handler. Any
+     * future handler on an exempt route (there is currently only one:
+     * `GET /handoffs/:id`) must not assume this is set. */
+    userId?: string;
   }
 }
 
@@ -74,8 +80,16 @@ export function registerIdentity(
       return;
     }
 
+    // Review fix: `x-user-id` is not one of the handful of headers Node's
+    // HTTP parser arrays up on repetition (that list is short and fixed --
+    // `set-cookie` is the main one) -- a request sending this header twice
+    // arrives here as ONE comma-joined string, which simply fails
+    // `UUID_RE` below like any other malformed value. `typeof raw ===
+    // "string"` (not an `Array.isArray` branch that can never actually
+    // run over real HTTP) is what that verified behavior actually looks
+    // like in code.
     const raw = request.headers[USER_ID_HEADER];
-    const userId = Array.isArray(raw) ? raw[0] : raw;
+    const userId = typeof raw === "string" ? raw : undefined;
     if (userId === undefined || !UUID_RE.test(userId)) {
       await reply.code(400).send({ error: `Missing or malformed "${USER_ID_HEADER}" header.` });
       return;

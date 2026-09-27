@@ -1,7 +1,11 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildTestApp as buildApp, DEFAULT_TEST_USER_ID } from "./test-support/build-test-app.js";
+import {
+  buildTestApp as buildApp,
+  DEFAULT_TEST_USER_ID,
+  injectAs,
+} from "./test-support/build-test-app.js";
 import { users } from "./db/schema.js";
 import { createTestDatabase, type TestDatabase } from "./db/test-db.js";
 import { loadEnvFile } from "./load-env.js";
@@ -78,6 +82,41 @@ describe("identity hook (ticket dba885e)", () => {
     await app.inject({ method: "GET", url: "/sources", headers: { "x-user-id": id } });
     await app.inject({ method: "GET", url: "/sources", headers: { "x-user-id": id } });
 
+    const rows = await db.select().from(users).where(eq(users.id, id));
+    expect(rows).toHaveLength(1);
+  });
+
+  // Review fix (B2): the wrapper's own "does the caller already have a
+  // header?" check used to be case-SENSITIVE against a case-INSENSITIVE
+  // HTTP concept, so a caller spelling the header "X-User-Id" (equally
+  // valid HTTP) had it silently discarded and overwritten with the
+  // default fixture user, with no error. Proven directly against the
+  // real users table, not just against the response.
+  it("honors an explicit header even when the caller spells it with different casing (build-test-app.ts's own case-insensitivity)", async () => {
+    const app = buildTestSubject();
+    const id = "33333333-3333-4333-8333-333333333333";
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/sources",
+      headers: { "X-User-Id": id },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const rows = await db.select().from(users).where(eq(users.id, id));
+    expect(rows).toHaveLength(1);
+    // And NOT silently run as the default fixture user instead.
+    const defaultRows = await db.select().from(users).where(eq(users.id, DEFAULT_TEST_USER_ID));
+    expect(defaultRows).toHaveLength(0);
+  });
+
+  it("injectAs is a casing-proof way to act as a specific user, for future cross-user isolation tests", async () => {
+    const app = buildTestSubject();
+    const id = "44444444-4444-4444-8444-444444444444";
+
+    const response = await injectAs(app, id, { method: "GET", url: "/sources" });
+
+    expect(response.statusCode).toBe(200);
     const rows = await db.select().from(users).where(eq(users.id, id));
     expect(rows).toHaveLength(1);
   });
