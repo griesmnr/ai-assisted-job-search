@@ -112,3 +112,111 @@ describe("getUserId (ticket dba885e)", () => {
     expect(getUserId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   });
 });
+
+/**
+ * Ticket 9f06f8f: adopting a SERVER-resolved identity, and remembering the
+ * verified email. Same `vi.resetModules()` discipline as above -- the module's
+ * in-memory `cached` would otherwise mask whether storage was really written.
+ */
+const EMAIL_KEY = "jobsearch.web.userEmail.v1";
+const ADOPTED = "99999999-9999-4999-8999-999999999999";
+
+describe("setUserId (ticket 9f06f8f)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("replaces a self-minted id, persists the new one, and reports that it CHANGED", async () => {
+    const { getUserId, setUserId } = await import("./identity");
+    const minted = getUserId();
+
+    const changed = setUserId(ADOPTED);
+
+    expect(changed).toBe(true);
+    expect(getUserId()).toBe(ADOPTED);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(ADOPTED);
+    expect(ADOPTED).not.toBe(minted);
+  });
+
+  it("reports NOT changed when the server hands back the id this browser already had", async () => {
+    // The "claiming my anonymous session" case -- the caller branches on this
+    // to decide whether cached app state still belongs to this user.
+    const existing = "11111111-1111-4111-8111-111111111111";
+    window.localStorage.setItem(STORAGE_KEY, existing);
+    const { setUserId } = await import("./identity");
+
+    expect(setUserId(existing)).toBe(false);
+  });
+
+  it("survives a module reload, the same way a minted id does", async () => {
+    const { setUserId } = await import("./identity");
+    setUserId(ADOPTED);
+
+    vi.resetModules();
+    const { getUserId } = await import("./identity");
+
+    expect(getUserId()).toBe(ADOPTED);
+  });
+
+  it("REFUSES a malformed id rather than storing one the API would reject on every request", async () => {
+    const existing = "11111111-1111-4111-8111-111111111111";
+    window.localStorage.setItem(STORAGE_KEY, existing);
+    const { getUserId, setUserId } = await import("./identity");
+
+    expect(() => setUserId("not-a-uuid")).toThrow(/malformed user id/i);
+    // The browser's existing, working identity is left completely untouched:
+    // a bad adoption must present as one failed sign-in, never as "the whole
+    // app broke afterwards".
+    expect(getUserId()).toBe(existing);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(existing);
+  });
+});
+
+describe("getVerifiedEmail / setVerifiedEmail (ticket 9f06f8f)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("round-trips through localStorage, and is undefined before anything is verified", async () => {
+    const { getVerifiedEmail, setVerifiedEmail } = await import("./identity");
+
+    expect(getVerifiedEmail()).toBeUndefined();
+    setVerifiedEmail("alice@example.com");
+    expect(getVerifiedEmail()).toBe("alice@example.com");
+    expect(window.localStorage.getItem(EMAIL_KEY)).toBe("alice@example.com");
+  });
+
+  it("reads blocked storage as 'nothing verified' rather than throwing into the caller", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage blocked by policy");
+    });
+    const { getVerifiedEmail } = await import("./identity");
+
+    // Review fix S1's rule, applied to this key too: a storage THROW must
+    // never surface as a broken page -- the prompt simply reappears, which is
+    // the honest consequence of unavailable storage (the user id is gone with
+    // it, so this genuinely IS a new anonymous visitor).
+    expect(getVerifiedEmail()).toBeUndefined();
+  });
+
+  it("does not throw when storage cannot be written", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const { setVerifiedEmail } = await import("./identity");
+
+    expect(() => setVerifiedEmail("alice@example.com")).not.toThrow();
+  });
+});

@@ -752,3 +752,86 @@ button[aria-disabled="true"] {
   font-family: inherit;
   font-size: 0.9rem;
 }
+
+/* Ticket 9f06f8f (epic 2b9e9dd child 4): the post-results sign-in prompt
+   and the emailed link's landing view.
+
+   Visually set apart from the result cards above it with a soft tinted
+   panel rather than the plain `--border` outline every other section here
+   uses -- deliberately: this is the one block on the page that ASKS for
+   something instead of showing search output, and Nicole's framing for it
+   ("so you can find this again", never a wall) depends on it reading as an
+   offer rather than as another row of results. `color-mix` against
+   `currentColor` keeps it working in both light and dark, exactly as
+   `.resume-list-item-focused` above already does -- this file has no
+   hardcoded palette to tie a tint to. */
+.magic-link-prompt {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.magic-link-prompt h3 {
+  margin: 0 0 0.5rem;
+}
+
+/* The already-verified confirmation carries no ask, so it gets no panel
+   weight -- one quiet line, not a box competing with the results. */
+.magic-link-prompt-signed-in {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.magic-link-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* Wide enough to show a whole real address. `type="email"`'s default size is
+   the same ~20-character default the nickname field needed widening past
+   (ticket 5a79aa4's note above), and a half-visible address is exactly what
+   makes a typo survive to the "check your inbox" state. */
+.magic-link-form input {
+  flex: 1 1 18rem;
+  min-width: 12rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* "Not now" and "Use a different address" are real options, not buried
+   links -- but they must not compete with the primary action, so they read
+   as plain text buttons. */
+.magic-link-secondary {
+  background: none;
+  border: none;
+  padding: 0.4rem 0.25rem;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.magic-link-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.magic-link-error {
+  color: #b3261e;
+}
+
+/* The landing view is a full-page takeover (MagicLinkLanding.tsx), so it
+   gets the page's own centered column rather than sitting inside a
+   section. */
+.magic-link-landing .magic-link-panel {
+  margin-top: 2rem;
+  max-width: 40rem;
+}
