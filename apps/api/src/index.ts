@@ -151,7 +151,17 @@ export function buildApp(deps: BuildAppDeps) {
   // often when 5173 is taken — while closing the arbitrary-origin gap:
   // only pages actually served from this machine's loopback address can
   // call this API at all.
-  void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
+  //
+  // Ticket 17d14b1 (deploy scaffolding) added the `CORS_ALLOWED_ORIGIN`
+  // branch: a deployed frontend lives on a real domain, not localhost, so
+  // the regex above alone would lock it out there. It names that one real
+  // origin explicitly when set (never a second `origin: true`-style
+  // wildcard — the drive-by-spend reasoning above applies just as much to
+  // a real domain as to localhost) and falls back to the regex when unset,
+  // which is the default dev/test posture.
+  void app.register(cors, {
+    origin: process.env.CORS_ALLOWED_ORIGIN ?? /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
+  });
 
   // Ticket dba885e (epic 2b9e9dd): every route below now requires the
   // anonymous `x-user-id` header -- registered before any route so the
