@@ -400,6 +400,17 @@ Rules:
   main as a shortcut — always let `pnpm install`, run from inside that
   worktree, produce its own.
 - Worktrees are removed after merge or abandonment. No stale worktrees.
+- **A worktree has no `.env` of its own** (it's gitignored, so `git worktree
+  add` never carries it over) — every DB-backed test suite's `beforeAll`
+  then fails to resolve the `postgres` hostname and the WHOLE suite is
+  skipped, not failed. `rtk vitest run` still prints a green-looking `PASS
+  (N) FAIL (0)` line in that state; only the `skipped (...)` count (and the
+  process's own non-zero exit code) gives it away. Found during PM
+  verification of ticket 3fc1e5e's fable review: a review or merge
+  decision made off that line alone, without checking the skip count or
+  copying a real `.env` into the worktree first, can wave through a change
+  whose actual DB-touching tests (including a fresh ticket's own new
+  ones) never ran at all.
 
 ## Agent Orchestration
 
