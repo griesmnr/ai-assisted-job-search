@@ -1026,12 +1026,18 @@ export function registerSearchRoutes(
       // Ticket b2f9dfd: deliberately NOT scoped by userId here, unlike
       // `/searches/estimate` above -- this route never calls
       // `getOrCreateResumeId` (it only reads `resumeText` and hands it to
-      // a worker), so an unscoped lookup leaves no persistent residue if
-      // `resumeId` belongs to someone else. Verifying that ownership at
-      // all is the general by-id access-control question ticket 3fc1e5e's
-      // audit covers consistently across every route with this shape --
-      // see `loadResumeText`'s own doc comment for the full reasoning and
-      // why `/searches/estimate` specifically could not wait for it.
+      // a worker), so an unscoped lookup leaves no COPY of the resume
+      // TEXT the way the estimate route's did (review round 2, N1: an
+      // earlier version of this comment overstated this as "no
+      // persistent residue" -- that's false, this still creates a real
+      // `searches` row and authorizes real scoring spend against a
+      // resumeId the caller may not own). Whether that's acceptable at
+      // all -- and closing the read/spend gap itself -- is the general
+      // by-id access-control question ticket 3fc1e5e's audit covers
+      // consistently across every route with this shape; see
+      // `loadResumeText`'s own doc comment for why `/searches/estimate`
+      // specifically could not wait for it (that route's gap was a
+      // permanent TEXT copy, not just an authorization question).
       const resumeText = await loadResumeText(resumeId);
       if (resumeText === undefined) {
         return reply.code(404).send({ error: `No resume with id "${resumeId}".` });
