@@ -6,6 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadEnvFile } from "./load-env.js";
+import { registerIdentity } from "./identity.js";
 import { EstimateProgressTracker } from "./matching/estimateProgress.js";
 import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
 import { ZeroResultEstimateCache } from "./matching/zeroResultCache.js";
@@ -151,6 +152,12 @@ export function buildApp(deps: BuildAppDeps) {
   // only pages actually served from this machine's loopback address can
   // call this API at all.
   void app.register(cors, { origin: /^http:\/\/(localhost|127\.0\.0\.1):\d+$/ });
+
+  // Ticket dba885e (epic 2b9e9dd): every route below now requires the
+  // anonymous `x-user-id` header -- registered before any route so the
+  // hook applies globally, with its own two exemptions (CORS preflight,
+  // GET /handoffs/:id) documented on `registerIdentity` itself.
+  registerIdentity(app, deps.db);
 
   registerSourceRoutes(app);
   registerResumeRoutes(app, deps.db, deps.inferTitles);

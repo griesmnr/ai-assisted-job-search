@@ -37,8 +37,13 @@
  * confusing rather than helpful — a stale run would poll, 404, and have to
  * be cleaned up for no benefit.
  *
- * Single-user app with no accounts or login (see App.tsx's doc comment),
- * so these keys need no per-user scoping — a fixed name is correct.
+ * UPDATE (ticket dba885e, epic 2b9e9dd): a real per-browser identity now
+ * exists (see identity.ts), but these keys still need no per-user
+ * scoping in their NAME -- `sessionStorage` is already scoped per
+ * browser tab by the platform itself, so a fixed key name was never at
+ * risk of colliding across different people's browsers, only across
+ * different tabs of the SAME browser, which was never this file's
+ * concern. Nothing here changes.
  *
  * Every access is wrapped: `sessionStorage` can throw on ACCESS (not just
  * on write) in a browser configured to block site data, and persistence is

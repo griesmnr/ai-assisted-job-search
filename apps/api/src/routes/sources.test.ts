@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../index.js";
+import { buildTestApp as buildApp } from "../test-support/build-test-app.js";
 
 // GET /sources never touches the database (see registerSourceRoutes) —
-// a fake db is fine here, same reasoning as index.test.ts.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fakeDb = {} as any;
+// a fake db is fine here, same reasoning as index.test.ts. Ticket dba885e:
+// the identity hook now runs on every request regardless of route, so the
+// fake needs a working (no-op) `insert` chain for that hook alone — see
+// index.test.ts's identical comment.
+const fakeDb = {
+  insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
 
 // checkSourceHealth() (sources/registry.ts) calls each createXSourceFromEnv
 // with no argument, so it always reads live process.env — unlike those

@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { ping } from "@app/shared";
-import { buildApp } from "./index.js";
+import { buildTestApp as buildApp } from "./test-support/build-test-app.js";
 
 // A minimal fake db satisfies BuildAppDeps's type without needing a real
 // Postgres connection just to prove buildApp wires routes up — the routes
-// this test actually exercises (GET /sources) never touch `db`. Route
-// behavior that DOES touch the database is covered by routes/*.test.ts
-// against a real Postgres instance, matching this codebase's existing
-// integration-test convention (see demo-match.test.ts, db/schema.test.ts).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fakeDb = {} as any;
+// this test actually exercises (GET /sources) never touch `db` themselves.
+// Route behavior that DOES touch the database is covered by
+// routes/*.test.ts against a real Postgres instance, matching this
+// codebase's existing integration-test convention (see demo-match.test.ts,
+// db/schema.test.ts).
+//
+// Ticket dba885e: the identity hook (identity.ts) now runs on EVERY
+// request regardless of route, including this one, and does one
+// `db.insert(users).values(...).onConflictDoNothing(...)` — so the fake
+// needs that one chain to be real (a no-op), even though this test still
+// never exercises any actual query logic.
+const fakeDb = {
+  insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
 
 describe("api entrypoint", () => {
   it("builds a Fastify instance with routes registered", async () => {

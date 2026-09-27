@@ -488,24 +488,31 @@ land, scored by the workers above as they come in.
 UI:
 
 ```bash
+# 0. Every request needs an x-user-id header (ticket dba885e) -- a
+#    per-browser identity the real frontend mints and persists itself
+#    (apps/web/src/identity.ts). Calling the API directly, mint one by hand:
+USER_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
 # 1. Create a resume, capture its id
 curl -s -X POST http://localhost:3000/resumes \
   -H 'Content-Type: application/json' \
+  -H "x-user-id: $USER_ID" \
   -d '{"resumeText": "paste your resume text here"}'
 # -> { "id": "<resumeId>", ... }
 
 # 2. See which source ids are configured
-curl -s http://localhost:3000/sources
+curl -s http://localhost:3000/sources -H "x-user-id: $USER_ID"
 
 # 3. Kick off a search — publishes one fetch.source message per sourceId
 curl -s -X POST http://localhost:3000/searches \
   -H 'Content-Type: application/json' \
+  -H "x-user-id: $USER_ID" \
   -d '{"resumeId": "<resumeId>", "sourceIds": ["greenhouse", "lever"]}'
 # -> 202, { "searchId": "<searchId>", "status": "pending", "skippedSources": [] }
 # (no top-level "id" field -- it's "searchId")
 
 # 4. Poll for results as the workers fetch, score, and persist
-curl -s http://localhost:3000/searches/<searchId>
+curl -s http://localhost:3000/searches/<searchId> -H "x-user-id: $USER_ID"
 ```
 
 Watch the `[fetch-worker]`/`[score-worker]`-prefixed lines in the same
