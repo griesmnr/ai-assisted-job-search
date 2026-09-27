@@ -1,0 +1,17 @@
+server {
+    # ${PORT} is substituted at container START by the base nginx image's
+    # own entrypoint (envsubst over every *.template file under
+    # /etc/nginx/templates/, see web.Dockerfile) -- it only touches
+    # variables that are actually set in the environment, so nginx's own
+    # runtime variables below ($uri) are never touched by the same pass.
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA fallback -- see web.Dockerfile's comment on why this exists even
+    # though there's only one real route today.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

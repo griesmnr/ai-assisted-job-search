@@ -51,15 +51,19 @@ describe("api entrypoint", () => {
       else process.env.CORS_ALLOWED_ORIGIN = ORIGINAL;
     });
 
-    it("falls back to the localhost-only regex when unset, unchanged from before this ticket", async () => {
-      delete process.env.CORS_ALLOWED_ORIGIN;
-      const app = buildApp({
+    function buildAppUnderTest() {
+      return buildApp({
         db: fakeDb,
         inferTitles: async () => [],
         getScoreJob: () => {
           throw new Error("not used by this test");
         },
       });
+    }
+
+    it("falls back to the localhost-only regex when unset, unchanged from before this ticket", async () => {
+      delete process.env.CORS_ALLOWED_ORIGIN;
+      const app = buildAppUnderTest();
       const allowed = await app.inject({
         method: "GET",
         url: "/sources",
@@ -75,15 +79,43 @@ describe("api entrypoint", () => {
       expect(blocked.headers["access-control-allow-origin"]).toBeUndefined();
     });
 
-    it("allows exactly the configured origin when CORS_ALLOWED_ORIGIN is set, and nothing else", async () => {
-      process.env.CORS_ALLOWED_ORIGIN = "https://jobsearch.example.com";
-      const app = buildApp({
-        db: fakeDb,
-        inferTitles: async () => [],
-        getScoreJob: () => {
-          throw new Error("not used by this test");
-        },
+    // Opus review, F2 (BLOCKER, verified live): a set-but-blank value is
+    // not the same as unset, and `??` alone let it through as a real
+    // origin string -- @fastify/cors then 500'd every request, since ""
+    // isn't a value it accepts. This is the exact state the README's own
+    // Railway walkthrough invites on the very first deploy (create the
+    // variable before `web`'s real URL exists, fill it in later).
+    it("falls back to the dev regex, rather than 500ing, when set but blank", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = "   ";
+      const app = buildAppUnderTest();
+      const response = await app.inject({
+        method: "GET",
+        url: "/sources",
+        headers: { origin: "http://localhost:5173" },
       });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    });
+
+    // Opus review, F9 (verified live): a value copied out of a browser's
+    // address bar commonly carries a trailing slash; a browser's own
+    // `Origin` header never does, so an un-trimmed comparison would 500
+    // every real request in production while looking correctly configured.
+    it("strips a trailing slash from a configured origin", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = "https://jobsearch.example.com/";
+      const app = buildAppUnderTest();
+      const response = await app.inject({
+        method: "GET",
+        url: "/sources",
+        headers: { origin: "https://jobsearch.example.com" },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("https://jobsearch.example.com");
+    });
+
+    it("echoes the configured origin regardless of the caller's actual Origin header", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = "https://jobsearch.example.com";
+      const app = buildAppUnderTest();
       const allowed = await app.inject({
         method: "GET",
         url: "/sources",
@@ -97,15 +129,25 @@ describe("api entrypoint", () => {
       // does. So a page served from localhost, hitting a deployed API with
       // CORS_ALLOWED_ORIGIN set, still gets told the allowed origin is the
       // real deployed frontend, not localhost -- which is exactly what
-      // stops a browser from trusting the response, since the header no
+      // stops a BROWSER from trusting the response, since the header no
       // longer matches the page's own origin. The dev-time regex must NOT
       // additionally kick in once a real origin is configured.
-      const localhost = await app.inject({
+      //
+      // Opus review, F10: this is protection for a browser specifically,
+      // not a server-side allowlist -- the handler still runs and returns
+      // its real body to a mismatched Origin (this app has no other
+      // request authentication; see the x-user-id header's own documented
+      // trust level in identity.ts). A non-browser client that doesn't
+      // enforce CORS at all is unaffected by this header either way; that
+      // gap is tracked by tickets 3fc1e5e/9f06f8f's identity work, not
+      // this one.
+      const mismatched = await app.inject({
         method: "GET",
         url: "/sources",
         headers: { origin: "http://localhost:5173" },
       });
-      expect(localhost.headers["access-control-allow-origin"]).toBe(
+      expect(mismatched.statusCode).toBe(200);
+      expect(mismatched.headers["access-control-allow-origin"]).toBe(
         "https://jobsearch.example.com",
       );
     });

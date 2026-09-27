@@ -29,10 +29,17 @@ inside one project/one bill.
    (see `.env.example`) — map them explicitly in step 5, don't rely on
    Railway's names matching.
 3. **Add a RabbitMQ service.** Railway has no first-party RabbitMQ
-   offering; search the template marketplace for a community "RabbitMQ"
-   template (image `rabbitmq:3.13.7-management` is a safe manual choice if
-   none looks trustworthy — same image this app's dev compose file uses).
-   Note its host/port/credentials the same way.
+   offering, but publishes its own guide for deploying one from the
+   template marketplace ("Deploy RabbitMQ and Wire Up Producers and
+   Consumers" in Railway's docs), which recommends image
+   `rabbitmq:4-management` — follow that guide rather than a manual
+   deploy. **Cross-service hosts on Railway are not the values shown in
+   each service's own Variables tab** — reachability between services goes
+   over Railway's private network at `<service>.railway.internal`,
+   referenced as `${{ServiceName.RAILWAY_PRIVATE_DOMAIN}}` (the same is
+   true of Postgres — `${{Postgres.PGHOST}}`, used below, already resolves
+   there). Copying a literal host string out of either service's own
+   settings UI is the wrong value here.
 4. **Add the `api` service**: "+ New" → "GitHub Repo" (or "Empty Service" +
    manual deploy), root directory `/`, Dockerfile path
    `deploy/api.Dockerfile`. Railway builds from the repo root by default,
@@ -63,19 +70,29 @@ inside one project/one bill.
    `CORS_ALLOWED_ORIGIN` and `PORT` — neither worker serves HTTP).
    `worker-score-job` also needs `ANTHROPIC_API_KEY`.
 
-   Only `api`'s container should run migrations (its Dockerfile `CMD`
-   does this automatically, once, before starting the server) — that's
-   why the workers get a _Custom Start Command_ instead of running the
-   default `CMD`, which would otherwise re-run `drizzle-kit migrate` on
-   every worker restart too.
+   Only `api`'s container should run migrations (its Dockerfile `CMD` does
+   this automatically before starting the server, on **every** boot and
+   redeploy, not just the first one — `drizzle-kit migrate` is idempotent
+   against already-applied migrations, so this is harmless, just not
+   "once") — that's why the workers get a _Custom Start Command_ instead
+   of running the default `CMD`, which would otherwise run it redundantly
+   from three containers on every restart.
 
 7. **Add the `web` service**: same repo, Dockerfile path
-   `deploy/web.Dockerfile`, with one **build argument**:
+   `deploy/web.Dockerfile`, with one **required build argument**:
    `VITE_API_BASE_URL` = the `api` service's real public URL (Railway
    assigns one once you enable public networking on that service — Service
    → Settings → Networking → "Generate Domain"). This is a _build_ arg,
    not a runtime variable — Railway's build-arg support is under the same
-   Settings → Build page.
+   Settings → Build page. The image build fails loudly if this is left
+   blank (deploy/web.Dockerfile's own guard) rather than silently shipping
+   a broken frontend. `VITE_RESUME_OPTIMIZER_APP_URL` (apps/web/src/api/
+   client.ts) is a second, optional build-time var with a sane default —
+   only set it if the separate resume-tailoring app's own URL needs
+   overriding.
+   No variable is needed for the port Railway assigns `web` at runtime —
+   the image reads `PORT` itself (deploy/web.nginx.conf.template) the same
+   way `api` does.
 
 8. **Enable public networking** (Settings → Networking → "Generate
    Domain") on both `api` and `web`. Once both have real URLs:
@@ -93,10 +110,14 @@ inside one project/one bill.
 
 10. **Verify before asking Jay to test** (per Nicole's own stated plan):
     open `web`'s URL, paste a resume, run a real search against one
-    source, confirm results land. That's also the acceptance check for
-    this ticket's "no bugs first" requirement — nothing here is
-    considered done until that round-trip works against the real
-    deployed URLs, not just `docker compose` locally.
+    source, confirm results land. This ticket's Dockerfiles and configs
+    were verified by careful reading and by exercising individual pieces
+    directly (drizzle-kit against a missing `.env`, a `vite build` with a
+    blank `VITE_API_BASE_URL`, `@fastify/cors` against each
+    `CORS_ALLOWED_ORIGIN` shape) — Docker itself is not installed in the
+    dev container this was built in, so neither image has actually been
+    built and run end to end yet. This step is that first real end-to-end
+    check, not optional polish on top of one.
 
 ## Self-host fallback: `docker-compose.prod.yml`
 

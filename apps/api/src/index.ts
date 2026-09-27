@@ -159,8 +159,23 @@ export function buildApp(deps: BuildAppDeps) {
   // wildcard — the drive-by-spend reasoning above applies just as much to
   // a real domain as to localhost) and falls back to the regex when unset,
   // which is the default dev/test posture.
+  //
+  // Opus review, F2 (BLOCKER) + F9: `??` alone treats a set-but-BLANK
+  // `CORS_ALLOWED_ORIGIN=` (not the same as unset) as a real value —
+  // verified live to make @fastify/cors 500 EVERY request, not just fail
+  // CORS, since `origin: ""` isn't a value it accepts. This is not a
+  // contrived input: the README's own Railway walkthrough has Nicole set
+  // this variable before `web`'s real URL exists yet ("circular on the
+  // very first deploy"), and creating-it-blank-then-filling-it-in-later
+  // is the natural reading of that instruction. `.trim()` + a truthiness
+  // check treats blank the same as unset (falls back to the dev regex);
+  // it also strips a trailing slash a value copy-pasted from a browser's
+  // address bar commonly carries, which a browser's own `Origin` header
+  // never has — an un-trimmed `.../` would otherwise silently 500 every
+  // real request in exactly the same way.
+  const configuredOrigin = process.env.CORS_ALLOWED_ORIGIN?.trim().replace(/\/+$/, "");
   void app.register(cors, {
-    origin: process.env.CORS_ALLOWED_ORIGIN ?? /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
+    origin: configuredOrigin ? configuredOrigin : /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
   });
 
   // Ticket dba885e (epic 2b9e9dd): every route below now requires the
