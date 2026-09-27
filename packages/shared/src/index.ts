@@ -484,10 +484,16 @@ export type RequestMagicLinkResponse = {
 };
 
 /** `POST /auth/magic-link/verify` (ticket 9f06f8f). The raw token from the
- * emailed link's `?magicLinkToken=` query parameter. POST, not GET, and
- * sent in a body rather than a URL -- see routes/auth.ts's own reasoning
- * (a GET is consumed by link prefetchers and lands the credential in
- * server logs and `Referer` headers). */
+ * emailed link's `#magicLinkToken=` URL FRAGMENT. POST, not GET, and sent
+ * in a body rather than a URL -- see routes/auth.ts's own reasoning (a GET
+ * is consumed by link prefetchers and lands the credential in server logs
+ * and `Referer` headers).
+ *
+ * The fragment, not a query parameter (review round 4, F2): a fragment is
+ * never sent to ANY server -- not the static host that serves the SPA, not
+ * a proxy in front of it, not in a `Referer` -- whereas
+ * `?magicLinkToken=...` would land the live credential in the frontend
+ * host's own access logs before a line of this app's code runs. */
 export type VerifyMagicLinkRequest = {
   token: string;
 };
@@ -500,11 +506,15 @@ export type VerifyMagicLinkRequest = {
  *    to the anonymous user that REQUESTED the link. "Claiming my anonymous
  *    session": `userId` is unchanged, and everything the visitor already had
  *    is already theirs -- there is no data to migrate, because there were
- *    never two identities, only one gaining an email.
+ *    never two identities, only one gaining an email. Only ever returned to
+ *    the browser that requested the link (see `"different_browser"` under
+ *    `MagicLinkRejectionReason` for the account-fixation attack that
+ *    restriction exists to stop).
  *  - `"adopted"` -- a `users` row already had this email, so the verifying
  *    browser adopts THAT user. "Logging in from a second device": `userId` is
  *    a DIFFERENT id than the caller sent, and the caller must start sending
- *    the returned one.
+ *    the returned one. Reachable from ANY browser -- that is the feature, and
+ *    it requires only control of the inbox.
  */
 export type MagicLinkOutcome = "attached" | "adopted";
 
@@ -543,15 +553,30 @@ export type VerifyMagicLinkResponse = {
  *    an existing account. See routes/auth.ts's own doc comment for the full
  *    reasoning; recovery is to use the other address's link, or a fresh
  *    browser profile.
+ *  - `"different_browser"` -- the link is being redeemed somewhere OTHER than
+ *    the browser that requested it, AND no account exists for the address yet
+ *    (so redemption would take the "attach" branch). Refused because nothing
+ *    authenticates who REQUESTS a link: an attacker who POSTs
+ *    `/auth/magic-link` for a stranger's address with their own `x-user-id`
+ *    would otherwise have the victim's click bind the victim's email to the
+ *    ATTACKER's user id, handing that id back for the victim's browser to
+ *    adopt -- permanent account fixation (reproduced end to end by fable's
+ *    round-3 review of ticket 9f06f8f, 2026-09-27). The token is NOT consumed
+ *    by this refusal, so the real requester's own link still works; recovery
+ *    is to open it in the browser it was asked for from, after which
+ *    `"adopted"` makes every other device work.
  *
  * Telling `expired` apart from `already_used` is a deliberate, narrow
  * disclosure: both are only ever reachable by someone who already holds the
  * 256-bit token, so neither tells an attacker anything they could not already
  * infer, while the difference is exactly what a confused real user needs to
- * see.
+ * see. `different_browser` discloses nothing further for the same reason, and
+ * deliberately does NOT reveal whether an account already exists for the
+ * address (it is only ever returned when one does not, but reaching it at all
+ * already requires holding the token).
  */
 export type MagicLinkRejectionReason =
-  "invalid" | "expired" | "already_used" | "browser_already_claimed";
+  "invalid" | "expired" | "already_used" | "browser_already_claimed" | "different_browser";
 
 export type VerifyMagicLinkError = {
   error: string;

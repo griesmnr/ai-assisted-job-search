@@ -32,9 +32,13 @@ vi.mock("../api/client", () => ({
     const body = (err as { body?: unknown }).body;
     if (typeof body !== "object" || body === null) return undefined;
     const reason = (body as { reason?: unknown }).reason;
-    return ["invalid", "expired", "already_used", "browser_already_claimed"].find(
-      (candidate) => candidate === reason,
-    );
+    return [
+      "invalid",
+      "expired",
+      "already_used",
+      "browser_already_claimed",
+      "different_browser",
+    ].find((candidate) => candidate === reason);
   },
 }));
 
@@ -46,7 +50,7 @@ const ADOPTED_USER_ID = "99999999-9999-4999-8999-999999999999";
 const OWN_USER_ID = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(() => {
-  window.history.replaceState(null, "", "/?magicLinkToken=tok_abc123");
+  window.history.replaceState(null, "", "/#magicLinkToken=tok_abc123");
 });
 
 afterEach(() => {
@@ -63,7 +67,7 @@ function rejection(reason: string, message: string): Error & { body: unknown } {
 }
 
 describe("readMagicLinkTokenFromUrl", () => {
-  it("finds the token, and reports none once the parameter is gone", () => {
+  it("finds the token in the fragment, and reports none once it is gone", () => {
     expect(readMagicLinkTokenFromUrl()).toBe("tok_abc123");
 
     window.history.replaceState(null, "", "/");
@@ -71,8 +75,34 @@ describe("readMagicLinkTokenFromUrl", () => {
   });
 
   it("treats an empty parameter as absent", () => {
-    window.history.replaceState(null, "", "/?magicLinkToken=");
+    window.history.replaceState(null, "", "/#magicLinkToken=");
     expect(readMagicLinkTokenFromUrl()).toBeUndefined();
+  });
+
+  /**
+   * REVIEW ROUND 4, F2: the token lives in the FRAGMENT, which no server ever
+   * receives, precisely so the static host serving this bundle cannot log a
+   * live credential. Reading a query parameter too would quietly re-open that
+   * hole the moment anything produced a `?`-shaped link again, so this pins
+   * fragment-only -- a query-string token is not a sign-in link here.
+   */
+  it("ignores a token in the query string -- the fragment is the only place it lives", () => {
+    window.history.replaceState(null, "", "/?magicLinkToken=tok_in_the_query");
+    expect(readMagicLinkTokenFromUrl()).toBeUndefined();
+  });
+
+  it("keeps any other fragment parameter when stripping the token", async () => {
+    window.history.replaceState(null, "", "/#keep=me&magicLinkToken=tok_abc123");
+    verifyMagicLink.mockResolvedValue({
+      userId: ADOPTED_USER_ID,
+      email: "alice@example.com",
+      outcome: "adopted",
+    });
+
+    render(<MagicLinkLanding token="tok_abc123" />);
+    await screen.findByRole("heading", { name: /you're signed in/i });
+
+    expect(window.location.hash).toBe("#keep=me");
   });
 });
 
@@ -97,7 +127,7 @@ describe("MagicLinkLanding -- success", () => {
 
     // THE CREDENTIAL IS OUT OF THE URL. A single-use token must not survive
     // in the address bar or in browser history once it has been redeemed.
-    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
   });
 
   it("does NOT reset persisted app state when the id is unchanged -- an in-progress search survives claiming it", async () => {
@@ -239,7 +269,7 @@ describe("MagicLinkLanding -- refusals", () => {
     // No identity was adopted on a refusal.
     expect(localStorage.getItem("jobsearch.web.userEmail.v1")).toBeNull();
     // A spent link comes out of the URL like a successful one.
-    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
   });
 
   it("shows the reused-link message for a replayed token", async () => {
@@ -272,6 +302,36 @@ describe("MagicLinkLanding -- refusals", () => {
   });
 
   /**
+   * REVIEW ROUND 4, F1. The refusal that closes account fixation: a link
+   * redeemed somewhere other than the browser that asked for it, for an
+   * address with no account yet. The copy matters more here than for any other
+   * reason code, because this is the ONE refusal a completely innocent user can
+   * hit (they asked on their phone and clicked on their laptop) -- and their
+   * recovery is NOT "ask for a new link", since this link was never spent.
+   */
+  it("explains the different-browser refusal, adopts nothing, and says the link is still good", async () => {
+    verifyMagicLink.mockRejectedValue(
+      rejection(
+        "different_browser",
+        "Open this sign-in link in the browser you asked for it from. Once your email address is attached there, you can sign in from any other browser or device.",
+      ),
+    );
+
+    render(<MagicLinkLanding token="tok_abc123" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/browser you asked for it from/i);
+    // Not the generic spent-link note: this link still works elsewhere.
+    expect(screen.getByText(/this link hasn't been used up/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/you can ask for a new link from the bottom of your results/i),
+    ).not.toBeInTheDocument();
+    // NOTHING was adopted -- the whole point of the server-side refusal is
+    // that this browser does not become somebody else's account.
+    expect(localStorage.getItem("jobsearch.web.userId.v1")).toBeNull();
+    expect(localStorage.getItem("jobsearch.web.userEmail.v1")).toBeNull();
+  });
+
+  /**
    * A transport failure is the one refusal that is NOT adjudicated: the token
    * has not been consumed, so the link is still worth retrying -- which means
    * it must stay in the URL, unlike every spent-token case above.
@@ -287,7 +347,7 @@ describe("MagicLinkLanding -- refusals", () => {
     expect(
       screen.getByText(/still worth trying again once you're back online/i),
     ).toBeInTheDocument();
-    expect(window.location.search).toBe("?magicLinkToken=tok_abc123");
+    expect(window.location.hash).toBe("#magicLinkToken=tok_abc123");
   });
 
   it("refuses a malformed user id rather than storing one the API would reject on every request", async () => {

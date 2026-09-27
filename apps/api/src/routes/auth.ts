@@ -18,7 +18,7 @@
  * frontend, not here; this file would happily mint a link at any time, and
  * deliberately does not try to police when the UI asks.
  *
- * ================= THE THREE SECURITY PROPERTIES ==================
+ * ================= THE FOUR SECURITY PROPERTIES ==================
  *
  * 1. UNGUESSABILITY. A token is 32 bytes of `randomBytes` (256 bits),
  *    base64url-encoded. Only its sha256 is stored (see `magicLinkTokens`'s own
@@ -39,18 +39,39 @@
  *    single conditional UPDATE, Postgres serializes them on the row and
  *    exactly one gets a row back.
  *
+ * 4. NO ACCOUNT FIXATION. The ATTACH branch -- and only that branch -- also
+ *    requires that the browser VERIFYING is the browser that REQUESTED
+ *    (`resolveIdentity`'s `different_browser` refusal). Added in review round
+ *    4 after fable reproduced a full account-takeover end to end without it:
+ *    nothing authenticates who requests a link, so an attacker could POST
+ *    `/auth/magic-link` for `victim@` carrying their OWN `x-user-id`, and the
+ *    victim's click on a perfectly genuine email would then attach `victim@`
+ *    to the ATTACKER's user row and hand that id back for the victim's
+ *    browser to adopt -- permanently, since the victim's own later link for
+ *    their own address just adopts the same attacker-controlled row. The
+ *    ADOPT branch stays reachable from any browser: that is second-device
+ *    sign-in, it only ever requires control of the inbox, and it is not part
+ *    of the attack (it points the verifier at the address's OWN pre-existing
+ *    account, never at an id the attacker chose).
+ *
  * WHY VERIFY IS A POST WITH THE TOKEN IN THE BODY. The emailed link points at
- * the SPA (`?magicLinkToken=...`), which reads the token and POSTs it here.
- * Three things fall out of that, all deliberate:
+ * the SPA (`#magicLinkToken=...`), which reads the token and POSTs it here.
+ * Four things fall out of that, all deliberate:
  *   - A GET endpoint carrying the token in its path/query would land the
  *     credential in this app's own request logs, in any intermediary's logs,
  *     and in the `Referer` of every subsequent request from that page.
+ *   - The token rides in the URL FRAGMENT, not a query parameter (review
+ *     round 4, F2). The API-side design above keeps it out of THIS server's
+ *     logs, but `?magicLinkToken=...` would still be logged by whatever
+ *     static host serves the SPA, in full, before any of this app's code
+ *     runs. A fragment is never sent to any server, proxy, or `Referer`
+ *     header at all -- only the browser ever sees it.
  *   - Consuming a token requires running JavaScript and issuing a POST, so
  *     the link scanners and prefetchers that follow URLs in mail (SafeLinks
  *     and friends) do not burn the user's one-shot token by looking at it.
- *   - The frontend strips the query parameter with `history.replaceState` as
- *     soon as the response lands, so the token does not linger in the address
- *     bar or in browser history.
+ *   - The frontend strips the fragment with `history.replaceState` as soon as
+ *     the response lands, so the token does not linger in the address bar or
+ *     in browser history.
  *
  * WHAT THIS ROUTE DELIBERATELY DOES NOT DO: rate limiting or abuse
  * prevention beyond correctness (explicitly out of scope per the ticket --
@@ -230,7 +251,12 @@ export function registerAuthRoutes(
       });
 
       const linkUrl = new URL(webAppBaseUrl());
-      linkUrl.searchParams.set("magicLinkToken", token);
+      // A FRAGMENT, not a query parameter -- see this file's header (property
+      // 4's sibling note on WHY VERIFY IS A POST). Assigned as one string
+      // rather than via `searchParams` so it cannot end up on the wrong side
+      // of the `#`. Safe without encoding: the token is base64url (A-Z a-z
+      // 0-9 `-` `_`), none of which means anything in a fragment.
+      linkUrl.hash = `magicLinkToken=${token}`;
       const link = linkUrl.toString();
       const minutes = Math.round(MAGIC_LINK_TTL_MS / 60_000);
 
@@ -277,10 +303,16 @@ export function registerAuthRoutes(
     { schema: { body: verifyMagicLinkBodySchema } },
     async (request, reply) => {
       const tokenHash = hashToken(request.body.token);
+      // The browser doing the VERIFYING, which is a different question from
+      // the browser that requested the link. Both are needed: the ADOPT
+      // branch ignores this one (second-device sign-in is the feature), the
+      // ATTACH branch requires it to match (security property 4 -- account
+      // fixation).
+      const verifierUserId = requireUserId(request);
 
       let resolved: { userId: string; email: string; outcome: MagicLinkOutcome };
       try {
-        resolved = await claimAndResolve(db, tokenHash);
+        resolved = await claimAndResolve(db, tokenHash, verifierUserId);
       } catch (err) {
         if (err instanceof MagicLinkRefusal) {
           return reply.code(400).send({ error: err.message, reason: err.reason });
@@ -305,18 +337,27 @@ export function registerAuthRoutes(
  *
  * Retries ONCE on a unique violation, which has exactly one reachable cause
  * here: two verifications for the SAME new email, in flight at the same
- * moment, from two different anonymous browsers. Both pass the "no users row
- * has this email" check, then the second one's `UPDATE users SET email`
- * collides on `users_email_unique`. Because the loser's transaction rolls
- * back, its token is un-claimed, and the retry takes the ADOPT branch
- * instead (the email now demonstrably exists) -- which is the correct outcome
- * for it: both browsers end up pointed at the same single account, which is
- * what one person verifying the same address twice means.
+ * moment, from two different anonymous browsers (each redeeming its OWN
+ * link from its OWN browser, so both clear the `different_browser` check).
+ * Both pass the "no users row has this email" check, then the second one's
+ * `UPDATE users SET email` collides on `users_email_unique`. Because the
+ * loser's transaction rolls back, its token is un-claimed, and the retry
+ * takes the ADOPT branch instead (the email now demonstrably exists) -- which
+ * is the correct outcome for it: both browsers end up pointed at the same
+ * single account, which is what one person verifying the same address twice
+ * means. Raced for real in auth.test.ts ("two SIMULTANEOUS first
+ * verifications..."), not merely reasoned about.
+ *
+ * `verifierUserId` is the `x-user-id` of the request being served -- passed
+ * all the way down because only `resolveIdentity`'s attach branch may consult
+ * it, and it must be compared INSIDE this transaction so a mismatch rolls the
+ * `used_at` claim back with everything else.
  */
 async function claimAndResolve(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
   tokenHash: string,
+  verifierUserId: string,
 ): Promise<{ userId: string; email: string; outcome: MagicLinkOutcome }> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -347,7 +388,7 @@ async function claimAndResolve(
         }
 
         const { email, requestingUserId } = claimed[0]!;
-        return await resolveIdentity(tx, email, requestingUserId);
+        return await resolveIdentity(tx, email, requestingUserId, verifierUserId);
       });
     } catch (err) {
       if (attempt === 0 && isUniqueViolation(err)) continue;
@@ -401,14 +442,34 @@ async function classifyClaimFailure(
 }
 
 /**
- * The two identity-resolution branches this ticket exists for, plus the third
- * case the ticket did not enumerate.
+ * The two identity-resolution branches this ticket exists for, plus the two
+ * cases the ticket did not enumerate (a browser that already carries a
+ * different email, and a link redeemed from a browser that did not ask for
+ * it).
+ *
+ * THE TWO BRANCHES TRUST DIFFERENT THINGS, AND THAT ASYMMETRY IS THE WHOLE
+ * SECURITY DESIGN:
+ *
+ *  - ADOPT trusts the INBOX only. The address already has an account, so the
+ *    only thing redemption can do is point the verifier at that account --
+ *    an id chosen by nobody, already carrying that address's own data. Any
+ *    browser may do this; that IS second-device sign-in.
+ *  - ATTACH trusts the inbox AND the browser. It writes an address onto a
+ *    `users` row named by `requesting_user_id`, which is a client-asserted,
+ *    unauthenticated value captured from whoever POSTed `/auth/magic-link`.
+ *    Anyone can request a link for anyone's address, so if this branch
+ *    accepted a click from an arbitrary browser, the requester would get to
+ *    CHOOSE which account a stranger's verified email lands on. See
+ *    `different_browser` below.
  */
 async function resolveIdentity(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tx: NodePgDatabase<any>,
   email: string,
   requestingUserId: string,
+  /** The `x-user-id` of the request being served right now -- NOT the one
+   * stored on the token. Consulted by the attach branch only. */
+  verifierUserId: string,
 ): Promise<{ userId: string; email: string; outcome: MagicLinkOutcome }> {
   // BRANCH 1 -- "logging in from a second device". A `users` row already
   // carries this email, so this browser adopts THAT user, and every resume,
@@ -435,6 +496,47 @@ async function resolveIdentity(
   // are visible immediately, no separate migration step" criterion is
   // satisfied by construction: there were never two identities, only one
   // gaining an email.
+  //
+  // FIRST, THE GUARD THAT MAKES THAT SAFE (security property 4, review round
+  // 4). This branch is the only place in the app where an unauthenticated,
+  // client-chosen id (`requesting_user_id`, captured from whoever POSTed
+  // `/auth/magic-link`, which requires no authentication of any kind) gets an
+  // email written onto it and is then handed back as the caller's identity.
+  // Without this check, fable's round-3 review took a full account over end
+  // to end: attacker POSTs `/auth/magic-link {email: "victim@"}` with their
+  // own `x-user-id` A, the victim gets a genuine email and clicks it in their
+  // own browser, this branch writes `victim@` onto row A, and the victim's
+  // browser adopts A -- so every resume and search the victim makes from then
+  // on is readable and deletable by the attacker, with no recovery (the
+  // victim's own later link for their own address now takes the ADOPT branch
+  // into that same row A).
+  //
+  // Requiring the verifier to be the requester closes it completely: an
+  // attacker can still make a stranger's inbox receive a link, but the only
+  // browser that link can attach anything from is the attacker's own, where
+  // it attaches the attacker's OWN address to the attacker's OWN row and
+  // grants nothing. Note this costs the legitimate user nothing after the
+  // first attach -- from then on the address HAS an account, so every other
+  // device takes the ADOPT branch, which is deliberately unbound.
+  //
+  // Thrown, so it rolls the whole transaction back INCLUDING the `used_at`
+  // claim: the real requester's link must still work afterward, exactly like
+  // the `browser_already_claimed` refusal below.
+  //
+  // Compared in constant time, for a reason specific to this check: a refusal
+  // here does NOT consume the token, so an attacker holding one may retry it
+  // an unlimited number of times, which is exactly the condition a statistical
+  // timing attack needs -- and the value being compared against
+  // (`requesting_user_id`) is not merely an identifier in this app, it IS the
+  // bearer credential (`x-user-id`, identity.ts). A naive `!==` on two strings
+  // is not constant time in V8.
+  if (!constantTimeEquals(verifierUserId, requestingUserId)) {
+    throw new MagicLinkRefusal(
+      "different_browser",
+      "Open this sign-in link in the browser you asked for it from. Once your email address is attached there, you can sign in from any other browser or device.",
+    );
+  }
+
   const requesting = await tx
     .select({ email: users.email })
     .from(users)
@@ -463,7 +565,7 @@ async function resolveIdentity(
   // already claimed, e.g. a private window). A proper answer needs an
   // explicit sign-out, which is its own ticket.
   const currentEmail = requesting[0]?.email ?? null;
-  if (currentEmail !== null && !emailsEqual(currentEmail, email)) {
+  if (currentEmail !== null && !constantTimeEquals(currentEmail, email)) {
     throw new MagicLinkRefusal(
       "browser_already_claimed",
       `This browser is already signed in as ${currentEmail}. Open this link in a different browser (or a private window) to sign in as ${email}.`,
@@ -489,13 +591,23 @@ async function resolveIdentity(
 }
 
 /**
- * Constant-time comparison of two already-normalized addresses. Not because
- * an email is secret -- it is not -- but because this specific comparison
- * decides whether the caller is told the OTHER address on the account
- * (`browser_already_claimed`'s message names it), and a length/prefix-timing
- * side channel on that decision is free to remove here.
+ * Constant-time string equality, used by both of `resolveIdentity`'s
+ * refusal decisions:
+ *
+ *  - two already-normalized email addresses. Not because an email is secret
+ *    -- it is not -- but because that comparison decides whether the caller is
+ *    told the OTHER address on the account (`browser_already_claimed`'s
+ *    message names it), and a length/prefix-timing side channel on that
+ *    decision is free to remove here.
+ *  - the verifying browser's id against the token's `requesting_user_id`,
+ *    where the value on the other side genuinely IS a credential -- see that
+ *    call site's own note.
+ *
+ * Length is compared first and short-circuits, which is not a leak worth
+ * caring about at either call site (a UUID's length is fixed; an address's
+ * length is already implied by the message that names it).
  */
-function emailsEqual(a: string, b: string): boolean {
+function constantTimeEquals(a: string, b: string): boolean {
   const left = Buffer.from(a, "utf8");
   const right = Buffer.from(b, "utf8");
   if (left.length !== right.length) return false;

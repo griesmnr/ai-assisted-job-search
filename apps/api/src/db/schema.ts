@@ -516,10 +516,24 @@ export const userJobStatuses = pgTable(
  * ASKED for the link -- the thing a brand-new email attaches to ("claiming
  * my anonymous session"). FK'd to `users` because `registerIdentity` has
  * already lazily created that row by the time `POST /auth/magic-link` runs.
- * Note it is NOT necessarily the browser that VERIFIES: the whole point of
- * the second-device case is that the link may be opened somewhere else
- * entirely, and the verify route reads this column rather than the
- * verifying request's own `x-user-id` (see routes/auth.ts).
+ *
+ * WHICH BRANCH READS IT, AND WHICH DOES NOT -- corrected in review round 4,
+ * because the original wording here ("the verify route reads this column
+ * rather than the verifying request's own `x-user-id`") stated as an
+ * unqualified design goal the exact premise that turned out to be an account-
+ * takeover (fable's round-3 review of ticket 9f06f8f reproduced it end to
+ * end; see routes/auth.ts's security property 4):
+ *
+ *  - The ADOPT branch ("logging in from a second device") ignores this column
+ *    entirely. It resolves by EMAIL, so the link may be opened anywhere, by
+ *    any browser, which is the whole point of that case.
+ *  - The ATTACH branch ("claiming my anonymous session") writes the email
+ *    onto THIS row, and therefore now REQUIRES that the verifying request's
+ *    own `x-user-id` equals this column -- otherwise it refuses
+ *    (`different_browser`) without consuming the token. This value is
+ *    client-asserted and unauthenticated (anyone may request a link for
+ *    anyone's address), so trusting it to name the account a stranger's
+ *    verified email lands on is precisely what must not happen.
  *
  * `used_at` NULL means "never redeemed". It is set exactly once, by a
  * conditional `UPDATE ... WHERE used_at IS NULL`, which is what makes

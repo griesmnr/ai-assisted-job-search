@@ -375,6 +375,7 @@ export function magicLinkRejectionReason(err: unknown): MagicLinkRejectionReason
     "expired",
     "already_used",
     "browser_already_claimed",
+    "different_browser",
   ];
   return known.find((candidate) => candidate === reason);
 }

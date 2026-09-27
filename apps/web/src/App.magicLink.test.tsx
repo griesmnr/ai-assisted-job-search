@@ -265,7 +265,7 @@ describe("the emailed link's landing view takes over the whole page (ticket 9f06
       email: "alice@example.com",
       outcome: "adopted",
     });
-    window.history.replaceState(null, "", "/?magicLinkToken=tok_xyz");
+    window.history.replaceState(null, "", "/#magicLinkToken=tok_xyz");
 
     render(<App />);
 

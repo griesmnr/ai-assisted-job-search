@@ -1255,14 +1255,14 @@ function JobSearchApp() {
  * "rendered fewer hooks than expected" crash the day someone does. Splitting
  * the components makes the guarantee structural instead of a rule to
  * remember. It costs one component and no behavior: with no
- * `?magicLinkToken=` in the URL (every ordinary page load), this renders
- * exactly what it always did.
+ * `#magicLinkToken=` in the URL fragment (every ordinary page load), this
+ * renders exactly what it always did.
  *
  * `useState(readMagicLinkTokenFromUrl)` reads the URL ONCE, at first render,
  * the same pattern `restored`/`readAppState` already uses in `JobSearchApp`
- * and for the same reason: `MagicLinkLanding` strips the parameter out of the
- * URL with `history.replaceState` as soon as it has an answer, and this view
- * must not switch out from under itself the moment that happens.
+ * and for the same reason: `MagicLinkLanding` strips the token out of the URL
+ * fragment with `history.replaceState` as soon as it has an answer, and this
+ * view must not switch out from under itself the moment that happens.
  */
 function App() {
   const [magicLinkToken] = useState(readMagicLinkTokenFromUrl);

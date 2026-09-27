@@ -11,20 +11,27 @@ import { clearAppState } from "../session";
  *
  * This app has no router (single page, ticket 484889d), so "a landing page"
  * is a full-page takeover: `App` renders THIS instead of the normal three-tab
- * UI whenever `?magicLinkToken=` is present in the URL, and nothing else.
+ * UI whenever `#magicLinkToken=` is present in the URL, and nothing else.
  * That is deliberate rather than a shortcut -- the one thing this view must
  * not do is render the ordinary app underneath while an identity switch is
  * mid-flight, which would show one user's cached results while the browser is
  * becoming a different user.
  *
+ * WHY THE TOKEN ARRIVES IN THE URL FRAGMENT rather than a query parameter
+ * (review round 4, F2): a fragment is never sent to any server. A
+ * `?magicLinkToken=...` would be written, in full and still live, into the
+ * access log of whatever static host serves this bundle -- before a single
+ * line of this component runs, and regardless of how carefully the API side
+ * keeps the token out of ITS logs. The API builds the link (apps/api/src/
+ * routes/auth.ts); this is the other half of the same decision.
+ *
  * WHAT HAPPENS, IN ORDER:
  *
  *  1. On mount, POST the token exactly once (see `startedRef` -- StrictMode
  *     makes this non-negotiable, not defensive).
- *  2. On a real response, strip `magicLinkToken` from the URL with
+ *  2. On a real response, strip `magicLinkToken` from the URL fragment with
  *     `history.replaceState`, so the credential stops living in the address
- *     bar, in browser history, and in the `Referer` of anything the page
- *     fetches next.
+ *     bar and in browser history.
  *  3. On success, adopt the returned identity (`setUserId`), remember the
  *     verified email, and -- only if the id actually CHANGED -- clear the
  *     persisted app state, because a `resumeId` cached for the previous
@@ -41,12 +48,23 @@ import { clearAppState } from "../session";
  * every real user a click and buy nothing.
  */
 
-/** Reads the token out of the current URL. Exported so `App` can decide
- * whether to render this view at all without duplicating the parameter
+/** The token's name in the URL fragment. One constant, used by both the read
+ * and the strip below, so they can never disagree. */
+const TOKEN_PARAM = "magicLinkToken";
+
+/** The fragment parsed as `key=value` pairs. `location.hash` includes the
+ * leading `#`, which `URLSearchParams` would otherwise treat as part of the
+ * first key's name. */
+function hashParams(hash: string): URLSearchParams {
+  return new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+}
+
+/** Reads the token out of the current URL's FRAGMENT. Exported so `App` can
+ * decide whether to render this view at all without duplicating the parameter
  * name. */
 export function readMagicLinkTokenFromUrl(): string | undefined {
   try {
-    const token = new URLSearchParams(window.location.search).get("magicLinkToken");
+    const token = hashParams(window.location.hash).get(TOKEN_PARAM);
     return token !== null && token.length > 0 ? token : undefined;
   } catch {
     // Unparseable location (never expected in a browser) must not take the
@@ -56,10 +74,16 @@ export function readMagicLinkTokenFromUrl(): string | undefined {
 }
 
 /** The current URL with the token removed -- where this flow always ends up,
- * whether it succeeded or failed. */
+ * whether it succeeded or failed. Any OTHER fragment parameter is preserved
+ * (there are none today, but silently eating one would be a nasty surprise
+ * for whoever adds the first), and an emptied fragment drops the `#` itself
+ * rather than leaving a bare one in the address bar. */
 function urlWithoutToken(): string {
   const url = new URL(window.location.href);
-  url.searchParams.delete("magicLinkToken");
+  const params = hashParams(url.hash);
+  params.delete(TOKEN_PARAM);
+  const rest = params.toString();
+  url.hash = rest.length > 0 ? rest : "";
   return url.toString();
 }
 
@@ -201,6 +225,16 @@ export function MagicLinkLanding({ token }: { token: string }) {
           {phase.reason === undefined ? (
             <p className="magic-link-note">
               The link hasn't been used up — it's still worth trying again once you're back online.
+            </p>
+          ) : phase.reason === "different_browser" ? (
+            // The one refusal whose recovery is NOT "ask for a new link":
+            // this link was never spent (the API refuses it before consuming
+            // it), so the SAME email still works — just not from here. See
+            // MagicLinkRejectionReason in @app/shared for why the attach
+            // step is pinned to the requesting browser at all.
+            <p className="magic-link-note">
+              This link hasn't been used up. Open it again from your email, in the browser where you
+              asked for it — after that first time, signing in works from any browser or device.
             </p>
           ) : (
             <p className="magic-link-note">
