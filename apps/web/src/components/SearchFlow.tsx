@@ -886,7 +886,7 @@ export function SearchFlow({
                     <dd>{phase.result.cappedForBudget}</dd>
                   </>
                 )}
-                <dt>Total jobs linked</dt>
+                <dt>Total jobs found</dt>
                 <dd>{phase.result.linked}</dd>
               </dl>
               {/* `cappedForBudget` gets its OWN honest note, deliberately

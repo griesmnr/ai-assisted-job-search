@@ -37,7 +37,7 @@ export function SearchSourceStatusList({ sources }: { sources: SearchSourceState
           {s.status === "complete" && s.linkedJobCount !== null && (
             <span className="search-source-status-detail">
               {" "}
-              — {s.linkedJobCount} job{s.linkedJobCount === 1 ? "" : "s"} linked
+              — {s.linkedJobCount} job{s.linkedJobCount === 1 ? "" : "s"} found
             </span>
           )}
           {s.status === "pending" && (
