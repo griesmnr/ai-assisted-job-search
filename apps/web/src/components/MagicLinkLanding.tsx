@@ -87,6 +87,69 @@ function urlWithoutToken(): string {
   return url.toString();
 }
 
+/**
+ * Ticket bb2f275, Nicole (live): after a SUCCESSFUL verification, the
+ * reload should land on "Already Scored Jobs" rather than defaulting to
+ * "New Job Search" -- the more meaningful destination once results are
+ * tied to a real account, and the ONLY meaningful one on a second-device
+ * "adopt" login, where `clearAppState()` has already wiped any single-resume
+ * session state by the time this marker is written (see the effect below).
+ *
+ * A URL fragment param, not sessionStorage: the reload this marker survives
+ * is a real `window.location.replace` (navigation.ts), and a value baked
+ * into the URL being navigated TO is simpler to reason about than a side
+ * table that has to be remembered and cleaned up independently of the
+ * navigation itself. `JobSearchApp` (App.tsx) reads and consumes it once.
+ */
+const LAND_ON_SCORED_TAB_PARAM = "landOnScoredTab";
+
+/** Reads whether the CURRENT url carries the "land on Already Scored Jobs"
+ * marker -- a pure read, safe to call from anywhere (including, if it were
+ * ever needed, a React render body) since it has no side effect. Exported
+ * for `App.tsx`. */
+export function hasLandOnScoredTabMarker(): boolean {
+  try {
+    return hashParams(window.location.hash).get(LAND_ON_SCORED_TAB_PARAM) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Removes the marker from the current URL in place (no reload), so a LATER,
+ * unrelated page reload does not keep forcing "Already Scored Jobs" forever.
+ * Exported for `App.tsx`, meant to be called once, right after
+ * `hasLandOnScoredTabMarker()` is consumed. */
+export function clearLandOnScoredTabMarker(): void {
+  try {
+    const url = new URL(window.location.href);
+    const params = hashParams(url.hash);
+    params.delete(LAND_ON_SCORED_TAB_PARAM);
+    const rest = params.toString();
+    url.hash = rest.length > 0 ? rest : "";
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // Same posture as the marker functions around this one: a real browser
+    // is never expected to land here, and if it somehow does, failing to
+    // strip the marker is a minor inconvenience (one extra "land on scored
+    // tab" reload), never a reason to break anything else on the page.
+  }
+}
+
+/** `urlWithoutToken()` plus the "land on Already Scored Jobs" marker --
+ * used ONLY by the successful-verification path's own `history.replaceState`
+ * call below, so the marker is baked into the URL the SAME moment the token
+ * is stripped out of it (one history entry, not two). The failure path
+ * keeps calling plain `urlWithoutToken()`, unchanged -- landing on "Already
+ * Scored Jobs" only makes sense once there IS a verified identity to show
+ * results for. */
+function urlWithoutTokenLandingOnScoredTab(): string {
+  const url = new URL(urlWithoutToken());
+  const params = hashParams(url.hash);
+  params.set(LAND_ON_SCORED_TAB_PARAM, "1");
+  url.hash = params.toString();
+  return url.toString();
+}
+
 type Phase =
   | { status: "verifying" }
   | { status: "verified"; email: string; switchedAccount: boolean }
@@ -142,8 +205,11 @@ export function MagicLinkLanding({ token }: { token: string }) {
       .then((result) => {
         // The token is spent either way now -- take it out of the URL before
         // anything else, so a reload cannot re-submit it and it stops being
-        // visible.
-        window.history.replaceState(null, "", urlWithoutToken());
+        // visible. Ticket bb2f275: also bakes in the "land on Already
+        // Scored Jobs" marker `JobSearchApp` reads on its next mount (the
+        // "Continue" button below reloads to `window.location.href`, which
+        // now carries it) -- one history entry, not a separate step.
+        window.history.replaceState(null, "", urlWithoutTokenLandingOnScoredTab());
         if (!aliveRef.current) return;
         // `setUserId` throws only on a malformed id, which would leave this
         // browser unable to talk to the API at all -- surface it as a
@@ -208,7 +274,19 @@ export function MagicLinkLanding({ token }: { token: string }) {
               on anonymously before.
             </p>
           )}
-          <button type="button" onClick={() => reloadTo(urlWithoutToken())}>
+          {/* Ticket bb2f275: `urlWithoutTokenLandingOnScoredTab()`, not
+              plain `urlWithoutToken()` -- lands on "Already Scored Jobs"
+              rather than defaulting to "New Job Search", the more
+              meaningful destination once results are tied to a real
+              account (and the only meaningful one after
+              `switchedAccount`, which already wiped this browser's
+              single-resume session state above). Called explicitly here
+              rather than relied on implicitly via the marker the effect
+              above already baked into `window.location` -- both are
+              correct (the function is idempotent), but this is the one
+              a reader tracing "why does this land on Already Scored
+              Jobs" would actually look at. */}
+          <button type="button" onClick={() => reloadTo(urlWithoutTokenLandingOnScoredTab())}>
             Continue to your results
           </button>
         </section>

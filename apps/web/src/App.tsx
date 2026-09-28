@@ -17,7 +17,12 @@ import {
   groupKeyForStatus,
   type ScoredGroupKey,
 } from "./components/GroupedResultsList";
-import { MagicLinkLanding, readMagicLinkTokenFromUrl } from "./components/MagicLinkLanding";
+import {
+  clearLandOnScoredTabMarker,
+  hasLandOnScoredTabMarker,
+  MagicLinkLanding,
+  readMagicLinkTokenFromUrl,
+} from "./components/MagicLinkLanding";
 import { MagicLinkPrompt } from "./components/MagicLinkPrompt";
 import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
@@ -186,6 +191,27 @@ function JobSearchApp() {
   // appearing inline the moment a resume is pasted, before any new search
   // runs, read as "jarring... old stuff".
   const [activeTab, setActiveTab] = useState<Tab>("search");
+  // Ticket bb2f275, Nicole (live): landing on "Already Scored Jobs" right
+  // after a successful magic-link verification is the more meaningful
+  // destination than the default "New Job Search" -- MagicLinkLanding.tsx
+  // bakes a marker into the URL it reloads to specifically for this. A
+  // mount-only effect (not the `activeTab` initializer above) because
+  // consuming the marker has a real side effect (stripping it out of the
+  // URL via `history.replaceState`, so a LATER, unrelated reload doesn't
+  // keep forcing this tab) -- doing that inside a `useState` initializer
+  // would run it twice under StrictMode's double-invoked render (the same
+  // hazard MagicLinkLanding.tsx's own `startedRef`/`aliveRef` comments
+  // document at length for its token-redemption POST). A plain effect is
+  // safe here specifically because consuming the marker IS idempotent
+  // (checking presence before acting): StrictMode's mount -> cleanup ->
+  // remount runs this twice too, but the second run finds the marker
+  // already gone and does nothing, which is the correct outcome, not a bug.
+  useEffect(() => {
+    if (hasLandOnScoredTabMarker()) {
+      setActiveTab("scored");
+      clearLandOnScoredTabMarker();
+    }
+  }, []);
   // Ticket 3f05144: read ONCE, at first render, before any state below is
   // initialized. A reload is indistinguishable from a first visit from
   // inside React, so restoring has to happen in the state initializers

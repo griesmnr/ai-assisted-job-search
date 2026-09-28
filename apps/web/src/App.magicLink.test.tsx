@@ -294,3 +294,45 @@ describe("the emailed link's landing view takes over the whole page (ticket 9f06
     await vi.waitFor(() => expect(getSources).toHaveBeenCalled());
   });
 });
+
+describe("lands on Already Scored Jobs after a successful magic-link verification (ticket bb2f275)", () => {
+  it("defaults to Already Scored Jobs when the URL carries the landing marker, and consumes it", async () => {
+    mockHappyPath(ONE_RESULT);
+    // The state a real page load is in right after MagicLinkLanding's
+    // "Continue to your results" reload -- the token is already gone (that
+    // happened before the reload), only the landing marker remains.
+    window.history.replaceState(null, "", "/#landOnScoredTab=1");
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: "New Job Search" });
+    expect(screen.getByRole("button", { name: "New Job Search" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: /^Already Scored Jobs/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // Consumed exactly once: a LATER, unrelated reload must not keep
+    // forcing this tab forever.
+    expect(window.location.hash).toBe("");
+  });
+
+  it("defaults to New Job Search as usual when the URL carries no marker", async () => {
+    mockHappyPath(ONE_RESULT);
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: "New Job Search" });
+    expect(screen.getByRole("button", { name: "New Job Search" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /^Already Scored Jobs/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+});
