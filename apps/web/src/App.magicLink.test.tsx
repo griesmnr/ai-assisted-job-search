@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   EstimateSearchResponse,
@@ -317,6 +318,36 @@ describe("lands on Already Scored Jobs after a successful magic-link verificatio
 
     // Consumed exactly once: a LATER, unrelated reload must not keep
     // forcing this tab forever.
+    expect(window.location.hash).toBe("");
+  });
+
+  // Opus review, required fix: App.tsx's own comment on the marker-consuming
+  // effect argues at length that a PLAIN effect (not the `activeTab` state
+  // initializer) is the StrictMode-safe place to consume this marker --
+  // `main.tsx` really does wrap the app in `StrictMode`, which mounts,
+  // unmounts and re-mounts every component once in dev specifically to
+  // surface exactly this class of bug (see MagicLinkLanding.test.tsx's own
+  // "redeems the token EXACTLY ONCE under StrictMode's double mount", the
+  // precedent this test follows for the analogous hazard there). Without
+  // this test, that 13-line argument had zero coverage.
+  it("lands on Already Scored Jobs correctly under StrictMode's double-invoked mount", async () => {
+    mockHappyPath(ONE_RESULT);
+    window.history.replaceState(null, "", "/#landOnScoredTab=1");
+
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+
+    await screen.findByRole("button", { name: "New Job Search" });
+    expect(screen.getByRole("button", { name: /^Already Scored Jobs/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    // The marker must not survive StrictMode's extra mount/cleanup cycle
+    // half-consumed or duplicated -- exactly gone, same as under a single
+    // real mount.
     expect(window.location.hash).toBe("");
   });
 
