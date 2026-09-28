@@ -669,8 +669,8 @@ button[aria-disabled="true"] {
   align-items: center;
 }
 
-/* Ticket e367a63: status buttons (Save/Optimize Resume/Apply/Dismiss) are
-   toggles now -- clicking the already-active one undoes it instead of a
+/* Ticket e367a63: status buttons (Save/Apply/Dismiss -- "Optimize Resume"
+   removed by ticket 1bc4ea2) are toggles -- clicking the already-active one undoes it instead of a
    separate top-right Undo control. `.result-action-active` (driven by
    `aria-pressed`) is the only remaining indication of which status is
    set -- opus review (e367a63) caught that `.tab-button[aria-pressed=

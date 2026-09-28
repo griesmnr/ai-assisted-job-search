@@ -5,18 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScoredJobResult } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
-const createHandoff = vi.fn();
-
-// Ticket dbfd594: "Optimize Resume" now mints a real server-side handoff
-// before navigating anywhere -- mocked here the same way App-level tests
-// mock ./api/client, so this component-level test never makes a real
-// network call.
-vi.mock("../api/client", () => ({
-  createHandoff: (...args: unknown[]) => createHandoff(...args),
-  handoffFetchUrl: (id: string) => `https://api.example.com/handoffs/${id}`,
-  RESUME_OPTIMIZER_APP_URL: "https://optimizer.example.com/",
-}));
-
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -26,8 +14,7 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
   return {
     jobId: "job-1",
     // Ticket 3f0883f: per-row resume identity -- see ScoredJobResult
-    // .resumeId's own doc comment. "Optimize Resume" now reads this
-    // (not a caller-supplied prop) for its handoff call.
+    // .resumeId's own doc comment.
     resumeId: "resume-1",
     externalId: "ext-1",
     title: "Backend Engineer",
@@ -55,7 +42,7 @@ function makeResult(overrides: Partial<ScoredJobResult> = {}): ScoredJobResult {
 // pill (once a status is set) stays past-tense/state form ("Saved") --
 // two different labels for the same status, deliberately.
 describe("ResultCard — present-tense action buttons vs. state pill (ticket bed37bd)", () => {
-  it("shows all four actions as present-tense verbs, regardless of current status -- Open Job Page as a separate link (dogfooding revert of 3d80a85), the rest as buttons", () => {
+  it("shows all three actions as present-tense verbs, regardless of current status -- Open Job Page as a separate link (dogfooding revert of 3d80a85), the rest as buttons", () => {
     render(
       <ResultCard
         result={makeResult()}
@@ -66,7 +53,9 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     );
 
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Optimize Resume" })).toBeInTheDocument();
+    // Ticket 1bc4ea2: "Optimize Resume" was removed (decoupled from
+    // Nicole's separate resume-tailoring app, "for now").
+    expect(screen.queryByRole("button", { name: "Optimize Resume" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Job Page" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
@@ -109,32 +98,6 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onSetStatus).toHaveBeenCalledWith("job-1", "saved", "resume-1");
-  });
-
-  it("Optimize Resume mints a handoff, opens the optimizer app with it, and records resume_optimized (ticket dbfd594)", async () => {
-    const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    createHandoff.mockResolvedValue({ id: "handoff-1", expiresAt: new Date().toISOString() });
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-
-    render(
-      <ResultCard
-        result={makeResult()}
-        onSetStatus={onSetStatus}
-        onClearStatus={async () => {}}
-        onViewResume={() => {}}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
-
-    await waitFor(() => expect(createHandoff).toHaveBeenCalledWith("job-1", "resume-1"));
-    expect(openSpy).toHaveBeenCalledWith(
-      "https://optimizer.example.com/?import=" +
-        encodeURIComponent("https://api.example.com/handoffs/handoff-1"),
-      "_blank",
-      "noreferrer",
-    );
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized", "resume-1");
   });
 });
 
@@ -335,63 +298,31 @@ describe("ResultCard — status buttons are undo-able toggles, no separate Undo 
       "aria-pressed",
       "false",
     );
-    expect(screen.getByRole("button", { name: "Optimize Resume" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
   });
 
-  it('clicking "Optimize Resume" while already resume_optimized clears the status only -- no new handoff, no new tab', async () => {
-    const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    const onClearStatus = vi.fn().mockResolvedValue(undefined);
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-
+  // Ticket 1bc4ea2: the button that could SET this status is gone, but a
+  // job scored/updated before that removal can still carry
+  // status: "resume_optimized" in the database -- this must keep
+  // displaying correctly (the acceptance criterion this ticket names
+  // explicitly), not render broken or fall back to some other label.
+  it("still shows the state pill for a pre-existing resume_optimized status, with no button able to set or toggle it", () => {
     render(
       <ResultCard
         result={makeResult({ status: "resume_optimized" })}
-        onSetStatus={onSetStatus}
-        onClearStatus={onClearStatus}
-        onViewResume={() => {}}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Optimize Resume" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
-
-    await waitFor(() => expect(onClearStatus).toHaveBeenCalledWith("job-1"));
-    expect(createHandoff).not.toHaveBeenCalled();
-    expect(openSpy).not.toHaveBeenCalled();
-    expect(onSetStatus).not.toHaveBeenCalled();
-  });
-
-  it('clicking "Optimize Resume" while NOT yet optimized still mints a handoff, opens a tab, and sets the status (unchanged path)', async () => {
-    const onSetStatus = vi.fn().mockResolvedValue(undefined);
-    createHandoff.mockResolvedValue({ id: "handoff-1", expiresAt: new Date().toISOString() });
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-
-    render(
-      <ResultCard
-        result={makeResult()}
-        onSetStatus={onSetStatus}
+        onSetStatus={async () => {}}
         onClearStatus={async () => {}}
         onViewResume={() => {}}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Optimize Resume" }));
-
-    await waitFor(() => expect(createHandoff).toHaveBeenCalledWith("job-1", "resume-1"));
-    expect(openSpy).toHaveBeenCalledWith(
-      "https://optimizer.example.com/?import=" +
-        encodeURIComponent("https://api.example.com/handoffs/handoff-1"),
-      "_blank",
-      "noreferrer",
-    );
-    expect(onSetStatus).toHaveBeenCalledWith("job-1", "resume_optimized", "resume-1");
+    expect(screen.getByText("Resume optimized")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Optimize Resume" })).not.toBeInTheDocument();
+    // The three remaining actions are all still present and clickable
+    // alongside the historical pill (Nicole: "there should be no reason
+    // why there is not an option to do anything you want").
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
   });
 });
 
