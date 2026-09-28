@@ -828,6 +828,52 @@ button[aria-disabled="true"] {
   color: #b3261e;
 }
 
+/* Ticket d3a95d1, Nicole (live design discussion): the prompt used to sit
+   inline at the end of the results list, which meant a long results list
+   could push it far below the fold -- "never reached" in practice. Her own
+   framing of the placement tradeoff: top competes with results and gets
+   skipped; bottom (inline, long list) is often never scrolled to; "off to
+   the side" is neither. `position: fixed` takes it out of document flow
+   entirely, so it stays visible without scrolling regardless of how long
+   the results list runs, while a compact size and low-key tint (inherited
+   from `.magic-link-prompt` above) keep it from competing with the results
+   for attention the moment they land. `z-index` only needs to clear
+   ordinary page content -- nothing else on this page uses a stacking
+   context above the base layer. */
+.magic-link-prompt-floating {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 20;
+  margin-top: 0;
+  width: 20rem;
+  max-width: calc(100vw - 2.5rem);
+  box-shadow: 0 4px 16px color-mix(in srgb, currentColor 15%, transparent);
+}
+
+/* The signed-in confirmation is normally undecorated (a quiet inline line,
+   see `.magic-link-prompt-signed-in` above) -- floating and undecorated at
+   once would look like stray, unstyled text overlapping the page, so it
+   gets the same panel treatment as every other floating state here. */
+.magic-link-prompt-floating.magic-link-prompt-signed-in {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  padding: 0.75rem 1rem;
+}
+
+/* Narrow viewports: a right-anchored fixed width card can crowd a phone
+   screen's edges. Full-width-minus-margins reads better than a narrower
+   fixed box at that size. */
+@media (max-width: 30rem) {
+  .magic-link-prompt-floating {
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-width: none;
+  }
+}
+
 /* The landing view is a full-page takeover (MagicLinkLanding.tsx), so it
    gets the page's own centered column rather than sitting inside a
    section. */
