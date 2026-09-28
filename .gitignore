@@ -1,6 +1,11 @@
 prep/
 .worktrees/
 
+# A separate scratch project's own repo, incidentally sitting inside this
+# one's working directory -- explicitly not meant to be tracked or linted
+# here (see voice-journal/README.md's own header).
+voice-journal/
+
 # Secrets — never commit
 .env
 .env.local
