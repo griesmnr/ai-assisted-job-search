@@ -31,10 +31,6 @@ const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
 const setJobStatus = vi.fn();
-// Ticket dbfd594: ResultCard's "Optimize Resume" now calls these -- not
-// exercised by this file's own tests, but must exist so a click doesn't
-// throw "createHandoff is not a function" from the mocked module.
-const createHandoff = vi.fn().mockResolvedValue({ id: "handoff-1", expiresAt: "2026-01-01" });
 
 vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
@@ -56,9 +52,6 @@ vi.mock("./api/client", () => ({
   getResume: () => Promise.reject(new Error("no resume text fetched in this test")),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
-  createHandoff: (...args: unknown[]) => createHandoff(...args),
-  handoffFetchUrl: (id: string) => `https://api.example.com/handoffs/${id}`,
-  RESUME_OPTIMIZER_APP_URL: "https://optimizer.example.com/",
 }));
 
 afterEach(() => {
@@ -253,10 +246,6 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
   });
 
   it("a status change updates the card in place but does NOT move it to a new group until the tab is next opened", async () => {
-    // "Optimize Resume" (ticket dbfd594) calls window.open -- jsdom has no
-    // real implementation of it, so this stubs it rather than letting it
-    // log a "not implemented" error.
-    vi.spyOn(window, "open").mockImplementation(() => null);
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -268,9 +257,14 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     // useResults's own fetch has something to resolve to.
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
     getAllResults.mockResolvedValueOnce(GROUPED_RESULTS);
+    // Ticket 1bc4ea2: this test used to drive the transition via the
+    // (now-removed) "Optimize Resume" button; "Dismiss" exercises the
+    // identical in-place-update-then-frozen-until-reopen mechanic this
+    // test is actually about, which has nothing to do with which status
+    // value is involved.
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
-      status: "resume_optimized",
+      status: "dismissed",
       updatedAt: new Date().toISOString(),
     });
 
@@ -279,10 +273,10 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     await screen.findByRole("heading", { name: "Saved" });
 
     // Refetch after the status write returns job-saved with its status
-    // flipped to resume_optimized.
+    // flipped to dismissed.
     const afterStatusChange: GetAllResultsResponse = {
       results: GROUPED_RESULTS.results.map((r) =>
-        r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
+        r.jobId === "job-saved" ? { ...r, status: "dismissed" } : r,
       ),
     };
     getAllResults.mockResolvedValueOnce(afterStatusChange);
@@ -296,14 +290,12 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     getAllResults.mockResolvedValue(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
-    fireEvent.click(within(savedSection).getByRole("button", { name: "Optimize Resume" }));
+    fireEvent.click(within(savedSection).getByRole("button", { name: "Dismiss" }));
 
     // The card's own badge updates in place...
-    await waitFor(() =>
-      expect(within(savedSection).getByText("Resume optimized")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(savedSection).getByText("Dismissed")).toBeInTheDocument());
     // ...but it's still rendered under "Saved" for this render -- it has
-    // NOT moved to "Resume Optimized" yet.
+    // NOT moved to "Dismissed" yet.
     expect(within(savedSection).getByText("Saved Job")).toBeInTheDocument();
 
     // Now leave and re-open the tab -- THIS is when the snapshot
@@ -312,10 +304,14 @@ describe("'Already Scored Jobs' groups by status (ticket bec2f98)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
 
     await waitFor(() => {
-      const resumeOptimizedSection = screen
-        .getByRole("heading", { name: "Resume Optimized" })
+      // Ticket bec2f98: a dismissed job stays visible here too (marked
+      // "Dismissed" rather than disappearing) -- so this is the SAME
+      // "Dismissed" group the OTHER pre-seeded dismissed job
+      // ("Dismissed Job") already renders under, not a separate section.
+      const dismissedSection = screen
+        .getByRole("heading", { name: "Dismissed" })
         .closest("section")!;
-      expect(within(resumeOptimizedSection).getByText("Saved Job")).toBeInTheDocument();
+      expect(within(dismissedSection).getByText("Saved Job")).toBeInTheDocument();
     });
   });
 });
@@ -340,7 +336,6 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
   // regression in either direction (placement moving, or counts staying
   // stale) fails this one test.
   it("quick-link counts update live off a status change while the card's SECTION PLACEMENT stays frozen at tab-open (bec2f98)", async () => {
-    vi.spyOn(window, "open").mockImplementation(() => null);
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -352,9 +347,14 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     // useResults's own fetch has something to resolve to.
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
     getAllResults.mockResolvedValueOnce(GROUPED_RESULTS);
+    // Ticket 1bc4ea2: this test used to drive the transition into a
+    // previously-EMPTY quick-link group via the (now-removed) "Optimize
+    // Resume" button/"Resume Optimized" group; "Apply"/"Applied" is the
+    // same shape (absent from GROUPED_RESULTS above, so it starts as an
+    // empty group too) and exercises the identical mechanic.
     setJobStatus.mockResolvedValue({
       jobId: "job-saved",
-      status: "resume_optimized",
+      status: "applied",
       updatedAt: new Date().toISOString(),
     });
 
@@ -363,16 +363,16 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     await screen.findByRole("heading", { name: "Saved" });
 
     // Quick-links reflect the initial state: one Saved, one Dismissed, no
-    // "Resume Optimized" link yet (that group is empty).
+    // "Applied" link yet (that group is empty).
     expect(screen.getByText("Saved (1)")).toBeInTheDocument();
     expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
-    expect(screen.queryByText(/^Resume Optimized/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Applied/)).not.toBeInTheDocument();
 
     // Refetch after the status write returns job-saved with its status
-    // flipped to resume_optimized -- same as bec2f98's own test above.
+    // flipped to applied -- same as bec2f98's own test above.
     const afterStatusChange: GetAllResultsResponse = {
       results: GROUPED_RESULTS.results.map((r) =>
-        r.jobId === "job-saved" ? { ...r, status: "resume_optimized" } : r,
+        r.jobId === "job-saved" ? { ...r, status: "applied" } : r,
       ),
     };
     getAllResults.mockResolvedValueOnce(afterStatusChange);
@@ -386,27 +386,24 @@ describe("'Already Scored Jobs' quick-jump links (ticket 1ea4bf3)", () => {
     getAllResults.mockResolvedValue(afterStatusChange);
 
     const savedSection = screen.getByRole("heading", { name: "Saved" }).closest("section")!;
-    fireEvent.click(within(savedSection).getByRole("button", { name: "Optimize Resume" }));
+    fireEvent.click(within(savedSection).getByRole("button", { name: "Apply" }));
 
     // The card's own badge updates in place...
-    await waitFor(() =>
-      expect(within(savedSection).getByText("Resume optimized")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(savedSection).getByText("Applied")).toBeInTheDocument());
 
     // LIVE quick-link counts have already updated, in this same render,
-    // without leaving the tab: "Saved" lost its job, "Resume Optimized"
-    // gained one, "Dismissed" is unaffected.
-    await waitFor(() => expect(screen.getByText("Resume Optimized (1)")).toBeInTheDocument());
+    // without leaving the tab: "Saved" lost its job, "Applied" gained one,
+    // "Dismissed" is unaffected.
+    await waitFor(() => expect(screen.getByText("Applied (1)")).toBeInTheDocument());
     expect(screen.queryByText("Saved (1)")).not.toBeInTheDocument();
     expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
 
     // FROZEN card placement, checked in this SAME render as the live counts
     // above: the card is still rendered under "Saved" -- it has NOT moved
-    // to a new "Resume Optimized" section. This is ticket bec2f98's
-    // guarantee, and it must hold even though the quick-link counts above
-    // just changed.
+    // to a new "Applied" section. This is ticket bec2f98's guarantee, and
+    // it must hold even though the quick-link counts above just changed.
     expect(within(savedSection).getByText("Saved Job")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Resume Optimized" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Applied" })).not.toBeInTheDocument();
   });
 });
 

@@ -1,11 +1,16 @@
 import { useState } from "react";
 import type { ScoredJobResult, UserJobStatus } from "@app/shared";
-import { createHandoff, handoffFetchUrl, RESUME_OPTIMIZER_APP_URL } from "../api/client";
 
 // State pill labels (past-tense/state form) -- shown once result.status is
 // SET, describing what already happened. Distinct from ACTION_LABELS
 // below (ticket bed37bd): a button that DOES the saving should read
 // "Save", not "Saved" -- the button is an action, the pill is a state.
+//
+// `resume_optimized` stays here even though ticket 1bc4ea2 removed the
+// button that could ever SET it: existing rows written before that
+// removal still carry this status, and this is display of already-
+// recorded state, not the action being removed -- GroupedResultsList's
+// "Resume Optimized" section has the same reasoning.
 const STATUS_LABELS: Record<UserJobStatus, string> = {
   saved: "Saved",
   resume_optimized: "Resume optimized",
@@ -14,10 +19,13 @@ const STATUS_LABELS: Record<UserJobStatus, string> = {
 };
 
 // Button labels (present-tense action verbs) -- ticket bed37bd, Nicole:
-// "Save", "Optimize Resume", "Apply", "Dismiss".
-const ACTION_LABELS: Record<UserJobStatus, string> = {
+// "Save", "Apply", "Dismiss". "Optimize Resume" removed by ticket 1bc4ea2
+// (Nicole: match scores between this app and her separate resume-
+// tailoring app diverge, and she doesn't want the two coupled right now)
+// -- no button renders it, so no entry belongs here; STATUS_LABELS above
+// still needs `resume_optimized` for the reason given there.
+const ACTION_LABELS: Record<Exclude<UserJobStatus, "resume_optimized">, string> = {
   saved: "Save",
-  resume_optimized: "Optimize Resume",
   applied: "Apply",
   dismissed: "Dismiss",
 };
@@ -25,11 +33,15 @@ const ACTION_LABELS: Record<UserJobStatus, string> = {
 // Ticket 3d80a85 merged "Open posting" into "Apply" (Apply became the
 // link). Dogfooding feedback (2026-09-08) reverted that: Nicole wants
 // Apply back as a plain status button, with a SEPARATE real link to the
-// posting -- "Open Job Page". So "saved"/"applied"/"dismissed" are all
-// plain buttons now; only "resume_optimized" is handled separately below
-// (a real navigation to Nicole's resume-tailoring app AND a state change
-// together, unlike a bare status button).
-const BUTTON_ACTIONS: UserJobStatus[] = ["saved", "applied", "dismissed"];
+// posting -- "Open Job Page". Ticket 1bc4ea2 removed "Optimize Resume"
+// (previously handled separately from this list, since it was a real
+// navigation to a second app AND a state change together, unlike a bare
+// status button) -- so all three remaining actions are plain buttons now.
+const BUTTON_ACTIONS: Exclude<UserJobStatus, "resume_optimized">[] = [
+  "saved",
+  "applied",
+  "dismissed",
+];
 
 /**
  * One job in the curated list. Status buttons call the caller's
@@ -50,8 +62,9 @@ export function ResultCard({
   /**
    * Review fix, ticket 3f0883f: takes `resumeId` as a third argument now,
    * sourced below from `result.resumeId` -- NOT a caller-supplied prop the
-   * way `resumeId` briefly was for the handoff call (see this file's other
-   * doc comment on `handleOptimizeResume`). Same bug, same fix: once a
+   * way `resumeId` briefly was for the handoff call the now-removed
+   * "Optimize Resume" button made (ticket 1bc4ea2 removed the button;
+   * this comment's history is kept for context). Same bug, same fix: once a
    * card can belong to a DIFFERENT resume than whichever one is active
    * this session (or none at all), `user_job_statuses.resume_id` -- which
    * exists specifically to answer "which resume version did I apply
@@ -90,49 +103,6 @@ export function ResultCard({
     setError(null);
     try {
       await onClearStatus(result.jobId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPending(null);
-    }
-  }
-
-  // Ticket dbfd594: unlike Apply, the target URL isn't known up front --
-  // it depends on a real handoff being minted first (POST /handoffs), so
-  // this can't be a plain `<a href>` the way Apply is. `window.open`
-  // (rather than `location.href`) keeps the click's semantics the same as
-  // Apply's `target="_blank"`: this app's own tab stays put, the other
-  // app opens alongside it.
-  //
-  // Ticket e367a63: this button is now a toggle like the others. If
-  // `resume_optimized` is already the active status, clicking it undoes
-  // that status ONLY -- no new handoff, no new tab (Nicole, dogfooding:
-  // "if optimize resume or apply are highlighted and you want to undo
-  // those, it should not launch the page again"). Re-running the
-  // optimize flow against an updated resume still works exactly as
-  // before, but only from the not-yet-optimized state.
-  async function handleOptimizeResume() {
-    if (result.status === "resume_optimized") {
-      await handleClearStatus();
-      return;
-    }
-    setPending("resume_optimized");
-    setError(null);
-    try {
-      // Ticket 3f0883f review fix: `result.resumeId`, not a caller-supplied
-      // prop -- "Already Scored Jobs" can now show a job scored under a
-      // DIFFERENT resume than whichever one is active this session (or
-      // none at all). A single `resumeId` prop used to be silently correct
-      // only because a ResultCard, at the time, could never render for
-      // anything but the one active resume; that invariant no longer
-      // holds, and using the wrong one here would tailor against the
-      // wrong resume's text with no indication anything went wrong.
-      const handoff = await createHandoff(result.jobId, result.resumeId);
-      const importUrl = `${RESUME_OPTIMIZER_APP_URL}?import=${encodeURIComponent(
-        handoffFetchUrl(handoff.id),
-      )}`;
-      window.open(importUrl, "_blank", "noreferrer");
-      await onSetStatus(result.jobId, "resume_optimized", result.resumeId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -190,7 +160,7 @@ export function ResultCard({
         </div>
         {/* Ticket e367a63: the top-right Undo control is gone -- Nicole
             wants the status button itself to undo (see the toggle logic
-            on BUTTON_ACTIONS and handleOptimizeResume below). This pill
+            on BUTTON_ACTIONS below). This pill
             is now a plain, non-interactive state label; the buttons in
             the action row carry `aria-pressed` + a highlighted style as
             the indication of which one is active. */}
@@ -296,34 +266,16 @@ export function ResultCard({
         <a href={result.applyUrl} target="_blank" rel="noreferrer">
           Open Job Page
         </a>
-        {/* Ticket dbfd594: opens Nicole's separate resume-tailoring app
-            with this job's description + resume text handed over via a
-            short-lived server-side handoff (see handleOptimizeResume
-            above and apps/api/src/routes/handoffs.ts's own doc comment
-            for why it can't just be a link with the payload inlined).
-            Ticket e367a63: this is now a toggle -- while NOT yet
-            `resume_optimized`, clicking still re-opens the tailoring app
-            (e.g. against an updated base resume) same as before; once it
-            IS the active status, clicking it undoes instead of
-            re-opening (handleOptimizeResume decides which). Never
-            disabled on its own status so the undo path always works. */}
-        <button
-          type="button"
-          className={
-            result.status === "resume_optimized"
-              ? "result-action result-action-active"
-              : "result-action"
-          }
-          aria-pressed={result.status === "resume_optimized"}
-          disabled={pending !== null}
-          onClick={() => void handleOptimizeResume()}
-        >
-          {pending === "resume_optimized"
-            ? "Opening..."
-            : result.status === "resume_optimized" && pending === "clearing"
-              ? "Undoing..."
-              : ACTION_LABELS.resume_optimized}
-        </button>
+        {/* Ticket 1bc4ea2: the "Optimize Resume" button (formerly here,
+            ticket dbfd594) is removed -- Nicole decoupled this app from
+            her separate resume-tailoring app "for now" (diverging match
+            scores, an action here depending on a second app's uptime).
+            A job whose status is ALREADY `resume_optimized` from before
+            this removal still shows the state pill above
+            (STATUS_LABELS) and still groups under GroupedResultsList's
+            "Resume Optimized" section -- this only removes the ability
+            to SET that status going forward, it does not touch already-
+            recorded data. */}
         {BUTTON_ACTIONS.map((status) => {
           const isActive = result.status === status;
           return (
