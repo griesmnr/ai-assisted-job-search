@@ -185,9 +185,13 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
 
     await submitResumeAndOpenScoredTab();
 
+    // Ticket 368b6cc, Nicole (dogfooding): a genuinely-loaded zero shows NO
+    // count now, same treatment as the still-loading case below -- "(0)"
+    // is gone, not "(0)" -> something else.
+    expect(await screen.findByRole("heading", { name: "Already Scored Jobs" })).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Already Scored Jobs (0)" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: /^Already Scored Jobs \(/ }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("No jobs scored yet.")).toBeInTheDocument();
   });
 

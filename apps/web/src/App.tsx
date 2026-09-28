@@ -115,6 +115,21 @@ function isNicknameConflictError(err: unknown): boolean {
   return (body as { reason?: unknown }).reason === "nickname_conflict";
 }
 
+/**
+ * Ticket 368b6cc (Nicole, dogfooding: "when there are no resumes and no
+ * already scored jobs, I don't want to see the parentheses zero... I
+ * think it's a little tacky"). `scoredJobCount`/`resumeCount` were
+ * already `undefined` (never 0) while their list is still loading, so
+ * this shared formatter extends the exact same "nothing to show yet"
+ * treatment to an ACTUAL zero once loading finishes -- one place used by
+ * all four render call sites (tab button + heading, for each of the two
+ * counts) so they can't drift into showing "(0)" in one spot and not the
+ * other.
+ */
+function formatCount(count: number | undefined): string {
+  return count !== undefined && count > 0 ? ` (${count})` : "";
+}
+
 function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] }): SearchCriteria {
   const nearLocations = splitPhrases(form.nearLocations);
   const criteria: SearchCriteria = {};
@@ -404,7 +419,8 @@ function JobSearchApp() {
   // meaning "for the current resume" once the tab itself did.  `undefined`
   // before there's real data to count (`allResultsState.status !==
   // "ready"`), not 0 -- both call sites treat that as "show no number yet"
-  // rather than a misleading "(0)".
+  // rather than a misleading "(0)". Ticket 368b6cc: an ACTUAL zero, once
+  // loaded, gets the same treatment -- see `formatCount` below.
   const scoredJobCount =
     allResultsState.status === "ready"
       ? (allResultsState.data.totalMatchingCount ?? allResultsState.data.results.length) +
@@ -414,7 +430,8 @@ function JobSearchApp() {
   // Ticket 303cff0: same "count in the tab button itself" pattern as
   // `scoredJobCount` above, `undefined` (not 0) before the list has
   // actually loaded so the tab button shows no number rather than a
-  // misleading "(0)" while still fetching.
+  // misleading "(0)" while still fetching. Ticket 368b6cc: an ACTUAL zero,
+  // once loaded, gets the same treatment -- see `formatCount` below.
   const resumeCount =
     resumesListState.status === "ready" ? resumesListState.data.resumes.length : undefined;
 
@@ -920,7 +937,7 @@ function JobSearchApp() {
           onClick={() => setActiveTab("scored")}
         >
           Already Scored Jobs
-          {scoredJobCount !== undefined && ` (${scoredJobCount})`}
+          {formatCount(scoredJobCount)}
         </button>
         <button
           type="button"
@@ -929,7 +946,7 @@ function JobSearchApp() {
           onClick={() => setActiveTab("resumes")}
         >
           My Resumes
-          {resumeCount !== undefined && ` (${resumeCount})`}
+          {formatCount(resumeCount)}
         </button>
       </nav>
 
@@ -1181,7 +1198,7 @@ function JobSearchApp() {
               there" when asked if the duplication was fine. */}
           <h2>
             Already Scored Jobs
-            {scoredJobCount !== undefined && ` (${scoredJobCount})`}
+            {formatCount(scoredJobCount)}
           </h2>
           {/* Ticket 3f0883f: no longer gated on `resumeId` -- this tab is
               the cross-resume browsable history now, and "no resume active
@@ -1225,7 +1242,7 @@ function JobSearchApp() {
         <section className="resumes-section">
           <h2>
             My Resumes
-            {resumeCount !== undefined && ` (${resumeCount})`}
+            {formatCount(resumeCount)}
           </h2>
           {resumesListState.status === "loading" && <p>Loading resumes...</p>}
           {resumesListState.status === "error" && (
