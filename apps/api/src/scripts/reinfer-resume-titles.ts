@@ -61,8 +61,36 @@
  * Usage (run on YOUR OWN machine, against YOUR OWN database and API key --
  * this never runs in CI or in the sandbox this ticket was implemented in):
  *
- *   npx tsx apps/api/src/scripts/reinfer-resume-titles.ts          # DRY RUN, no spend
+ *   npx tsx apps/api/src/scripts/reinfer-resume-titles.ts          # DRY RUN -- still calls Claude
+ *                                                                   # once per candidate (see N1
+ *                                                                   # below), just never writes
  *   npx tsx apps/api/src/scripts/reinfer-resume-titles.ts --live   # actually re-infers and writes
+ *
+ * Opus review, N1: the dry run does NOT skip spend -- it calls
+ * `inferTitleKeywords` for every candidate exactly as `--live` does, only
+ * the WRITE is skipped. An earlier draft of this comment claimed "no spend"
+ * here, which was wrong in the direction that matters (an operator reading
+ * this before deciding how freely to re-run it).
+ *
+ * Opus review, B1 (BLOCKING, fixed): `inferTitleKeywords` swallows EVERY
+ * failure -- a bad API key, a rate limit, a network drop, a malformed
+ * response -- into a silent `[]` (see that function's own doc comment: this
+ * is the right contract for its ORIGINAL caller, resume submission, which
+ * must never be blocked by an inference hiccup). This script is a second
+ * caller with the OPPOSITE need, and the first version of it inherited that
+ * contract without noticing the reversal: a `[]` result compared as
+ * genuinely different from any non-empty stored value, so `--live` would
+ * WRITE `[]` over a resume's real chips on a transient failure. That is
+ * worse than the bug this script exists to fix -- and, critically, not
+ * self-healing: `[]` is NOT NULL, and `routes/resumes.ts`'s lazy
+ * re-inference is gated on `suggestedTitles === null`, so a wiped row stays
+ * wiped forever through ordinary app use. Proven live against real
+ * Postgres during review (a throwing fake client's `--live` run left a real
+ * row's chips overwritten with `[]`). Fixed below: an empty re-inference
+ * result is now treated as a FAILURE to be reported and skipped, never as a
+ * value to compare or write -- the schema this script's own prompt asks for
+ * is 3-6 titles, so a genuine empty success is not an expected shape this
+ * script needs to accommodate.
  */
 import { pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
@@ -148,9 +176,21 @@ export type ReinferOutcome = {
   newTitles: string[];
 };
 
+/** Opus review, B1: a resume whose re-inference came back empty --
+ * `inferTitleKeywords` swallows every real failure into `[]` (see this
+ * file's header), so an empty result here means "the call failed," not
+ * "Claude genuinely suggested zero titles." Reported so a bad run is loud,
+ * never written, never compared against the stored value. */
+export type ReinferFailure = { id: string; resumeNickname: string };
+
 export type ReinferResult = {
   totalConsidered: number;
   changed: ReinferOutcome[];
+  /** Opus review, B1. Always empty in a genuinely healthy run -- a
+   * non-empty list here means re-run this script; the affected resumes
+   * were left completely untouched, not written with a wrong or partial
+   * value. */
+  failed: ReinferFailure[];
   written: boolean;
 };
 
@@ -162,9 +202,20 @@ export async function runReinfer(
 ): Promise<ReinferResult> {
   const candidates = await findInferredResumes(db);
   const changed: ReinferOutcome[] = [];
+  const failed: ReinferFailure[] = [];
 
   for (const candidate of candidates) {
     const newTitles = await inferTitleKeywords(anthropic, candidate.resumeText);
+    // Opus review, B1 (BLOCKING): an empty result is a FAILURE signal, not
+    // a real re-inference outcome to compare or write -- see this file's
+    // header for why `inferTitleKeywords` can return `[]` on a transient
+    // error, and why writing that over real chips would be silent,
+    // non-self-healing data loss. Checked BEFORE `titlesEqual`, and the
+    // candidate is skipped entirely: no write, not counted as "changed".
+    if (newTitles.length === 0) {
+      failed.push({ id: candidate.id, resumeNickname: candidate.resumeNickname });
+      continue;
+    }
     if (titlesEqual(candidate.suggestedTitles, newTitles)) continue;
     changed.push({
       id: candidate.id,
@@ -180,7 +231,7 @@ export async function runReinfer(
     }
   }
 
-  return { totalConsidered: candidates.length, changed, written: opts.live };
+  return { totalConsidered: candidates.length, changed, failed, written: opts.live };
 }
 
 async function main(): Promise<void> {
@@ -220,12 +271,31 @@ async function main(): Promise<void> {
 
   try {
     const result = await runReinfer(db, anthropic, { live });
+    // Opus review, N2: the candidate count is now printed BEFORE any
+    // per-resume detail (and before the "nothing to do" early return), so
+    // an operator always sees the real blast radius up front -- a database
+    // with far more candidates than expected (e.g. from repeated dogfooding
+    // submissions, each edit creating a new content-addressed row) is
+    // visible immediately rather than only inferable from a long list.
     console.log(`\n${result.totalConsidered} resume(s) had a previously-inferred title set.`);
+
+    if (result.failed.length > 0) {
+      console.log(
+        `\n${result.failed.length} resume(s) FAILED to re-infer (API error, rate limit, or ` +
+          `similar -- see this file's header on why an empty result is treated as a failure, ` +
+          `never written) and were left completely untouched:\n`,
+      );
+      for (const failure of result.failed) {
+        console.log(`  ${failure.id}  "${failure.resumeNickname}"`);
+      }
+      console.log("\nRe-run this script to retry the failed resume(s).");
+    }
+
     if (result.changed.length === 0) {
-      console.log("None re-infer to anything different -- nothing to do.");
+      console.log("\nNone of the rest re-infer to anything different -- nothing to do.");
       return;
     }
-    console.log(`${result.changed.length} would change:\n`);
+    console.log(`\n${result.changed.length} would change:\n`);
     for (const outcome of result.changed) {
       console.log(`  ${outcome.id}  "${outcome.resumeNickname}"`);
       console.log(`    old: ${JSON.stringify(outcome.oldTitles)}`);

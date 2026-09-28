@@ -28,31 +28,32 @@ afterAll(async () => testDb?.teardown());
 /**
  * Same no-network fake-client pattern resume-title-inference.test.ts and
  * demo-match.test.ts already establish for this codebase -- adapted here to
- * be KEYED BY RESUME TEXT and backed by a live DATABASE LOOKUP for anything
- * unrecognized, because `runReinfer` processes every non-null-
+ * be KEYED BY RESUME TEXT, because `runReinfer` processes every non-null-
  * `suggestedTitles` resume in the WHOLE test database, including ones a
  * PRIOR test in this same file left behind (nothing deletes rows between
  * tests, same shared-database shape `reassign-legacy-resumes.test.ts`
  * already lives with).
  *
- * A naive fixed fallback (e.g. always `[]`) would be actively dangerous
- * here, not just inaccurate: in `--live` mode, `runReinfer` WRITES every
- * resume whose "new" output differs from what's stored, so a fallback that
- * doesn't happen to equal a leftover row's actual stored titles would get
- * that row silently overwritten as a side effect of a LATER, unrelated
- * test -- corrupting state an earlier test already asserted on. Instead,
- * anything this test's own map doesn't recognize gets its OWN
- * already-stored `suggestedTitles` echoed straight back, which is
- * guaranteed to compare equal under `titlesEqual` and therefore never
- * appear in `result.changed` or get written -- a true no-op for every row
- * this test doesn't explicitly target, regardless of execution order or
- * how much earlier tests left behind.
+ * Opus review, B2: an earlier version of this fake made an unrecognized
+ * prompt's fallback a live DB lookup that echoed the resume's OWN stored
+ * `suggestedTitles` back, reasoned as "guaranteed to compare equal and
+ * therefore never written." That guarantee was false -- the echoed value
+ * still passes through `inferTitleKeywords`'s real `splitConjoinedTitles`
+ * step, which is NOT the identity function (`["Billing"]` -> `[]`,
+ * `["Software Engineer, Microservices"]` -> `["Software Engineer"]`), so an
+ * unrecognized leftover row with an unsplit-shaped stored value could still
+ * come back different and get WRITTEN by a later `--live` test, corrupting
+ * state an earlier test had already asserted on. This version instead
+ * THROWS for anything unrecognized -- simulating a real API failure, the
+ * exact scenario the runReinfer-level B1 fix now exists to handle safely
+ * (an empty/failed result is skipped and reported, never compared or
+ * written). A leftover row from an earlier test now provably cannot be
+ * touched by a later test's run, and if a test's OWN target resume text
+ * fails to match its own key, the test fails loudly (a thrown error
+ * propagating out of `runReinfer`) instead of silently asserting on the
+ * wrong thing.
  */
-function makeKeyedAnthropicClient(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  testDb: NodePgDatabase<any>,
-  responsesByTextSubstring: Record<string, string[]>,
-): Anthropic {
+function makeKeyedAnthropicClient(responsesByTextSubstring: Record<string, string[]>): Anthropic {
   const fakeClient = {
     messages: {
       create: async (params: { messages: Array<{ content: string }> }) => {
@@ -60,19 +61,15 @@ function makeKeyedAnthropicClient(
         const match = Object.entries(responsesByTextSubstring).find(([key]) =>
           prompt.includes(key),
         );
-        if (match) {
-          return { content: [{ type: "text", text: JSON.stringify({ titles: match[1] }) }] };
+        if (!match) {
+          throw new Error(
+            "makeKeyedAnthropicClient: no response configured for this prompt -- simulates a " +
+              "real API failure for any resume this test doesn't explicitly target, which " +
+              "runReinfer's own failure handling (opus review, B1) makes safe: the row is " +
+              "skipped and reported, never written.",
+          );
         }
-        // Unrecognized -- find which stored resume this prompt is FOR (the
-        // real prompt is a fixed prefix + the resume's own text verbatim,
-        // resume-title-inference.ts's PROMPT_PREFIX) and echo its own
-        // current titles back, so this call is a guaranteed no-op.
-        const rows = await testDb
-          .select({ resumeText: resumes.resumeText, suggestedTitles: resumes.suggestedTitles })
-          .from(resumes);
-        const owner = rows.find((r) => prompt.endsWith(r.resumeText));
-        const titles = owner?.suggestedTitles ?? [];
-        return { content: [{ type: "text", text: JSON.stringify({ titles }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ titles: match[1] }) }] };
       },
     },
   };
@@ -156,7 +153,7 @@ describe("runReinfer", () => {
       resumeText,
       suggestedTitles: ["Backend Software Engineer (Java/Node.js)"],
     });
-    const anthropic = makeKeyedAnthropicClient(db, { [resumeText]: ["Backend Engineer"] });
+    const anthropic = makeKeyedAnthropicClient({ [resumeText]: ["Backend Engineer"] });
 
     const result = await runReinfer(db, anthropic, { live: false });
 
@@ -178,7 +175,7 @@ describe("runReinfer", () => {
       resumeText,
       suggestedTitles: ["Software Developer - Cloud & Microservices"],
     });
-    const anthropic = makeKeyedAnthropicClient(db, {
+    const anthropic = makeKeyedAnthropicClient({
       [resumeText]: ["Cloud Engineer", "Software Developer"],
     });
 
@@ -201,7 +198,7 @@ describe("runReinfer", () => {
     });
     // Same titles, different order -- a real thing a non-deterministic
     // model call can do against literally unchanged input.
-    const anthropic = makeKeyedAnthropicClient(db, {
+    const anthropic = makeKeyedAnthropicClient({
       [resumeText]: ["Cloud Engineer", "Backend Engineer"],
     });
 
@@ -221,7 +218,7 @@ describe("runReinfer", () => {
       resumeText,
       suggestedTitles: ["React/Angular Frontend Developer"],
     });
-    const anthropic = makeKeyedAnthropicClient(db, { [resumeText]: ["Frontend Engineer"] });
+    const anthropic = makeKeyedAnthropicClient({ [resumeText]: ["Frontend Engineer"] });
 
     await runReinfer(db, anthropic, { live: false });
 
@@ -239,7 +236,7 @@ describe("runReinfer", () => {
       resumeText: "Resume B",
       suggestedTitles: ["Cloud Engineer"], // already clean
     });
-    const anthropic = makeKeyedAnthropicClient(db, {
+    const anthropic = makeKeyedAnthropicClient({
       "Resume A": ["Backend Engineer"], // changes
       "Resume B": ["Cloud Engineer"], // unchanged
     });
@@ -254,5 +251,68 @@ describe("runReinfer", () => {
     expect(rowA[0]?.suggestedTitles).toEqual(["Backend Engineer"]);
     const rowB = await db.select().from(resumes).where(eq(resumes.id, idB));
     expect(rowB[0]?.suggestedTitles).toEqual(["Cloud Engineer"]);
+  });
+});
+
+/**
+ * Opus review, B1 (BLOCKING, the finding this whole describe block exists to
+ * pin): `inferTitleKeywords` swallows every real failure into `[]`, and an
+ * earlier version of this script treated that `[]` as a genuine
+ * re-inference result -- comparing it against the stored titles (always
+ * "different" unless the stored value was already `[]`) and, in `--live`
+ * mode, WRITING it over the resume's real chips. Proven during review
+ * against real Postgres: a throwing fake client's `--live` run left a real
+ * row's chips silently wiped to `[]`. Worse than the staleness bug this
+ * script exists to fix, and NOT self-healing (`[]` is not `null`, so
+ * routes/resumes.ts's lazy re-inference never re-triggers on it).
+ */
+describe("runReinfer treats an empty re-inference result as a FAILURE, never a value (ticket 1e09c1b, opus review B1)", () => {
+  it("a resume whose inference fails is reported in `failed`, not `changed`, and is never written even with --live", async () => {
+    const userId = await seedUser();
+    const resumeText = "A resume the fake client has no configured response for.";
+    const resumeId = await seedResume(userId, {
+      resumeText,
+      suggestedTitles: ["Backend Engineer", "Cloud Engineer"],
+    });
+    // No entry for `resumeText` -- the fake client throws for it, simulating
+    // a real API failure (bad key, rate limit, network drop, ...).
+    const anthropic = makeKeyedAnthropicClient({});
+
+    const result = await runReinfer(db, anthropic, { live: true });
+
+    expect(result.failed.map((f) => f.id)).toContain(resumeId);
+    expect(result.changed.map((c) => c.id)).not.toContain(resumeId);
+
+    // The real assertion: the row's ORIGINAL chips are completely untouched,
+    // not overwritten with `[]` or anything else.
+    const row = await db.select().from(resumes).where(eq(resumes.id, resumeId));
+    expect(row[0]?.suggestedTitles).toEqual(["Backend Engineer", "Cloud Engineer"]);
+  });
+
+  it("one resume's failure does not block another resume in the same run from succeeding", async () => {
+    const userId = await seedUser();
+    const failingText = "This one fails.";
+    const succeedingText = "This one succeeds.";
+    const failingId = await seedResume(userId, {
+      resumeText: failingText,
+      suggestedTitles: ["Old Title"],
+    });
+    const succeedingId = await seedResume(userId, {
+      resumeText: succeedingText,
+      suggestedTitles: ["Stale Title"],
+    });
+    // Only the succeeding one has a configured response -- the other throws.
+    const anthropic = makeKeyedAnthropicClient({ [succeedingText]: ["Fresh Title"] });
+
+    const result = await runReinfer(db, anthropic, { live: true });
+
+    expect(result.failed.map((f) => f.id)).toContain(failingId);
+    expect(result.changed.map((c) => c.id)).toContain(succeedingId);
+
+    const failingRow = await db.select().from(resumes).where(eq(resumes.id, failingId));
+    expect(failingRow[0]?.suggestedTitles).toEqual(["Old Title"]); // untouched
+
+    const succeedingRow = await db.select().from(resumes).where(eq(resumes.id, succeedingId));
+    expect(succeedingRow[0]?.suggestedTitles).toEqual(["Fresh Title"]); // updated
   });
 });
