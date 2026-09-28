@@ -17,6 +17,8 @@ import {
   groupKeyForStatus,
   type ScoredGroupKey,
 } from "./components/GroupedResultsList";
+import { MagicLinkLanding, readMagicLinkTokenFromUrl } from "./components/MagicLinkLanding";
+import { MagicLinkPrompt } from "./components/MagicLinkPrompt";
 import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
@@ -159,7 +161,7 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
  */
 type Tab = "search" | "scored" | "resumes";
 
-function App() {
+function JobSearchApp() {
   const sourcesState = useSources();
   // Ticket f4a7f07: "New Job Search" and "Already Scored Jobs". Nicole,
   // after several rounds of thinking out loud, settled on exactly these
@@ -1143,6 +1145,25 @@ function App() {
                 ) : (
                   <p>No jobs matched this search.</p>
                 )}
+                {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the
+                    email is ever asked for -- right after scored results
+                    land, never before. Everything about that placement is
+                    the ticket's point (nothing earlier in this flow is worth
+                    protecting, and "verify after value" is where PLG
+                    practice and NN/g's reciprocity principle agree), so it
+                    is enforced by WHERE this is mounted, not by a prop:
+                    this whole section only renders once
+                    `hasFreshSearchResults` is true, which only
+                    `handleSearchComplete` ever sets, and only for a run
+                    whose poll reported literally "complete".
+
+                    Gated additionally on there being real results to come
+                    back FOR: "find these results again later" is a strange
+                    thing to offer about a search that matched nothing, and
+                    `hiddenBelowFloor` alone doesn't count -- the user
+                    cannot see those, so there is nothing on screen the
+                    offer refers to. */}
+                {resultsState.data.results.length > 0 && <MagicLinkPrompt />}
               </section>
             )}
           </div>
@@ -1217,6 +1238,36 @@ function App() {
       </div>
     </main>
   );
+}
+
+/**
+ * Ticket 9f06f8f (epic 2b9e9dd child 4): the emailed sign-in link's landing
+ * view is a FULL-PAGE TAKEOVER, and this wrapper is what makes that true in
+ * the one way that matters -- `JobSearchApp` is not mounted at all while a
+ * token is being redeemed, so none of its data hooks (useSources,
+ * useResults, useResumesList) fire a single request under the identity the
+ * browser is in the middle of replacing.
+ *
+ * WHY A WRAPPER COMPONENT rather than an early `return` inside
+ * `JobSearchApp`: React hooks cannot be skipped, so an early return there
+ * would have to sit ABOVE every other hook in the file -- safe only as long
+ * as nobody ever adds a hook above it, and silently producing a
+ * "rendered fewer hooks than expected" crash the day someone does. Splitting
+ * the components makes the guarantee structural instead of a rule to
+ * remember. It costs one component and no behavior: with no
+ * `#magicLinkToken=` in the URL fragment (every ordinary page load), this
+ * renders exactly what it always did.
+ *
+ * `useState(readMagicLinkTokenFromUrl)` reads the URL ONCE, at first render,
+ * the same pattern `restored`/`readAppState` already uses in `JobSearchApp`
+ * and for the same reason: `MagicLinkLanding` strips the token out of the URL
+ * fragment with `history.replaceState` as soon as it has an answer, and this
+ * view must not switch out from under itself the moment that happens.
+ */
+function App() {
+  const [magicLinkToken] = useState(readMagicLinkTokenFromUrl);
+  if (magicLinkToken !== undefined) return <MagicLinkLanding token={magicLinkToken} />;
+  return <JobSearchApp />;
 }
 
 export default App;

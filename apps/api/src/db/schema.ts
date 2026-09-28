@@ -475,6 +475,94 @@ export const userJobStatuses = pgTable(
 );
 
 /**
+ * Ticket 9f06f8f (epic 2b9e9dd, child 4): one outstanding magic-link
+ * verification attempt. This is the table that turns "I am the same browser
+ * as before" (`users`, ticket dba885e) into "I am this real person with this
+ * real inbox" -- identity.ts's own doc comment names this ticket as the
+ * place real signing/expiry/single-use enforcement arrives, and this table
+ * is where the expiry and single-use halves live.
+ *
+ * WHY `token_hash` AND NOT THE TOKEN ITSELF. This is the one deliberate
+ * departure from `handoffs`'s "the row's own UUID id IS the token" shortcut
+ * right below, and the difference in kind is the reason: a handoff id grants
+ * read access to one point-in-time payload for ten minutes, whereas a
+ * magic-link token grants LOGIN AS A USER. Storing only
+ * `sha256(token)` means anything that can read this table -- a leaked
+ * backup, a `pg_dump` in a support ticket, a SQL-injection read, a DBA
+ * glancing at rows -- still cannot produce a working link, because sha256
+ * is not invertible and the token carries 256 bits of `randomBytes`
+ * entropy (no dictionary/brute-force shortcut, unlike a hashed password).
+ * The raw token exists in exactly two places, both outside this database:
+ * the email that was sent, and the URL the user clicks. A plain-column
+ * token would be a credential at rest for no benefit -- lookup is an
+ * equality match either way.
+ *
+ * Deliberately NOT an HMAC/signed token either (the other reading of
+ * identity.ts's "REAL signing"): a signature buys the ability to reject a
+ * forged token WITHOUT a database round trip, and this route has to do a
+ * round trip regardless -- single-use enforcement is a write (`used_at`),
+ * and expiry is a column on the row. Signing would add a second secret to
+ * manage and rotate for zero additional rejection power over "the hash is
+ * not in the table".
+ *
+ * `email` is the address the user TYPED (normalized -- lowercased and
+ * trimmed, see routes/auth.ts's `normalizeEmail`), stored at REQUEST time,
+ * so the token can only ever claim the address it was mailed to. It is
+ * deliberately not re-read from anywhere at verify time: if it were a
+ * parameter of the verify call instead, a token for alice@ could be
+ * replayed to claim bob@.
+ *
+ * `requesting_user_id` is the anonymous `users.id` of the browser that
+ * ASKED for the link -- the thing a brand-new email attaches to ("claiming
+ * my anonymous session"). FK'd to `users` because `registerIdentity` has
+ * already lazily created that row by the time `POST /auth/magic-link` runs.
+ *
+ * WHICH BRANCH READS IT, AND WHICH DOES NOT -- corrected in review round 4,
+ * because the original wording here ("the verify route reads this column
+ * rather than the verifying request's own `x-user-id`") stated as an
+ * unqualified design goal the exact premise that turned out to be an account-
+ * takeover (fable's round-3 review of ticket 9f06f8f reproduced it end to
+ * end; see routes/auth.ts's security property 4):
+ *
+ *  - The ADOPT branch ("logging in from a second device") ignores this column
+ *    entirely. It resolves by EMAIL, so the link may be opened anywhere, by
+ *    any browser, which is the whole point of that case.
+ *  - The ATTACH branch ("claiming my anonymous session") writes the email
+ *    onto THIS row, and therefore now REQUIRES that the verifying request's
+ *    own `x-user-id` equals this column -- otherwise it refuses
+ *    (`different_browser`) without consuming the token. This value is
+ *    client-asserted and unauthenticated (anyone may request a link for
+ *    anyone's address), so trusting it to name the account a stranger's
+ *    verified email lands on is precisely what must not happen.
+ *
+ * `used_at` NULL means "never redeemed". It is set exactly once, by a
+ * conditional `UPDATE ... WHERE used_at IS NULL`, which is what makes
+ * replay rejection atomic rather than a read-then-write race -- see
+ * routes/auth.ts's `claimToken`.
+ */
+export const magicLinkTokens = pgTable("magic_link_tokens", {
+  // A plain UUID row id, distinct from the token: safe to log, quote in an
+  // error, or join on, none of which is true of the token or its hash.
+  id: text("id").primaryKey(),
+  // sha256(raw token), lowercase hex. `.unique()` is not decoration: it is
+  // the index the verify path's only lookup uses, and it makes a hash
+  // collision (or a duplicate insert from a retried request) a loud error
+  // rather than two rows racing to be claimed.
+  tokenHash: text("token_hash").notNull().unique(),
+  email: text("email").notNull(),
+  requestingUserId: text("requesting_user_id")
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Stored as a concrete instant rather than recomputed from `created_at` at
+  // read time, for the same reason `handoffs.expires_at` is (see below): the
+  // TTL policy can change later without retroactively extending or
+  // shortening links already in someone's inbox.
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+});
+
+/**
  * A short-lived, cross-app handoff (ticket dbfd594): "Optimize Resume"
  * links to Nicole's separate resume-tailoring app with a job description
  * + resume text payload. That app runs on a different origin (its own

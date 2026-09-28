@@ -22,6 +22,9 @@ import type {
   GetResumeResultsResponse,
   GetSourcesResponse,
   ListResumesResponse,
+  MagicLinkRejectionReason,
+  RequestMagicLinkRequest,
+  RequestMagicLinkResponse,
   SearchCriteria,
   SearchStatusResponse,
   SetJobStatusResponse,
@@ -30,6 +33,8 @@ import type {
   UpdateResumeNicknameRequest,
   UpdateResumeNicknameResponse,
   UserJobStatus,
+  VerifyMagicLinkRequest,
+  VerifyMagicLinkResponse,
 } from "@app/shared";
 
 const API_BASE_URL: string =
@@ -308,4 +313,69 @@ export function createHandoff(jobId: string, resumeId: string): Promise<CreateHa
  */
 export function handoffFetchUrl(handoffId: string): string {
   return `${API_BASE_URL}/handoffs/${encodeURIComponent(handoffId)}`;
+}
+
+/**
+ * Ticket 9f06f8f: asks the API to email a single-use sign-in link to
+ * `email`. Resolves once the provider has ACCEPTED the message -- never a
+ * guarantee it landed in an inbox, which no provider API can promise
+ * synchronously, so the "check your inbox" copy this feeds must not claim
+ * delivery.
+ *
+ * A `503` means the email provider could not be reached or is not
+ * configured; the caller should invite a retry rather than treat it as the
+ * user's mistake.
+ */
+export function requestMagicLink(email: string): Promise<RequestMagicLinkResponse> {
+  const body: RequestMagicLinkRequest = { email };
+  return request<RequestMagicLinkResponse>("/auth/magic-link", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Ticket 9f06f8f: redeems the token from an emailed link, returning the
+ * identity this browser must use from here on.
+ *
+ * POST, with the token in the BODY rather than in the URL -- see
+ * apps/api/src/routes/auth.ts's header comment for the full reasoning (a GET
+ * would put the credential in server logs and in the `Referer` of every
+ * later request from the page, and would be consumed by the link scanners
+ * that follow URLs in mail).
+ *
+ * A rejection is an `ApiError` whose `body` carries a
+ * `MagicLinkRejectionReason` -- read it via `magicLinkRejectionReason`
+ * below rather than by string-matching the message.
+ */
+export function verifyMagicLink(token: string): Promise<VerifyMagicLinkResponse> {
+  const body: VerifyMagicLinkRequest = { token };
+  return request<VerifyMagicLinkResponse>("/auth/magic-link/verify", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Pulls the machine-readable refusal code out of a failed `verifyMagicLink`.
+ *
+ * Structural, not `instanceof ApiError`, for the same reason
+ * `isNicknameConflictError` (App.tsx) and `apiErrorStatus` (SearchFlow.tsx)
+ * are: component tests mock `./api/client` wholesale, so the `ApiError` class
+ * identity a mocked rejection carries is not guaranteed to be the one this
+ * module defines.
+ */
+export function magicLinkRejectionReason(err: unknown): MagicLinkRejectionReason | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const body = (err as { body?: unknown }).body;
+  if (typeof body !== "object" || body === null) return undefined;
+  const reason = (body as { reason?: unknown }).reason;
+  const known: MagicLinkRejectionReason[] = [
+    "invalid",
+    "expired",
+    "already_used",
+    "browser_already_claimed",
+    "different_browser",
+  ];
+  return known.find((candidate) => candidate === reason);
 }

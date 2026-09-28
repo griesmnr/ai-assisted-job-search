@@ -89,3 +89,80 @@ export function getUserId(): string {
   cached = fresh;
   return fresh;
 }
+
+/**
+ * Ticket 9f06f8f (epic 2b9e9dd, child 4): adopts a user id the SERVER
+ * resolved, replacing whatever this browser had minted for itself.
+ *
+ * This is the one and only path by which an id arrives from outside this
+ * module, and it exists for exactly one caller: `POST
+ * /auth/magic-link/verify`'s response, after the user clicked a single-use
+ * link mailed to their own address. The id it writes is a credential in
+ * precisely the same sense a self-minted one is (`x-user-id` is the whole
+ * of this app's auth -- see apps/api/src/identity.ts's doc comment on why
+ * an unsigned UUID is the chosen trust level), so it is stored the same
+ * way and must never be logged.
+ *
+ * Validated against the SAME `UUID_RE` a self-minted id must satisfy,
+ * deliberately: a malformed value here would be rejected by the API on
+ * every subsequent request, which presents as "the whole app is broken
+ * after signing in" rather than as one failed verification. Throwing
+ * instead lets the caller show a real error and leave the browser's
+ * existing, working identity untouched.
+ *
+ * Returns true when the id actually CHANGED. `MagicLinkLanding` branches on
+ * that: an unchanged id means "this browser's own anonymous session just
+ * gained an email" (nothing to reset -- the in-progress search and its
+ * results still belong to the same person), while a changed id means the
+ * browser is now a DIFFERENT user, and anything cached under the previous
+ * one (session.ts's persisted `resumeId`) refers to rows that user does not
+ * own and would 404.
+ */
+export function setUserId(id: string): boolean {
+  if (!isValidId(id)) {
+    throw new Error(`Refusing to adopt a malformed user id: "${id}"`);
+  }
+  const changed = getUserId() !== id;
+  writeStoredId(id);
+  cached = id;
+  return changed;
+}
+
+/**
+ * The verified email address this browser is signed in as, or `undefined`.
+ *
+ * WHY THIS IS STORED CLIENT-SIDE RATHER THAN READ FROM THE API. Its only
+ * job is to stop the post-results prompt from asking a signed-in user to
+ * sign in again, and for that purpose local storage is not merely adequate,
+ * it is exactly correct: this value and the user id live in the SAME storage
+ * with the SAME lifetime. If storage is cleared, the id goes with it -- the
+ * browser is then a genuinely new anonymous visitor, and prompting is the
+ * right behavior, not a bug. So a `GET /auth/session` round trip could not
+ * be more accurate here, only slower, and this ticket does not add one.
+ *
+ * Never used for authorization. The server decides what this identity may
+ * see from the id on the wire; this string only decides whether a prompt is
+ * rendered.
+ */
+const EMAIL_STORAGE_KEY = "jobsearch.web.userEmail.v1";
+
+export function getVerifiedEmail(): string | undefined {
+  try {
+    const raw = window.localStorage.getItem(EMAIL_STORAGE_KEY);
+    return raw !== null && raw.length > 0 ? raw : undefined;
+  } catch {
+    // Same blocked-storage handling as `readStoredId` (review fix S1): read
+    // as "nothing stored", never propagate.
+    return undefined;
+  }
+}
+
+export function setVerifiedEmail(email: string): void {
+  try {
+    window.localStorage.setItem(EMAIL_STORAGE_KEY, email);
+  } catch {
+    // Best-effort, exactly like `writeStoredId`: failing to remember this
+    // only means the prompt may reappear later, which is a cosmetic
+    // consequence of unavailable storage, not a broken sign-in.
+  }
+}
