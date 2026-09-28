@@ -112,7 +112,10 @@ inside one project/one bill.
    resume in a fresh Postgres is empty on a brand-new database — nothing
    to reconcile. If you ever restore a dump that has data under
    `LEGACY_USER_ID`, see `apps/api/src/scripts/reassign-legacy-resumes.ts`
-   and ticket `27a32bf` before assuming "my resumes" is broken.
+   and ticket `27a32bf` before assuming "my resumes" is broken. If you're
+   bringing over data from your OWN local environment specifically (not a
+   pre-auth historical dump), see "Bringing over your local data" below —
+   different scenario, different fix, not the legacy-user one.
 
 10. **Verify before asking Jay to test** (per Nicole's own stated plan):
     open `web`'s URL, paste a resume, run a real search against one
@@ -124,6 +127,83 @@ inside one project/one bill.
     dev container this was built in, so neither image has actually been
     built and run end to end yet. This step is that first real end-to-end
     check, not optional polish on top of one.
+
+## Bringing over your local data (ticket f19f589, optional, one-time)
+
+If you've been dogfooding this app locally (Nicole has), your real
+resumes, searches, and scored jobs live entirely in your local Postgres
+today. There's no reason to lose that just because the deployed database
+starts empty — a standard Postgres dump/restore carries it straight
+over, plus one identity gotcha that has nothing to do with the database
+itself.
+
+**Do this dump/restore BEFORE the `api` service's first boot** (step 4
+above) — before it ever runs `drizzle-kit migrate` against the Railway
+Postgres. Restoring a full schema+data dump into an already-migrated
+(but still empty) database throws "relation already exists" errors for
+every table. Order: create the Postgres service (step 2), restore into
+it while it's still genuinely empty, _then_ add the `api` service — its
+migration step will correctly see every migration already applied (your
+dump already ran every one of them locally) and do nothing further.
+
+1. **Dump your local database** (run on your Mac host, wherever
+   `docker compose` runs today):
+
+   ```bash
+   docker compose exec postgres pg_dump -U jobsearch -d jobsearch \
+     --no-owner --no-privileges -F c -f /tmp/jobsearch-dump.pgdump
+   docker compose cp postgres:/tmp/jobsearch-dump.pgdump ./jobsearch-dump.pgdump
+   ```
+
+2. **Restore into Railway's Postgres**, using the connection string from
+   that service's own Variables tab (`DATABASE_URL`, or build one from
+   the individual `PG*` variables — see step 2 above for why those don't
+   share names with what `api` itself reads):
+
+   ```bash
+   pg_restore --no-owner --no-privileges \
+     -d "<Railway's Postgres connection string>" \
+     jobsearch-dump.pgdump
+   ```
+
+   Needs `pg_restore` installed locally (macOS: `brew install libpq` if
+   you don't already have Postgres client tools) — or use a GUI client
+   (TablePlus, Postico) if you'd rather not touch the CLI for a one-time
+   operation; either produces the same result.
+
+3. **The identity gotcha — do this before your first real click on the
+   deployed site, not after.** This app's anonymous identity
+   (`identity.ts`) lives in the _browser's_ localStorage, scoped per
+   **origin**. Your local app runs on `localhost`; the deployed site is a
+   different origin entirely — so a fresh visit there mints a brand-new,
+   unrelated anonymous id, and none of the data you just restored will
+   appear to belong to it (the exact "My Resumes looks wiped" symptom
+   ticket `27a32bf` describes for a different cause). This is NOT the
+   `LEGACY_USER_ID` case step 9 above covers, and
+   `reassign-legacy-resumes.ts` won't help here — that script only moves
+   data away from the one specific legacy placeholder id, not between two
+   arbitrary real ids.
+
+   The fix doesn't need a script at all, because this app's identity is
+   explicitly client-asserted, never server-generated (`db/schema.ts`'s
+   own documented invariant) — you can just make your browser claim the
+   SAME id on both sites:
+
+   - On your **local** app, open devtools console:
+     ```js
+     localStorage.getItem("jobsearch.web.userId.v1");
+     ```
+     Copy the value it prints.
+   - On the **deployed** site, before doing anything else there, open
+     devtools console and run:
+     ```js
+     localStorage.setItem("jobsearch.web.userId.v1", "<the value you copied>");
+     ```
+     then reload the page.
+
+   Your browser is now the same anonymous identity on both sites, the
+   data you restored already belongs to it, and everything appears
+   immediately — no reconciliation step needed.
 
 ## Self-host fallback: `docker-compose.prod.yml`
 
