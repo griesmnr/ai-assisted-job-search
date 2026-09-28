@@ -162,7 +162,17 @@ dump already ran every one of them locally) and do nothing further.
    thing step 3 above already warns about for cross-service host values)
    — from your Mac, that fails with a DNS error that gives no hint of the
    real cause. `DATABASE_PUBLIC_URL` (same service's Variables tab) is
-   the one that's actually reachable from outside Railway:
+   the one that's actually reachable from outside Railway.
+
+   Opus review round 2: Railway's databases are **private by default** as
+   of mid-2026 — `DATABASE_PUBLIC_URL` will not exist in the Variables
+   tab at all until you turn public access on. On the Postgres service:
+   Settings → Networking → enable **Public Networking / TCP Proxy**. That
+   creates the proxy and populates `DATABASE_PUBLIC_URL`. It's fine to
+   turn public access back off once the restore is done — the `api`
+   service never needs it, only this one manual step does — and worth
+   doing, since a public proxy bills network egress and has no reason to
+   stay open afterward.
 
    ```bash
    pg_restore --no-owner --no-privileges \
@@ -178,8 +188,8 @@ dump already ran every one of them locally) and do nothing further.
    export PATH="$(brew --prefix libpq)/bin:$PATH"
    ```
 
-   in the same shell before calling `pg_restore`, or `pg_restore: command
-not found` is what you'll see next. A GUI client (TablePlus, Postico)
+   in the same shell before calling `pg_restore`, or you'll see
+   `pg_restore: command not found` next. A GUI client (TablePlus, Postico)
    works too if you'd rather not touch the CLI — but only if it exports
    the WHOLE database, not just the `public` schema: drizzle's own
    migration-tracking table lives in a separate `drizzle` schema, and
