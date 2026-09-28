@@ -112,7 +112,10 @@ inside one project/one bill.
    resume in a fresh Postgres is empty on a brand-new database — nothing
    to reconcile. If you ever restore a dump that has data under
    `LEGACY_USER_ID`, see `apps/api/src/scripts/reassign-legacy-resumes.ts`
-   and ticket `27a32bf` before assuming "my resumes" is broken.
+   and ticket `27a32bf` before assuming "my resumes" is broken. If you're
+   bringing over data from your OWN local environment specifically (not a
+   pre-auth historical dump), see "Bringing over your local data" below —
+   different scenario, different fix, not the legacy-user one.
 
 10. **Verify before asking Jay to test** (per Nicole's own stated plan):
     open `web`'s URL, paste a resume, run a real search against one
@@ -124,6 +127,128 @@ inside one project/one bill.
     dev container this was built in, so neither image has actually been
     built and run end to end yet. This step is that first real end-to-end
     check, not optional polish on top of one.
+
+## Bringing over your local data (ticket f19f589, optional, one-time)
+
+If you've been dogfooding this app locally (Nicole has), your real
+resumes, searches, and scored jobs live entirely in your local Postgres
+today. There's no reason to lose that just because the deployed database
+starts empty — a standard Postgres dump/restore carries it straight
+over, plus one identity gotcha that has nothing to do with the database
+itself.
+
+**Do this dump/restore BEFORE the `api` service's first boot** (step 4
+above) — before it ever runs `drizzle-kit migrate` against the Railway
+Postgres. Restoring a full schema+data dump into an already-migrated
+(but still empty) database throws "relation already exists" errors for
+every table. Order: create the Postgres service (step 2), restore into
+it while it's still genuinely empty, _then_ add the `api` service — its
+migration step will correctly see every migration already applied (your
+dump already ran every one of them locally) and do nothing further.
+
+1. **Dump your local database** (run on your Mac host, wherever
+   `docker compose` runs today):
+
+   ```bash
+   docker compose exec postgres pg_dump -U jobsearch -d jobsearch \
+     --no-owner --no-privileges -F c -f /tmp/jobsearch-dump.pgdump
+   docker compose cp postgres:/tmp/jobsearch-dump.pgdump ./jobsearch-dump.pgdump
+   ```
+
+2. **Restore into Railway's Postgres, using `DATABASE_PUBLIC_URL` —
+   specifically NOT `DATABASE_URL` or the plain `PG*` variables.** Opus
+   review, blocker: those all resolve to `postgres.railway.internal`,
+   reachable only from INSIDE Railway's own private network (the exact
+   thing step 3 above already warns about for cross-service host values)
+   — from your Mac, that fails with a DNS error that gives no hint of the
+   real cause. `DATABASE_PUBLIC_URL` (same service's Variables tab) is
+   the one that's actually reachable from outside Railway.
+
+   Opus review round 2: Railway's databases are **private by default** as
+   of mid-2026 — `DATABASE_PUBLIC_URL` will not exist in the Variables
+   tab at all until you turn public access on. On the Postgres service:
+   Settings → Networking → enable **Public Networking / TCP Proxy**. That
+   creates the proxy and populates `DATABASE_PUBLIC_URL`. It's fine to
+   turn public access back off once the restore is done — the `api`
+   service never needs it, only this one manual step does — and worth
+   doing, since a public proxy bills network egress and has no reason to
+   stay open afterward.
+
+   ```bash
+   pg_restore --no-owner --no-privileges \
+     -d "<Railway's DATABASE_PUBLIC_URL>" \
+     jobsearch-dump.pgdump
+   ```
+
+   Needs `pg_restore` installed locally. macOS: `brew install libpq` —
+   but that formula is keg-only and does NOT put its binaries on `PATH`
+   by itself (opus review); also run:
+
+   ```bash
+   export PATH="$(brew --prefix libpq)/bin:$PATH"
+   ```
+
+   in the same shell before calling `pg_restore`, or you'll see
+   `pg_restore: command not found` next. A GUI client (TablePlus, Postico)
+   works too if you'd rather not touch the CLI — but only if it exports
+   the WHOLE database, not just the `public` schema: drizzle's own
+   migration-tracking table lives in a separate `drizzle` schema, and
+   that table is what makes step 3's ordering claim ("the migration step
+   will see everything already applied") actually true. A `public`-only
+   export drops it, and `api`'s first boot then re-runs all 18+
+   migrations against a database that already has every table.
+
+   If you get the order wrong and `api` has already migrated before you
+   restore, `pg_restore --clean --if-exists ...` (same command, two added
+   flags) drops and recreates each object instead of erroring on it —
+   but plain `pg_restore` does NOT abort on the first error by default,
+   so a partial run without `--clean` can leave a confusing half-restored
+   mix rather than a clean failure. Getting the order right the first
+   time (this section's whole point) is still the better plan.
+
+3. **The identity gotcha — do this before your first real click on the
+   deployed site, not after.** This app's anonymous identity is
+   client-asserted, never server-generated (`apps/web/src/identity.ts` /
+   `apps/api/src/identity.ts`'s own documented invariant), and it lives in
+   the _browser's_ localStorage, scoped per **origin**. Your local app
+   runs on `localhost`; the deployed site is a different origin entirely
+   — so a fresh visit there mints a brand-new, unrelated anonymous id, and
+   none of the data you just restored will appear to belong to it (the
+   exact "My Resumes looks wiped" symptom ticket `27a32bf` describes for a
+   different cause).
+
+   This is NOT (necessarily only) the `LEGACY_USER_ID` case step 9 above
+   covers — and your local database may well contain BOTH kinds of data
+   at once: your own browser's real id from normal use, AND rows still
+   under `LEGACY_USER_ID` from any `demo-match.ts` CLI runs (its default
+   owner). `reassign-legacy-resumes.ts` only ever moves data away from
+   that one specific legacy placeholder id, never between two arbitrary
+   real ids, so it can't do what this step needs on its own — but you may
+   still want to run it too, for the `LEGACY_USER_ID` half, AFTER doing
+   the identity fix below (that script refuses to run until a real
+   `users` row already exists for its target id, which the localStorage
+   step is what creates).
+
+   The fix for your OWN browser's data doesn't need a script at all — you
+   can just make your browser claim the SAME id on both sites:
+
+   - On your **local** app, open devtools console:
+     ```js
+     localStorage.getItem("jobsearch.web.userId.v1");
+     ```
+     Copy the value it prints.
+   - On the **deployed** site, before doing anything else there, open
+     devtools console and run:
+     ```js
+     localStorage.setItem("jobsearch.web.userId.v1", "<the value you copied>");
+     ```
+     then reload the page. (If you'd also verified an email locally,
+     copy `jobsearch.web.userEmail.v1` the same way so the deployed site
+     doesn't re-prompt you to sign in — cosmetic only, but saves a step.)
+
+   Your browser is now the same anonymous identity on both sites, the
+   data you restored already belongs to it, and everything appears
+   immediately — no reconciliation step needed for this half.
 
 ## Self-host fallback: `docker-compose.prod.yml`
 
