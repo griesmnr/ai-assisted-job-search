@@ -102,7 +102,10 @@ describe("readMagicLinkTokenFromUrl", () => {
     render(<MagicLinkLanding token="tok_abc123" />);
     await screen.findByRole("heading", { name: /you're signed in/i });
 
-    expect(window.location.hash).toBe("#keep=me");
+    // Ticket bb2f275: a successful verification also bakes in the "land on
+    // Already Scored Jobs" marker (see that ticket) -- `keep=me` survives
+    // alongside it, which is the actual property this test is about.
+    expect(window.location.hash).toBe("#keep=me&landOnScoredTab=1");
   });
 });
 
@@ -127,7 +130,10 @@ describe("MagicLinkLanding -- success", () => {
 
     // THE CREDENTIAL IS OUT OF THE URL. A single-use token must not survive
     // in the address bar or in browser history once it has been redeemed.
-    expect(window.location.hash).toBe("");
+    // Ticket bb2f275: the ONLY thing left in the fragment is the "land on
+    // Already Scored Jobs" marker a successful verification bakes in --
+    // never the token itself.
+    expect(window.location.hash).toBe("#landOnScoredTab=1");
   });
 
   it("does NOT reset persisted app state when the id is unchanged -- an in-progress search survives claiming it", async () => {
@@ -220,6 +226,9 @@ describe("MagicLinkLanding -- success", () => {
 
     expect(reloadTo).toHaveBeenCalledTimes(1);
     expect(reloadTo.mock.calls[0]![0]).not.toContain("magicLinkToken");
+    // Ticket bb2f275: a successful "Continue" carries the "land on Already
+    // Scored Jobs" marker App.tsx reads on its next mount.
+    expect(reloadTo.mock.calls[0]![0]).toContain("landOnScoredTab=1");
   });
 
   /**
@@ -270,6 +279,23 @@ describe("MagicLinkLanding -- refusals", () => {
     expect(localStorage.getItem("jobsearch.web.userEmail.v1")).toBeNull();
     // A spent link comes out of the URL like a successful one.
     expect(window.location.hash).toBe("");
+  });
+
+  // Ticket bb2f275: landing on "Already Scored Jobs" only makes sense once
+  // there IS a verified identity to show results for -- a refusal must NOT
+  // carry the marker forward.
+  it("does NOT carry the 'land on Already Scored Jobs' marker on Continue after a refusal", async () => {
+    verifyMagicLink.mockRejectedValue(
+      rejection("expired", "That sign-in link expired. Request a new one to sign in."),
+    );
+
+    render(<MagicLinkLanding token="tok_abc123" />);
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: /continue without signing in/i }));
+
+    expect(reloadTo).toHaveBeenCalledTimes(1);
+    expect(reloadTo.mock.calls[0]![0]).not.toContain("landOnScoredTab");
   });
 
   it("shows the reused-link message for a replayed token", async () => {
