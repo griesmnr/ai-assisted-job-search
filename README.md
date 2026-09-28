@@ -60,7 +60,10 @@ Built, tested, and what `POST /searches` actually runs in production today:
   README exercises.
 - A React frontend (`apps/web`) — source toggles, resume input with
   AI-suggested title chips, a search-criteria form, a polling results view,
-  per-job status controls, and the "Optimize Resume" handoff.
+  and per-job status controls. (The "Optimize Resume" handoff UI is
+  removed as of ticket 1bc4ea2 -- decoupled from the separate
+  resume-tailoring app "for now" -- though the backend route it used
+  stays dormant; see `docs/resume-optimizer-handoff-contract.md`.)
 - The shortlist-truncation bug this section used to describe as open (a
   fixed `slice(0, 12)` silently dropping most of the ranked list once the
   candidate pool grew) is fixed: every survivor is a scoring candidate, a
