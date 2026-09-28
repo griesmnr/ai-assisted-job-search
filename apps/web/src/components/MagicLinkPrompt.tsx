@@ -13,6 +13,19 @@ import { getVerifiedEmail } from "../identity";
  * mounted rather than by a prop this component checks, so there is no way to
  * render it early by passing the wrong flag.
  *
+ * WHY IT FLOATS RATHER THAN SITTING INLINE (ticket d3a95d1, Nicole, live
+ * design discussion): the original inline placement, at the end of the
+ * results list, meant a long list could push it far below the fold --
+ * "never reached" is the same practical failure as never offering it at
+ * all. Nicole's own framing of the tradeoff: top competes with results and
+ * gets skipped past; bottom (inline, long list) is often never scrolled to;
+ * "off to the side" is neither -- a small persistent element, visible
+ * without scrolling, that doesn't block the first look at results. The
+ * `magic-link-prompt-floating` class (index.css) does this with
+ * `position: fixed`, which is a pure CSS/presentation change -- it does NOT
+ * touch WHEN this component is allowed to mount (still gated exactly as
+ * before, in App.tsx) or any of its internal states below.
+ *
  * WHY IT IS FRAMED AS "SO YOU CAN FIND THIS AGAIN" AND NOT AS A LOGIN WALL
  * (Nicole's framing, on the ticket): nothing here is gated. The results are
  * already on screen, already saved server-side under this browser's anonymous
@@ -49,26 +62,42 @@ export function MagicLinkPrompt() {
   const [email, setEmail] = useState("");
   const [phase, setPhase] = useState<Phase>({ status: "idle" });
 
+  // Opus review, B2 (BLOCKING): `dismissed` must be checked BEFORE the
+  // signed-in branch below, not after -- floating made the signed-in
+  // confirmation a fixed-position card sitting in the corner of every
+  // results view, and inline it had never needed a dismiss button (nothing
+  // to close, just a line scrolled past once), so this check used to come
+  // too late for that branch to ever reach it. Without this reordering, a
+  // signed-in user would have permanent, undismissable chrome occluding
+  // whatever's behind it -- see that branch's own dismiss button below.
+  if (dismissed) return null;
+
   // Already signed in: a short reassurance, no ask. Deliberately still
   // rendered (rather than nothing at all) because "are my results actually
   // saved anywhere?" is the exact question this section exists to answer,
   // and it is worth answering for the people who already did the thing.
   if (verifiedEmail !== undefined) {
     return (
-      <section className="magic-link-prompt magic-link-prompt-signed-in">
+      <section className="magic-link-prompt magic-link-prompt-floating magic-link-prompt-signed-in">
         <p>
           These results are saved to <strong>{verifiedEmail}</strong>. Use a sign-in link from any
           other browser to see them there.
         </p>
+        <button
+          type="button"
+          className="magic-link-prompt-signed-in-dismiss"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+        >
+          ×
+        </button>
       </section>
     );
   }
 
-  if (dismissed) return null;
-
   if (phase.status === "sent") {
     return (
-      <section className="magic-link-prompt" aria-live="polite">
+      <section className="magic-link-prompt magic-link-prompt-floating" aria-live="polite">
         <h3>Check your inbox</h3>
         <p>
           We sent a sign-in link to <strong>{phase.email}</strong>. Open it on any device to save
@@ -110,12 +139,15 @@ export function MagicLinkPrompt() {
   }
 
   return (
-    <section className="magic-link-prompt">
+    <section className="magic-link-prompt magic-link-prompt-floating">
       <h3>Want to find these results again later?</h3>
+      {/* Ticket d3a95d1, Nicole (live, while it's now a small floating
+          element): trimmed to one sentence -- the "no password / nothing
+          hidden behind it" reassurance was true and worth having once, but
+          not worth the length in a compact floating card. */}
       <p>
         Add your email and we'll send you a link that brings you back to this search from any
-        browser. No password, and nothing here is hidden behind it — your results are already saved
-        to this browser.
+        browser.
       </p>
       <form
         className="magic-link-form"

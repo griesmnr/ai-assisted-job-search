@@ -828,6 +828,104 @@ button[aria-disabled="true"] {
   color: #b3261e;
 }
 
+/* Ticket d3a95d1, Nicole (live design discussion): the prompt used to sit
+   inline at the end of the results list, which meant a long results list
+   could push it far below the fold -- "never reached" in practice. Her own
+   framing of the placement tradeoff: top competes with results and gets
+   skipped; bottom (inline, long list) is often never scrolled to; "off to
+   the side" is neither. `position: fixed` takes it out of document flow
+   entirely, so it stays visible without scrolling regardless of how long
+   the results list runs. `z-index` only needs to clear ordinary page
+   content -- nothing else on this page uses a stacking context above the
+   base layer.
+
+   Opus review, B1 (BLOCKING): `.magic-link-prompt`'s `background` is a
+   95%-transparent tint -- correct when the card sat IN FLOW with only the
+   page canvas behind it, but `position: fixed` now sits it ON TOP of
+   scrolled results, and at 95% transparency their text showed straight
+   through. `background: Canvas` (the CSS system color for the page's own
+   background, correct in both light and dark since `:root` declares
+   `color-scheme: light dark` above) makes the floating card opaque without
+   hardcoding a palette this stylesheet otherwise avoids. */
+.magic-link-prompt-floating {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 20;
+  margin-top: 0;
+  width: 20rem;
+  max-width: calc(100vw - 2.5rem);
+  background: Canvas;
+  box-shadow: 0 4px 16px color-mix(in srgb, currentColor 15%, transparent);
+  /* Opus review, N1: bottom-anchored + fixed means this cannot scroll --
+     on a short viewport (a landscape phone) the card's own content could
+     otherwise overflow off the TOP of the screen with no way to reach it.
+     Capped to the viewport's own height (minus the same margin used on
+     the other three sides) with internal scrolling as the fallback. */
+  max-height: calc(100vh - 2.5rem);
+  overflow-y: auto;
+}
+
+/* Opus review, B2 (BLOCKING): the signed-in confirmation is normally
+   undecorated AND has no dismiss button of its own (see
+   `.magic-link-prompt-signed-in` above, and `MagicLinkPrompt.tsx`'s
+   `dismissed` check, which returns before that branch is ever reached) --
+   inline, that was harmless, a quiet line scrolled past once. Floating, it
+   would camp permanently in the corner of every results view with no way
+   to close it, occluding whatever's behind it forever. Given the panel
+   treatment below (so it doesn't read as stray text, opus review's
+   original ask) AND a real dismiss button (MagicLinkPrompt.tsx), so the
+   float-forever problem doesn't just move from "undecorated" to
+   "undecorated but permanent". */
+.magic-link-prompt-floating.magic-link-prompt-signed-in {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+/* A bare "×", not underlined text like `.magic-link-secondary` above --
+   this is a close affordance on a corner card, not a text link. */
+.magic-link-prompt-signed-in-dismiss {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Opus review, N2: a floating, fixed-position card sits ON TOP of the
+   results section's own natural end -- without extra clearance, its last
+   card(s) can end up permanently occluded (scrolling further does nothing,
+   since the floating card scrolls with the viewport too). Scoped with
+   `:has()` to ONLY the results section that actually hosts the floating
+   prompt (rather than a blanket `.app` padding bump, which would add dead
+   space under every tab, including ones the prompt never appears on). */
+.results-section:has(.magic-link-prompt-floating) {
+  padding-bottom: 8rem;
+}
+
+/* Narrow viewports: a right-anchored fixed width card can crowd a phone
+   screen's edges. Full-width-minus-margins reads better than a narrower
+   fixed box at that size. Opus review, N3: widened from 30rem -- a
+   right-anchored 20rem box still overlaps most of a near-full-width
+   content column well above phone widths (e.g. a 48rem/768px tablet, where
+   `.app`'s own content column is not yet at its own max-width either). */
+@media (max-width: 48rem) {
+  .magic-link-prompt-floating {
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-width: none;
+  }
+}
+
 /* The landing view is a full-page takeover (MagicLinkLanding.tsx), so it
    gets the page's own centered column rather than sitting inside a
    section. */
