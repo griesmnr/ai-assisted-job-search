@@ -989,7 +989,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
   // Mutation-verified during review: deleting
   // <SearchSourceStatusList sources={phase.sources} /> from the running
   // panel entirely passed every other test in the suite -- the "Fetching"
-  // badge and the "Fetched ... jobs linked" detail had zero coverage
+  // badge and the "Fetched ... jobs found" detail had zero coverage
   // anywhere. This test exercises exactly the branch that justifies the
   // component's existence.
   it("shows per-source status live in the running panel, including a still-fetching source", async () => {
@@ -1021,7 +1021,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     expect(screen.getByText(/still fetching/)).toBeInTheDocument();
     expect(screen.getByText("greenhouse")).toBeInTheDocument();
     expect(screen.getByText("Fetched")).toBeInTheDocument();
-    expect(screen.getByText(/12 jobs linked/)).toBeInTheDocument();
+    expect(screen.getByText(/12 jobs found/)).toBeInTheDocument();
   });
 
   // Same field, mid-flight: the "running" panel must show cappedForBudget
