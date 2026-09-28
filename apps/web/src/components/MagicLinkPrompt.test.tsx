@@ -164,6 +164,20 @@ describe("MagicLinkPrompt", () => {
     expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
   });
 
+  // Opus review, B2 (BLOCKING, ticket d3a95d1): floating turned this
+  // state into a fixed-position card with no way to close it -- inline it
+  // never needed one (nothing to close, just a line scrolled past once).
+  it("the already-verified confirmation can be dismissed, same as the ask can", () => {
+    localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
+
+    render(<MagicLinkPrompt />);
+    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+
+    expect(screen.queryByText(/these results are saved to/i)).not.toBeInTheDocument();
+  });
+
   // Ticket d3a95d1, Nicole (live design discussion): moved from sitting
   // inline at the end of a potentially long results list (where it could
   // sit below the fold and never get seen) to a floating element that
@@ -174,13 +188,13 @@ describe("MagicLinkPrompt", () => {
   describe("floats instead of sitting inline (ticket d3a95d1)", () => {
     it("in the idle/form state", () => {
       const { container } = render(<MagicLinkPrompt />);
-      expect(container.querySelector(".magic-link-prompt-floating")).not.toBeNull();
+      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
     });
 
     it("in the already-verified state", () => {
       localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
       const { container } = render(<MagicLinkPrompt />);
-      expect(container.querySelector(".magic-link-prompt-floating")).not.toBeNull();
+      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
     });
 
     it("in the 'sent' state", async () => {
@@ -195,7 +209,7 @@ describe("MagicLinkPrompt", () => {
       fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
       await screen.findByRole("heading", { name: /check your inbox/i });
 
-      expect(container.querySelector(".magic-link-prompt-floating")).not.toBeNull();
+      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
     });
   });
 });

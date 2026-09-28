@@ -62,6 +62,16 @@ export function MagicLinkPrompt() {
   const [email, setEmail] = useState("");
   const [phase, setPhase] = useState<Phase>({ status: "idle" });
 
+  // Opus review, B2 (BLOCKING): `dismissed` must be checked BEFORE the
+  // signed-in branch below, not after -- floating made the signed-in
+  // confirmation a fixed-position card sitting in the corner of every
+  // results view, and inline it had never needed a dismiss button (nothing
+  // to close, just a line scrolled past once), so this check used to come
+  // too late for that branch to ever reach it. Without this reordering, a
+  // signed-in user would have permanent, undismissable chrome occluding
+  // whatever's behind it -- see that branch's own dismiss button below.
+  if (dismissed) return null;
+
   // Already signed in: a short reassurance, no ask. Deliberately still
   // rendered (rather than nothing at all) because "are my results actually
   // saved anywhere?" is the exact question this section exists to answer,
@@ -73,11 +83,17 @@ export function MagicLinkPrompt() {
           These results are saved to <strong>{verifiedEmail}</strong>. Use a sign-in link from any
           other browser to see them there.
         </p>
+        <button
+          type="button"
+          className="magic-link-prompt-signed-in-dismiss"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+        >
+          ×
+        </button>
       </section>
     );
   }
-
-  if (dismissed) return null;
 
   if (phase.status === "sent") {
     return (
