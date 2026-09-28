@@ -91,6 +91,24 @@ describe("App 'My Resumes' tab (ticket 303cff0)", () => {
     expect(screen.queryByRole("button", { name: /My Resumes \(/ })).not.toBeInTheDocument();
   });
 
+  // Ticket 368b6cc, Nicole (dogfooding): "when there are no resumes and no
+  // already scored jobs, I don't want to see the parentheses zero." Same
+  // "no count" treatment as the loading state above, but for the list
+  // having genuinely finished loading with zero in it -- a real state, not
+  // a timing window.
+  it("shows no count (not '(0)') once the resumes list has loaded with zero in it", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
+    listResumes.mockResolvedValue({ resumes: [] } satisfies ListResumesResponse);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "My Resumes" })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /My Resumes \(/ })).not.toBeInTheDocument();
+  });
+
   it("re-fetches the resumes list (and the count updates) after a new resume is submitted", async () => {
     getSources.mockResolvedValue(SOURCES);
     getAllResults.mockResolvedValue(EMPTY_RESULTS);
@@ -103,8 +121,12 @@ describe("App 'My Resumes' tab (ticket 303cff0)", () => {
     });
 
     render(<App />);
+    // Ticket 368b6cc: loaded with zero resumes now shows NO count (not
+    // "(0)") -- the dedicated test above covers this directly; this wait
+    // just needs to know the initial (empty) fetch has settled before
+    // triggering the second one below.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "My Resumes (0)" })).toBeInTheDocument();
+      expect(listResumes).toHaveBeenCalledTimes(1);
     });
 
     listResumes.mockResolvedValueOnce({
