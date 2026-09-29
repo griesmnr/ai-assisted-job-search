@@ -368,7 +368,7 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     ],
   };
 
-  it("shows scored jobs from every source, and their real status groups, when NO source is checked on the New Job Search form", async () => {
+  it("shows scored jobs from every source, and their real status groups, when EVERY source is unchecked on the New Job Search form", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -385,12 +385,17 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
-    // Deliberately never touch a single source checkbox -- a fresh session
-    // (no restored `selectedSourceIds`) starts with NONE of them checked,
-    // which is exactly the state that triggered Nicole's reported bug (the
-    // old code's `bySource` filter treated an empty `selectedSourceIds` as
-    // "hide everything").
+    // Opus review round 2 (ticket c49c088): App.tsx:568-575 auto-checks
+    // EVERY configured source once a fresh session's sources load (there is
+    // no restored `selectedSourceIds` here -- see that effect's own doc
+    // comment) -- so reaching an empty `selectedSourceIds`, the exact state
+    // that triggered Nicole's reported bug (the old code's `bySource`
+    // filter treated an empty set as "hide everything"), requires
+    // explicitly unchecking both boxes rather than just never touching
+    // them.
     await screen.findByLabelText("Greenhouse");
+    fireEvent.click(screen.getByLabelText("USAJOBS"));
+    fireEvent.click(screen.getByLabelText("Greenhouse"));
 
     fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
 
@@ -400,7 +405,7 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     expect(screen.getByRole("heading", { name: "Dismissed" })).toBeInTheDocument();
   });
 
-  it("still shows both jobs after explicitly checking only ONE source on the New Job Search form", async () => {
+  it("still shows both jobs after unchecking only ONE source on the New Job Search form", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -417,8 +422,12 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
-    // Check ONLY USAJOBS -- under the old (buggy) code this would have hidden
-    // the Greenhouse-sourced job from "Already Scored Jobs" too.
+    // Both sources start checked (App.tsx:568-575's auto-select, same as
+    // the test above) -- this click UNCHECKS USAJOBS, leaving only
+    // Greenhouse selected. Under the old (buggy) code that would have
+    // hidden the USAJobs-sourced job from "Already Scored Jobs"; this is
+    // the test that actually pins the real App.tsx -> GroupedResultsList
+    // call site (opus review round 2, ticket c49c088).
     await screen.findByLabelText("Greenhouse");
     fireEvent.click(screen.getByLabelText("USAJOBS"));
 
