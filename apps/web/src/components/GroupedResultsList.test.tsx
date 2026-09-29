@@ -55,6 +55,90 @@ const DATA: GetResumeResultsResponse = {
   ],
 };
 
+// Ticket c49c088: "Already Scored Jobs" was silently filtering by whatever
+// sources happened to be toggled on the unrelated New Job Search form
+// (`selectedSourceIds`, shared React state) -- a job from a source not
+// currently checked there, or every job once the New Job Search form had
+// nothing checked, simply vanished from this tab, along with the Saved/
+// Applied/Dismissed groups that job would have populated. Nicole,
+// dogfooding: "notice that there's no saved jobs, there's no dismissed
+// jobs, etc., and only 79 appear to be showing." Fix: this component no
+// longer accepts source-scoping at all -- it always shows every scored job.
+describe("GroupedResultsList — shows every scored job regardless of source (ticket c49c088)", () => {
+  it("shows jobs from sources that are not toggled anywhere, and renders their status groups (Saved, Dismissed)", () => {
+    const MIXED_SOURCES_AND_STATUSES: GetAllResultsResponse = {
+      results: [
+        job({ jobId: "job-a", title: "USAJobs Posting", dataSource: "usajobs", status: "saved" }),
+        job({
+          jobId: "job-b",
+          title: "Greenhouse Posting",
+          dataSource: "greenhouse",
+          status: "dismissed",
+        }),
+        job({ jobId: "job-c", title: "Lever Posting", dataSource: "lever", status: null }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={MIXED_SOURCES_AND_STATUSES}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("USAJobs Posting")).toBeInTheDocument();
+    expect(screen.getByText("Greenhouse Posting")).toBeInTheDocument();
+    expect(screen.getByText("Lever Posting")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Saved" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dismissed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No action taken" })).toBeInTheDocument();
+    expect(screen.getByText("Showing 3 of 3 scored jobs.")).toBeInTheDocument();
+  });
+});
+
+// Ticket c49c088 review fix (F1): App.tsx (the only caller) renders this
+// component when `data.results.length > 0 || hiddenBelowFloor > 0` -- its
+// own separate "No jobs scored yet." paragraph handles the true
+// zero-everything case before this component ever mounts. So
+// `data.results.length === 0` INSIDE this component always means every
+// scored job is hidden below the match-score floor. The reviewer caught
+// that the message for this state ("No jobs have been scored yet.") was
+// reachable only here and directly contradicted the floor notice rendered
+// in the very same paragraph block ("N more jobs scored below the
+// match-quality floor and are not shown.").
+describe("GroupedResultsList — empty state when every scored job is below the match-score floor (ticket c49c088 review F1)", () => {
+  it("names the match-score floor as the reason, and does not contradict the floor notice paragraph", () => {
+    const ALL_BELOW_FLOOR: GetAllResultsResponse = {
+      results: [],
+      hiddenBelowFloor: 421,
+    };
+
+    render(
+      <GroupedResultsList
+        data={ALL_BELOW_FLOOR}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText("No scored jobs are above the current match-score floor."),
+    ).toBeInTheDocument();
+    // The old, reviewer-flagged wording claimed nothing had been scored at
+    // all -- directly contradicted by the floor notice appearing right
+    // beneath it.
+    expect(screen.queryByText("No jobs have been scored yet.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("421 more jobs scored below the match-quality floor and are not shown."),
+    ).toBeInTheDocument();
+  });
+});
+
 // Ticket b182bde: opt-in, default-off client-side filter, same guarantees as
 // ResultsList's identical checkbox (see that file's tests) -- exercised here
 // too since GroupedResultsList duplicates the filtering logic rather than
@@ -64,7 +148,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -83,7 +166,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -101,12 +183,16 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
 
-  it("shows a level-filter-specific empty state (not the generic source-selection one) when every source-visible job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
+  it("shows a level-filter-specific empty state (not the generic zero-scored-jobs one) when every job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
     // Same regression as ResultsList.test.tsx's identical case: with every
-    // source-visible job overqualified and the checkbox checked,
-    // `visible.length` is 0, but the old code blamed source selection
-    // ("No jobs match the current source selection.") when the level
-    // filter -- not source selection -- is what hid them.
+    // job overqualified and the checkbox checked, `visible.length` is 0,
+    // but the old code blamed source selection when the level filter --
+    // not source selection -- is what hid them. Ticket c49c088 removed
+    // source-selection blame from this component entirely, but the same
+    // class of bug (blaming the wrong reason for an empty `visible`) is
+    // exactly as possible today between the level filter and the
+    // match-score-floor message, so this regression check still earns its
+    // keep against the current code.
     const ALL_OVERQUALIFIED: GetResumeResultsResponse = {
       ...DATA,
       results: DATA.results.map((r) => ({ ...r, levelFit: "overqualified" as const })),
@@ -115,7 +201,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={ALL_OVERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -128,11 +213,11 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
+        `Every scored job is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
       ),
     ).toBeInTheDocument();
   });
@@ -158,7 +243,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -176,7 +260,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -195,7 +278,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.getByText("Staff Backend Engineer")).toBeInTheDocument();
   });
 
-  it("shows an underqualified-filter-specific empty state when every source-visible job is underqualified and the checkbox is checked", () => {
+  it("shows an underqualified-filter-specific empty state when every job is underqualified and the checkbox is checked", () => {
     const ALL_UNDERQUALIFIED: GetResumeResultsResponse = {
       ...DATA,
       results: DATA.results.map((r) => ({ ...r, levelFit: "underqualified" as const })),
@@ -204,7 +287,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={ALL_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -217,11 +299,11 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        `Every job from the selected sources is one you may be underqualified for — uncheck "Hide roles I'm underqualified for" to see them.`,
+        `Every scored job is one you may be underqualified for — uncheck "Hide roles I'm underqualified for" to see them.`,
       ),
     ).toBeInTheDocument();
   });
@@ -230,7 +312,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -246,7 +327,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
+        "Showing 1 of 3 scored jobs. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
       ),
     ).toBeInTheDocument();
   });
@@ -275,7 +356,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -293,7 +373,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -312,7 +391,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
   });
 
-  it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
+  it("shows a contract-filter-specific empty state (not the generic zero-scored-jobs one) when every job is contract/temp and the checkbox is checked", () => {
     const ALL_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -325,7 +404,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={ALL_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -337,11 +415,11 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
 
     expect(screen.queryByText("Contract Software Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+        'Every scored job is contract/temp — uncheck "Hide contract/temp roles" to see them.',
       ),
     ).toBeInTheDocument();
   });
@@ -350,7 +428,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -366,12 +443,12 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
+        "Showing 1 of 3 scored jobs. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
       ),
     ).toBeInTheDocument();
   });
 
-  it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the source-selection message) when the only two source-visible jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
+  it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the zero-scored-jobs message) when the only two jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
     const ONLY_OVERQUALIFIED_AND_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -389,7 +466,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={ONLY_OVERQUALIFIED_AND_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -409,11 +485,11 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
+        `Every scored job is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
       ),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
   });
 
@@ -436,7 +512,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={DATA_BOTH}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -450,9 +525,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Showing 1 of 2 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.)",
-      ),
+      screen.getByText("Showing 1 of 2 scored jobs. (1 hidden as maybe overqualified.)"),
     ).toBeInTheDocument();
   });
 });
@@ -476,7 +549,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     render(
       <GroupedResultsList
         data={GROUPED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -506,7 +578,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     const { rerender } = render(
       <GroupedResultsList
         data={GROUPED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -535,7 +606,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     rerender(
       <GroupedResultsList
         data={afterStatusChange}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -579,7 +649,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     const { rerender } = render(
       <GroupedResultsList
         data={ONLY_SAVED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -604,7 +673,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     rerender(
       <GroupedResultsList
         data={NOW_DISMISSED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -616,7 +684,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
   });
 
-  it("live quick-link counts respect source toggles -- a job hidden by a deselected source is not counted", () => {
+  it("live quick-link counts include every scored job regardless of data source -- ticket c49c088: this component no longer inherits the New Job Search form's source toggles at all", () => {
     const TWO_SOURCES: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -629,7 +697,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     render(
       <GroupedResultsList
         data={TWO_SOURCES}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -637,12 +704,11 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       />,
     );
 
-    // Only job-a's source is selected -- the live count must reflect just
-    // the source-filtered set, not both jobs. If the live computation read
-    // `data.results` directly instead of the already-source-filtered
-    // `visible` array, this would incorrectly show "Saved (2)".
-    expect(screen.getByText("Saved (1)")).toBeInTheDocument();
-    expect(screen.queryByText("Saved (2)")).not.toBeInTheDocument();
+    // Neither job's source is anything the caller had to select -- this
+    // component takes no `selectedSourceIds` prop at all any more, so both
+    // must count regardless of what's toggled on the unrelated New Job
+    // Search form.
+    expect(screen.getByText("Saved (2)")).toBeInTheDocument();
   });
 });
 
@@ -675,7 +741,6 @@ describe("GroupedResultsList — the same job scored under two different resumes
     render(
       <GroupedResultsList
         data={CROSS_RESUME}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -709,7 +774,6 @@ describe("GroupedResultsList — the same job scored under two different resumes
     render(
       <GroupedResultsList
         data={CROSS_RESUME}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -735,7 +799,6 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
     render(
       <GroupedResultsList
         data={{ ...DATA, totalMatchingCount: 650 }}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -752,7 +815,6 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}

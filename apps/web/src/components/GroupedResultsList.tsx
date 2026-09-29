@@ -55,7 +55,6 @@ export function groupKeyForStatus(status: UserJobStatus | null): ScoredGroupKey 
  */
 export function GroupedResultsList({
   data,
-  selectedSourceIds,
   groupFor,
   onSetStatus,
   onClearStatus,
@@ -70,7 +69,6 @@ export function GroupedResultsList({
   // stayed on the narrower type for its own single-resume case) had to
   // change.
   data: GetAllResultsResponse;
-  selectedSourceIds: ReadonlySet<string>;
   groupFor: (result: ScoredJobResult) => ScoredGroupKey;
   // Ticket 3f0883f review fix: passthrough to ResultCard, which now
   // supplies `resumeId` itself (from `result.resumeId`) -- see that
@@ -80,9 +78,9 @@ export function GroupedResultsList({
   /** Ticket 1e183a4: passthrough to ResultCard -- see its own doc comment. */
   onViewResume: (resumeId: string) => void;
 }) {
-  // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter, same pattern as
-  // `selectedSourceIds` -- see ResultsList.tsx's identical filter for the
-  // full reasoning (never a silent server-side drop).
+  // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter -- see
+  // ResultsList.tsx's identical filter for the full reasoning (never a
+  // silent server-side drop).
   const [hideOverqualified, setHideOverqualified] = useState(false);
   // Ticket a340074: see ResultsList.tsx's identical state for the full
   // reasoning -- symmetric opt-in filter for the other `levelFit` value.
@@ -91,25 +89,23 @@ export function GroupedResultsList({
   // reasoning -- DEFAULT-OFF, contract/temp postings shown unless hidden.
   const [hideContractOrTemp, setHideContractOrTemp] = useState(false);
 
-  const bySource = data.results.filter((r) => selectedSourceIds.has(r.dataSource));
-  const overqualifiedCount = bySource.filter((r) => r.levelFit === "overqualified").length;
-  const underqualifiedCount = bySource.filter((r) => r.levelFit === "underqualified").length;
-  const contractOrTempCount = bySource.filter((r) => r.isContractOrTemp).length;
+  const overqualifiedCount = data.results.filter((r) => r.levelFit === "overqualified").length;
+  const underqualifiedCount = data.results.filter((r) => r.levelFit === "underqualified").length;
+  const contractOrTempCount = data.results.filter((r) => r.isContractOrTemp).length;
   // Ticket a340074: see ResultsList.tsx's identical telescoping computation
-  // for the full reasoning (sequential source -> overqualified ->
-  // underqualified -> contract/temp, so an overlap between any of the three
-  // hide-toggles is never double-counted).
+  // for the full reasoning (sequential overqualified -> underqualified ->
+  // contract/temp, so an overlap between any of the three hide-toggles is
+  // never double-counted).
   const afterOverLevel = hideOverqualified
-    ? bySource.filter((r) => r.levelFit !== "overqualified")
-    : bySource;
+    ? data.results.filter((r) => r.levelFit !== "overqualified")
+    : data.results;
   const afterUnderLevel = hideUnderqualified
     ? afterOverLevel.filter((r) => r.levelFit !== "underqualified")
     : afterOverLevel;
   const visible = hideContractOrTemp
     ? afterUnderLevel.filter((r) => !r.isContractOrTemp)
     : afterUnderLevel;
-  const hiddenBySourceToggle = data.results.length - bySource.length;
-  const hiddenByOverqualifiedFilter = bySource.length - afterOverLevel.length;
+  const hiddenByOverqualifiedFilter = data.results.length - afterOverLevel.length;
   const hiddenByUnderqualifiedFilter = afterOverLevel.length - afterUnderLevel.length;
   const hiddenByContractFilter = afterUnderLevel.length - visible.length;
 
@@ -137,17 +133,28 @@ export function GroupedResultsList({
 
   // Ticket a340074: see ResultsList.tsx's identical four-way empty-state
   // logic for the full reasoning.
+  //
+  // Ticket c49c088 review fix (F1): App.tsx only renders this component at
+  // all when `data.results.length > 0 || hiddenBelowFloor > 0` (its own
+  // "No jobs scored yet." paragraph handles the true zero-everything case
+  // before this component ever mounts) -- so `data.results.length === 0`
+  // HERE always means every scored job is hidden below the match-score
+  // floor, never "no source selected" (that blame was removed) and never
+  // "nothing has been scored" (App.tsx already said so). The old
+  // "No jobs have been scored yet." wording was reachable only in that
+  // hiddenBelowFloor-only state and directly contradicted the floor notice
+  // paragraph rendered right below it.
   let emptyStateMessage: string | null = null;
-  if (bySource.length === 0) {
-    emptyStateMessage = "No jobs match the current source selection.";
+  if (data.results.length === 0) {
+    emptyStateMessage = "No scored jobs are above the current match-score floor.";
   } else if (visible.length === 0) {
     if (afterOverLevel.length === 0) {
       emptyStateMessage =
-        'Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I\'m overqualified for" to see them.';
+        'Every scored job is one you may be overqualified for — uncheck "Hide roles I\'m overqualified for" to see them.';
     } else if (afterUnderLevel.length === 0) {
       emptyStateMessage = hideOverqualified
         ? 'Every remaining job (after hiding roles you may be overqualified for) is one you may be underqualified for — uncheck "Hide roles I\'m underqualified for" to see them.'
-        : 'Every job from the selected sources is one you may be underqualified for — uncheck "Hide roles I\'m underqualified for" to see them.';
+        : 'Every scored job is one you may be underqualified for — uncheck "Hide roles I\'m underqualified for" to see them.';
     } else if (hideContractOrTemp) {
       const leveledClauses = [
         hideOverqualified ? "overqualified" : null,
@@ -156,7 +163,7 @@ export function GroupedResultsList({
       emptyStateMessage =
         leveledClauses.length > 0
           ? `Every remaining job (after hiding roles you may be ${leveledClauses.join(" or ")} for) is contract/temp — uncheck "Hide contract/temp roles" to see them.`
-          : 'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.';
+          : 'Every scored job is contract/temp — uncheck "Hide contract/temp roles" to see them.';
     }
   }
 
@@ -164,10 +171,7 @@ export function GroupedResultsList({
     <div className="results-list">
       <p className="results-summary">
         {emptyStateMessage ??
-          `Showing ${visible.length} of ${data.results.length} scored jobs from the sources you've selected.` +
-            (hiddenBySourceToggle > 0
-              ? ` (${hiddenBySourceToggle} hidden by source toggles.)`
-              : "") +
+          `Showing ${visible.length} of ${data.results.length} scored jobs.` +
             // Ticket b182bde review (F1a): see ResultsList.tsx's identical
             // clause for the full reasoning.
             (hiddenByOverqualifiedFilter > 0
@@ -182,8 +186,7 @@ export function GroupedResultsList({
               ? ` (${hiddenByContractFilter} contract/temp hidden.)`
               : "")}
       </p>
-      {/* Ticket b182bde: count always shown, same pattern as the source-
-          toggle hidden count above.
+      {/* Ticket b182bde: count always shown.
           Ticket 8c252ff: see ResultsList.tsx's identical label for why the
           wording changed from "above my level" -- that phrasing described
           the opposite of what this checkbox filters. */}

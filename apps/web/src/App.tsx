@@ -1243,7 +1243,6 @@ function JobSearchApp() {
             (allResultsState.data.hiddenBelowFloor ?? 0) > 0 ? (
               <GroupedResultsList
                 data={allResultsState.data}
-                selectedSourceIds={selectedSourceIds}
                 groupFor={scoredGroupFor}
                 onSetStatus={handleSetStatus}
                 onClearStatus={handleClearStatus}
