@@ -99,6 +99,46 @@ describe("GroupedResultsList — shows every scored job regardless of source (ti
   });
 });
 
+// Ticket c49c088 review fix (F1): App.tsx (the only caller) renders this
+// component when `data.results.length > 0 || hiddenBelowFloor > 0` -- its
+// own separate "No jobs scored yet." paragraph handles the true
+// zero-everything case before this component ever mounts. So
+// `data.results.length === 0` INSIDE this component always means every
+// scored job is hidden below the match-score floor. The reviewer caught
+// that the message for this state ("No jobs have been scored yet.") was
+// reachable only here and directly contradicted the floor notice rendered
+// in the very same paragraph block ("N more jobs scored below the
+// match-quality floor and are not shown.").
+describe("GroupedResultsList — empty state when every scored job is below the match-score floor (ticket c49c088 review F1)", () => {
+  it("names the match-score floor as the reason, and does not contradict the floor notice paragraph", () => {
+    const ALL_BELOW_FLOOR: GetAllResultsResponse = {
+      results: [],
+      hiddenBelowFloor: 421,
+    };
+
+    render(
+      <GroupedResultsList
+        data={ALL_BELOW_FLOOR}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText("No scored jobs are above the current match-score floor."),
+    ).toBeInTheDocument();
+    // The old, reviewer-flagged wording claimed nothing had been scored at
+    // all -- directly contradicted by the floor notice appearing right
+    // beneath it.
+    expect(screen.queryByText("No jobs have been scored yet.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("421 more jobs scored below the match-quality floor and are not shown."),
+    ).toBeInTheDocument();
+  });
+});
+
 // Ticket b182bde: opt-in, default-off client-side filter, same guarantees as
 // ResultsList's identical checkbox (see that file's tests) -- exercised here
 // too since GroupedResultsList duplicates the filtering logic rather than
@@ -143,12 +183,16 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
   });
 
-  it("shows a level-filter-specific empty state (not the generic source-selection one) when every source-visible job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
+  it("shows a level-filter-specific empty state (not the generic zero-scored-jobs one) when every job is above level and the checkbox is checked (ticket b182bde review F1b)", () => {
     // Same regression as ResultsList.test.tsx's identical case: with every
-    // source-visible job overqualified and the checkbox checked,
-    // `visible.length` is 0, but the old code blamed source selection
-    // ("No jobs match the current source selection.") when the level
-    // filter -- not source selection -- is what hid them.
+    // job overqualified and the checkbox checked, `visible.length` is 0,
+    // but the old code blamed source selection when the level filter --
+    // not source selection -- is what hid them. Ticket c49c088 removed
+    // source-selection blame from this component entirely, but the same
+    // class of bug (blaming the wrong reason for an empty `visible`) is
+    // exactly as possible today between the level filter and the
+    // match-score-floor message, so this regression check still earns its
+    // keep against the current code.
     const ALL_OVERQUALIFIED: GetResumeResultsResponse = {
       ...DATA,
       results: DATA.results.map((r) => ({ ...r, levelFit: "overqualified" as const })),
@@ -169,7 +213,7 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
@@ -234,7 +278,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.getByText("Staff Backend Engineer")).toBeInTheDocument();
   });
 
-  it("shows an underqualified-filter-specific empty state when every source-visible job is underqualified and the checkbox is checked", () => {
+  it("shows an underqualified-filter-specific empty state when every job is underqualified and the checkbox is checked", () => {
     const ALL_UNDERQUALIFIED: GetResumeResultsResponse = {
       ...DATA,
       results: DATA.results.map((r) => ({ ...r, levelFit: "underqualified" as const })),
@@ -255,7 +299,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.queryByText("Senior Backend Engineer")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
@@ -347,7 +391,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.getByText("Software Engineer (Contract)")).toBeInTheDocument();
   });
 
-  it("shows a contract-filter-specific empty state (not the generic source-selection one) when every source-visible job is contract/temp and the checkbox is checked", () => {
+  it("shows a contract-filter-specific empty state (not the generic zero-scored-jobs one) when every job is contract/temp and the checkbox is checked", () => {
     const ALL_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -371,7 +415,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
 
     expect(screen.queryByText("Contract Software Engineer")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
@@ -404,7 +448,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     ).toBeInTheDocument();
   });
 
-  it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the source-selection message) when the only two source-visible jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
+  it("shows the COMBINED level+contract empty-state message (not either single-filter message, and not the zero-scored-jobs message) when the only two jobs are one overqualified-but-not-contract job and one contract-but-not-overqualified job, and BOTH checkboxes are checked (reviewer finding: this message had zero test coverage; ticket b182bde already shipped one empty-state-blames-wrong-filter bug, so this combination is worth covering directly)", () => {
     const ONLY_OVERQUALIFIED_AND_CONTRACT: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -445,7 +489,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
       ),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No jobs match the current source selection."),
+      screen.queryByText("No scored jobs are above the current match-score floor."),
     ).not.toBeInTheDocument();
   });
 

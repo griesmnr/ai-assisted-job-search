@@ -309,6 +309,126 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
   });
 });
 
+// Ticket c49c088: "Already Scored Jobs" was silently filtering by
+// `selectedSourceIds` -- the New Job Search form's OWN source toggles, a
+// completely different tab's state. Nicole, dogfooding at the match-score
+// floor set to 0%: "notice that there's no saved jobs, there's no
+// dismissed jobs, etc., and only 79 appear to be showing." The component
+// fix (GroupedResultsList.tsx) already has direct unit coverage for this;
+// this is the App-level guard the reviewer asked for -- it exercises the
+// real call site (App.tsx passing `allResultsState.data` straight into
+// `<GroupedResultsList>`) so a future edit that reintroduces the same class
+// of bug ONE LAYER UP -- e.g. pre-filtering `data.results` by
+// `selectedSourceIds` before ever handing it to GroupedResultsList -- fails
+// here even though GroupedResultsList's own tests would stay green (they
+// never touch App.tsx's call site at all).
+describe("App — Already Scored Jobs tab is independent of the New Job Search source toggles (ticket c49c088)", () => {
+  const CROSS_SOURCE_RESULTS: GetAllResultsResponse = {
+    results: [
+      {
+        jobId: "job-usajobs",
+        resumeId: "resume-1",
+        externalId: "ext-usajobs",
+        title: "USAJobs Posting",
+        company: "Acme",
+        dataSource: "usajobs",
+        location: null,
+        locationType: null,
+        applyUrl: "https://example.com/apply",
+        matchScore: 80,
+        rationale: "Good fit.",
+        strengths: [],
+        gaps: [],
+        status: "saved",
+        levelFit: null,
+        levelFitNote: null,
+        isContractOrTemp: false,
+        resumeNickname: "Resume 1",
+      },
+      {
+        jobId: "job-greenhouse",
+        resumeId: "resume-1",
+        externalId: "ext-greenhouse",
+        title: "Greenhouse Posting",
+        company: "Acme",
+        dataSource: "greenhouse",
+        location: null,
+        locationType: null,
+        applyUrl: "https://example.com/apply",
+        matchScore: 70,
+        rationale: "Good fit.",
+        strengths: [],
+        gaps: [],
+        status: "dismissed",
+        levelFit: null,
+        levelFitNote: null,
+        isContractOrTemp: false,
+        resumeNickname: "Resume 1",
+      },
+    ],
+  };
+
+  it("shows scored jobs from every source, and their real status groups, when NO source is checked on the New Job Search form", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue(CROSS_SOURCE_RESULTS);
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    // Deliberately never touch a single source checkbox -- a fresh session
+    // (no restored `selectedSourceIds`) starts with NONE of them checked,
+    // which is exactly the state that triggered Nicole's reported bug (the
+    // old code's `bySource` filter treated an empty `selectedSourceIds` as
+    // "hide everything").
+    await screen.findByLabelText("Greenhouse");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
+
+    expect(await screen.findByText("USAJobs Posting")).toBeInTheDocument();
+    expect(screen.getByText("Greenhouse Posting")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Saved" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dismissed" })).toBeInTheDocument();
+  });
+
+  it("still shows both jobs after explicitly checking only ONE source on the New Job Search form", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue(CROSS_SOURCE_RESULTS);
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    // Check ONLY USAJOBS -- under the old (buggy) code this would have hidden
+    // the Greenhouse-sourced job from "Already Scored Jobs" too.
+    await screen.findByLabelText("Greenhouse");
+    fireEvent.click(screen.getByLabelText("USAJOBS"));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
+
+    expect(await screen.findByText("USAJobs Posting")).toBeInTheDocument();
+    expect(screen.getByText("Greenhouse Posting")).toBeInTheDocument();
+  });
+});
+
 // Ticket 0308d7e (Nicole, dogfooding ac141d0: "I don't think we need the
 // resume-ready words anymore") -- redundant once ac141d0's collapsed
 // "Using Resume N" bar already communicates the same thing.

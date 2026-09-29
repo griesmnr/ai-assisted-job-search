@@ -133,9 +133,20 @@ export function GroupedResultsList({
 
   // Ticket a340074: see ResultsList.tsx's identical four-way empty-state
   // logic for the full reasoning.
+  //
+  // Ticket c49c088 review fix (F1): App.tsx only renders this component at
+  // all when `data.results.length > 0 || hiddenBelowFloor > 0` (its own
+  // "No jobs scored yet." paragraph handles the true zero-everything case
+  // before this component ever mounts) -- so `data.results.length === 0`
+  // HERE always means every scored job is hidden below the match-score
+  // floor, never "no source selected" (that blame was removed) and never
+  // "nothing has been scored" (App.tsx already said so). The old
+  // "No jobs have been scored yet." wording was reachable only in that
+  // hiddenBelowFloor-only state and directly contradicted the floor notice
+  // paragraph rendered right below it.
   let emptyStateMessage: string | null = null;
   if (data.results.length === 0) {
-    emptyStateMessage = "No jobs have been scored yet.";
+    emptyStateMessage = "No scored jobs are above the current match-score floor.";
   } else if (visible.length === 0) {
     if (afterOverLevel.length === 0) {
       emptyStateMessage =
