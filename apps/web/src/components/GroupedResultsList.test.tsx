@@ -55,6 +55,50 @@ const DATA: GetResumeResultsResponse = {
   ],
 };
 
+// Ticket c49c088: "Already Scored Jobs" was silently filtering by whatever
+// sources happened to be toggled on the unrelated New Job Search form
+// (`selectedSourceIds`, shared React state) -- a job from a source not
+// currently checked there, or every job once the New Job Search form had
+// nothing checked, simply vanished from this tab, along with the Saved/
+// Applied/Dismissed groups that job would have populated. Nicole,
+// dogfooding: "notice that there's no saved jobs, there's no dismissed
+// jobs, etc., and only 79 appear to be showing." Fix: this component no
+// longer accepts source-scoping at all -- it always shows every scored job.
+describe("GroupedResultsList — shows every scored job regardless of source (ticket c49c088)", () => {
+  it("shows jobs from sources that are not toggled anywhere, and renders their status groups (Saved, Dismissed)", () => {
+    const MIXED_SOURCES_AND_STATUSES: GetAllResultsResponse = {
+      results: [
+        job({ jobId: "job-a", title: "USAJobs Posting", dataSource: "usajobs", status: "saved" }),
+        job({
+          jobId: "job-b",
+          title: "Greenhouse Posting",
+          dataSource: "greenhouse",
+          status: "dismissed",
+        }),
+        job({ jobId: "job-c", title: "Lever Posting", dataSource: "lever", status: null }),
+      ],
+    };
+
+    render(
+      <GroupedResultsList
+        data={MIXED_SOURCES_AND_STATUSES}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("USAJobs Posting")).toBeInTheDocument();
+    expect(screen.getByText("Greenhouse Posting")).toBeInTheDocument();
+    expect(screen.getByText("Lever Posting")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Saved" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dismissed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No action taken" })).toBeInTheDocument();
+    expect(screen.getByText("Showing 3 of 3 scored jobs.")).toBeInTheDocument();
+  });
+});
+
 // Ticket b182bde: opt-in, default-off client-side filter, same guarantees as
 // ResultsList's identical checkbox (see that file's tests) -- exercised here
 // too since GroupedResultsList duplicates the filtering logic rather than
@@ -64,7 +108,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -83,7 +126,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -115,7 +157,6 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     render(
       <GroupedResultsList
         data={ALL_OVERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -132,7 +173,7 @@ describe(`GroupedResultsList — "Hide roles I'm overqualified for" filter (tick
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
+        `Every scored job is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
       ),
     ).toBeInTheDocument();
   });
@@ -158,7 +199,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -176,7 +216,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -204,7 +243,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={ALL_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -221,7 +259,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        `Every job from the selected sources is one you may be underqualified for — uncheck "Hide roles I'm underqualified for" to see them.`,
+        `Every scored job is one you may be underqualified for — uncheck "Hide roles I'm underqualified for" to see them.`,
       ),
     ).toBeInTheDocument();
   });
@@ -230,7 +268,6 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     render(
       <GroupedResultsList
         data={DATA_WITH_UNDERQUALIFIED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -246,7 +283,7 @@ describe(`GroupedResultsList — "Hide roles I'm underqualified for" filter (tic
     expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
+        "Showing 1 of 3 scored jobs. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
       ),
     ).toBeInTheDocument();
   });
@@ -275,7 +312,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -293,7 +329,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -325,7 +360,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={ALL_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -341,7 +375,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'Every job from the selected sources is contract/temp — uncheck "Hide contract/temp roles" to see them.',
+        'Every scored job is contract/temp — uncheck "Hide contract/temp roles" to see them.',
       ),
     ).toBeInTheDocument();
   });
@@ -350,7 +384,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={WITH_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -366,7 +399,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
+        "Showing 1 of 3 scored jobs. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
       ),
     ).toBeInTheDocument();
   });
@@ -389,7 +422,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={ONLY_OVERQUALIFIED_AND_CONTRACT}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -409,7 +441,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        `Every job from the selected sources is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
+        `Every scored job is one you may be overqualified for — uncheck "Hide roles I'm overqualified for" to see them.`,
       ),
     ).not.toBeInTheDocument();
     expect(
@@ -436,7 +468,6 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     render(
       <GroupedResultsList
         data={DATA_BOTH}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -450,9 +481,7 @@ describe('GroupedResultsList — "Hide contract/temp roles" filter (ticket 8f5a7
     expect(screen.getByText("Senior Backend Engineer")).toBeInTheDocument();
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Showing 1 of 2 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.)",
-      ),
+      screen.getByText("Showing 1 of 2 scored jobs. (1 hidden as maybe overqualified.)"),
     ).toBeInTheDocument();
   });
 });
@@ -476,7 +505,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     render(
       <GroupedResultsList
         data={GROUPED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -506,7 +534,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     const { rerender } = render(
       <GroupedResultsList
         data={GROUPED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -535,7 +562,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     rerender(
       <GroupedResultsList
         data={afterStatusChange}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -579,7 +605,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     const { rerender } = render(
       <GroupedResultsList
         data={ONLY_SAVED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -604,7 +629,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     rerender(
       <GroupedResultsList
         data={NOW_DISMISSED}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={frozenGroupFor}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -616,7 +640,7 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     expect(screen.getByText("Dismissed (1)")).toBeInTheDocument();
   });
 
-  it("live quick-link counts respect source toggles -- a job hidden by a deselected source is not counted", () => {
+  it("live quick-link counts include every scored job regardless of data source -- ticket c49c088: this component no longer inherits the New Job Search form's source toggles at all", () => {
     const TWO_SOURCES: GetResumeResultsResponse = {
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
@@ -629,7 +653,6 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
     render(
       <GroupedResultsList
         data={TWO_SOURCES}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -637,12 +660,11 @@ describe("GroupedResultsList — quick-jump links (ticket 1ea4bf3)", () => {
       />,
     );
 
-    // Only job-a's source is selected -- the live count must reflect just
-    // the source-filtered set, not both jobs. If the live computation read
-    // `data.results` directly instead of the already-source-filtered
-    // `visible` array, this would incorrectly show "Saved (2)".
-    expect(screen.getByText("Saved (1)")).toBeInTheDocument();
-    expect(screen.queryByText("Saved (2)")).not.toBeInTheDocument();
+    // Neither job's source is anything the caller had to select -- this
+    // component takes no `selectedSourceIds` prop at all any more, so both
+    // must count regardless of what's toggled on the unrelated New Job
+    // Search form.
+    expect(screen.getByText("Saved (2)")).toBeInTheDocument();
   });
 });
 
@@ -675,7 +697,6 @@ describe("GroupedResultsList — the same job scored under two different resumes
     render(
       <GroupedResultsList
         data={CROSS_RESUME}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -709,7 +730,6 @@ describe("GroupedResultsList — the same job scored under two different resumes
     render(
       <GroupedResultsList
         data={CROSS_RESUME}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -735,7 +755,6 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
     render(
       <GroupedResultsList
         data={{ ...DATA, totalMatchingCount: 650 }}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
@@ -752,7 +771,6 @@ describe("GroupedResultsList — truncation notice (ticket e9a82f3)", () => {
     render(
       <GroupedResultsList
         data={DATA}
-        selectedSourceIds={new Set(["usajobs"])}
         groupFor={(r) => groupKeyForStatus(r.status)}
         onSetStatus={async () => {}}
         onClearStatus={async () => {}}
