@@ -943,6 +943,44 @@ function JobSearchApp() {
     setHasFreshSearchResults(true);
   }
 
+  // Ticket d0a7074, Nicole (dogfooding): "is there a magic link opportunity
+  // on the already scored jobs page too?" -- then, once told it wasn't
+  // there: "that's what I was hoping to see." So the offer now covers both
+  // results tabs, not just "Results from this search".
+  //
+  // WHY THIS IS ONE HOISTED INSTANCE AND NOT ONE PER TAB: all three tab
+  // panels stay mounted at once (only `hidden` toggles -- ticket f4a7f07),
+  // and MagicLinkPrompt keeps `dismissed`/`email`/`phase` in its own local
+  // state. Two mount points would therefore be two INDEPENDENT states:
+  // "Not now" on one tab and the prompt is still sitting there on the
+  // other, or submit the address on one tab and the other still shows an
+  // empty form asking again. Since the prompt is `position: fixed`
+  // (ticket d3a95d1) it is already visually detached from whatever section
+  // contains it, so a single instance at `main.app` level is the honest
+  // structure rather than a workaround -- the tab it "belongs to" is
+  // decided by this gate, and the card renders in the same corner either
+  // way.
+  //
+  // WHAT THE GATE PRESERVES: ticket 9f06f8f's placement rule is unchanged
+  // -- the email is asked for only after real scored results are on
+  // screen, never before. The search-tab arm still requires
+  // `hasFreshSearchResults` (set only by `handleSearchComplete`, only for
+  // a run whose poll reported literally "complete"), so a search tab with
+  // nothing completed still never shows it. Both arms additionally require
+  // at least one VISIBLE result: "find these results again later" is a
+  // strange offer when nothing is on screen to come back for, and
+  // `hiddenBelowFloor` alone doesn't count -- the user cannot see those.
+  // The "My Resumes" tab is not an arm at all, so it never shows the
+  // prompt.
+  const showMagicLinkPrompt =
+    (activeTab === "search" &&
+      hasFreshSearchResults &&
+      resultsState.status === "ready" &&
+      resultsState.data.results.length > 0) ||
+    (activeTab === "scored" &&
+      allResultsState.status === "ready" &&
+      allResultsState.data.results.length > 0);
+
   return (
     <main className="app">
       <h1>AI-Assisted Job Search</h1>
@@ -1188,25 +1226,6 @@ function JobSearchApp() {
                 ) : (
                   <p>No jobs matched this search.</p>
                 )}
-                {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the
-                    email is ever asked for -- right after scored results
-                    land, never before. Everything about that placement is
-                    the ticket's point (nothing earlier in this flow is worth
-                    protecting, and "verify after value" is where PLG
-                    practice and NN/g's reciprocity principle agree), so it
-                    is enforced by WHERE this is mounted, not by a prop:
-                    this whole section only renders once
-                    `hasFreshSearchResults` is true, which only
-                    `handleSearchComplete` ever sets, and only for a run
-                    whose poll reported literally "complete".
-
-                    Gated additionally on there being real results to come
-                    back FOR: "find these results again later" is a strange
-                    thing to offer about a search that matched nothing, and
-                    `hiddenBelowFloor` alone doesn't count -- the user
-                    cannot see those, so there is nothing on screen the
-                    offer refers to. */}
-                {resultsState.data.results.length > 0 && <MagicLinkPrompt />}
               </section>
             )}
           </div>
@@ -1278,6 +1297,14 @@ function JobSearchApp() {
           )}
         </section>
       </div>
+
+      {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the email is
+          ever asked for. Ticket d0a7074 hoisted it here, out of the search
+          tab's own results section, so that a SINGLE instance can serve
+          both results tabs -- see `showMagicLinkPrompt` above for the gate
+          it now carries instead of physical nesting, and for why one
+          instance rather than one per tab. */}
+      {showMagicLinkPrompt && <MagicLinkPrompt />}
     </main>
   );
 }
