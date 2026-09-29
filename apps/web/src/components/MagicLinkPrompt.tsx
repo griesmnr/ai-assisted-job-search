@@ -35,9 +35,12 @@ import { getVerifiedEmail } from "../identity";
  * "off to the side" is neither -- a small persistent element, visible
  * without scrolling, that doesn't block the first look at results. The
  * `magic-link-prompt-floating` class (index.css) does this with
- * `position: fixed`, which is a pure CSS/presentation change -- it does NOT
- * touch WHEN this component is allowed to mount (still gated exactly as
- * before, in App.tsx) or any of its internal states below.
+ * `position: fixed`, which was a pure CSS/presentation change -- d3a95d1
+ * itself touched neither when this component mounts nor any of its
+ * internal states below. (Ticket d0a7074 later DID change the mounting, as
+ * the paragraph above describes; that float-vs-inline reasoning is
+ * unaffected by it, and `position: fixed` is in fact why one hoisted
+ * instance works at all.)
  *
  * WHY IT IS FRAMED AS "SO YOU CAN FIND THIS AGAIN" AND NOT AS A LOGIN WALL
  * (Nicole's framing, on the ticket): nothing here is gated. The results are
