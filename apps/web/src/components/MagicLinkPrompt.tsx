@@ -103,9 +103,6 @@ export function MagicLinkPrompt() {
           We sent a sign-in link to <strong>{phase.email}</strong>. Open it on any device to save
           these results to that address. The link works once and expires in about 15 minutes.
         </p>
-        <p className="magic-link-note">
-          Nothing is lost if you ignore it — these results stay in this browser either way.
-        </p>
         <button
           type="button"
           className="magic-link-secondary"
@@ -144,10 +141,17 @@ export function MagicLinkPrompt() {
       {/* Ticket d3a95d1, Nicole (live, while it's now a small floating
           element): trimmed to one sentence -- the "no password / nothing
           hidden behind it" reassurance was true and worth having once, but
-          not worth the length in a compact floating card. */}
+          not worth the length in a compact floating card.
+          Ticket f199f55, Nicole (live, after walking through what this
+          feature actually does end to end): reworded again -- "ties these
+          results to your email so that you can get them back anytime"
+          names the real mechanism (the email is the durable identity; any
+          future link is just a fresh proof-of-you) instead of implying
+          THIS specific link is what "brings you back", which is what led
+          to her original "why does it expire, then?" confusion. */}
       <p>
-        Add your email and we'll send you a link that brings you back to this search from any
-        browser.
+        Add your email and we'll send you a link that ties these results to your email so that you
+        can get them back anytime.
       </p>
       <form
         className="magic-link-form"

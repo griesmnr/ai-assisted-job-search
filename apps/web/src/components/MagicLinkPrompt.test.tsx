@@ -35,8 +35,12 @@ describe("MagicLinkPrompt", () => {
     // nothing hidden behind it" reassurance is gone. "Not now" being a
     // real, equally-weighted option is what still carries the "not a
     // wall" framing, not the removed sentence.
+    // Ticket f199f55, Nicole (live): reworded to name the actual
+    // mechanism -- the email ties to the results permanently, rather than
+    // implying THIS specific link is what "brings you back" (the exact
+    // framing that led to her "why does it expire, then?" confusion).
     expect(
-      screen.getByText(/send you a link that brings you back to this search from any browser/i),
+      screen.getByText(/ties these results to your email so that you can get them back anytime/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/already saved to this browser/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /not now/i })).toBeInTheDocument();
@@ -65,8 +69,11 @@ describe("MagicLinkPrompt", () => {
     // Never claims delivery, only that it was sent -- the provider accepting
     // a message is not an inbox receiving it.
     expect(screen.getByText(/we sent a sign-in link/i)).toBeInTheDocument();
-    // And still says nothing is lost by ignoring it.
-    expect(screen.getByText(/nothing is lost if you ignore it/i)).toBeInTheDocument();
+    // Ticket f199f55, Nicole (live): the "nothing is lost if you ignore
+    // it" reassurance is gone -- her own reasoning was that having it
+    // right next to the call to action undercuts the point of sending the
+    // link at all.
+    expect(screen.queryByText(/nothing is lost if you ignore it/i)).not.toBeInTheDocument();
   });
 
   it("returns to the form (not a silent re-send) when the mail didn't arrive", async () => {
