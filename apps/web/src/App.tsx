@@ -25,6 +25,7 @@ import {
 } from "./components/MagicLinkLanding";
 import { MagicLinkPrompt } from "./components/MagicLinkPrompt";
 import { SignedInCue } from "./components/SignedInCue";
+import { SignInRecovery } from "./components/SignInRecovery";
 import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
@@ -996,6 +997,35 @@ function JobSearchApp() {
   const showMagicLinkPrompt =
     (activeTab === "search" && searchArmReady) || (activeTab === "scored" && scoredArmReady);
 
+  // Ticket 5a7e957: the "been here before?" entry point, for someone who
+  // saved their email and then lost this browser's storage. Nicole's own rule
+  // for when it belongs on screen: "on any site run where there's no data?
+  // because if there is data, or they use the site normally, they'll get
+  // prompted as we discussed."
+  //
+  // That is the right rule for a reason worth writing down: `MagicLinkPrompt`
+  // ALREADY performs recovery, because an address that already has an account
+  // takes the adopt branch in `routes/auth.ts`. So a second entry point is
+  // needed only where the prompt cannot render -- nothing scored. Two doors
+  // into the same room at once would just be confusing.
+  //
+  // `resumeId === undefined` is the refinement: someone who has pasted a
+  // resume but not searched yet has no scored results, but is mid-onboarding
+  // rather than lost, and offering them a way back would read as the app not
+  // noticing what they are doing. `hiddenBelowFloor` counts as data here --
+  // jobs exist, they are merely filtered, so this browser is plainly not
+  // empty.
+  //
+  // Whether the visitor is signed in is NOT checked here: `SignInRecovery`
+  // reads `getVerifiedEmail()` itself and renders nothing when set, the same
+  // way `SignedInCue` does the inverse. The two share the header slot and are
+  // mutually exclusive by construction.
+  const showSignInRecovery =
+    resumeId === undefined &&
+    allResultsState.status === "ready" &&
+    allResultsState.data.results.length === 0 &&
+    (allResultsState.data.hiddenBelowFloor ?? 0) === 0;
+
   return (
     <main className="app">
       {/* Ticket a5c8fa9: the h1 and the signed-in cue share one row, so the
@@ -1007,6 +1037,7 @@ function JobSearchApp() {
       <div className="app-header">
         <h1>AI-Assisted Job Search</h1>
         <SignedInCue />
+        {showSignInRecovery && <SignInRecovery />}
       </div>
 
       <nav className="tab-nav" aria-label="Sections">

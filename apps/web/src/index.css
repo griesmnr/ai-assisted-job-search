@@ -51,6 +51,58 @@ h1 {
   margin: 0;
 }
 
+/* Ticket 5a7e957: the collapsed "been here before?" entry point. Shares the
+   header's top-right slot with `.signed-in-cue` below and is mutually
+   exclusive with it (one renders only with a verified email, the other only
+   without), so they never compete for the space. Styled as a quiet text link
+   rather than a button because it is an offer aimed at returning users, and a
+   first-timer -- who cannot be told apart from one, see SignInRecovery.tsx --
+   should be able to read straight past it. Same `margin-left: auto`
+   reasoning as `.signed-in-cue` for the wrapped case. */
+.sign-in-recovery-link {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* Expanded, the panel needs the whole width rather than a slot beside the
+   h1. `flex-basis: 100%` drops it onto its own line via the header's existing
+   `flex-wrap: wrap`, so it never squeezes the heading. Deliberately NOT
+   `position: fixed`: this app has been bitten three times by fixed chrome
+   (ticket d3a95d1's opacity and scroll fixes, its review finding B2's dismiss
+   button, and ticket d0a7074's card floating over the resume picker), and an
+   in-flow panel cannot overlap anything at any width.
+   The explicit margin and padding also override the global rule for bare
+   `section` elements, which sets a 2rem top margin and a top border suited to
+   real page sections -- this is a widget inside the header, not one of
+   those. */
+.sign-in-recovery-open {
+  flex-basis: 100%;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 34rem;
+}
+
+.sign-in-recovery-open h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.sign-in-recovery-open p {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
 /* `margin-left: auto` as well as the parent's `space-between`: when the row
    wraps, `space-between` no longer pushes this right (it's alone on its own
    line), and without this the cue would left-align under the heading. */

@@ -1,6 +1,6 @@
-import { useId, useState } from "react";
-import { requestMagicLink } from "../api/client";
+import { useState } from "react";
 import { getVerifiedEmail } from "../identity";
+import { MagicLinkForm } from "./MagicLinkForm";
 
 /**
  * The post-results sign-in prompt (ticket 9f06f8f, epic 2b9e9dd child 4).
@@ -64,21 +64,12 @@ import { getVerifiedEmail } from "../identity";
  * says where it was sent and offers to send another, and does not assert
  * delivery.
  */
-type Phase =
-  | { status: "idle" }
-  | { status: "sending" }
-  | { status: "sent"; email: string }
-  | { status: "error"; message: string };
-
 export function MagicLinkPrompt() {
-  const fieldId = useId();
   // Read once at mount: this cannot change while the component is alive --
   // the only thing that sets it is `MagicLinkLanding`, which is a full-page
   // takeover that this component is never mounted alongside.
   const [verifiedEmail] = useState(getVerifiedEmail);
   const [dismissed, setDismissed] = useState(false);
-  const [email, setEmail] = useState("");
-  const [phase, setPhase] = useState<Phase>({ status: "idle" });
 
   if (dismissed) return null;
 
@@ -103,46 +94,6 @@ export function MagicLinkPrompt() {
   // so both the button and the ordering dependency are simply gone.
   if (verifiedEmail !== undefined) return null;
 
-  if (phase.status === "sent") {
-    return (
-      <section className="magic-link-prompt magic-link-prompt-floating" aria-live="polite">
-        <h3>Check your inbox</h3>
-        <p>
-          We sent a sign-in link to <strong>{phase.email}</strong>. Open it on any device to save
-          these results to that address. The link works once and expires in about 15 minutes.
-        </p>
-        <button
-          type="button"
-          className="magic-link-secondary"
-          // Back to the form rather than straight to a second send: if the
-          // mail has not arrived, the most likely reason by far is a typo in
-          // the address, so the useful next step is seeing and fixing what
-          // was actually typed -- not silently re-sending to the same wrong
-          // inbox.
-          onClick={() => setPhase({ status: "idle" })}
-        >
-          Use a different address
-        </button>
-      </section>
-    );
-  }
-
-  async function handleSubmit() {
-    const trimmed = email.trim();
-    if (trimmed.length === 0) return;
-    setPhase({ status: "sending" });
-    try {
-      // The server normalizes and echoes the address it actually mailed
-      // (lowercased, trimmed) -- showing THAT, rather than the raw input, is
-      // what makes "check your inbox" name the same string the mail was
-      // addressed to.
-      const { email: sentTo } = await requestMagicLink(trimmed);
-      setPhase({ status: "sent", email: sentTo });
-    } catch (err) {
-      setPhase({ status: "error", message: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
   return (
     <section className="magic-link-prompt magic-link-prompt-floating">
       <h3>Want to find these results again later?</h3>
@@ -161,50 +112,25 @@ export function MagicLinkPrompt() {
         Add your email and we'll send you a link that ties these results to your email so that you
         can get them back anytime.
       </p>
-      <form
-        className="magic-link-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void handleSubmit();
-        }}
-      >
-        <label htmlFor={fieldId}>Email address</label>
-        <input
-          id={fieldId}
-          // `type="email"` gives mobile keyboards the right layout and gives
-          // the browser's own validation a chance before a round trip. The
-          // API validates independently and is the real authority (see
-          // routes/auth.ts's EMAIL_RE and why it is deliberately permissive).
-          type="email"
-          autoComplete="email"
-          value={email}
-          placeholder="you@example.com"
-          onChange={(event) => {
-            setEmail(event.target.value);
-            // Clear a previous failure the moment the user starts fixing the
-            // thing that failed -- a stale error under a field being edited
-            // reads as though the new value had failed too.
-            if (phase.status === "error") setPhase({ status: "idle" });
-          }}
-          disabled={phase.status === "sending"}
-        />
-        <button type="submit" disabled={phase.status === "sending" || email.trim().length === 0}>
-          {phase.status === "sending" ? "Sending..." : "Email me a link"}
-        </button>
-        <button
-          type="button"
-          className="magic-link-secondary"
-          onClick={() => setDismissed(true)}
-          disabled={phase.status === "sending"}
-        >
-          Not now
-        </button>
-      </form>
-      {phase.status === "error" && (
-        <p role="alert" className="magic-link-error">
-          Could not send the link: {phase.message}
-        </p>
-      )}
+      {/* Ticket 5a7e957: the field, the send, the phases and the "check your
+          inbox" panel all live in `MagicLinkForm` now, shared with
+          `SignInRecovery`. Only the framing above and the two strings below
+          are this component's own -- see MagicLinkForm's doc comment for why
+          the link's own FACTS (single use, ~15 minutes) are deliberately not
+          a per-caller string. */}
+      <MagicLinkForm
+        sentBody={(sentTo) => (
+          <>
+            We sent a sign-in link to <strong>{sentTo}</strong>. Open it on any device to save these
+            results to that address.
+          </>
+        )}
+        secondary={
+          <button type="button" className="magic-link-secondary" onClick={() => setDismissed(true)}>
+            Not now
+          </button>
+        }
+      />
     </section>
   );
 }

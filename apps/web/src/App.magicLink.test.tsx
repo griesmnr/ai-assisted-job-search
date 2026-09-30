@@ -315,6 +315,82 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
  * rather than only where the old card did, and whether a verified user really
  * sees no floating card anywhere.
  */
+/**
+ * Ticket 5a7e957. Nicole's rule for when the "been here before?" entry point
+ * belongs on screen: "on any site run where there's no data? because if there
+ * is data, or they use the site normally, they'll get prompted as we
+ * discussed."
+ *
+ * Only App can answer this -- the component itself only knows whether an
+ * email is verified. The gate (nothing scored, no resume in play) lives in
+ * App.tsx, and the property worth pinning is that this and the results prompt
+ * are never on screen together, since they are two doors into the same
+ * endpoint.
+ */
+describe("the way back in appears only where the results prompt cannot (ticket 5a7e957)", () => {
+  it("offers it to an anonymous visitor with nothing scored and no resume", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+    // Never both doors at once.
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
+  });
+
+  it("withdraws it once a resume is in play -- mid-onboarding is not lost", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  it("withdraws it when jobs exist but are all below the match-score floor -- filtered is not empty", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({
+      results: [],
+      hiddenBelowFloor: 12,
+    } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    await screen.findByRole("button", { name: /^Already Scored Jobs/ });
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  it("never shows it alongside the results prompt, even once a search has landed", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the signed-in cue instead once an email is verified", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
+
+    render(<App />);
+
+    expect(await screen.findByText(/these results are saved to/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("a verified user gets a quiet header cue, not a floating card (ticket a5c8fa9)", () => {
   const SCORED_FOR_CUE: GetAllResultsResponse = {
     results: [
