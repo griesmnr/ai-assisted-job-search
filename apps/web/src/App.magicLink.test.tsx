@@ -355,6 +355,35 @@ describe("the way back in appears only where the results prompt cannot (ticket 5
     expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
   });
 
+  /**
+   * Opus review round 4 (FIX 2): the two `status === "error"` arms added for
+   * S2 had NO coverage -- reverting both to the pre-fix `status === "ready"`
+   * form passed all 357 web tests. That is the same defect class as round 1's
+   * F2, and it shipped in the very commit where the same gap was caught and
+   * closed for the S1 fix.
+   *
+   * Asserted once per arm, deliberately: a single both-fetches-failed test
+   * would still pass with either arm reverted on its own.
+   */
+  it("still offers it when the scored-results fetch fails -- an error is not evidence of data", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockRejectedValue(new Error("results unavailable"));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+  });
+
+  it("still offers it when the resume-list fetch fails", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    listResumes.mockRejectedValue(new Error("resumes unavailable"));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+  });
+
   it("withdraws it when jobs exist but are all below the match-score floor -- filtered is not empty", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue({
