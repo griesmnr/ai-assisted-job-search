@@ -63,7 +63,7 @@ vi.mock("./api/client", () => ({
   RESUME_OPTIMIZER_APP_URL: "https://example.invalid/",
 }));
 
-vi.mock("./navigation", () => ({ reloadTo: vi.fn() }));
+vi.mock("./navigation", () => ({ reloadTo: vi.fn(), reloadCurrent: vi.fn() }));
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/");

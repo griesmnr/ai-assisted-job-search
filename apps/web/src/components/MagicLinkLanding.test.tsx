@@ -21,6 +21,7 @@ import { writeAppState } from "../session";
  */
 const verifyMagicLink = vi.fn();
 const reloadTo = vi.fn();
+const reloadCurrent = vi.fn();
 
 vi.mock("../api/client", () => ({
   verifyMagicLink: (...args: unknown[]) => verifyMagicLink(...args),
@@ -44,6 +45,7 @@ vi.mock("../api/client", () => ({
 
 vi.mock("../navigation", () => ({
   reloadTo: (...args: unknown[]) => reloadTo(...args),
+  reloadCurrent: () => reloadCurrent(),
 }));
 
 const ADOPTED_USER_ID = "99999999-9999-4999-8999-999999999999";
@@ -213,7 +215,28 @@ describe("MagicLinkLanding -- success", () => {
     expect(screen.getByText(/this browser is now signed in to the account/i)).toBeInTheDocument();
   });
 
-  it("reloads to the token-free URL on Continue", async () => {
+  /**
+   * Ticket a90095b: this used to assert `reloadTo` was called with a URL
+   * containing the marker -- and passed, while the button was DEAD in a real
+   * browser. Nicole, testing: "Continue to your results button unfortunately
+   * is not doing anything."
+   *
+   * The reason the old assertion could not see it: the success handler had
+   * already `replaceState`d the URL to exactly the string being passed to
+   * `reloadTo`, and navigating to a URL identical to the current one
+   * (fragment included) is a same-document fragment navigation -- no reload.
+   * jsdom implements no navigation at all, so "was called with the right
+   * URL" and "the browser actually goes somewhere" are indistinguishable
+   * here. That gap is precisely why `navigation.ts` exists as a mockable
+   * seam, and it is a permanent limit of this file, not something this test
+   * closes.
+   *
+   * So the assertions moved to where the guarantee now lives: `reloadCurrent`
+   * (a real `location.reload()`), `reloadTo` NOT called, and the destination
+   * proven on `window.location` -- the URL the reload will preserve -- rather
+   * than on an argument.
+   */
+  it("reloads the current URL on Continue, with the token gone and the scored-tab marker already in place", async () => {
     verifyMagicLink.mockResolvedValue({
       userId: ADOPTED_USER_ID,
       email: "alice@example.com",
@@ -224,11 +247,15 @@ describe("MagicLinkLanding -- success", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /continue to your results/i }));
 
-    expect(reloadTo).toHaveBeenCalledTimes(1);
-    expect(reloadTo.mock.calls[0]![0]).not.toContain("magicLinkToken");
+    expect(reloadCurrent).toHaveBeenCalledTimes(1);
+    // A `reloadTo` here would be the regression: same-URL navigation, no
+    // reload, dead button.
+    expect(reloadTo).not.toHaveBeenCalled();
+    // The destination lives in the URL being reloaded, not on an argument.
+    expect(window.location.href).not.toContain("magicLinkToken");
     // Ticket bb2f275: a successful "Continue" carries the "land on Already
     // Scored Jobs" marker App.tsx reads on its next mount.
-    expect(reloadTo.mock.calls[0]![0]).toContain("landOnScoredTab=1");
+    expect(window.location.href).toContain("landOnScoredTab=1");
   });
 
   /**
