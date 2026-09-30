@@ -6,12 +6,25 @@ import { getVerifiedEmail } from "../identity";
  * The post-results sign-in prompt (ticket 9f06f8f, epic 2b9e9dd child 4).
  *
  * WHERE THIS IS ALLOWED TO APPEAR, AND WHY IT IS THE CALLER'S DECISION:
- * App.tsx renders this inside the "Results from this search" section, which
- * only exists once a real search has completed (`hasFreshSearchResults`). The
- * placement is the whole point of the ticket -- offer the email "right after
- * scored results land, never before" -- and it is enforced by WHERE this is
- * mounted rather than by a prop this component checks, so there is no way to
- * render it early by passing the wrong flag.
+ * offering the email "right after scored results land, never before" is the
+ * whole point of the ticket, and it stays the CALLER's decision -- this
+ * component takes no "should I show?" prop and checks no such flag itself,
+ * so it cannot be made to appear early by passing the wrong one.
+ *
+ * Ticket d0a7074 changed the shape of that enforcement, not the rule.
+ * Originally this was mounted physically inside the "Results from this
+ * search" section, which only exists once `hasFreshSearchResults` is true.
+ * Nicole asked for the same offer on "Already Scored Jobs" too, and because
+ * every tab panel stays mounted at once (ticket f4a7f07) while this
+ * component holds `dismissed`/`email`/`phase` locally, a second mount point
+ * would have meant a second independent state -- dismissing on one tab
+ * leaving it up on the other, or a submitted address on one tab still
+ * showing an empty form on the other. So there is now exactly ONE instance,
+ * hoisted to `main.app` level, and App.tsx's `showMagicLinkPrompt` carries
+ * the gate that nesting used to carry: a completed search with visible
+ * results on the search tab, OR visible scored results on the scored tab,
+ * and nothing at all on "My Resumes". Read that gate, not this file, for
+ * exactly when the prompt is allowed on screen.
  *
  * WHY IT FLOATS RATHER THAN SITTING INLINE (ticket d3a95d1, Nicole, live
  * design discussion): the original inline placement, at the end of the
@@ -22,9 +35,12 @@ import { getVerifiedEmail } from "../identity";
  * "off to the side" is neither -- a small persistent element, visible
  * without scrolling, that doesn't block the first look at results. The
  * `magic-link-prompt-floating` class (index.css) does this with
- * `position: fixed`, which is a pure CSS/presentation change -- it does NOT
- * touch WHEN this component is allowed to mount (still gated exactly as
- * before, in App.tsx) or any of its internal states below.
+ * `position: fixed`, which was a pure CSS/presentation change -- d3a95d1
+ * itself touched neither when this component mounts nor any of its
+ * internal states below. (Ticket d0a7074 later DID change the mounting, as
+ * the paragraph above describes; that float-vs-inline reasoning is
+ * unaffected by it, and `position: fixed` is in fact why one hoisted
+ * instance works at all.)
  *
  * WHY IT IS FRAMED AS "SO YOU CAN FIND THIS AGAIN" AND NOT AS A LOGIN WALL
  * (Nicole's framing, on the ticket): nothing here is gated. The results are

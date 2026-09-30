@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   EstimateSearchResponse,
+  GetAllResultsResponse,
   GetResumeResultsResponse,
   GetSourcesResponse,
 } from "@app/shared";
@@ -255,6 +256,413 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
 
     expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
     expect(requestMagicLink).toHaveBeenCalledWith("alice@example.com");
+  });
+});
+
+/**
+ * Ticket d0a7074, Nicole (dogfooding): "is there a magic link opportunity on
+ * the already scored jobs page too?" -- then, once told it wasn't: "that's
+ * what I was hoping to see."
+ *
+ * The prompt moved from a mount physically inside the search tab's results
+ * section to ONE hoisted instance at `main.app` level, gated by App's
+ * `showMagicLinkPrompt`. These tests cover what that hoist has to get right
+ * and what the old single-mount tests above could never have caught: the new
+ * tab, the new gate's negative cases, and -- the reason it is one instance
+ * rather than two mounts -- that state does not fork between the tabs.
+ */
+describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a7074)", () => {
+  const SCORED: GetAllResultsResponse = {
+    results: [
+      {
+        jobId: "job-9",
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        externalId: "ext-9",
+        title: "Previously Scored Engineer",
+        company: "Acme",
+        dataSource: "usajobs",
+        location: null,
+        locationType: null,
+        applyUrl: "https://example.com/apply",
+        matchScore: 77,
+        rationale: "Good fit.",
+        strengths: [],
+        gaps: [],
+        levelFit: null,
+        levelFitNote: null,
+        isContractOrTemp: false,
+        status: null,
+      },
+    ],
+  };
+
+  function openScoredTab() {
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
+  }
+
+  it("appears on Already Scored Jobs when that tab has scored results, with no search run this session", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    render(<App />);
+    // Deliberately no resume, no estimate, no search -- "Already Scored
+    // Jobs" is the cross-session history tab (ticket 3f0883f), so results
+    // being on screen here is exactly the "value already delivered"
+    // condition ticket 9f06f8f's placement rule is about, even though
+    // nothing was searched in THIS session.
+    openScoredTab();
+
+    expect(await screen.findByText("Previously Scored Engineer")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+  });
+
+  it("stays absent on Already Scored Jobs when nothing has ever been scored", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    openScoredTab();
+
+    expect(await screen.findByText("No jobs scored yet.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stays absent on Already Scored Jobs when every scored job is hidden below the match-score floor", async () => {
+    mockHappyPath(ONE_RESULT);
+    // The gate deliberately requires a VISIBLE result, not merely a job
+    // that exists: `hiddenBelowFloor` jobs are ones the user cannot see, so
+    // "find these results again later" would point at nothing on screen.
+    // This is the same rule the search tab has always had, and it is the
+    // case most likely to be got wrong by keying the gate on
+    // `scoredJobCount` (which counts below-floor jobs) instead.
+    getAllResults.mockResolvedValue({
+      results: [],
+      hiddenBelowFloor: 12,
+    } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    openScoredTab();
+
+    expect(
+      await screen.findByText(/12 more jobs scored below the match-quality floor/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("never renders on My Resumes, even while both results tabs would qualify", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
+
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("is exactly ONE element, never one per tab, even when both results tabs qualify at once", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    // Both tabs qualify here (a completed search WITH results, and scored
+    // history WITH results) and all three tab panels stay mounted at once
+    // (ticket f4a7f07) -- so a per-tab mount would put two of these in the
+    // DOM simultaneously. Counting nodes is the only way to see that; every
+    // `getByRole` assertion above would pass either way on the visible tab,
+    // and would THROW on the duplicate, which is a confusing way to learn
+    // about it.
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(1);
+
+    openScoredTab();
+    expect(await screen.findByText("Previously Scored Engineer")).toBeInTheDocument();
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(1);
+  });
+
+  it("stays dismissed across a tab switch -- 'Not now' means not now, not 'not on this tab'", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /not now/i }));
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+
+    // THE reason this is one hoisted instance rather than one mount per tab:
+    // `dismissed` lives in the component's own state, so two mounts would be
+    // two independent dismissals and this prompt would be right back.
+    openScoredTab();
+    expect(await screen.findByText("Previously Scored Engineer")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review, F1 (BLOCKING). The hoisted gate was transcribed from the
+   * old mount's INLINE `results.length > 0` check and dropped the two
+   * ancestor wrappers it used to live inside: `{resumeId && ...}` and
+   * `hidden={resumeEditing || resumeChanging}` (App.tsx). The card is
+   * `position: fixed`, and the clearance rule only pads
+   * `.results-section` -- never `.resume-section` -- so with those
+   * conditions gone it floated over the resume picker, occluding its
+   * bottom rows (and, under the narrow-viewport rule where it goes
+   * full-width, the "Use this resume" button itself) with no way to scroll
+   * out from under it. Exactly the occlusion class the clearance rule
+   * exists to prevent, reintroduced where the clearance cannot reach.
+   */
+  it("disappears while the resume picker is open, and comes back on cancel (review F1)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+
+    // A completed search locks the resume, so the collapsed bar's button is
+    // "Change resume" (the picker) rather than "Edit resume".
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stays hidden on the search tab while the picker is open, even though Already Scored Jobs would qualify (review F1)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+
+    // The scored arm IS ready here, which is what makes this worth its own
+    // test: the instance stays mounted (that's F2's fix) and must still be
+    // invisible, so `hidden` has to be driven by the ACTIVE tab's arm, not
+    // by "either arm is ready".
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(1);
+
+    openScoredTab();
+    expect(await screen.findByText("Previously Scored Engineer")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+  });
+
+  /**
+   * Opus review, F2 (BLOCKING). The first version rendered the prompt as a
+   * bare `{showMagicLinkPrompt && <MagicLinkPrompt />}`, which UNMOUNTS it
+   * on any tab switch that fails the gate -- destroying the
+   * `dismissed`/`email`/`phase` it holds locally. The old inline mount was
+   * immune because it lived inside a `hidden` div. These three tests cover
+   * the three states that died, all via a round trip through "My Resumes"
+   * (neither arm's tab, so the naive gate goes false).
+   */
+  function roundTripThroughMyResumes() {
+    fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^New Job Search/ }));
+  }
+
+  it("keeps a dismissal through a round trip via My Resumes (review F2)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    fireEvent.click(screen.getByRole("button", { name: /not now/i }));
+
+    roundTripThroughMyResumes();
+
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a half-typed address through a round trip via My Resumes (review F2)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@exam" },
+    });
+
+    roundTripThroughMyResumes();
+
+    expect(screen.getByLabelText(/email address/i)).toHaveValue("alice@exam");
+  });
+
+  it("keeps the 'check your inbox' confirmation through a round trip via My Resumes, and does not re-arm a second send (review F2)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+    requestMagicLink.mockResolvedValue({
+      email: "alice@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+
+    await submitResume();
+    await runSearchToCompletion();
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+
+    roundTripThroughMyResumes();
+
+    // The worst of the three losses: the app had just said "we sent a link
+    // to alice@example.com", and after this trip it showed no record of
+    // having sent anything AND offered the send button again, so a
+    // reasonable user double-sends.
+    expect(screen.getByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /email me a link/i })).not.toBeInTheDocument();
+    expect(requestMagicLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a dismissal when the scored tab is visited while its own results are still loading (review F2)", async () => {
+    mockHappyPath(ONE_RESULT);
+    // A promise that never settles: `useAllResults` genuinely sits in
+    // `loading` (and can also land in `error`), so `scoredArmReady` is
+    // false for that whole window. Switching through it must not destroy
+    // the search tab's dismissal.
+    getAllResults.mockReturnValue(new Promise(() => {}));
+
+    await submitResume();
+    await runSearchToCompletion();
+    fireEvent.click(screen.getByRole("button", { name: /not now/i }));
+
+    openScoredTab();
+    expect(await screen.findByText("Loading results...")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^New Job Search/ }));
+
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review, F3 (BLOCKING, and a regression introduced by the F2 fix
+   * itself). The clearance rule in index.css keeps the last result card
+   * from being permanently occluded by the floating prompt. It has now
+   * silently broken TWICE -- once because the hoist made its original
+   * `.results-section:has(...)` selector unmatchable, and once because
+   * keying it on a merely-present, non-hidden HOST kept it matching after
+   * `MagicLinkPrompt` returns `null` on dismissal, leaving 8rem of dead
+   * space under the results section forever.
+   *
+   * So this asserts the selector directly, across the whole matrix, rather
+   * than just the happy path. jsdom's selector engine (nwsapi) evaluates
+   * `:has()`, `>` inside `:has()`, and `:not([attr])` correctly, so the
+   * real production selector string can be queried as-is -- the one piece
+   * of this feature no rendering assertion can reach, since jsdom computes
+   * no layout.
+   */
+  /**
+   * KNOWN LIMIT, STATED SO NOBODY OVER-TRUSTS THIS: the selector is
+   * restated here, so these two tests pin its SEMANTICS against a real
+   * DOM -- they do not detect someone editing `index.css` to something
+   * else. I tried three ways to read the live rule instead and each is a
+   * scope change this ticket shouldn't make: `node:fs` doesn't typecheck
+   * (this file is under `apps/web/src`, which `tsconfig.app.json` compiles
+   * with the browser's type set, and `@types/node` is a devDependency of
+   * `apps/api`/`packages/shared` only); Vite's `?raw` returns an empty
+   * string because vitest's default `css: false` stubs CSS imports; and
+   * moving the test out of `src` hides it from `vitest.config.ts`'s
+   * `include`. Ticket 5c93a51 tracks the stronger version.
+   *
+   * What these DO catch is the actual F3 logic error and its predecessor,
+   * both of which were wrong selectors rather than absent ones -- verified
+   * by substituting each historical selector here and watching these fail.
+   * The `index.css` rule carries a pointer back to this test so an editor
+   * of one sees the other.
+   */
+  const CLEARANCE_SELECTOR =
+    ".app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section";
+
+  function clearedSections() {
+    return document.querySelectorAll(CLEARANCE_SELECTOR).length;
+  }
+
+  it("applies bottom clearance only while a card is really on screen (review F3)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    // Visible card -> clearance on. Both results sections match; the
+    // hidden tab's padding costs nothing (display:none lays out nothing),
+    // and that breadth is deliberate -- see the CSS comment.
+    expect(clearedSections()).toBe(2);
+
+    // Dismissed -> the host survives UN-hidden but renders no card, which
+    // is exactly the case the first version of this selector got wrong.
+    fireEvent.click(screen.getByRole("button", { name: /not now/i }));
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
+    expect(document.querySelectorAll(".magic-link-prompt-host")).toHaveLength(1);
+    expect(clearedSections()).toBe(0);
+  });
+
+  it("drops bottom clearance while the host is mounted but hidden (review F3)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(clearedSections()).toBe(2);
+
+    // Picker open: host stays mounted (F2's state preservation) but hidden,
+    // so no card is on screen and nothing should be padded for one.
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+    expect(clearedSections()).toBe(0);
+
+    // And back on cancel, proving the rule tracks visibility rather than
+    // latching off permanently.
+    fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
+    expect(clearedSections()).toBe(0);
+  });
+
+  it("carries a submitted address across a tab switch, rather than asking again on the other tab", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+    requestMagicLink.mockResolvedValue({
+      email: "alice@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+
+    // Same single-instance reasoning as the dismissal test: with two mounts
+    // the other tab would show a blank form, which reads as "did that
+    // actually send?" right after being told to check the inbox.
+    openScoredTab();
+    expect(await screen.findByText("Previously Scored Engineer")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+    expect(requestMagicLink).toHaveBeenCalledTimes(1);
   });
 });
 

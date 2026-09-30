@@ -943,6 +943,58 @@ function JobSearchApp() {
     setHasFreshSearchResults(true);
   }
 
+  // Ticket d0a7074, Nicole (dogfooding): "is there a magic link opportunity
+  // on the already scored jobs page too?" -- then, once told it wasn't
+  // there: "that's what I was hoping to see." So the offer now covers both
+  // results tabs, not just "Results from this search".
+  //
+  // WHY THIS IS ONE HOISTED INSTANCE AND NOT ONE PER TAB: all three tab
+  // panels stay mounted at once (only `hidden` toggles -- ticket f4a7f07),
+  // and MagicLinkPrompt keeps `dismissed`/`email`/`phase` in its own local
+  // state. Two mount points would therefore be two INDEPENDENT states:
+  // "Not now" on one tab and the prompt is still sitting there on the
+  // other, or submit the address on one tab and the other still shows an
+  // empty form asking again. Since the prompt is `position: fixed`
+  // (ticket d3a95d1) it is already visually detached from whatever section
+  // contains it, so a single instance at `main.app` level is the honest
+  // structure rather than a workaround -- the tab it "belongs to" is
+  // decided by this gate, and the card renders in the same corner either
+  // way.
+  //
+  // WHAT THE GATE PRESERVES: ticket 9f06f8f's placement rule is unchanged
+  // -- the email is asked for only after real scored results are on
+  // screen, never before. Both arms require at least one VISIBLE result:
+  // "find these results again later" is a strange offer when nothing is on
+  // screen to come back for, and `hiddenBelowFloor` alone doesn't count --
+  // the user cannot see those. The "My Resumes" tab is not an arm at all,
+  // so it never shows the prompt.
+  //
+  // `searchArmReady` reproduces the FULL chain of conditions the old
+  // mount inherited from its ancestors, not just the `length > 0` check it
+  // carried inline. Opus review (F1, BLOCKING) caught that the first
+  // version of this gate dropped the `{resumeId && ...}` and
+  // `hidden={resumeEditing || resumeChanging}` wrappers it used to live
+  // inside: with those gone, clicking "Change" or "Edit" on the collapsed
+  // resume bar left this fixed-position card floating over the resume
+  // picker, whose own section gets no clearance padding -- occluding the
+  // bottom rows and, on a narrow viewport, the "Use this resume" button
+  // itself, with no way to scroll out from under it. That is the exact
+  // occlusion class the clearance rule below exists to prevent,
+  // reintroduced somewhere the clearance does not reach.
+  const searchArmReady =
+    resumeId !== undefined &&
+    !resumeEditing &&
+    !resumeChanging &&
+    hasFreshSearchResults &&
+    resultsState.status === "ready" &&
+    resultsState.data.results.length > 0;
+
+  const scoredArmReady =
+    allResultsState.status === "ready" && allResultsState.data.results.length > 0;
+
+  const showMagicLinkPrompt =
+    (activeTab === "search" && searchArmReady) || (activeTab === "scored" && scoredArmReady);
+
   return (
     <main className="app">
       <h1>AI-Assisted Job Search</h1>
@@ -1188,25 +1240,6 @@ function JobSearchApp() {
                 ) : (
                   <p>No jobs matched this search.</p>
                 )}
-                {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the
-                    email is ever asked for -- right after scored results
-                    land, never before. Everything about that placement is
-                    the ticket's point (nothing earlier in this flow is worth
-                    protecting, and "verify after value" is where PLG
-                    practice and NN/g's reciprocity principle agree), so it
-                    is enforced by WHERE this is mounted, not by a prop:
-                    this whole section only renders once
-                    `hasFreshSearchResults` is true, which only
-                    `handleSearchComplete` ever sets, and only for a run
-                    whose poll reported literally "complete".
-
-                    Gated additionally on there being real results to come
-                    back FOR: "find these results again later" is a strange
-                    thing to offer about a search that matched nothing, and
-                    `hiddenBelowFloor` alone doesn't count -- the user
-                    cannot see those, so there is nothing on screen the
-                    offer refers to. */}
-                {resultsState.data.results.length > 0 && <MagicLinkPrompt />}
               </section>
             )}
           </div>
@@ -1278,6 +1311,43 @@ function JobSearchApp() {
           )}
         </section>
       </div>
+
+      {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the email is
+          ever asked for. Ticket d0a7074 hoisted it here, out of the search
+          tab's own results section, so that a SINGLE instance can serve
+          both results tabs -- see `showMagicLinkPrompt` above for the gate
+          it now carries instead of physical nesting, and for why one
+          instance rather than one per tab.
+
+          `hidden`, NOT conditional rendering, for the tab half of that
+          gate -- the same pattern (and the same reason) as the three tab
+          panels above and the resume-editing wrapper inside the search
+          tab: see ticket ac141d0's comment on that wrapper. Opus review
+          (F2, BLOCKING) caught that a bare `{showMagicLinkPrompt && ...}`
+          UNMOUNTS this component on any tab switch that fails the gate,
+          destroying the local `dismissed`/`email`/`phase` it holds. Three
+          concrete regressions, all of which the old inline mount was
+          immune to because it sat inside a `hidden` div: a dismissed
+          prompt came back after a round trip through "My Resumes"; a
+          half-typed address was wiped by the same trip; and worst, the
+          "Check your inbox" confirmation vanished, so the app stopped
+          showing any record of a link it had just sent AND re-armed the
+          send button for a silent double-send. Mounting on
+          `searchArmReady || scoredArmReady` and hiding with `hidden` keeps
+          one instance alive across every tab switch while still removing
+          it visually and from the a11y tree.
+
+          Still genuinely unmounts when NEITHER arm is ready -- e.g. a
+          criteria or source change resets `hasFreshSearchResults`. That
+          matches the old behavior exactly (the old mount died with its
+          results section) and is the right call anyway: that reset means
+          "you're composing a different search now," so a dismissal of the
+          previous one carries no information. */}
+      {(searchArmReady || scoredArmReady) && (
+        <div className="magic-link-prompt-host" hidden={!showMagicLinkPrompt}>
+          <MagicLinkPrompt />
+        </div>
+      )}
     </main>
   );
 }

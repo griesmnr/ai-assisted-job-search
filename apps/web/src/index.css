@@ -903,11 +903,50 @@ button[aria-disabled="true"] {
 /* Opus review, N2: a floating, fixed-position card sits ON TOP of the
    results section's own natural end -- without extra clearance, its last
    card(s) can end up permanently occluded (scrolling further does nothing,
-   since the floating card scrolls with the viewport too). Scoped with
-   `:has()` to ONLY the results section that actually hosts the floating
-   prompt (rather than a blanket `.app` padding bump, which would add dead
-   space under every tab, including ones the prompt never appears on). */
-.results-section:has(.magic-link-prompt-floating) {
+   since the floating card scrolls with the viewport too).
+
+   Ticket d0a7074: the prompt is no longer a CHILD of the results section
+   (it's one hoisted instance at `main.app` level now, serving both results
+   tabs -- see App.tsx's `showMagicLinkPrompt`), so the original
+   `.results-section:has(.magic-link-prompt-floating)` selector would never
+   match again and the clearance would silently vanish. Rekeyed one level
+   up. This keeps the original intent intact: only `.results-section` gets
+   the padding, never a blanket `.app` bump that would add dead space under
+   every tab. Both results sections get it rather than just the visible
+   one, which costs nothing -- the other is inside a `hidden`
+   (display:none) panel, so its padding isn't laid out at all -- and "My
+   Resumes" uses `.resumes-section`, so it is untouched either way.
+
+   The test has to satisfy BOTH halves of the conjunction below, and each
+   half alone gets exactly one case wrong -- this rule has now silently
+   broken twice, so the reasoning for each is worth spelling out:
+
+     - `:not([hidden])` on the host is required because the host stays
+       MOUNTED-but-`hidden` across tab switches (see App.tsx's F2 note --
+       that's what preserves the dismissal and the "check your inbox"
+       state). Asking only whether the prompt EXISTS would pad a results
+       section while the card is invisible, reachable whenever one arm is
+       ready and the other tab is the one on screen.
+     - `> .magic-link-prompt` inside the host is required because
+       MagicLinkPrompt returns `null` when dismissed (see its `dismissed`
+       check) while its host div survives, un-hidden. Asking only whether
+       a visible host EXISTS would therefore leave 8rem of dead space
+       under the results section forever after a user clicks "Not now" --
+       which is a first-class option, not an edge case. That was opus
+       review F3 on this very rule: measured `HOST_HIDDEN: false,
+       PROMPT_COUNT: 0, CSS_CLEARANCE_ACTIVE: 2`.
+
+   Together: pad only when a real card is actually on screen. Note the `>`
+   combinators are load-bearing -- wrapping the host one level deeper
+   silently drops the clearance again, the same fragility the original
+   `.results-section:has(...)` selector had.
+
+   IF YOU EDIT THIS SELECTOR, edit it in `App.magicLink.test.tsx` too. Its
+   `CLEARANCE_SELECTOR` restates this string (see that constant's comment
+   for why it cannot read this file, and ticket 5c93a51 to close that), so
+   a change here does not fail any test on its own -- the coverage is of
+   the selector's behavior, not of this file's contents. */
+.app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section {
   padding-bottom: 8rem;
 }
 
