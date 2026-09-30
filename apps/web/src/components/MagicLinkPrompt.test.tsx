@@ -159,30 +159,32 @@ describe("MagicLinkPrompt", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("never asks an already-verified user to sign in again, and says where their results live", () => {
+  /**
+   * Ticket a5c8fa9, Nicole: "I'm not crazy about the pop-up that tells you
+   * that these results are saved to <her address>... And no pop-up after a
+   * successful magic link." A verified user now gets NOTHING from this
+   * component; the reassurance moved to `SignedInCue` in the header (see
+   * SignedInCue.test.tsx for the other half).
+   *
+   * This replaces two older tests -- one asserting the floating "these
+   * results are saved to" card rendered here, and one asserting it had a
+   * dismiss button (opus review B2 on ticket d3a95d1, which existed only
+   * because permanent fixed-position chrome with no close affordance
+   * occludes content forever). Both described markup this component no
+   * longer produces.
+   */
+  it("renders nothing at all for an already-verified user -- no ask, and no confirmation card", () => {
     // Written through the real storage key `identity.ts` uses, so this test
     // fails if that key ever changes without this being updated.
     localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
 
-    render(<MagicLinkPrompt />);
+    const { container } = render(<MagicLinkPrompt />);
 
+    expect(container).toBeEmptyDOMElement();
     expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
-    expect(screen.getByText("signed-in@example.com")).toBeInTheDocument();
-    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
-  });
-
-  // Opus review, B2 (BLOCKING, ticket d3a95d1): floating turned this
-  // state into a fixed-position card with no way to close it -- inline it
-  // never needed one (nothing to close, just a line scrolled past once).
-  it("the already-verified confirmation can be dismissed, same as the ask can", () => {
-    localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
-
-    render(<MagicLinkPrompt />);
-    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
-
     expect(screen.queryByText(/these results are saved to/i)).not.toBeInTheDocument();
+    // The dismiss affordance B2 required is gone with the card it guarded.
+    expect(screen.queryByRole("button", { name: /dismiss/i })).not.toBeInTheDocument();
   });
 
   // Ticket d3a95d1, Nicole (live design discussion): moved from sitting
@@ -198,11 +200,9 @@ describe("MagicLinkPrompt", () => {
       expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
     });
 
-    it("in the already-verified state", () => {
-      localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
-      const { container } = render(<MagicLinkPrompt />);
-      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
-    });
+    // Ticket a5c8fa9: the "already-verified state" case that sat here is
+    // gone -- there is no floating card in that state any more, so there is
+    // no float to assert. The verified state's own test is above.
 
     it("in the 'sent' state", async () => {
       requestMagicLink.mockResolvedValue({

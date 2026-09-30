@@ -20,6 +20,48 @@ h1 {
   font-size: 1.5rem;
 }
 
+/* Ticket a5c8fa9: the heading row, so the signed-in cue can sit top-right
+   in normal flow rather than as `position: fixed` chrome (see
+   SignedInCue.tsx for why that distinction has bitten this app three times).
+   `baseline` so the small cue aligns with the h1's text rather than floating
+   against its box, and `gap` + `flex-wrap` so a long email address drops to
+   its own line on a narrow viewport instead of squeezing the heading. */
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  /* Stands in for the `h1`'s own former UA `margin-top: 0.67em`, so the row
+     starts exactly where the bare heading used to. */
+  margin: 1.005rem 0 0;
+}
+
+/* Opus review N1, measured in real Chromium: wrapping the `h1` in a flex
+   container silently pushed the tab nav down 16px FOR EVERY VISITOR,
+   including anonymous ones who see no cue at all -- a layout change from a
+   ticket scoped to verified users.
+   Nothing in this file resets `h1`'s UA `margin: 0.67em 0`. It used to
+   COLLAPSE with `.tab-nav`'s `margin-top: 1rem`, giving
+   `max(1.005rem, 1rem)` = 16px. A flex item's margins cannot collapse
+   through their container, so the two started stacking instead:
+   1.005rem + 1rem = 32px. Zeroing it here (with the top half moved onto
+   `.app-header` above) restores the original 16px exactly, cue or no cue. */
+.app-header h1 {
+  margin: 0;
+}
+
+/* `margin-left: auto` as well as the parent's `space-between`: when the row
+   wraps, `space-between` no longer pushes this right (it's alone on its own
+   line), and without this the cue would left-align under the heading. */
+.signed-in-cue {
+  margin: 0 0 0 auto;
+  color: var(--muted);
+  font-size: 0.85rem;
+  /* A long address must not force the page to scroll sideways. */
+  overflow-wrap: anywhere;
+}
+
 section {
   margin-top: 2rem;
   padding-top: 1.5rem;
@@ -777,15 +819,12 @@ button[aria-disabled="true"] {
   margin: 0 0 0.5rem;
 }
 
-/* The already-verified confirmation carries no ask, so it gets no panel
-   weight -- one quiet line, not a box competing with the results. */
-.magic-link-prompt-signed-in {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
+/* Ticket a5c8fa9: `.magic-link-prompt-signed-in` was here, stripping the
+   panel weight off the already-verified confirmation ("one quiet line, not a
+   box competing with the results"). That intent survives in
+   `.signed-in-cue` near the top of this file; the class itself has no
+   renderer left, since MagicLinkPrompt returns `null` for a verified user
+   now. */
 
 .magic-link-form {
   display: flex;
@@ -866,39 +905,16 @@ button[aria-disabled="true"] {
   overflow-y: auto;
 }
 
-/* Opus review, B2 (BLOCKING): the signed-in confirmation is normally
-   undecorated AND has no dismiss button of its own (see
-   `.magic-link-prompt-signed-in` above, and `MagicLinkPrompt.tsx`'s
-   `dismissed` check, which returns before that branch is ever reached) --
-   inline, that was harmless, a quiet line scrolled past once. Floating, it
-   would camp permanently in the corner of every results view with no way
-   to close it, occluding whatever's behind it forever. Given the panel
-   treatment below (so it doesn't read as stray text, opus review's
-   original ask) AND a real dismiss button (MagicLinkPrompt.tsx), so the
-   float-forever problem doesn't just move from "undecorated" to
-   "undecorated but permanent". */
-.magic-link-prompt-floating.magic-link-prompt-signed-in {
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-}
-
-/* A bare "×", not underlined text like `.magic-link-secondary` above --
-   this is a close affordance on a corner card, not a text link. */
-.magic-link-prompt-signed-in-dismiss {
-  background: none;
-  border: none;
-  padding: 0;
-  margin-left: auto;
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: 1.1rem;
-  line-height: 1;
-  cursor: pointer;
-}
+/* Ticket a5c8fa9: the `.magic-link-prompt-floating.magic-link-prompt-signed-in`
+   panel and its `.magic-link-prompt-signed-in-dismiss` button lived here and
+   are gone. They existed only for the floating signed-in card, which Nicole
+   asked to be replaced by a quiet header label ("no pop-up after a successful
+   magic link") -- see `.signed-in-cue` above and SignedInCue.tsx. Worth
+   recording what went with them: opus review B2 on ticket d3a95d1 added that
+   dismiss button because permanent fixed-position chrome with no way to close
+   it occludes content forever. An in-flow header label cannot occlude
+   anything, so B2's finding is retired rather than re-solved, and neither the
+   panel treatment nor the dismiss affordance has any remaining caller. */
 
 /* Opus review, N2: a floating, fixed-position card sits ON TOP of the
    results section's own natural end -- without extra clearance, its last
