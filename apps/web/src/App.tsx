@@ -24,6 +24,7 @@ import {
   readMagicLinkTokenFromUrl,
 } from "./components/MagicLinkLanding";
 import { MagicLinkPrompt } from "./components/MagicLinkPrompt";
+import { SignedInCue } from "./components/SignedInCue";
 import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
@@ -997,7 +998,16 @@ function JobSearchApp() {
 
   return (
     <main className="app">
-      <h1>AI-Assisted Job Search</h1>
+      {/* Ticket a5c8fa9: the h1 and the signed-in cue share one row, so the
+          cue sits top-right of the app without being `position: fixed` --
+          see SignedInCue's own doc comment for why that distinction has
+          mattered repeatedly here. Renders nothing at all when the visitor
+          has no verified email, in which case this collapses to just the
+          heading. */}
+      <div className="app-header">
+        <h1>AI-Assisted Job Search</h1>
+        <SignedInCue />
+      </div>
 
       <nav className="tab-nav" aria-label="Sections">
         <button

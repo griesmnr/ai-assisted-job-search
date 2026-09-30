@@ -56,6 +56,8 @@ import { getVerifiedEmail } from "../identity";
  * doc comment for why local storage is not merely adequate but exactly
  * correct here (it shares its lifetime with the user id itself, so "storage
  * was cleared" genuinely does mean "this is a new anonymous visitor").
+ * Ticket a5c8fa9: verified users now get `null` here and see `SignedInCue`
+ * in the header instead -- this component is purely the ASK now.
  *
  * WHAT "SENT" DOES AND DOES NOT CLAIM: the API resolving means the email
  * provider ACCEPTED the message, never that it arrived -- so the confirmation
@@ -78,38 +80,28 @@ export function MagicLinkPrompt() {
   const [email, setEmail] = useState("");
   const [phase, setPhase] = useState<Phase>({ status: "idle" });
 
-  // Opus review, B2 (BLOCKING): `dismissed` must be checked BEFORE the
-  // signed-in branch below, not after -- floating made the signed-in
-  // confirmation a fixed-position card sitting in the corner of every
-  // results view, and inline it had never needed a dismiss button (nothing
-  // to close, just a line scrolled past once), so this check used to come
-  // too late for that branch to ever reach it. Without this reordering, a
-  // signed-in user would have permanent, undismissable chrome occluding
-  // whatever's behind it -- see that branch's own dismiss button below.
   if (dismissed) return null;
 
-  // Already signed in: a short reassurance, no ask. Deliberately still
-  // rendered (rather than nothing at all) because "are my results actually
-  // saved anywhere?" is the exact question this section exists to answer,
-  // and it is worth answering for the people who already did the thing.
-  if (verifiedEmail !== undefined) {
-    return (
-      <section className="magic-link-prompt magic-link-prompt-floating magic-link-prompt-signed-in">
-        <p>
-          These results are saved to <strong>{verifiedEmail}</strong>. Use a sign-in link from any
-          other browser to see them there.
-        </p>
-        <button
-          type="button"
-          className="magic-link-prompt-signed-in-dismiss"
-          aria-label="Dismiss"
-          onClick={() => setDismissed(true)}
-        >
-          ×
-        </button>
-      </section>
-    );
-  }
+  // Already signed in: this component renders NOTHING. Ticket a5c8fa9,
+  // Nicole, dogfooding right after verifying her own link: "I'm not crazy
+  // about the pop-up that tells you that these results are saved to
+  // <her address>... let's just make the tiny visual cue in the top right...
+  // And no pop-up after a successful magic link."
+  //
+  // The reassurance itself is NOT dropped -- "are my results actually saved
+  // anywhere?" is still a real question worth answering for someone who did
+  // the thing, which is why this branch used to render a card at all. It
+  // moved to `SignedInCue` (App.tsx's header row), where it is a quiet
+  // persistent label instead of floating chrome.
+  //
+  // That relocation also retires ticket d3a95d1's review finding B2 rather
+  // than working around it: B2 existed because a fixed-position signed-in
+  // card with no dismiss button was permanent chrome occluding whatever sat
+  // behind it, so `dismissed` had to be checked before this branch and the
+  // branch needed a `x` of its own. An inline label in the header occludes
+  // nothing, needs no dismiss affordance, and needs no clearance padding --
+  // so both the button and the ordering dependency are simply gone.
+  if (verifiedEmail !== undefined) return null;
 
   if (phase.status === "sent") {
     return (

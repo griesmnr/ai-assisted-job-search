@@ -271,6 +271,87 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
  * tab, the new gate's negative cases, and -- the reason it is one instance
  * rather than two mounts -- that state does not fork between the tabs.
  */
+/**
+ * Ticket a5c8fa9, Nicole: "I'm not crazy about the pop-up that tells you that
+ * these results are saved to <her address>. Why don't we just say in the top
+ * right of the screen... And no pop-up after a successful magic link."
+ *
+ * The component-level halves live in SignedInCue.test.tsx and
+ * MagicLinkPrompt.test.tsx. What only App can answer -- and what neither of
+ * those files can -- is whether the cue actually appears across the whole app
+ * rather than only where the old card did, and whether a verified user really
+ * sees no floating card anywhere.
+ */
+describe("a verified user gets a quiet header cue, not a floating card (ticket a5c8fa9)", () => {
+  const SCORED_FOR_CUE: GetAllResultsResponse = {
+    results: [
+      {
+        jobId: "job-cue",
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        externalId: "ext-cue",
+        title: "Scored While Signed In",
+        company: "Acme",
+        dataSource: "usajobs",
+        location: null,
+        locationType: null,
+        applyUrl: "https://example.com/apply",
+        matchScore: 74,
+        rationale: "Good fit.",
+        strengths: [],
+        gaps: [],
+        levelFit: null,
+        levelFitNote: null,
+        isContractOrTemp: false,
+        status: null,
+      },
+    ],
+  };
+
+  it("shows the cue on all three tabs, and renders no floating prompt anywhere", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED_FOR_CUE);
+    localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
+
+    render(<App />);
+
+    // New Job Search (the default tab).
+    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
+    expect(screen.getByText("signed-in@example.com")).toBeInTheDocument();
+
+    // Already Scored Jobs -- the tab whose results would previously have
+    // summoned the floating signed-in card via d0a7074's scored arm.
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
+    expect(await screen.findByText("Scored While Signed In")).toBeInTheDocument();
+    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
+    expect(document.querySelectorAll(".magic-link-prompt-floating")).toHaveLength(0);
+
+    // My Resumes -- the cue is persistent app chrome, not tied to results.
+    fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
+    expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
+
+    // And exactly one of it, despite three tab panels being mounted at once
+    // (ticket f4a7f07) -- it lives in the header, above all of them.
+    expect(document.querySelectorAll(".signed-in-cue")).toHaveLength(1);
+  });
+
+  it("shows no cue for an anonymous visitor, and still offers the ask", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED_FOR_CUE);
+    // No verified email in storage.
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
+    expect(await screen.findByText("Scored While Signed In")).toBeInTheDocument();
+
+    expect(screen.queryByText(/these results are saved to/i)).not.toBeInTheDocument();
+    // The ask is untouched by this ticket -- it must still appear exactly as
+    // ticket d0a7074 left it.
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+  });
+});
+
 describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a7074)", () => {
   const SCORED: GetAllResultsResponse = {
     results: [
