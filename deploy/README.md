@@ -108,14 +108,13 @@ and delete the point.
 
 ## Before you share the URL
 
-**Nothing gates spending, and every search spends your Anthropic credit.**
+**Nothing authenticates who spends your Anthropic credit, and every search spends it.**
 
-An earlier draft of this section said "there is no login" and "no spend cap,
-`grep` comes back empty," stamped as verified. Both were wrong — opus review
-caught it, and the grep had been run against the wrong terms and its null
-result treated as proof of absence. What follows was re-checked line by line
-against the source on 2026-09-30, with file references so you can confirm
-rather than trust.
+An earlier draft of this section carried a "verified against the code" stamp
+and was wrong on two counts — it said there is no login, and that no spend
+cap exists. Everything below was re-checked against the source on 2026-09-30,
+and every claim names the file it came from so you can confirm it rather than
+trust it.
 
 **There IS a sign-in** — email magic link, `apps/api/src/routes/auth.ts` —
 but it protects nothing. It is offered only after results land, and every
@@ -288,10 +287,11 @@ way.
     source, confirm results land. Originally written as "before asking Jay
     to test"; as of 2026-09-30 Jay is no longer the only intended audience
     ("Jay isn't the only one I want to show"), which is also why the
-    always-on shape was chosen over a per-demo one. This ticket's Dockerfiles and configs
-    were verified by careful reading and by exercising individual pieces
-    directly (drizzle-kit against a missing `.env`, a `vite build` with a
-    blank `VITE_API_BASE_URL`, `@fastify/cors` against each
+    always-on shape was chosen over a per-demo one. This ticket's
+    Dockerfiles and configs were verified by careful reading and by
+    exercising individual pieces directly (drizzle-kit against a missing
+    `.env`, a `vite build` with a blank `VITE_API_BASE_URL`,
+    `@fastify/cors` against each
     `CORS_ALLOWED_ORIGIN` shape) — Docker itself is not installed in the
     dev container this was built in, so neither image has actually been
     built and run end to end yet. This step is that first real end-to-end
