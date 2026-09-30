@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { MagicLinkRejectionReason } from "@app/shared";
 import { magicLinkRejectionReason, verifyMagicLink } from "../api/client";
 import { setUserId, setVerifiedEmail } from "../identity";
-import { reloadTo } from "../navigation";
+import { reloadCurrent, reloadTo } from "../navigation";
 import { clearAppState } from "../session";
 
 /**
@@ -36,8 +36,10 @@ import { clearAppState } from "../session";
  *     verified email, and -- only if the id actually CHANGED -- clear the
  *     persisted app state, because a `resumeId` cached for the previous
  *     anonymous user names a row the newly-adopted user does not own.
- *  4. Reload to the cleaned URL when the user clicks Continue. See
- *     navigation.ts for why a reload rather than an in-place re-render.
+ *  4. Reload when the user clicks Continue. See navigation.ts for why a
+ *     reload rather than an in-place re-render, and (ticket a90095b) why
+ *     success reloads the CURRENT url in place while failure navigates to a
+ *     token-stripped one.
  *
  * WHY THE TOKEN IS REDEEMED AUTOMATICALLY rather than behind a "click to
  * sign in" button: the usual argument for a confirm button is that mail link
@@ -95,11 +97,19 @@ function urlWithoutToken(): string {
  * "adopt" login, where `clearAppState()` has already wiped any single-resume
  * session state by the time this marker is written (see the effect below).
  *
- * A URL fragment param, not sessionStorage: the reload this marker survives
- * is a real `window.location.replace` (navigation.ts), and a value baked
- * into the URL being navigated TO is simpler to reason about than a side
- * table that has to be remembered and cleaned up independently of the
- * navigation itself. `JobSearchApp` (App.tsx) reads and consumes it once.
+ * A URL fragment param, not sessionStorage: a value baked into the URL is
+ * simpler to reason about than a side table that has to be remembered and
+ * cleaned up independently of the navigation itself. `JobSearchApp`
+ * (App.tsx) reads and consumes it once.
+ *
+ * Ticket a90095b: the reload this marker survives is
+ * `window.location.reload()` (navigation.ts's `reloadCurrent`), NOT the
+ * `window.location.replace` this comment originally named. Putting the
+ * marker in the fragment is exactly what made a `replace` to that same URL
+ * a silent no-op and left the "Continue" button dead -- see that button's
+ * own comment below. The marker being in the URL is still right; what
+ * changed is that the URL is now reloaded in place rather than navigated
+ * to.
  */
 const LAND_ON_SCORED_TAB_PARAM = "landOnScoredTab";
 
@@ -274,19 +284,36 @@ export function MagicLinkLanding({ token }: { token: string }) {
               on anonymously before.
             </p>
           )}
-          {/* Ticket bb2f275: `urlWithoutTokenLandingOnScoredTab()`, not
-              plain `urlWithoutToken()` -- lands on "Already Scored Jobs"
-              rather than defaulting to "New Job Search", the more
-              meaningful destination once results are tied to a real
-              account (and the only meaningful one after
-              `switchedAccount`, which already wiped this browser's
-              single-resume session state above). Called explicitly here
-              rather than relied on implicitly via the marker the effect
-              above already baked into `window.location` -- both are
-              correct (the function is idempotent), but this is the one
-              a reader tracing "why does this land on Already Scored
-              Jobs" would actually look at. */}
-          <button type="button" onClick={() => reloadTo(urlWithoutTokenLandingOnScoredTab())}>
+          {/* Ticket a90095b: `reloadCurrent()`, NOT
+              `reloadTo(urlWithoutTokenLandingOnScoredTab())`.
+
+              This button was dead. Nicole, testing the flow end to end:
+              "Continue to your results button unfortunately is not doing
+              anything." The success handler above already ran
+              `history.replaceState` with
+              `urlWithoutTokenLandingOnScoredTab()`, so the address bar
+              ALREADY reads `#landOnScoredTab=1` by the time this renders
+              -- which made `reloadTo` a request to replace the current URL
+              with a byte-identical one, fragment included. That is a
+              same-document fragment navigation, so the browser did
+              nothing at all.
+
+              bb2f275's original comment here argued the explicit call was
+              clearer for a reader tracing "why does this land on Already
+              Scored Jobs", and treated the URLs being the same as
+              harmless ("the function is idempotent"). The function is; the
+              navigation is not. The destination is now expressed entirely
+              by the marker the success handler bakes in -- see
+              `urlWithoutTokenLandingOnScoredTab` and
+              `LAND_ON_SCORED_TAB_PARAM` above for that half, and
+              navigation.ts's `reloadCurrent` for why a reload rather than
+              a navigation is what this needs.
+
+              The FAILURE path below deliberately still uses `reloadTo`:
+              its own `replaceState` is conditional on an adjudicated
+              refusal, so on a network error the token is still in the URL
+              and stripping it is part of that button's job. */}
+          <button type="button" onClick={() => reloadCurrent()}>
             Continue to your results
           </button>
         </section>
