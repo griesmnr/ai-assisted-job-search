@@ -10,6 +10,65 @@ Everything up to that point (images, config, migration order) is done;
 what's left is the account-creation step itself plus setting the env vars
 below.
 
+**Read "What this costs" and "Before you share the URL" first.** This
+deployment spends money in two independent places — the host, and your
+Anthropic key — and the second one is the one that can be run up by other
+people.
+
+## What this costs
+
+**Railway has no free tier.** New accounts get a one-time trial credit and
+then need a paid plan; there is no perpetual-free option to settle into.
+Ticket 950911d exists because the first version of this document said
+"Railway (recommended)" and mentioned billing without ever naming that,
+which is a real omission rather than a detail: Nicole hit the end of the
+trial credit unexpectedly and reasonably asked whether she'd been pointed at
+something she could not afford to keep.
+
+**What the monthly figure will be for THIS app is usage-dependent, and this
+document deliberately does not guess.** Railway meters on resources
+consumed, and this app runs six always-on services, two of which (Postgres
+and RabbitMQ) are the memory-hungry ones. Rather than inherit a number that
+rots, do this:
+
+1. Check Railway's current pricing page for the plan's base price and what
+   usage allowance it includes. These change.
+2. Deploy, then watch your project's own usage/estimated-cost view for two
+   or three days of normal use. That gives you a real figure for your
+   actual traffic instead of an estimate for someone else's.
+
+If the answer is higher than you want, the honest tradeoff is not a cheaper
+managed host — it's whether you want to be a sysadmin:
+
+| Option                       | Ongoing money                     | Ongoing effort                                                              |
+| ---------------------------- | --------------------------------- | --------------------------------------------------------------------------- |
+| Railway (this guide)         | trial credit, then paid & metered | near zero — no machine to patch, no TLS to renew                            |
+| A small VPS (Hetzner, DO, …) | low, fixed                        | you own the OS: SSH, firewall, TLS renewal, updates, and the 2am outage     |
+| Oracle Cloud "Always Free"   | genuinely $0                      | same as a VPS, plus a signup process widely reported as difficult           |
+| Render / Fly.io              | paid, per-service                 | low, but six services priced individually adds up; RabbitMQ is self-managed |
+
+The free options are not free. They move the cost from money to your
+evenings. **Nicole chose Railway knowing this** (2026-09-30): "I want to
+have an authentic version of the app... I don't want to be turning it on and
+off again. You don't need to patch it together just to make it free. I want
+a whole operational app."
+
+Two shapes that were considered and **declined**, recorded so they are not
+re-proposed as savings:
+
+- **Splitting the frontend onto Vercel's free tier** and hosting only the
+  backend. This genuinely works — `apps/web` is a plain `vite build` and
+  talks to the API purely over HTTP via `VITE_API_BASE_URL`, so it will
+  deploy to Vercel unmodified. But Vercel cannot host the rest: the two
+  workers are always-on RabbitMQ consumers and Vercel has no always-on
+  compute at all, and there is no Vercel equivalent of RabbitMQ. Once
+  you're paying for an always-on backend anyway, the split only adds a
+  second platform to operate. Do it if you want Vercel's CDN or its preview
+  deploys — not as a cost measure.
+- **Bringing the backend up only for demos.** Cheapest correct answer for a
+  single reviewer, and explicitly rejected: the app is meant to be
+  continuously available to several people.
+
 ## Why Railway
 
 The app needs a long-running API process, two long-running worker
@@ -18,6 +77,46 @@ to each other — that rules out static hosts and most serverless platforms
 outright. Railway runs arbitrary long-lived containers from a Dockerfile,
 has first-party Postgres, and has a community RabbitMQ template, all
 inside one project/one bill.
+
+**Do not "optimize" the two workers into one process, or into the API, to
+shave hosting cost.** They are separate deliberately: the message-driven
+fan-out (API publishes → source workers fetch → scoring workers score) is
+the thing this project exists to demonstrate, and it is what gives retries,
+DLQs and idempotency somewhere real to live. See CLAUDE.md's "Why RabbitMQ
+is the honest architecture here". Collapsing them would save a few dollars
+and delete the point.
+
+## Before you share the URL
+
+**There is no login, and every search spends your Anthropic credit.**
+
+This is the one thing about going live that can cost you money you did not
+choose to spend. Verified against the code, 2026-09-30:
+
+- A user's identity is a UUID the browser mints for itself and sends in an
+  `x-user-id` header. It is unsigned and unverified by design (see
+  `apps/api/src/identity.ts`) — it identifies a browser, it does not
+  authenticate anyone.
+- There is **no rate limiting** on the API, and **no global or per-user
+  spend cap** in this codebase. `grep` for either comes back empty.
+- The app does estimate a search's cost and show it before you confirm, but
+  that is one search's estimate shown to one user. Nothing limits how many
+  searches happen, or how many people run them.
+
+So anyone who has the `web` URL can run real scoring jobs against your key,
+as many times as they like. That is fine for a handful of people you invited.
+It is not fine for a link that escapes.
+
+**Do this before the URL leaves your hands:** set a hard spend limit on the
+Anthropic account itself, in the Anthropic Console. That is the only control
+here that nothing in this app can route around — it does not depend on
+anyone behaving, and it fails closed. Pick a number you would be annoyed but
+not hurt to lose.
+
+A server-side daily budget guard would be the belt-and-braces version and is
+not built. If you want it, file it — it is application work, not deployment
+work, and the account-level cap is the thing that actually protects you
+either way.
 
 ## Railway setup
 
@@ -52,14 +151,14 @@ inside one project/one bill.
    which is required here (see the Dockerfile's own header).
 5. **Set `api`'s environment variables** (Railway service → Variables):
 
-   | Variable                                                      | Value                                                                                                                                                |
-   | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `PORT`                                                        | Railway sets this automatically — don't override it                                                                                                  |
-   | `POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB`     | from the Postgres service, step 2                                                                                                                    |
-   | `RABBITMQ_HOST` / `_PORT` / `RABBITMQ_DEFAULT_USER` / `_PASS` | from the RabbitMQ service, step 3                                                                                                                    |
-   | `ANTHROPIC_API_KEY`                                           | a real key — this is what makes resume scoring cost real money per search, keep it out of any log                                                    |
-   | `CORS_ALLOWED_ORIGIN`                                         | the `web` service's real public URL once step 8 gives you one (`https://....up.railway.app`) — circular on the very first deploy, see the note below |
-   | Job-source keys/tokens                                        | everything under `.env.example`'s USAJOBS/Greenhouse/Lever/etc. sections, if you want those sources live                                             |
+   | Variable                                                      | Value                                                                                                                                                                                                  |
+   | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+   | `PORT`                                                        | Railway sets this automatically — don't override it                                                                                                                                                    |
+   | `POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB`     | from the Postgres service, step 2                                                                                                                                                                      |
+   | `RABBITMQ_HOST` / `_PORT` / `RABBITMQ_DEFAULT_USER` / `_PASS` | from the RabbitMQ service, step 3                                                                                                                                                                      |
+   | `ANTHROPIC_API_KEY`                                           | a real key — this is what makes resume scoring cost real money per search, keep it out of any log. **Set an account-level spend limit before sharing the URL — see "Before you share the URL" above.** |
+   | `CORS_ALLOWED_ORIGIN`                                         | the `web` service's real public URL once step 8 gives you one (`https://....up.railway.app`) — circular on the very first deploy, see the note below                                                   |
+   | Job-source keys/tokens                                        | everything under `.env.example`'s USAJOBS/Greenhouse/Lever/etc. sections, if you want those sources live                                                                                               |
 
    Railway also supports referencing another service's variables directly
    (`${{Postgres.PGHOST}}` syntax) instead of copy-pasting — use that where
@@ -117,9 +216,12 @@ inside one project/one bill.
    pre-auth historical dump), see "Bringing over your local data" below —
    different scenario, different fix, not the legacy-user one.
 
-10. **Verify before asking Jay to test** (per Nicole's own stated plan):
-    open `web`'s URL, paste a resume, run a real search against one
-    source, confirm results land. This ticket's Dockerfiles and configs
+10. **Verify it works before you show anyone** (per Nicole's own stated
+    plan): open `web`'s URL, paste a resume, run a real search against one
+    source, confirm results land. Originally written as "before asking Jay
+    to test"; as of 2026-09-30 Jay is no longer the only intended audience
+    ("Jay isn't the only one I want to show"), which is also why the
+    always-on shape was chosen over a per-demo one. This ticket's Dockerfiles and configs
     were verified by careful reading and by exercising individual pieces
     directly (drizzle-kit against a missing `.env`, a `vite build` with a
     blank `VITE_API_BASE_URL`, `@fastify/cors` against each
