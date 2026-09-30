@@ -61,8 +61,10 @@ h1 {
    reasoning as `.signed-in-cue` for the wrapped case.
 
    Opus review N10: `color: inherit`, NOT `var(--muted)` like the other quiet
-   text in this file. `--muted` measures ~4.48:1 at this size, marginally
-   under AA -- tolerable for supplementary text such as `.signed-in-cue`, but
+   text in this file. `--muted` is `color-mix(currentColor 55%, transparent)`,
+   which measures about 4.7:1 over white (passes AA) but about 4.4:1 over black
+   (fails) -- so it is the DARK theme that is the problem, a distinction the
+   first version of this comment left out (opus review round 3, N-d) -- tolerable for supplementary text such as `.signed-in-cue`, but
    this link is the ONLY path back for someone who has lost their browser
    storage, and a whole user journey should not hinge on text that is hard to
    read. Kept small and underlined so it stays unobtrusive at full

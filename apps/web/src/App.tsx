@@ -1033,19 +1033,33 @@ function JobSearchApp() {
   // their mere existence proves that id survived, which is exactly the
   // question "are they lost?" is asking. This is the account-scoped version
   // of the check the session-scoped one was standing in for.
+  // Opus review round 3 (S2): an ERROR in either fetch means "we don't know
+  // whether this browser has data", and the two guesses do not cost the same.
+  // Guessing "has data" hides the only path back from the one person who by
+  // definition cannot see their own data -- and the error that would explain it
+  // renders inside a tab panel they may not be looking at (the default tab is
+  // "search"). Guessing "empty" costs a returning user one redundant offer,
+  // which the adopt branch handles idempotently. `loading` still withholds it,
+  // so the link does not flash in and out on a slow connection. The two fetches
+  // are issued from independent effects, so the wait is max(t1, t2), not their
+  // sum.
+  const nothingScoredInThisBrowser =
+    allResultsState.status === "error" ||
+    (allResultsState.status === "ready" &&
+      allResultsState.data.results.length === 0 &&
+      (allResultsState.data.hiddenBelowFloor ?? 0) === 0);
+  const noResumesOnThisAccount =
+    resumesListState.status === "error" ||
+    (resumesListState.status === "ready" && resumesListState.data.resumes.length === 0);
   const showSignInRecovery =
-    resumeId === undefined &&
-    resumesListState.status === "ready" &&
-    resumesListState.data.resumes.length === 0 &&
-    allResultsState.status === "ready" &&
-    allResultsState.data.results.length === 0 &&
-    (allResultsState.data.hiddenBelowFloor ?? 0) === 0;
+    resumeId === undefined && noResumesOnThisAccount && nothingScoredInThisBrowser;
 
-  // Opus review F1: once the recovery offer has been shown, keep its host
-  // mounted for the rest of this page load even if the gate later closes.
-  // A ref rather than state: this only ever latches true, and nothing needs a
-  // re-render on account of it -- the render that sets it is already
-  // happening.
+  // Latches true the first time the recovery offer is due, so the component is
+  // not mounted before then. A ref rather than state: it only ever goes true,
+  // and nothing needs a re-render on its account -- the render that sets it is
+  // already happening. Monotonic and idempotent, so StrictMode's double
+  // invocation is harmless. NOT what preserves the panel's state across the
+  // gate closing; see the mount site.
   if (showSignInRecovery) signInRecoveryEverShownRef.current = true;
   const signInRecoveryEverShown = signInRecoveryEverShownRef.current;
 
@@ -1070,8 +1084,12 @@ function JobSearchApp() {
             screen mid-wait. `SignInRecovery` decides for itself whether to
             render, and deliberately keeps showing a confirmation after
             `offered` goes false: a receipt is not an offer.
-            `signInRecoveryEverShown` keeps the instance alive for the rest of
-            the page so that decision is still its to make. */}
+            `signInRecoveryEverShown` only delays the FIRST mount until the
+            offer has been earned once; it is not what preserves state (opus
+            review round 3, N-a: removing it entirely passes the whole suite,
+            because `SignInRecovery`'s own null-return already does that work).
+            Kept because mounting nothing before the offer is due is tidier
+            than mounting a component that immediately returns null. */}
         {signInRecoveryEverShown && <SignInRecovery offered={showSignInRecovery} />}
       </div>
 

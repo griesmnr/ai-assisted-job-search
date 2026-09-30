@@ -490,6 +490,53 @@ describe("the way back in appears only where the results prompt cannot (ticket 5
     expect(requestMagicLink).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Opus review round 3 (B3) -- the hole in the F1 fix itself. F1 kept the
+   * receipt alive once it EXISTED, but latched on success, leaving a window the
+   * width of the request. If the gate closed while the send was still in
+   * flight, the panel returned null, the form unmounted and `phase: "sending"`
+   * died with it; the response then re-mounted a FRESH form. Captured before
+   * the fix: the email had been sent, the field was empty, the offer form was
+   * back, and no confirmation was anywhere -- so the natural read is "my click
+   * didn't work" and the user sends a second link. Exactly the failure B2 was
+   * blocked on.
+   *
+   * The fix latches at submit instead. This test pins the in-flight ordering
+   * specifically: resume lands BEFORE the magic-link response resolves.
+   */
+  it("keeps the receipt when the gate closes while the send is still in flight", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    let release: (value: { email: string; expiresAt: string }) => void = () => {};
+    requestMagicLink.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /been here before/i }));
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "returning@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+    expect(await screen.findByRole("button", { name: /sending/i })).toBeInTheDocument();
+
+    // Gate closes MID-FLIGHT -- the request has not come back yet.
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    release({ email: "returning@example.com", expiresAt: new Date().toISOString() });
+
+    // The receipt must arrive and stay -- not a fresh empty offer.
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
+    expect(requestMagicLink).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the signed-in cue instead once an email is verified", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);

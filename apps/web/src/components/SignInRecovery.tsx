@@ -57,22 +57,31 @@ export function SignInRecovery({ offered }: { offered: boolean }) {
   // cannot change under a live instance.
   const [verifiedEmail] = useState(getVerifiedEmail);
   const [open, setOpen] = useState(false);
-  /** Opus review F1: a link having been sent outlives the conditions for
-   * OFFERING to send one. The paste box sits right below this panel, so the
-   * natural move while waiting for the email is to start on the resume --
-   * which gives this browser data, closes `offered`, and would otherwise take
-   * the "Check your inbox" confirmation off screen mid-wait. A receipt is not
-   * an offer; once one exists it stays until the page does. */
-  const [sent, setSent] = useState(false);
+  /** Opus review F1, corrected in round 3 (B3): a link the user has asked for
+   * outlives the conditions for OFFERING to send one. The paste box sits right
+   * below this panel, so the natural move while waiting for the email is to
+   * start on the resume -- which gives this browser data and closes `offered`
+   * mid-exchange.
+   *
+   * Latched at SUBMIT, not on success, and that distinction IS the bug the
+   * first version had: it latched in `onSent`, so if the gate closed while the
+   * request was still in flight this component returned `null`, unmounted the
+   * form and destroyed `phase: "sending"`. The response then set this flag,
+   * brought the panel back, and re-mounted a FRESH form -- an empty offer where
+   * the receipt should have been, with the email already sent and the user
+   * never told. A receipt is not an offer, and neither is a request already in
+   * flight. */
+  const [submitted, setSubmitted] = useState(false);
 
   // Already signed in -- there is nothing to recover. `SignedInCue` has this
   // slot instead.
   if (verifiedEmail !== undefined) return null;
 
-  // Withdrawn -- but only while there is no receipt to keep showing. Returning
-  // `null` rather than being unmounted by the caller is what preserves `open`,
-  // `sent` and the form's own phase if the conditions come back.
-  if (!offered && !sent) return null;
+  // Withdrawn -- but only while nothing is in flight and no receipt exists.
+  // Returning `null` rather than being unmounted by the caller is what
+  // preserves `open`, `submitted` and the form's own phase if the conditions
+  // come back.
+  if (!offered && !submitted) return null;
 
   if (!open) {
     return (
@@ -91,7 +100,8 @@ export function SignInRecovery({ offered }: { offered: boolean }) {
     <div className="sign-in-recovery-open">
       <MagicLinkForm
         submitLabel="Send me a sign-in link"
-        onSent={() => setSent(true)}
+        onSendStarted={() => setSubmitted(true)}
+        sentHeadingLevel="h2"
         // Opus review N6: `h2`, not `h3`. Every real page heading below is an
         // `h2`, and this sits ABOVE all of them in the header -- an `h3` here
         // skips a level in the document outline from the `h1`.

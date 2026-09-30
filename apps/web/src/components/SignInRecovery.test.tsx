@@ -99,6 +99,14 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
     await screen.findByRole("heading", { name: /check your inbox/i });
 
     expect(screen.getByText(/open it in this browser/i)).toBeInTheDocument();
+    // Opus review round 3 (S1): the confirmation heading must be an `h2` like
+    // this panel's pitch, not the shared form's `h3` default. Two reasons, both
+    // measured: an `h3` here skips a level under the page's `h1` (this panel
+    // sits above every real `h2`), and after N6 renamed
+    // `.sign-in-recovery-open h3` to `h2` there was no rule left matching it --
+    // so it fell back to the UA's 1.17em and 1em top margin inside a
+    // 0.75rem-padded card.
+    expect(screen.getByRole("heading", { name: /check your inbox/i }).tagName).toBe("H2");
     // Owned by MagicLinkForm rather than by this caller, deliberately -- the
     // expiry wording took a live back-and-forth to get right (ticket f199f55)
     // and must not drift per-caller.

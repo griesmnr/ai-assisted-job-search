@@ -49,7 +49,8 @@ export function MagicLinkForm({
   pitch,
   sentBody,
   secondary,
-  onSent,
+  onSendStarted,
+  sentHeadingLevel: SentHeading = "h3",
   submitLabel = "Email me a link",
 }: {
   /** The caller's framing above the field -- heading and explanation.
@@ -78,12 +79,27 @@ export function MagicLinkForm({
    * email sent with the user never told. A `ReactNode` simply cannot express
    * that, which is why the signature changed rather than the call site. */
   secondary?: (state: { sending: boolean }) => ReactNode;
-  /** Called once a send succeeds. Exists so a caller whose VISIBILITY is
-   * controlled from outside can keep itself on screen afterwards: a
-   * confirmation that a link was sent is a receipt, not an offer, and must not
-   * disappear because the surrounding conditions for *offering* stopped
-   * holding. See `SignInRecovery`. */
-  onSent?: (email: string) => void;
+  /** Called when a send STARTS -- deliberately at submit, not on success.
+   * Exists so a caller whose VISIBILITY is controlled from outside can keep
+   * itself on screen for the rest of the exchange: a link the user has already
+   * asked for is not an offer, and neither is the receipt that follows, so
+   * neither may vanish because the surrounding conditions for *offering*
+   * stopped holding.
+   *
+   * Opus review round 3 (B3): latching on SUCCESS left a window the width of
+   * the request. `SignInRecovery` unmounted mid-flight when the gate closed,
+   * destroying `phase: "sending"`; the response then re-mounted a fresh form
+   * and showed an empty offer where the receipt belonged -- the email sent,
+   * and the user never told, which is the exact failure B2 was blocked on. */
+  onSendStarted?: () => void;
+  /** Heading level for the confirmation, so it matches where the caller sits in
+   * the document outline. Opus review round 3 (S1): N6 moved the recovery
+   * panel's pitch to `h2` and renamed the `.sign-in-recovery-open h3` rule with
+   * it, but the confirmation heading lives HERE and stayed an `h3` -- so in that
+   * panel it both skips a level under the `h1` (N6's own reason) and, after the
+   * rename, matched no rule in index.css at all, falling back to the UA's
+   * 1.17em and 1em top margin inside a 0.75rem-padded card. */
+  sentHeadingLevel?: "h2" | "h3";
   submitLabel?: string;
 }) {
   const fieldId = useId();
@@ -93,6 +109,7 @@ export function MagicLinkForm({
   async function handleSubmit() {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
+    onSendStarted?.();
     setPhase({ status: "sending" });
     try {
       // The server normalizes and echoes the address it actually mailed
@@ -101,7 +118,6 @@ export function MagicLinkForm({
       // addressed to.
       const { email: sentTo } = await requestMagicLink(trimmed);
       setPhase({ status: "sent", email: sentTo });
-      onSent?.(sentTo);
     } catch (err) {
       setPhase({ status: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -119,7 +135,7 @@ export function MagicLinkForm({
     <div aria-live="polite">
       {phase.status === "sent" ? (
         <>
-          <h3>Check your inbox</h3>
+          <SentHeading>Check your inbox</SentHeading>
           <p>
             {sentBody(phase.email)} {sentFactsLine()}
           </p>
