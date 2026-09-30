@@ -1,16 +1,20 @@
 /**
- * The one place this app performs a real page navigation (ticket 9f06f8f).
+ * The one place this app leaves the current document -- by navigating or by
+ * reloading (ticket 9f06f8f; `reloadCurrent` added by ticket a90095b).
  *
- * WHY A MODULE FOR ONE LINE. Two reasons, both concrete:
+ * WHY A MODULE FOR TWO ONE-LINERS. Two reasons, both concrete:
  *
  *  1. TESTABILITY. `jsdom` does not implement navigation -- assigning
  *     `window.location.href`/`.replace()` emits a "Not implemented" jsdom
- *     error on the virtual console. A one-function module is something a test
- *     can `vi.mock`, so the sign-in flow is testable end to end without
- *     either polluting test output or asserting around an unnavigable window.
+ *     error on the virtual console. A tiny module is something a test can
+ *     `vi.mock`, so the sign-in flow is testable end to end without either
+ *     polluting test output or asserting around an unnavigable window. (A
+ *     mock proves only WHICH of these was called, never that a document
+ *     actually reloaded -- see navigation.test.ts, which stubs
+ *     `window.location` to pin exactly that much and says so.)
  *  2. IT MARKS THE SEAM. A full reload is a deliberate, unusual act in an SPA
- *     and the only caller has a specific reason for it (see below). Having it
- *     named makes that reason findable, rather than buried as a bare
+ *     and each caller has a specific reason for it (see below). Having them
+ *     named makes those reasons findable, rather than buried as a bare
  *     `location.replace` in a component.
  *
  * WHY THE SIGN-IN FLOW RELOADS AT ALL, rather than re-rendering in place:
@@ -28,6 +32,39 @@
  * button's history is exactly what we do not want.
  */
 export function reloadTo(url: string): void {
+  // Ticket a90095b, opus review findings 1 and 2. A `replace` to the URL the
+  // page is ALREADY on, when that URL has a fragment, is a same-document
+  // fragment navigation -- the browser does nothing observable. Callers ask
+  // to END UP at `url`; if that is already where they are, a reload is how
+  // you get there.
+  //
+  // This guard kills the whole class rather than the one instance that was
+  // reported. Two real cases, both measured by the reviewer:
+  //
+  //  1. REACHABLE TODAY. The API returns 200 with a malformed `userId`.
+  //     `setUserId` throws by design, but only AFTER the success path's
+  //     unconditional `replaceState` has already put `#landOnScoredTab=1`
+  //     in the URL. The throw lands in the `.catch`, where
+  //     `magicLinkRejectionReason` returns undefined (no adjudicated
+  //     reason), so that branch's own `replaceState` is skipped -- leaving
+  //     `urlWithoutToken()` equal to the current href, and
+  //     "Continue without signing in" as dead as the button this ticket
+  //     started with.
+  //  2. LATENT. `urlWithoutToken` deliberately preserves any OTHER fragment
+  //     parameter (see its doc comment, which advertises this as a kindness
+  //     to whoever adds the first one). The moment someone does, the
+  //     failure path's URL keeps a non-empty fragment and hits the same
+  //     no-op. Verified with `#keep=me&magicLinkToken=...`.
+  //
+  // Safe for the token in both: `url === window.location.href` means the
+  // current URL already IS what the caller asked to navigate to, so a
+  // reload cannot expose or re-submit anything the caller wasn't already
+  // content to sit on -- and `reload()` adds no history entry, so the
+  // `replace`-not-`assign` reasoning above is preserved.
+  if (url === window.location.href) {
+    window.location.reload();
+    return;
+  }
   window.location.replace(url);
 }
 

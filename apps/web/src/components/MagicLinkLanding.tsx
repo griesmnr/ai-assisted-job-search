@@ -309,10 +309,23 @@ export function MagicLinkLanding({ token }: { token: string }) {
               navigation.ts's `reloadCurrent` for why a reload rather than
               a navigation is what this needs.
 
-              The FAILURE path below deliberately still uses `reloadTo`:
-              its own `replaceState` is conditional on an adjudicated
-              refusal, so on a network error the token is still in the URL
-              and stripping it is part of that button's job. */}
+              The FAILURE path below deliberately still uses `reloadTo`,
+              because on a transport failure the token IS still in the URL
+              (that path's `replaceState` is conditional on an adjudicated
+              refusal) and stripping it is part of that button's job.
+
+              But note what an earlier version of this comment claimed and
+              got wrong, since opus review measured it: "the token is still
+              in the URL" is true of a network error and FALSE of the other
+              non-adjudicated case. A 200 carrying a malformed `userId`
+              makes `setUserId` throw AFTER the success `replaceState` has
+              already run, so the failure panel renders with
+              `#landOnScoredTab=1` still in the URL and `urlWithoutToken()`
+              equal to the current href -- which made that button a no-op
+              too, by exactly this ticket's mechanism. Fixed inside
+              `reloadTo` itself (navigation.ts), which now reloads when
+              asked to navigate to the URL already loaded, so the whole
+              class is closed rather than this one instance. */}
           <button type="button" onClick={() => reloadCurrent()}>
             Continue to your results
           </button>

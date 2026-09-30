@@ -251,7 +251,7 @@ describe("MagicLinkLanding -- success", () => {
     // A `reloadTo` here would be the regression: same-URL navigation, no
     // reload, dead button.
     expect(reloadTo).not.toHaveBeenCalled();
-    // The destination lives in the URL being reloaded, not in a argument.
+    // The destination lives in the URL being reloaded, not on an argument.
     expect(window.location.href).not.toContain("magicLinkToken");
     // Ticket bb2f275: a successful "Continue" carries the "land on Already
     // Scored Jobs" marker App.tsx reads on its next mount.
