@@ -557,6 +557,88 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
     ).not.toBeInTheDocument();
   });
 
+  /**
+   * Opus review, F3 (BLOCKING, and a regression introduced by the F2 fix
+   * itself). The clearance rule in index.css keeps the last result card
+   * from being permanently occluded by the floating prompt. It has now
+   * silently broken TWICE -- once because the hoist made its original
+   * `.results-section:has(...)` selector unmatchable, and once because
+   * keying it on a merely-present, non-hidden HOST kept it matching after
+   * `MagicLinkPrompt` returns `null` on dismissal, leaving 8rem of dead
+   * space under the results section forever.
+   *
+   * So this asserts the selector directly, across the whole matrix, rather
+   * than just the happy path. jsdom's selector engine (nwsapi) evaluates
+   * `:has()`, `>` inside `:has()`, and `:not([attr])` correctly, so the
+   * real production selector string can be queried as-is -- the one piece
+   * of this feature no rendering assertion can reach, since jsdom computes
+   * no layout.
+   */
+  /**
+   * KNOWN LIMIT, STATED SO NOBODY OVER-TRUSTS THIS: the selector is
+   * restated here, so these two tests pin its SEMANTICS against a real
+   * DOM -- they do not detect someone editing `index.css` to something
+   * else. I tried three ways to read the live rule instead and each is a
+   * scope change this ticket shouldn't make: `node:fs` doesn't typecheck
+   * (this file is under `apps/web/src`, which `tsconfig.app.json` compiles
+   * with the browser's type set, and `@types/node` is a devDependency of
+   * `apps/api`/`packages/shared` only); Vite's `?raw` returns an empty
+   * string because vitest's default `css: false` stubs CSS imports; and
+   * moving the test out of `src` hides it from `vitest.config.ts`'s
+   * `include`. Ticket 5c93a51 tracks the stronger version.
+   *
+   * What these DO catch is the actual F3 logic error and its predecessor,
+   * both of which were wrong selectors rather than absent ones -- verified
+   * by substituting each historical selector here and watching these fail.
+   * The `index.css` rule carries a pointer back to this test so an editor
+   * of one sees the other.
+   */
+  const CLEARANCE_SELECTOR =
+    ".app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section";
+
+  function clearedSections() {
+    return document.querySelectorAll(CLEARANCE_SELECTOR).length;
+  }
+
+  it("applies bottom clearance only while a card is really on screen (review F3)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    // Visible card -> clearance on. Both results sections match; the
+    // hidden tab's padding costs nothing (display:none lays out nothing),
+    // and that breadth is deliberate -- see the CSS comment.
+    expect(clearedSections()).toBe(2);
+
+    // Dismissed -> the host survives UN-hidden but renders no card, which
+    // is exactly the case the first version of this selector got wrong.
+    fireEvent.click(screen.getByRole("button", { name: /not now/i }));
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
+    expect(document.querySelectorAll(".magic-link-prompt-host")).toHaveLength(1);
+    expect(clearedSections()).toBe(0);
+  });
+
+  it("drops bottom clearance while the host is mounted but hidden (review F3)", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(clearedSections()).toBe(2);
+
+    // Picker open: host stays mounted (F2's state preservation) but hidden,
+    // so no card is on screen and nothing should be padded for one.
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+    expect(clearedSections()).toBe(0);
+
+    // And back on cancel, proving the rule tracks visibility rather than
+    // latching off permanently.
+    fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
+    expect(clearedSections()).toBe(0);
+  });
+
   it("carries a submitted address across a tab switch, rather than asking again on the other tab", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue(SCORED);

@@ -917,15 +917,36 @@ button[aria-disabled="true"] {
    (display:none) panel, so its padding isn't laid out at all -- and "My
    Resumes" uses `.resumes-section`, so it is untouched either way.
 
-   Keyed on `.magic-link-prompt-host:not([hidden])` rather than on the
-   prompt class itself, because the host stays MOUNTED-but-`hidden` across
-   tab switches (see App.tsx's F2 note -- that's what preserves the
-   dismissal and the "check your inbox" state). A `:has()` test that only
-   asked whether the prompt EXISTS would therefore also match while it is
-   invisible, padding 8rem of dead space under a results section with no
-   card floating over it -- reachable whenever one arm is ready and the
-   other is the one on screen. */
-.app:has(> .magic-link-prompt-host:not([hidden])) .results-section {
+   The test has to satisfy BOTH halves of the conjunction below, and each
+   half alone gets exactly one case wrong -- this rule has now silently
+   broken twice, so the reasoning for each is worth spelling out:
+
+     - `:not([hidden])` on the host is required because the host stays
+       MOUNTED-but-`hidden` across tab switches (see App.tsx's F2 note --
+       that's what preserves the dismissal and the "check your inbox"
+       state). Asking only whether the prompt EXISTS would pad a results
+       section while the card is invisible, reachable whenever one arm is
+       ready and the other tab is the one on screen.
+     - `> .magic-link-prompt` inside the host is required because
+       MagicLinkPrompt returns `null` when dismissed (see its `dismissed`
+       check) while its host div survives, un-hidden. Asking only whether
+       a visible host EXISTS would therefore leave 8rem of dead space
+       under the results section forever after a user clicks "Not now" --
+       which is a first-class option, not an edge case. That was opus
+       review F3 on this very rule: measured `HOST_HIDDEN: false,
+       PROMPT_COUNT: 0, CSS_CLEARANCE_ACTIVE: 2`.
+
+   Together: pad only when a real card is actually on screen. Note the `>`
+   combinators are load-bearing -- wrapping the host one level deeper
+   silently drops the clearance again, the same fragility the original
+   `.results-section:has(...)` selector had.
+
+   IF YOU EDIT THIS SELECTOR, edit it in `App.magicLink.test.tsx` too. Its
+   `CLEARANCE_SELECTOR` restates this string (see that constant's comment
+   for why it cannot read this file, and ticket 5c93a51 to close that), so
+   a change here does not fail any test on its own -- the coverage is of
+   the selector's behavior, not of this file's contents. */
+.app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section {
   padding-bottom: 8rem;
 }
 
