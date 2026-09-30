@@ -315,6 +315,269 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
  * rather than only where the old card did, and whether a verified user really
  * sees no floating card anywhere.
  */
+/**
+ * Ticket 5a7e957. Nicole's rule for when the "been here before?" entry point
+ * belongs on screen: "on any site run where there's no data? because if there
+ * is data, or they use the site normally, they'll get prompted as we
+ * discussed."
+ *
+ * Only App can answer this -- the component itself only knows whether an
+ * email is verified. The gate (nothing scored, no resume in play) lives in
+ * App.tsx, and the property worth pinning is that this and the results prompt
+ * are never on screen together, since they are two doors into the same
+ * endpoint.
+ */
+describe("the way back in appears only where the results prompt cannot (ticket 5a7e957)", () => {
+  it("offers it to an anonymous visitor with nothing scored and no resume", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+    // Never both doors at once.
+    expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
+  });
+
+  it("withdraws it once a resume is in play -- mid-onboarding is not lost", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review round 4 (FIX 2): the two `status === "error"` arms added for
+   * S2 had NO coverage -- reverting both to the pre-fix `status === "ready"`
+   * form passed all 357 web tests. That is the same defect class as round 1's
+   * F2, and it shipped in the very commit where the same gap was caught and
+   * closed for the S1 fix.
+   *
+   * Asserted once per arm, deliberately: a single both-fetches-failed test
+   * would still pass with either arm reverted on its own.
+   */
+  it("still offers it when the scored-results fetch fails -- an error is not evidence of data", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockRejectedValue(new Error("results unavailable"));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+  });
+
+  it("still offers it when the resume-list fetch fails", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    listResumes.mockRejectedValue(new Error("resumes unavailable"));
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /been here before/i })).toBeInTheDocument();
+  });
+
+  it("withdraws it when jobs exist but are all below the match-score floor -- filtered is not empty", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({
+      results: [],
+      hiddenBelowFloor: 12,
+    } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    await screen.findByRole("button", { name: /^Already Scored Jobs/ });
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  it("never shows it alongside the results prompt, even once a search has landed", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review F2: the `results.length === 0` conjunct -- the one that
+   * literally implements Nicole's "where there's no data" rule -- had ZERO
+   * coverage. Dropping it killed no tests, because `mockHappyPath` sets
+   * `getAllResults` to an empty list and every other gate test re-asserts
+   * empty, so the has-scored-jobs-but-no-resume state was never rendered.
+   *
+   * It is a real state: a returning visitor in a fresh tab, `localStorage`
+   * user id intact so their scored jobs load, `sessionStorage` gone so there
+   * is no active resume. They plainly have data, so they are plainly not lost.
+   */
+  it("withdraws it when scored jobs exist even though no resume is active", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({
+      results: [
+        {
+          jobId: "job-old",
+          resumeId: "resume-1",
+          resumeNickname: "Resume 1",
+          externalId: "ext-old",
+          title: "Scored Before This Tab",
+          company: "Acme",
+          dataSource: "usajobs",
+          location: null,
+          locationType: null,
+          applyUrl: "https://example.com/apply",
+          matchScore: 71,
+          rationale: "Good fit.",
+          strengths: [],
+          gaps: [],
+          levelFit: null,
+          levelFitNote: null,
+          isContractOrTemp: false,
+          status: null,
+        },
+      ],
+    } satisfies GetAllResultsResponse);
+
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: /^Already Scored Jobs \(/ }),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review N1: `resumeId` is `sessionStorage`-scoped, so on its own it
+   * cannot answer "is this person lost?" across a tab close. Resumes are
+   * scoped to the `localStorage` user id, so their existence proves that id
+   * survived.
+   */
+  it("withdraws it when the account has saved resumes, even with no active resume and nothing scored", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    listResumes.mockResolvedValue({
+      resumes: [
+        {
+          id: "resume-1",
+          resumeNickname: "Resume 1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          isLocked: false,
+          suggestedTitles: [],
+        },
+      ],
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /^My Resumes \(/ });
+
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Opus review F1. The paste box sits directly below this panel, so "start
+   * filling in my resume while I wait for the email" is the natural thing to
+   * do -- and it defines `resumeId`, which closes the gate. With the panel
+   * conditionally rendered, that UNMOUNTED the "Check your inbox"
+   * confirmation the user was waiting on. Exactly the failure class this
+   * project already fixed for the prompt (ticket d0a7074 review F2), whose
+   * comment sits forty lines above this gate in App.tsx.
+   */
+  it("keeps the 'check your inbox' confirmation when the user starts pasting a resume while waiting", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    requestMagicLink.mockResolvedValue({
+      email: "returning@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /been here before/i }));
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "returning@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+
+    // Now do the natural thing: start on the resume while waiting.
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    // The offer is correctly withdrawn from view, but the record of the link
+    // that was already sent must not be destroyed with it.
+    expect(screen.getByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+    expect(requestMagicLink).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Opus review round 3 (B3) -- the hole in the F1 fix itself. F1 kept the
+   * receipt alive once it EXISTED, but latched on success, leaving a window the
+   * width of the request. If the gate closed while the send was still in
+   * flight, the panel returned null, the form unmounted and `phase: "sending"`
+   * died with it; the response then re-mounted a FRESH form. Captured before
+   * the fix: the email had been sent, the field was empty, the offer form was
+   * back, and no confirmation was anywhere -- so the natural read is "my click
+   * didn't work" and the user sends a second link. Exactly the failure B2 was
+   * blocked on.
+   *
+   * The fix latches at submit instead. This test pins the in-flight ordering
+   * specifically: resume lands BEFORE the magic-link response resolves.
+   */
+  it("keeps the receipt when the gate closes while the send is still in flight", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    let release: (value: { email: string; expiresAt: string }) => void = () => {};
+    requestMagicLink.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /been here before/i }));
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "returning@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+    expect(await screen.findByRole("button", { name: /sending/i })).toBeInTheDocument();
+
+    // Gate closes MID-FLIGHT -- the request has not come back yet.
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "some resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
+
+    release({ email: "returning@example.com", expiresAt: new Date().toISOString() });
+
+    // The receipt must arrive and stay -- not a fresh empty offer.
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
+    expect(requestMagicLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the signed-in cue instead once an email is verified", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
+
+    render(<App />);
+
+    expect(await screen.findByText(/these results are saved to/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("a verified user gets a quiet header cue, not a floating card (ticket a5c8fa9)", () => {
   const SCORED_FOR_CUE: GetAllResultsResponse = {
     results: [

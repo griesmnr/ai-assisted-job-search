@@ -34,9 +34,10 @@ import { getVerifiedEmail } from "../identity";
  * back into their account at all, which is a real gap -- but it is ticket
  * 5a7e957's gap, and Nicole scoped it out of this one explicitly ("later,
  * when we address the gap that we've already filed a ticket for, we can
- * worry about how they can find those results again"). 5a7e957 will put its
+ * worry about how they can find those results again"). 5a7e957 has since put its
  * "Been here before? Enter your email address" entry point in this same
- * top-right slot, so expect these two to share space.
+ * top-right slot; the two are mutually exclusive by construction (this one
+ * renders only WITH a verified email, that one only without).
  *
  * `useState(getVerifiedEmail)` reads local storage ONCE at mount, the same
  * pattern and the same justification as `MagicLinkPrompt`: the only writer

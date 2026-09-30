@@ -51,6 +51,83 @@ h1 {
   margin: 0;
 }
 
+/* Ticket 5a7e957: the collapsed "been here before?" entry point. Shares the
+   header's top-right slot with `.signed-in-cue` below and is mutually
+   exclusive with it (one renders only with a verified email, the other only
+   without), so they never compete for the space. Styled as a quiet text link
+   rather than a button because it is an offer aimed at returning users, and a
+   first-timer -- who cannot be told apart from one, see SignInRecovery.tsx --
+   should be able to read straight past it. Same `margin-left: auto`
+   reasoning as `.signed-in-cue` for the wrapped case.
+
+   Opus review N10, figures corrected in round 4: `color: inherit`, NOT
+   `var(--muted)` like the other quiet text in this file.
+
+   `--muted` is `color-mix(in srgb, currentColor 55%, transparent)` --
+   currentColor at alpha 0.55 -- so it composites to #737373 on a white ground
+   and #8c8c8c on a black one. Computed sRGB/WCAG 2.x on 2026-09-30, and
+   checked independently against the reviewer's own figures: about 4.7:1 light,
+   about 6.3:1 dark. At 0.85rem this is normal-size text, so the AA bar is
+   4.5:1 -- BOTH themes clear it, and LIGHT is the tighter of the two.
+
+   Two earlier versions of this comment got that wrong in opposite directions
+   ("~4.48:1, marginally under AA", then round 3's "~4.4:1 over black, fails,
+   so dark is the problem"). 4.4:1 is what you get only by misreading the mix
+   as alpha 0.45, which is where both errors came from. Recorded because the
+   number has now been asserted wrongly twice, and a reader deserves to know
+   that this version was actually computed.
+
+   So the reason for `inherit` is MARGIN, not failure: light clears AA by about
+   0.2 and misses AAA's 7:1 outright, and this link is the only path back for
+   someone who has lost their browser storage -- a whole user journey should
+   not hinge on text that is merely almost readable. `var(--muted)` remains
+   fine for genuinely supplementary text such as `.signed-in-cue`. Kept small
+   and underlined so it stays unobtrusive at full contrast. */
+.sign-in-recovery-link {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* Expanded, the panel needs the whole width rather than a slot beside the
+   h1. `flex-basis: 100%` drops it onto its own line via the header's existing
+   `flex-wrap: wrap`, so it never squeezes the heading. Deliberately NOT
+   `position: fixed`: this app has been bitten three times by fixed chrome
+   (ticket d3a95d1's opacity and scroll fixes, its review finding B2's dismiss
+   button, and ticket d0a7074's card floating over the resume picker), and an
+   in-flow panel cannot overlap anything at any width.
+   Opus review N11: this is a `<div>` rather than a `<section>` precisely so
+   the global `section { margin-top: 2rem; padding-top: 1.5rem; border-top }`
+   rule -- meant for real page sections -- never applies and never has to be
+   undone declaration by declaration. The margin and padding below are this
+   widget's own, not overrides. */
+.sign-in-recovery-open {
+  flex-basis: 100%;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 34rem;
+}
+
+.sign-in-recovery-open h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.sign-in-recovery-open p {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
 /* `margin-left: auto` as well as the parent's `space-between`: when the row
    wraps, `space-between` no longer pushes this right (it's alone on its own
    line), and without this the cue would left-align under the heading. */

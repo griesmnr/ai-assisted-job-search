@@ -173,6 +173,68 @@ describe("MagicLinkPrompt", () => {
    * occludes content forever). Both described markup this component no
    * longer produces.
    */
+  /**
+   * Opus review B1 (ticket 5a7e957). Extracting `MagicLinkForm` moved the sent
+   * state from REPLACING this card to nesting inside it, so the pitch survived
+   * alongside the confirmation: two `<h3>`s, and a live "Add your email and
+   * we'll send you a link" sitting directly above "We sent a sign-in link to
+   * ...", pointing at a field that no longer existed. Roughly five extra lines
+   * of contradictory copy on a 20rem card.
+   *
+   * The existing sent-state test could not see it -- it only asserted the
+   * outer `section.magic-link-prompt-floating` was present, which stayed true
+   * because that section never unmounts any more.
+   */
+  it("replaces the pitch with the confirmation when sent, rather than showing both", async () => {
+    requestMagicLink.mockResolvedValue({
+      email: "alice@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+    render(<MagicLinkPrompt />);
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+    await screen.findByRole("heading", { name: /check your inbox/i });
+
+    expect(
+      screen.queryByRole("heading", { name: /find these results again/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Add your email and we'll send you a link/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+  });
+
+  /**
+   * Opus review B2 (ticket 5a7e957). `phase` moved into `MagicLinkForm`, and
+   * the first version typed the caller's secondary action as a bare
+   * `ReactNode` -- which silently dropped this button's
+   * `disabled={phase.status === "sending"}`. Clicking mid-flight then
+   * unmounted the whole card while the request was still going: the email
+   * sent, and the user was never told it had.
+   */
+  it("disables 'Not now' while a send is in flight", async () => {
+    let release: (value: { email: string; expiresAt: string }) => void = () => {};
+    requestMagicLink.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    render(<MagicLinkPrompt />);
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+
+    expect(await screen.findByRole("button", { name: /sending/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /not now/i })).toBeDisabled();
+
+    release({ email: "alice@example.com", expiresAt: new Date().toISOString() });
+    expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+  });
+
   it("renders nothing at all for an already-verified user -- no ask, and no confirmation card", () => {
     // Written through the real storage key `identity.ts` uses, so this test
     // fails if that key ever changes without this being updated.

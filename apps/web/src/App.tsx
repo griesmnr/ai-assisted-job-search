@@ -25,6 +25,7 @@ import {
 } from "./components/MagicLinkLanding";
 import { MagicLinkPrompt } from "./components/MagicLinkPrompt";
 import { SignedInCue } from "./components/SignedInCue";
+import { SignInRecovery } from "./components/SignInRecovery";
 import { MyResumes, type FocusResume } from "./components/MyResumes";
 import { ResultsList } from "./components/ResultsList";
 import { ResumeInput } from "./components/ResumeInput";
@@ -192,6 +193,11 @@ function JobSearchApp() {
   // appearing inline the moment a resume is pasted, before any new search
   // runs, read as "jarring... old stuff".
   const [activeTab, setActiveTab] = useState<Tab>("search");
+  /** Opus review F1 (ticket 5a7e957): latches true the first time the
+   * "been here before?" offer is shown, so its host stays mounted and its
+   * in-flight state survives the gate closing underneath it. See the mount
+   * site for the concrete bug. */
+  const signInRecoveryEverShownRef = useRef(false);
   // Ticket bb2f275, Nicole (live): landing on "Already Scored Jobs" right
   // after a successful magic-link verification is the more meaningful
   // destination than the default "New Job Search" -- MagicLinkLanding.tsx
@@ -996,6 +1002,67 @@ function JobSearchApp() {
   const showMagicLinkPrompt =
     (activeTab === "search" && searchArmReady) || (activeTab === "scored" && scoredArmReady);
 
+  // Ticket 5a7e957: the "been here before?" entry point, for someone who
+  // saved their email and then lost this browser's storage. Nicole's own rule
+  // for when it belongs on screen: "on any site run where there's no data?
+  // because if there is data, or they use the site normally, they'll get
+  // prompted as we discussed."
+  //
+  // That is the right rule for a reason worth writing down: `MagicLinkPrompt`
+  // ALREADY performs recovery, because an address that already has an account
+  // takes the adopt branch in `routes/auth.ts`. So a second entry point is
+  // needed only where the prompt cannot render -- nothing scored. Two doors
+  // into the same room at once would just be confusing.
+  //
+  // `resumeId === undefined` is the refinement: someone who has pasted a
+  // resume but not searched yet has no scored results, but is mid-onboarding
+  // rather than lost, and offering them a way back would read as the app not
+  // noticing what they are doing. `hiddenBelowFloor` counts as data here --
+  // jobs exist, they are merely filtered, so this browser is plainly not
+  // empty.
+  //
+  // Whether the visitor is signed in is NOT checked here: `SignInRecovery`
+  // reads `getVerifiedEmail()` itself and renders nothing when set, the same
+  // way `SignedInCue` does the inverse. The two share the header slot and are
+  // mutually exclusive by construction.
+  // Opus review N1: `resumesListState` too, not just `resumeId`. `resumeId`
+  // comes from `sessionStorage`, so it is TAB-scoped -- close the tab and the
+  // "they're mid-onboarding, not lost" refinement evaporates, and a returning
+  // visitor with saved resumes but nothing scored would be offered a way back
+  // they cannot need. Resumes are scoped to the user id in `localStorage`, so
+  // their mere existence proves that id survived, which is exactly the
+  // question "are they lost?" is asking. This is the account-scoped version
+  // of the check the session-scoped one was standing in for.
+  // Opus review round 3 (S2): an ERROR in either fetch means "we don't know
+  // whether this browser has data", and the two guesses do not cost the same.
+  // Guessing "has data" hides the only path back from the one person who by
+  // definition cannot see their own data -- and the error that would explain it
+  // renders inside a tab panel they may not be looking at (the default tab is
+  // "search"). Guessing "empty" costs a returning user one redundant offer,
+  // which the adopt branch handles idempotently. `loading` still withholds it,
+  // so the link does not flash in and out on a slow connection. The two fetches
+  // are issued from independent effects, so the wait is max(t1, t2), not their
+  // sum.
+  const nothingScoredInThisBrowser =
+    allResultsState.status === "error" ||
+    (allResultsState.status === "ready" &&
+      allResultsState.data.results.length === 0 &&
+      (allResultsState.data.hiddenBelowFloor ?? 0) === 0);
+  const noResumesOnThisAccount =
+    resumesListState.status === "error" ||
+    (resumesListState.status === "ready" && resumesListState.data.resumes.length === 0);
+  const showSignInRecovery =
+    resumeId === undefined && noResumesOnThisAccount && nothingScoredInThisBrowser;
+
+  // Latches true the first time the recovery offer is due, so the component is
+  // not mounted before then. A ref rather than state: it only ever goes true,
+  // and nothing needs a re-render on its account -- the render that sets it is
+  // already happening. Monotonic and idempotent, so StrictMode's double
+  // invocation is harmless. NOT what preserves the panel's state across the
+  // gate closing; see the mount site.
+  if (showSignInRecovery) signInRecoveryEverShownRef.current = true;
+  const signInRecoveryEverShown = signInRecoveryEverShownRef.current;
+
   return (
     <main className="app">
       {/* Ticket a5c8fa9: the h1 and the signed-in cue share one row, so the
@@ -1007,6 +1074,23 @@ function JobSearchApp() {
       <div className="app-header">
         <h1>AI-Assisted Job Search</h1>
         <SignedInCue />
+        {/* Opus review F1: the gate is passed DOWN as `offered` rather than
+            used to mount or unmount, for the same reason the prompt host
+            below uses `hidden` -- a bare `{showSignInRecovery && ...}`
+            destroys the component's state the instant the gate closes. The
+            most natural thing a user does while waiting for the email is
+            start pasting their resume, which gives this browser data, closes
+            the gate, and used to take the "Check your inbox" confirmation off
+            screen mid-wait. `SignInRecovery` decides for itself whether to
+            render, and deliberately keeps showing a confirmation after
+            `offered` goes false: a receipt is not an offer.
+            `signInRecoveryEverShown` only delays the FIRST mount until the
+            offer has been earned once; it is not what preserves state (opus
+            review round 3, N-a: removing it entirely passes the whole suite,
+            because `SignInRecovery`'s own null-return already does that work).
+            Kept because mounting nothing before the offer is due is tidier
+            than mounting a component that immediately returns null. */}
+        {signInRecoveryEverShown && <SignInRecovery offered={showSignInRecovery} />}
       </div>
 
       <nav className="tab-nav" aria-label="Sections">
