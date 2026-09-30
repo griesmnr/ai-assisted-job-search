@@ -32,6 +32,23 @@ h1 {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem 1rem;
+  /* Stands in for the `h1`'s own former UA `margin-top: 0.67em`, so the row
+     starts exactly where the bare heading used to. */
+  margin: 1.005rem 0 0;
+}
+
+/* Opus review N1, measured in real Chromium: wrapping the `h1` in a flex
+   container silently pushed the tab nav down 16px FOR EVERY VISITOR,
+   including anonymous ones who see no cue at all -- a layout change from a
+   ticket scoped to verified users.
+   Nothing in this file resets `h1`'s UA `margin: 0.67em 0`. It used to
+   COLLAPSE with `.tab-nav`'s `margin-top: 1rem`, giving
+   `max(1.005rem, 1rem)` = 16px. A flex item's margins cannot collapse
+   through their container, so the two started stacking instead:
+   1.005rem + 1rem = 32px. Zeroing it here (with the top half moved onto
+   `.app-header` above) restores the original 16px exactly, cue or no cue. */
+.app-header h1 {
+  margin: 0;
 }
 
 /* `margin-left: auto` as well as the parent's `space-between`: when the row

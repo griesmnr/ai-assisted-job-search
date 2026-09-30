@@ -184,6 +184,39 @@ async function runSearchToCompletion() {
   await screen.findByRole("heading", { name: "Results from this search" });
 }
 
+/**
+ * The floating prompt's bottom-clearance rule (index.css), restated.
+ *
+ * KNOWN LIMIT, STATED SO NOBODY OVER-TRUSTS THIS: because the selector is
+ * restated here, these tests pin its SEMANTICS against a real DOM -- they do
+ * not detect someone editing `index.css` to something else. Three ways to
+ * read the live rule instead were tried and each is a scope change the
+ * ticket that added this shouldn't have made: `node:fs` doesn't typecheck
+ * (this file is under `apps/web/src`, which `tsconfig.app.json` compiles
+ * with the browser's type set, and `@types/node` is a devDependency of
+ * `apps/api`/`packages/shared` only); Vite's `?raw` returns an empty string
+ * because vitest's default `css: false` stubs CSS imports; and moving the
+ * test out of `src` hides it from `vitest.config.ts`'s `include`. Ticket
+ * 5c93a51 tracks the stronger version.
+ *
+ * What these DO catch is ticket d0a7074's F3 logic error and its
+ * predecessor, both of which were WRONG selectors rather than absent ones --
+ * verified by substituting each historical selector here and watching them
+ * fail. The `index.css` rule carries a pointer back to this test so an
+ * editor of one sees the other.
+ *
+ * Module-scoped (ticket a5c8fa9 review) so the verified-user tests can pin
+ * clearance too, off ONE definition of the string rather than a second copy.
+ * This rule has silently broken twice, which is exactly why it is worth
+ * asserting from more than one angle.
+ */
+const CLEARANCE_SELECTOR =
+  ".app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section";
+
+function clearedSections() {
+  return document.querySelectorAll(CLEARANCE_SELECTOR).length;
+}
+
 describe("the sign-in prompt is offered only after scored results land (ticket 9f06f8f)", () => {
   it("is absent before a resume, before an estimate, and while a search is still running", async () => {
     mockHappyPath(ONE_RESULT);
@@ -326,6 +359,11 @@ describe("a verified user gets a quiet header cue, not a floating card (ticket a
     expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
     expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
     expect(document.querySelectorAll(".magic-link-prompt-floating")).toHaveLength(0);
+    // Acceptance criterion: with nothing floating, nothing is padded for it.
+    // Asserted directly rather than inferred from the count above, since this
+    // selector has silently broken twice (ticket d0a7074 F3 and its
+    // predecessor).
+    expect(clearedSections()).toBe(0);
 
     // My Resumes -- the cue is persistent app chrome, not tied to results.
     fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
@@ -655,32 +693,6 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
    * of this feature no rendering assertion can reach, since jsdom computes
    * no layout.
    */
-  /**
-   * KNOWN LIMIT, STATED SO NOBODY OVER-TRUSTS THIS: the selector is
-   * restated here, so these two tests pin its SEMANTICS against a real
-   * DOM -- they do not detect someone editing `index.css` to something
-   * else. I tried three ways to read the live rule instead and each is a
-   * scope change this ticket shouldn't make: `node:fs` doesn't typecheck
-   * (this file is under `apps/web/src`, which `tsconfig.app.json` compiles
-   * with the browser's type set, and `@types/node` is a devDependency of
-   * `apps/api`/`packages/shared` only); Vite's `?raw` returns an empty
-   * string because vitest's default `css: false` stubs CSS imports; and
-   * moving the test out of `src` hides it from `vitest.config.ts`'s
-   * `include`. Ticket 5c93a51 tracks the stronger version.
-   *
-   * What these DO catch is the actual F3 logic error and its predecessor,
-   * both of which were wrong selectors rather than absent ones -- verified
-   * by substituting each historical selector here and watching these fail.
-   * The `index.css` rule carries a pointer back to this test so an editor
-   * of one sees the other.
-   */
-  const CLEARANCE_SELECTOR =
-    ".app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section";
-
-  function clearedSections() {
-    return document.querySelectorAll(CLEARANCE_SELECTOR).length;
-  }
-
   it("applies bottom clearance only while a card is really on screen (review F3)", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue(SCORED);
