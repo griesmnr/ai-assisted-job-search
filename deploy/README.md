@@ -17,54 +17,74 @@ people.
 
 ## What this costs
 
-**Railway has no free tier.** New accounts get a one-time trial credit and
-then need a paid plan; there is no perpetual-free option to settle into.
+**Railway has a free plan, and it cannot run this app.** That distinction is
+the whole point of this section. Figures below read off
+[railway.com/pricing](https://railway.com/pricing) on 2026-09-30 — check it
+again rather than trusting this table's age:
+
+| Plan       | Price    | Included credit  | Projects | Services / project | RAM / service |
+| ---------- | -------- | ---------------- | -------- | ------------------ | ------------- |
+| Free trial | $0       | $5 once, 30 days | 2        | **5**              | 1 GB          |
+| Free       | $0       | $1 / month       | 1        | **3**              | 0.5 GB        |
+| Hobby      | $5 / mo  | $5 / month       | 50       | 50                 | 48 GB         |
+| Pro        | $20 / mo | $20 / month      | 100      | 100                | 1 TB          |
+
+This app is **six** always-on services. Neither free option fits — and note
+the trial does not either, at 5 services per project, so you would hit that
+wall partway through the setup steps below rather than at the end of the
+month. **Hobby ($5/month, including $5 of usage) is the real floor**, with
+metered usage above the included credit.
+
 Ticket 950911d exists because the first version of this document said
-"Railway (recommended)" and mentioned billing without ever naming that,
-which is a real omission rather than a detail: Nicole hit the end of the
-trial credit unexpectedly and reasonably asked whether she'd been pointed at
-something she could not afford to keep.
+"Railway (recommended)" and mentioned billing without naming any of that.
+Nicole hit the end of the trial credit unexpectedly and asked: "Did you know
+that when you recommended it to me?" The answer was that the structure was
+knowable and had simply not been checked — which is why this section now
+carries dated figures and a source link instead of an adjective.
 
-**What the monthly figure will be for THIS app is usage-dependent, and this
-document deliberately does not guess.** Railway meters on resources
-consumed, and this app runs six always-on services, two of which (Postgres
-and RabbitMQ) are the memory-hungry ones. Rather than inherit a number that
-rots, do this:
-
-1. Check Railway's current pricing page for the plan's base price and what
-   usage allowance it includes. These change.
-2. Deploy, then watch your project's own usage/estimated-cost view for two
-   or three days of normal use. That gives you a real figure for your
-   actual traffic instead of an estimate for someone else's.
+**What you actually pay above that $5 floor is usage-dependent, and this
+document deliberately does not guess it.** Railway meters on resources
+consumed, and two of the six services (Postgres and RabbitMQ) are the
+memory-hungry ones. Published plan prices are knowable and are in the table
+above; your own monthly bill is not. So: deploy, then watch your project's
+own usage/estimated-cost view for two or three days of normal use. That
+gives you a real figure for your traffic rather than an estimate for
+someone else's.
 
 If the answer is higher than you want, the honest tradeoff is not a cheaper
 managed host — it's whether you want to be a sysadmin:
 
-| Option                       | Ongoing money                     | Ongoing effort                                                              |
-| ---------------------------- | --------------------------------- | --------------------------------------------------------------------------- |
-| Railway (this guide)         | trial credit, then paid & metered | near zero — no machine to patch, no TLS to renew                            |
-| A small VPS (Hetzner, DO, …) | low, fixed                        | you own the OS: SSH, firewall, TLS renewal, updates, and the 2am outage     |
-| Oracle Cloud "Always Free"   | genuinely $0                      | same as a VPS, plus a signup process widely reported as difficult           |
-| Render / Fly.io              | paid, per-service                 | low, but six services priced individually adds up; RabbitMQ is self-managed |
+| Option                       | Ongoing money              | Ongoing effort                                                                                  |
+| ---------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
+| Railway (this guide)         | $5/mo floor, metered above | near zero — no machine to patch, no TLS to renew                                                |
+| A small VPS (Hetzner, DO, …) | low, fixed                 | you own the OS: SSH, firewall, TLS renewal, updates, and the 2am outage                         |
+| Oracle Cloud "Always Free"   | genuinely $0               | same as a VPS, plus a difficult signup, a card hold, and ARM capacity that is often unavailable |
+| Render / Fly.io              | paid, per-service          | low, but six services priced individually adds up; RabbitMQ is self-managed                     |
 
 The free options are not free. They move the cost from money to your
-evenings. **Nicole chose Railway knowing this** (2026-09-30): "I want to
-have an authentic version of the app... I don't want to be turning it on and
-off again. You don't need to patch it together just to make it free. I want
-a whole operational app."
+evenings. **Nicole chose an always-on app deliberately** (2026-09-30): "I
+want to have an authentic version of the app... I don't want to be turning
+it on and off again. You don't need to patch it together just to make it
+free. I want a whole operational app." (She chose it before this table
+existed, and before the pricing above was stated correctly — so this records
+her stated priority, not her endorsement of these numbers.)
 
 Two shapes that were considered and **declined**, recorded so they are not
 re-proposed as savings:
 
 - **Splitting the frontend onto Vercel's free tier** and hosting only the
-  backend. This genuinely works — `apps/web` is a plain `vite build` and
-  talks to the API purely over HTTP via `VITE_API_BASE_URL`, so it will
-  deploy to Vercel unmodified. But Vercel cannot host the rest: the two
-  workers are always-on RabbitMQ consumers and Vercel has no always-on
-  compute at all, and there is no Vercel equivalent of RabbitMQ. Once
-  you're paying for an always-on backend anyway, the split only adds a
-  second platform to operate. Do it if you want Vercel's CDN or its preview
-  deploys — not as a cost measure.
+  backend. The frontend genuinely can go there: it talks to the API purely
+  over HTTP via `VITE_API_BASE_URL`, so **no application code changes**. But
+  not zero config either — this is a pnpm workspace whose `apps/web` build
+  depends on `@app/shared`'s `dist/`, so a Vercel project needs a
+  root-directory setting and a build command that builds `packages/shared`
+  first. What Vercel cannot host is the rest: its compute is
+  invocation-scoped with duration caps, so a worker holding a long-lived
+  AMQP connection is not a fit, and while Vercel Queues exists it is not
+  AMQP — the workers would have to be rewritten against it. Once you are
+  paying for an always-on backend anyway, the split only adds a second
+  platform to operate. Do it for Vercel's CDN or preview deploys, not as a
+  cost measure.
 - **Bringing the backend up only for demos.** Cheapest correct answer for a
   single reviewer, and explicitly rejected: the app is meant to be
   continuously available to several people.
@@ -88,35 +108,82 @@ and delete the point.
 
 ## Before you share the URL
 
-**There is no login, and every search spends your Anthropic credit.**
+**Nothing gates spending, and every search spends your Anthropic credit.**
 
-This is the one thing about going live that can cost you money you did not
-choose to spend. Verified against the code, 2026-09-30:
+An earlier draft of this section said "there is no login" and "no spend cap,
+`grep` comes back empty," stamped as verified. Both were wrong — opus review
+caught it, and the grep had been run against the wrong terms and its null
+result treated as proof of absence. What follows was re-checked line by line
+against the source on 2026-09-30, with file references so you can confirm
+rather than trust.
 
-- A user's identity is a UUID the browser mints for itself and sends in an
-  `x-user-id` header. It is unsigned and unverified by design (see
-  `apps/api/src/identity.ts`) — it identifies a browser, it does not
-  authenticate anyone.
-- There is **no rate limiting** on the API, and **no global or per-user
-  spend cap** in this codebase. `grep` for either comes back empty.
-- The app does estimate a search's cost and show it before you confirm, but
-  that is one search's estimate shown to one user. Nothing limits how many
-  searches happen, or how many people run them.
+**There IS a sign-in** — email magic link, `apps/api/src/routes/auth.ts` —
+but it protects nothing. It is offered only after results land, and every
+route that authorizes spend accepts a self-minted header alone:
 
-So anyone who has the `web` URL can run real scoring jobs against your key,
-as many times as they like. That is fine for a handful of people you invited.
-It is not fine for a link that escapes.
+- A user's identity is a UUID the browser generates for itself
+  (`crypto.randomUUID()`, `apps/web/src/identity.ts`) and sends in an
+  `x-user-id` header. Unsigned and unverified by design
+  (`apps/api/src/identity.ts`) — it names a browser, it authenticates
+  nobody.
+- **No rate limiting anywhere.** `@fastify/cors` is the only plugin
+  registered (`apps/api/src/index.ts`), there is no `@fastify/rate-limit`
+  dependency, and no hand-rolled limiter. `auth.ts`'s own header records
+  this deliberately.
 
-**Do this before the URL leaves your hands:** set a hard spend limit on the
-Anthropic account itself, in the Anthropic Console. That is the only control
-here that nothing in this app can route around — it does not depend on
-anyone behaving, and it fails closed. Pick a number you would be annoyed but
-not hurt to lose.
+**Spend IS bounded — but not in the way that protects you here.** Two real
+ceilings exist:
 
-A server-side daily budget guard would be the belt-and-braces version and is
-not built. If you want it, file it — it is application work, not deployment
-work, and the account-level cap is the thing that actually protects you
-either way.
+- One search can bill at most `DEFAULT_SCORE_THRESHOLD` = **200** new
+  scoring calls, enforced per _search_ across all of its sources
+  (`apps/api/src/matching/scoring.ts`, plus "THE PER-SEARCH SCORING CAP" in
+  `apps/api/src/worker/fetchSourceWorker.ts`).
+- Underneath that, `ScoringSpendGuard` refuses any scoring call that would
+  push the score worker past **$15** of booked worst-case cost
+  (`DEFAULT_LIFETIME_SPEND_CEILING_USD`,
+  `apps/api/src/worker/scoreJobWorker.ts`). Refused work dead-letters rather
+  than billing.
+
+**The catch: that $15 is per worker *process*, not per month.** It is an
+in-memory counter (`private spentUsd = 0`) that resets to zero on every
+restart — and Railway restarts containers on each redeploy and after any
+crash. So it bounds a runaway bug well, and a determined stranger poorly:
+$15 per restart, indefinitely.
+
+Two more unguarded surfaces, since this section exists to enumerate them
+before a URL goes public:
+
+- **`POST /auth/magic-link` sends real email with no limiter.** Not Claude
+  money — Resend. `auth.ts` states the gap plainly: "one caller can ask for
+  many links for many addresses. That is a real, known gap." On a public URL
+  that is an email-bombing and sender-reputation exposure.
+- **`POST /resumes` also spends**, a Claude call per genuinely-new resume for
+  title inference (`apps/api/src/resume-title-inference.ts`). Small and
+  cached per resume, but uploads are not free either.
+- **`CORS_ALLOWED_ORIGIN` is itself a spend control**, not just plumbing —
+  `apps/api/src/index.ts` argues at length why it is not `origin: true`
+  (any page open in the same browser could otherwise cross-origin
+  `POST /searches`). Do not widen it to a wildcard to make a CORS error go
+  away. It does not stop non-browser clients, so it is a lock on one door
+  only.
+
+**Do this before the URL leaves your hands:** set a spend limit on the
+Anthropic account itself — Claude Console → **Settings → Billing → Spend
+limits → Set limit**. Verified 2026-09-30: user-set limits are enforced
+server-side by Anthropic (requests return HTTP 400 `invalid_request_error`,
+"You have reached your specified API usage limits"), so nothing in this app
+can route around it, and it fails closed.
+
+Two things about that number: it is a **monthly** limit that resets at 00:00
+UTC on the 1st, not a one-time ceiling — so pick something you could absorb
+_repeatedly_, not once. And if you set nothing, your tier's own cap applies
+($500/month on the Start tier), which is almost certainly not the number you
+want standing between a forwarded link and your card.
+
+A server-side per-day or per-user budget guard would be the belt-and-braces
+version and is not built. If you want it, file it — application work, not
+deployment work. The account-level cap is what actually protects you either
+way.
 
 ## Railway setup
 
