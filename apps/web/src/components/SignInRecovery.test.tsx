@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("SignInRecovery (ticket 5a7e957)", () => {
   it("starts collapsed as a single quiet line, with no form on screen", () => {
-    render(<SignInRecovery />);
+    render(<SignInRecovery offered />);
 
     expect(screen.getByRole("button", { name: /been here before/i })).toBeInTheDocument();
     // The header earns its place by being quiet -- no field until asked for.
@@ -39,7 +39,7 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
   });
 
   it("expands to a form, and collapses again on cancel", () => {
-    render(<SignInRecovery />);
+    render(<SignInRecovery offered />);
 
     fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
     expect(screen.getByLabelText(/email address/i)).toBeInTheDocument();
@@ -57,19 +57,25 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
       email: "returning@example.com",
       expiresAt: new Date(Date.now() + 900_000).toISOString(),
     });
-    render(<SignInRecovery />);
+    render(<SignInRecovery offered />);
 
     fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+    // Opus review F3: the raw input deliberately DIFFERS from the echo --
+    // mixed case and surrounding whitespace. An earlier version used the same
+    // string for both, so the "shows the server's echo" assertion passed even
+    // when the component showed the raw input instead (confirmed by mutation).
     fireEvent.change(screen.getByLabelText(/email address/i), {
-      target: { value: "returning@example.com" },
+      target: { value: "  Returning@Example.com " },
     });
     fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
 
     expect(await screen.findByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
-    expect(requestMagicLink).toHaveBeenCalledWith("returning@example.com");
-    // The address shown is the one the SERVER echoed, not the raw input --
-    // see MagicLinkForm's comment on why that distinction matters.
+    // Trimmed before sending, but case preserved -- normalizing is the
+    // server's job, not the client's.
+    expect(requestMagicLink).toHaveBeenCalledWith("Returning@Example.com");
+    // And what's SHOWN is the address the server said it mailed.
     expect(screen.getByText("returning@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("Returning@Example.com")).not.toBeInTheDocument();
   });
 
   /**
@@ -83,7 +89,7 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
       email: "returning@example.com",
       expiresAt: new Date(Date.now() + 900_000).toISOString(),
     });
-    render(<SignInRecovery />);
+    render(<SignInRecovery offered />);
 
     fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
     fireEvent.change(screen.getByLabelText(/email address/i), {
@@ -99,17 +105,58 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
     expect(screen.getByText(/works once and expires in about 15 minutes/i)).toBeInTheDocument();
   });
 
+  /**
+   * Opus review F1. A confirmation that a link was sent is a receipt, not an
+   * offer -- so it survives `offered` going false, which is what happens when
+   * the user starts pasting a resume while waiting for the email (the paste
+   * box is directly below this panel). Before this, the panel was unmounted by
+   * its caller and the receipt went with it, mid-wait.
+   */
+  it("keeps a sent confirmation on screen after the offer is withdrawn", async () => {
+    requestMagicLink.mockResolvedValue({
+      email: "returning@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+    const { rerender } = render(<SignInRecovery offered />);
+
+    fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "returning@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+    await screen.findByRole("heading", { name: /check your inbox/i });
+
+    rerender(<SignInRecovery offered={false} />);
+
+    expect(screen.getByRole("heading", { name: /check your inbox/i })).toBeInTheDocument();
+  });
+
+  it("renders nothing while not offered, and does not lose an expanded form if the offer returns", () => {
+    const { rerender } = render(<SignInRecovery offered />);
+    fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+    expect(screen.getByLabelText(/email address/i)).toBeInTheDocument();
+
+    rerender(<SignInRecovery offered={false} />);
+    expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
+
+    // Still expanded when it comes back -- `null` preserves state, unmounting
+    // would not.
+    rerender(<SignInRecovery offered />);
+    expect(screen.getByLabelText(/email address/i)).toBeInTheDocument();
+  });
+
   it("renders nothing at all once an email is verified -- SignedInCue owns the slot then", () => {
     localStorage.setItem("jobsearch.web.userEmail.v1", "already@example.com");
 
-    const { container } = render(<SignInRecovery />);
+    const { container } = render(<SignInRecovery offered />);
 
     expect(container).toBeEmptyDOMElement();
   });
 
   it("surfaces a send failure without losing what was typed", async () => {
     requestMagicLink.mockRejectedValue(new Error("network down"));
-    render(<SignInRecovery />);
+    render(<SignInRecovery offered />);
 
     fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
     fireEvent.change(screen.getByLabelText(/email address/i), {

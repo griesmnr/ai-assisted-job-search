@@ -50,17 +50,29 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * construction (that one renders only WITH a verified email, this one only
  * without).
  */
-export function SignInRecovery() {
+export function SignInRecovery({ offered }: { offered: boolean }) {
   // Read once at mount, same pattern and same justification as
   // `SignedInCue`/`MagicLinkPrompt`: the only writer is `MagicLinkLanding`,
   // a full-page takeover this is never mounted alongside, so the value
   // cannot change under a live instance.
   const [verifiedEmail] = useState(getVerifiedEmail);
   const [open, setOpen] = useState(false);
+  /** Opus review F1: a link having been sent outlives the conditions for
+   * OFFERING to send one. The paste box sits right below this panel, so the
+   * natural move while waiting for the email is to start on the resume --
+   * which gives this browser data, closes `offered`, and would otherwise take
+   * the "Check your inbox" confirmation off screen mid-wait. A receipt is not
+   * an offer; once one exists it stays until the page does. */
+  const [sent, setSent] = useState(false);
 
   // Already signed in -- there is nothing to recover. `SignedInCue` has this
   // slot instead.
   if (verifiedEmail !== undefined) return null;
+
+  // Withdrawn -- but only while there is no receipt to keep showing. Returning
+  // `null` rather than being unmounted by the caller is what preserves `open`,
+  // `sent` and the form's own phase if the conditions come back.
+  if (!offered && !sent) return null;
 
   if (!open) {
     return (
@@ -71,26 +83,44 @@ export function SignInRecovery() {
   }
 
   return (
-    <section className="sign-in-recovery sign-in-recovery-open">
-      <h3>Get your saved results back</h3>
-      <p>
-        If you saved your results to an email address before, enter it here and we&apos;ll send you
-        a link that brings them back to this browser.
-      </p>
+    // Opus review N11: a plain `<div>`, not a `<section>`. A bare `section`
+    // picks up the global `section { margin-top: 2rem; padding-top: 1.5rem;
+    // border-top: ... }` rule meant for real page sections, which then has to
+    // be undone declaration by declaration -- and any future addition to that
+    // rule would leak in silently. This is a widget inside the header.
+    <div className="sign-in-recovery-open">
       <MagicLinkForm
         submitLabel="Send me a sign-in link"
+        onSent={() => setSent(true)}
+        // Opus review N6: `h2`, not `h3`. Every real page heading below is an
+        // `h2`, and this sits ABOVE all of them in the header -- an `h3` here
+        // skips a level in the document outline from the `h1`.
+        pitch={
+          <>
+            <h2>Get your saved results back</h2>
+            <p>
+              If you saved your results to an email address before, enter it here and we&apos;ll
+              send you a link that brings them back to this browser.
+            </p>
+          </>
+        }
         sentBody={(sentTo) => (
           <>
             We sent a sign-in link to <strong>{sentTo}</strong>. Open it in this browser to bring
             your saved results back here.
           </>
         )}
-        secondary={
-          <button type="button" className="magic-link-secondary" onClick={() => setOpen(false)}>
+        secondary={({ sending }) => (
+          <button
+            type="button"
+            className="magic-link-secondary"
+            onClick={() => setOpen(false)}
+            disabled={sending}
+          >
             Cancel
           </button>
-        }
+        )}
       />
-    </section>
+    </div>
   );
 }

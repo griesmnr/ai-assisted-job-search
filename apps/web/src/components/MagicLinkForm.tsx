@@ -46,16 +46,44 @@ function sentFactsLine(): ReactNode {
 }
 
 export function MagicLinkForm({
+  pitch,
   sentBody,
   secondary,
+  onSent,
   submitLabel = "Email me a link",
 }: {
+  /** The caller's framing above the field -- heading and explanation.
+   *
+   * Opus review B1 (ticket 5a7e957): this is a PROP rather than something the
+   * caller renders itself, because the sent panel has to REPLACE it. The
+   * first version of this extraction had callers render their own pitch as a
+   * sibling, which turned the confirmation state into the pitch AND the
+   * confirmation stacked together -- two `<h3>`s, and a live "Add your email
+   * and we'll send you a link" sitting directly above "We sent a sign-in link
+   * to alice@example.com", pointing at a field that no longer existed. On
+   * `main` the sent state early-returned the whole card, so that could not
+   * happen. Owning the pitch here restores that. */
+  pitch: ReactNode;
   /** The situation-specific explanation shown after a send succeeds, above
    * the fixed facts line. Receives the address the server actually mailed. */
   sentBody: (email: string) => ReactNode;
   /** An optional caller-owned action rendered beside submit -- "Not now" for
-   * the results prompt, a cancel for the recovery panel. */
-  secondary?: ReactNode;
+   * the results prompt, a cancel for the recovery panel.
+   *
+   * Opus review B2: a function of `{ sending }`, not a bare node, because the
+   * caller's action usually must be disabled mid-flight and `phase` lives in
+   * here. The first version typed this as `ReactNode`, which silently dropped
+   * `MagicLinkPrompt`'s `disabled={phase.status === "sending"}` on "Not now"
+   * -- so dismissing during an in-flight request unmounted the card, and the
+   * email sent with the user never told. A `ReactNode` simply cannot express
+   * that, which is why the signature changed rather than the call site. */
+  secondary?: (state: { sending: boolean }) => ReactNode;
+  /** Called once a send succeeds. Exists so a caller whose VISIBILITY is
+   * controlled from outside can keep itself on screen afterwards: a
+   * confirmation that a link was sent is a receipt, not an offer, and must not
+   * disappear because the surrounding conditions for *offering* stopped
+   * holding. See `SignInRecovery`. */
+  onSent?: (email: string) => void;
   submitLabel?: string;
 }) {
   const fieldId = useId();
@@ -73,73 +101,87 @@ export function MagicLinkForm({
       // addressed to.
       const { email: sentTo } = await requestMagicLink(trimmed);
       setPhase({ status: "sent", email: sentTo });
+      onSent?.(sentTo);
     } catch (err) {
       setPhase({ status: "error", message: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  if (phase.status === "sent") {
-    return (
-      <div aria-live="polite">
-        <h3>Check your inbox</h3>
-        <p>
-          {sentBody(phase.email)} {sentFactsLine()}
-        </p>
-        <button
-          type="button"
-          className="magic-link-secondary"
-          // Back to the form rather than straight to a second send: if the
-          // mail has not arrived, the most likely reason by far is a typo in
-          // the address, so the useful next step is seeing and fixing what
-          // was actually typed -- not silently re-sending to the same wrong
-          // inbox.
-          onClick={() => setPhase({ status: "idle" })}
-        >
-          Use a different address
-        </button>
-      </div>
-    );
-  }
-
+  // Opus review N7: the live region wraps BOTH phases, so it is present in
+  // the DOM before the confirmation text appears inside it. A region inserted
+  // together with its own content is not announced by most screen readers --
+  // and on `main` this worked only by accident, because the region happened
+  // to be the `<section>` React reconciled in place across idle -> sent.
+  // Layout-neutral: `.magic-link-prompt` and `.sign-in-recovery-open` are
+  // plain blocks, not flex containers, and every selector that reaches inside
+  // them is a class or a descendant selector rather than a child one.
   return (
-    <>
-      <form
-        className="magic-link-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void handleSubmit();
-        }}
-      >
-        <label htmlFor={fieldId}>Email address</label>
-        <input
-          id={fieldId}
-          // `type="email"` gives mobile keyboards the right layout and gives
-          // the browser's own validation a chance before a round trip. The
-          // API validates independently and is the real authority (see
-          // routes/auth.ts's EMAIL_RE and why it is deliberately permissive).
-          type="email"
-          autoComplete="email"
-          value={email}
-          placeholder="you@example.com"
-          onChange={(event) => {
-            setEmail(event.target.value);
-            // Clear a previous failure the moment the user starts fixing the
-            // thing that failed -- a stale error under a field being edited
-            // reads as though the new value had failed too.
-            if (phase.status === "error") setPhase({ status: "idle" });
-          }}
-          disabled={phase.status === "sending"}
-        />
-        <button type="submit" disabled={phase.status === "sending" || email.trim().length === 0}>
-          {phase.status === "sending" ? "Sending..." : submitLabel}
-        </button>
-        {secondary}
-      </form>
-      {phase.status === "error" && (
-        <p role="alert" className="magic-link-error">
-          Could not send the link: {phase.message}
-        </p>
+    <div aria-live="polite">
+      {phase.status === "sent" ? (
+        <>
+          <h3>Check your inbox</h3>
+          <p>
+            {sentBody(phase.email)} {sentFactsLine()}
+          </p>
+          <button
+            type="button"
+            className="magic-link-secondary"
+            // Back to the form rather than straight to a second send: if the
+            // mail has not arrived, the most likely reason by far is a typo in
+            // the address, so the useful next step is seeing and fixing what
+            // was actually typed -- not silently re-sending to the same wrong
+            // inbox.
+            onClick={() => setPhase({ status: "idle" })}
+          >
+            Use a different address
+          </button>
+        </>
+      ) : (
+        <>
+          {pitch}
+          <form
+            className="magic-link-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSubmit();
+            }}
+          >
+            <label htmlFor={fieldId}>Email address</label>
+            <input
+              id={fieldId}
+              // `type="email"` gives mobile keyboards the right layout and
+              // gives the browser's own validation a chance before a round
+              // trip. The API validates independently and is the real
+              // authority (see routes/auth.ts's EMAIL_RE and why it is
+              // deliberately permissive).
+              type="email"
+              autoComplete="email"
+              value={email}
+              placeholder="you@example.com"
+              onChange={(event) => {
+                setEmail(event.target.value);
+                // Clear a previous failure the moment the user starts fixing
+                // the thing that failed -- a stale error under a field being
+                // edited reads as though the new value had failed too.
+                if (phase.status === "error") setPhase({ status: "idle" });
+              }}
+              disabled={phase.status === "sending"}
+            />
+            <button
+              type="submit"
+              disabled={phase.status === "sending" || email.trim().length === 0}
+            >
+              {phase.status === "sending" ? "Sending..." : submitLabel}
+            </button>
+            {secondary?.({ sending: phase.status === "sending" })}
+          </form>
+          {phase.status === "error" && (
+            <p role="alert" className="magic-link-error">
+              Could not send the link: {phase.message}
+            </p>
+          )}
+        </>
       )}
-    </>
+    </div>
   );
 }

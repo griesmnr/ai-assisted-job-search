@@ -193,6 +193,11 @@ function JobSearchApp() {
   // appearing inline the moment a resume is pasted, before any new search
   // runs, read as "jarring... old stuff".
   const [activeTab, setActiveTab] = useState<Tab>("search");
+  /** Opus review F1 (ticket 5a7e957): latches true the first time the
+   * "been here before?" offer is shown, so its host stays mounted and its
+   * in-flight state survives the gate closing underneath it. See the mount
+   * site for the concrete bug. */
+  const signInRecoveryEverShownRef = useRef(false);
   // Ticket bb2f275, Nicole (live): landing on "Already Scored Jobs" right
   // after a successful magic-link verification is the more meaningful
   // destination than the default "New Job Search" -- MagicLinkLanding.tsx
@@ -1020,11 +1025,29 @@ function JobSearchApp() {
   // reads `getVerifiedEmail()` itself and renders nothing when set, the same
   // way `SignedInCue` does the inverse. The two share the header slot and are
   // mutually exclusive by construction.
+  // Opus review N1: `resumesListState` too, not just `resumeId`. `resumeId`
+  // comes from `sessionStorage`, so it is TAB-scoped -- close the tab and the
+  // "they're mid-onboarding, not lost" refinement evaporates, and a returning
+  // visitor with saved resumes but nothing scored would be offered a way back
+  // they cannot need. Resumes are scoped to the user id in `localStorage`, so
+  // their mere existence proves that id survived, which is exactly the
+  // question "are they lost?" is asking. This is the account-scoped version
+  // of the check the session-scoped one was standing in for.
   const showSignInRecovery =
     resumeId === undefined &&
+    resumesListState.status === "ready" &&
+    resumesListState.data.resumes.length === 0 &&
     allResultsState.status === "ready" &&
     allResultsState.data.results.length === 0 &&
     (allResultsState.data.hiddenBelowFloor ?? 0) === 0;
+
+  // Opus review F1: once the recovery offer has been shown, keep its host
+  // mounted for the rest of this page load even if the gate later closes.
+  // A ref rather than state: this only ever latches true, and nothing needs a
+  // re-render on account of it -- the render that sets it is already
+  // happening.
+  if (showSignInRecovery) signInRecoveryEverShownRef.current = true;
+  const signInRecoveryEverShown = signInRecoveryEverShownRef.current;
 
   return (
     <main className="app">
@@ -1037,7 +1060,19 @@ function JobSearchApp() {
       <div className="app-header">
         <h1>AI-Assisted Job Search</h1>
         <SignedInCue />
-        {showSignInRecovery && <SignInRecovery />}
+        {/* Opus review F1: the gate is passed DOWN as `offered` rather than
+            used to mount or unmount, for the same reason the prompt host
+            below uses `hidden` -- a bare `{showSignInRecovery && ...}`
+            destroys the component's state the instant the gate closes. The
+            most natural thing a user does while waiting for the email is
+            start pasting their resume, which gives this browser data, closes
+            the gate, and used to take the "Check your inbox" confirmation off
+            screen mid-wait. `SignInRecovery` decides for itself whether to
+            render, and deliberately keeps showing a confirmation after
+            `offered` goes false: a receipt is not an offer.
+            `signInRecoveryEverShown` keeps the instance alive for the rest of
+            the page so that decision is still its to make. */}
+        {signInRecoveryEverShown && <SignInRecovery offered={showSignInRecovery} />}
       </div>
 
       <nav className="tab-nav" aria-label="Sections">

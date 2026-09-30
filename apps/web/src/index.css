@@ -58,7 +58,15 @@ h1 {
    rather than a button because it is an offer aimed at returning users, and a
    first-timer -- who cannot be told apart from one, see SignInRecovery.tsx --
    should be able to read straight past it. Same `margin-left: auto`
-   reasoning as `.signed-in-cue` for the wrapped case. */
+   reasoning as `.signed-in-cue` for the wrapped case.
+
+   Opus review N10: `color: inherit`, NOT `var(--muted)` like the other quiet
+   text in this file. `--muted` measures ~4.48:1 at this size, marginally
+   under AA -- tolerable for supplementary text such as `.signed-in-cue`, but
+   this link is the ONLY path back for someone who has lost their browser
+   storage, and a whole user journey should not hinge on text that is hard to
+   read. Kept small and underlined so it stays unobtrusive at full
+   contrast. */
 .sign-in-recovery-link {
   margin-left: auto;
   padding: 0;
@@ -66,7 +74,7 @@ h1 {
   background: none;
   font: inherit;
   font-size: 0.85rem;
-  color: var(--muted);
+  color: inherit;
   text-decoration: underline;
   cursor: pointer;
   text-align: left;
@@ -79,10 +87,11 @@ h1 {
    (ticket d3a95d1's opacity and scroll fixes, its review finding B2's dismiss
    button, and ticket d0a7074's card floating over the resume picker), and an
    in-flow panel cannot overlap anything at any width.
-   The explicit margin and padding also override the global rule for bare
-   `section` elements, which sets a 2rem top margin and a top border suited to
-   real page sections -- this is a widget inside the header, not one of
-   those. */
+   Opus review N11: this is a `<div>` rather than a `<section>` precisely so
+   the global `section { margin-top: 2rem; padding-top: 1.5rem; border-top }`
+   rule -- meant for real page sections -- never applies and never has to be
+   undone declaration by declaration. The margin and padding below are this
+   widget's own, not overrides. */
 .sign-in-recovery-open {
   flex-basis: 100%;
   margin-top: 0.75rem;
@@ -92,7 +101,7 @@ h1 {
   max-width: 34rem;
 }
 
-.sign-in-recovery-open h3 {
+.sign-in-recovery-open h2 {
   margin: 0 0 0.5rem;
   font-size: 1rem;
 }
