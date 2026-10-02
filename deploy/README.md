@@ -297,6 +297,47 @@ way.
     built and run end to end yet. This step is that first real end-to-end
     check, not optional polish on top of one.
 
+## When the API will not start: run the database preflight
+
+If the API crash-loops with a log that stops at `applying migrations...` and
+prints **no error**, do not try to read anything into it. That log is the same
+whether the host is wrong, the port is wrong, the two services are not on the
+same private network, or the database is not running -- four different problems,
+one identical symptom. The reason is that `pg` defaults
+`connectionTimeoutMillis` to `0`, so a TCP connect that never completes never
+times out and never throws. `drizzle-kit migrate` simply waits until the
+platform recycles the container.
+
+Ticket 86bb374 added a script that makes the failure name itself. Temporarily
+point the API service's **Custom Start Command** at:
+
+```
+node dist/scripts/preflight-db.js
+```
+
+Deploy, read the log, then **clear the start command again** so the service
+goes back to its normal `CMD`.
+
+It reports four things, each failing independently:
+
+1. the host, port, user and database the container is actually about to dial
+   (this is what catches a dashboard variable edit that never applied to the
+   running container -- a very common cause, and invisible everywhere else)
+2. what the hostname resolves to, with address family. Railway's private
+   network is IPv6-only, so an IPv4-only answer is itself the finding
+3. a raw TCP connect with a 10-second timeout, which separates "cannot reach"
+   (`ETIMEDOUT`, no route) from "reached and refused" (`ECONNREFUSED`, usually
+   a wrong port)
+4. a real Postgres handshake and `select 1`, so credentials and database-name
+   problems surface separately from reachability
+
+It never prints the password, not even its length. Exit code is non-zero on any
+failure, so it is safe to leave in a pre-deploy step if you ever want it there.
+
+Verified against a real Postgres on 2026-10-02 across all six outcomes:
+healthy, unresolvable host, wrong port, blackholed address, empty-but-set
+password, and a nonexistent database.
+
 ## Bringing over your local data (ticket f19f589, optional, one-time)
 
 If you've been dogfooding this app locally (Nicole has), your real
