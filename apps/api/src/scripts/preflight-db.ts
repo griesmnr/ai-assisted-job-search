@@ -89,7 +89,18 @@ function reportConfig(): { host: string; port: number; user: string; database: s
 async function reportResolution(host: string): Promise<boolean> {
   console.log("--- dns ---");
   try {
-    const addresses = await lookup(host, { all: true });
+    const addresses = await Promise.race([
+      lookup(host, { all: true }),
+      // A resolver that never answers would hang this step forever -- the
+      // exact failure mode this script was written to stop reproducing.
+      // `.unref()` so the timer never holds the process open on success.
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(Object.assign(new Error("dns lookup timed out"), { code: "ETIMEDOUT" })),
+          CONNECT_TIMEOUT_MS,
+        ).unref(),
+      ),
+    ]);
     for (const { address, family } of addresses) {
       line("resolved", `${address}  (IPv${family})`);
     }
@@ -107,7 +118,12 @@ async function reportResolution(host: string): Promise<boolean> {
     return true;
   } catch (err) {
     const code = err instanceof Error && "code" in err ? String(err.code) : "unknown";
-    line("FAILED", `${code} -- the hostname does not resolve at all`);
+    line(
+      "FAILED",
+      code === "ETIMEDOUT"
+        ? `${code} -- the resolver itself never answered in ${CONNECT_TIMEOUT_MS / 1000}s`
+        : `${code} -- the hostname does not resolve at all`,
+    );
     console.log(
       "\nThat is a name problem, not a network one: nothing was dialed. Check the\n" +
         "host variable above against what the database service actually publishes.",
@@ -172,6 +188,10 @@ async function reportPostgres(cfg: {
     // The whole reason this script exists: never inherit `pg`'s
     // wait-forever default.
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+    // Same reasoning, for the step AFTER the handshake: a server that accepts
+    // a connection and then never answers would hang `select 1` forever.
+    query_timeout: CONNECT_TIMEOUT_MS,
+    statement_timeout: CONNECT_TIMEOUT_MS,
   });
   try {
     await client.connect();
@@ -207,6 +227,29 @@ async function main(): Promise<void> {
 
   console.log("database preflight -- see apps/api/src/scripts/preflight-db.ts\n");
   const cfg = reportConfig();
+
+  // `Number("abc")` and `Number(undefined)` are both NaN, and `net.connect`
+  // throws ERR_SOCKET_BAD_PORT on NaN -- which the harness catch at the bottom
+  // of this file would print as "preflight itself failed", i.e. as a bug in
+  // this script rather than as the config finding it actually is. That is
+  // exactly backwards: a missing POSTGRES_PORT IS the finding, and a stale or
+  // absent variable in the running container is the single scenario this
+  // script exists for. Verified live (opus review, 2026-10-02): both
+  // `POSTGRES_PORT=abc` and an unset POSTGRES_PORT printed a raw RangeError
+  // stack before this check existed.
+  if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) {
+    console.log("--- port ---");
+    line(
+      "FAILED",
+      `POSTGRES_PORT is not a usable port number: ${process.env.POSTGRES_PORT ?? "(unset)"}`,
+    );
+    console.log(
+      "\nThat is a variable problem, not a network one: nothing was dialed. This\n" +
+        "is the same class of finding as step 1 -- a variable that never reached\n" +
+        "the running container. Postgres normally listens on 5432.",
+    );
+    process.exit(1);
+  }
 
   if (!(await reportResolution(cfg.host))) process.exit(1);
   if (!(await reportTcp(cfg.host, cfg.port))) process.exit(1);

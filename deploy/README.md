@@ -318,6 +318,11 @@ node dist/scripts/preflight-db.js
 Deploy, read the log, then **clear the start command again** so the service
 goes back to its normal `CMD`.
 
+Expect the deploy to keep restarting while this is set, **even on success**:
+the preflight runs, prints, and exits, and Railway restarts anything that
+exits. The log is the deliverable here, not a healthy deploy. Read the last
+run's output, then clear the start command.
+
 It reports four things, each failing independently:
 
 1. the host, port, user and database the container is actually about to dial
