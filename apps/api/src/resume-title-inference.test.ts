@@ -132,14 +132,81 @@ describe("inferTitleKeywords prompt/schema content (ticket 5ba5cca)", () => {
     expect(schemaDescription).toMatch(/senior full stack engineer/i);
   });
 
-  it("keeps the existing, correct instructions intact: 3-6 titles and preserving evidenced seniority", async () => {
+  it("keeps the existing, correct instructions intact: preserving evidenced seniority", async () => {
     const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
     await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
     const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
 
-    expect(schemaDescription).toMatch(/3-6/);
     expect(schemaDescription).toMatch(/senior\/staff\/principal/i);
     expect(schemaDescription).toMatch(/entry-level/i);
+  });
+
+  /**
+   * Ticket 6487ed8. This test's predecessor asserted `/3-6/` and KEPT PASSING
+   * after the request was raised to 8-10 -- vacuously, off a leftover "not 3-6
+   * uniformly narrow variants" elsewhere in the same description. So the
+   * headline change of that ticket shipped with zero coverage while a test
+   * named for the old behavior passed by coincidence (opus review, must-fix).
+   * The leftover phrasing is gone, so the count now appears exactly once.
+   */
+  it("asks for 8-10 titles, and says so exactly once", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+
+    expect(schemaDescription).toMatch(/8-10/);
+    expect(schemaDescription).not.toMatch(/3-6/);
+  });
+
+  /**
+   * Ticket 6487ed8's first defect: no recency weighting anywhere, so a resume
+   * spanning 2010-2026 could be answered entirely from its OLDEST entries.
+   * Nicole's live result was three chips drawn from job titles she last held
+   * in 2014.
+   */
+  it("weights the most recent roles, in both the schema and the prompt prefix", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+    const promptText = String(capturedParams[0]!.messages[0]!.content);
+
+    expect(schemaDescription).toMatch(/most recent/i);
+    expect(schemaDescription).toMatch(/read the dates/i);
+    expect(promptText).toMatch(/most recent/i);
+  });
+
+  /**
+   * Ticket 6487ed8, and specifically the fix's SECOND attempt. The first
+   * attempt told the model never to produce government job-series names, which
+   * would have deleted the chips Nicole explicitly wants -- USAJOBS is one of
+   * this app's own sources, so federal titles are how federal postings get
+   * found. This pins "alongside, never instead of", so a future edit cannot
+   * quietly reinstate a prohibition.
+   */
+  it("asks for cross-sector equivalents ALONGSIDE current-field titles, never instead of them", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+
+    expect(schemaDescription).toMatch(/ALONGSIDE/);
+    expect(schemaDescription).toMatch(/IT Specialist/);
+    expect(schemaDescription).toMatch(/crowded out/i);
+    // The prohibition the first attempt wrongly added must not come back.
+    expect(schemaDescription).not.toMatch(/do not return government job-series/i);
+  });
+
+  /**
+   * Ticket 6487ed8: at 300, the longer request truncated the response JSON
+   * mid-string on two of three live runs, and `fetchRawTitleSuggestions`
+   * swallows a parse failure into `[]` -- intermittently EMPTY chips, logged
+   * nowhere. The comment on the constant says not to lower it; this is the
+   * part that actually enforces that.
+   */
+  it("budgets enough output tokens to cover the model's reasoning plus the JSON", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(capturedParams[0]!.max_tokens).toBe(2000);
   });
 });
 

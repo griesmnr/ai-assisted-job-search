@@ -120,8 +120,82 @@ const MODEL = "claude-sonnet-5";
 // Small, deliberately: this is a resume-only call (no job description
 // attached), so a handful of short title strings is a large output budget
 // already -- nowhere near the per-job scorer's MAX_OUTPUT_TOKENS (2000).
-const MAX_OUTPUT_TOKENS = 300;
+//
+// Ticket 6487ed8: raised from 300 (via 1000) to 2000. At 300 this was SILENTLY TRUNCATING the
+// response once the request went from 3-6 titles to 8-10 -- measured, two of
+// three live runs against a real resume failed with "Unterminated string in
+// JSON", which `fetchRawTitleSuggestions` then swallows into `[]` by design.
+// The symptom is an EMPTY chip list, intermittently, with nothing logged
+// here: strictly worse than the thin list this ticket set out to fix, and
+// invisible without instrumenting the catch. Do not lower this again without
+// re-running `scripts/eval-title-inference-prompt.ts --live` and confirming
+// every shape still returns a full list on repeated runs; the budget has to
+// cover the model's own reasoning, not just the final JSON.
+//
+// Why 2000 and not 1000, which was the first fix: the review MEASURED
+// `output_tokens` across shapes at 89-504 while the final JSON is only ~90
+// tokens. The variance is entirely the model's own reasoning, so sizing to
+// "enough for today's prompt" is sizing to a moving target. `max_tokens` is a
+// ceiling billed on ACTUALS, so the extra headroom costs nothing and matches
+// the per-job scorer's budget. Measured per-resume cost either way:
+// ~$0.006-0.011, once per content-addressed resume.
+const MAX_OUTPUT_TOKENS = 2000;
 
+/**
+ * Ticket 6487ed8 (Nicole, live on the first real deployment): two defects
+ * found together, both in the prompt below.
+ *
+ * WHAT SHE SAW: her own resume produced exactly three chips -- "Program
+ * Analyst", "IT Specialist", "Computer Scientist" -- for a resume whose last
+ * sixteen years are software engineering. A Greenhouse search then returned
+ * one match, because `titleInclude` is what the search filters on. Her words:
+ * "I consider this a very big bug and a very big problem."
+ *
+ * WHY IT HAPPENED, measured rather than guessed (2026-10-05, three runs each
+ * against her real resume text):
+ *
+ *  1. The count was "3-6". THREE WAS A LEGAL ANSWER. She had been happy with
+ *     nine chips, which this design could never produce -- some of those were
+ *     hand-added by her. So output quality was a dice roll inside a permitted
+ *     range, and she had simply been seeing good rolls.
+ *  2. There was NO recency or target weighting anywhere in the prompt --
+ *     grepped for recent/current/latest/target, zero matches. Her resume
+ *     spans 2010-2026, opening with "Full Stack Software Developer" and
+ *     closing with two Boeing "Programmer Analyst" roles. Nothing told the
+ *     model which end of a career the person searches FROM, so anchoring on
+ *     the earliest titles -- and rendering them as federal job-series names --
+ *     was a defensible answer to the instructions as written.
+ *
+ * Note this was NOT a regression and NOT environment-specific: identical
+ * code, model and input locally produced six good engineering titles. The
+ * prompt had always been this fragile; the deployment was just the first
+ * fresh roll in a while.
+ *
+ * WHAT THIS DELIBERATELY DOES *NOT* DO, because the first attempt got it
+ * wrong: it does not suppress federal job-series titles. An early draft of
+ * this fix told the model never to translate a software role into government
+ * vocabulary -- which would have deleted the three chips Nicole explicitly
+ * wants ("I do still want the government ones to come up. So don't try to
+ * eliminate those."). She is right, and the reason is structural: USAJOBS is
+ * one of this app's own configured sources, so federal job-series names are
+ * how federal postings are FOUND. The defect was never that federal titles
+ * appeared; it was that only three appeared and the current-field ones were
+ * missing. The fix is breadth plus recency weighting -- current field first
+ * and never crowded out, other sectors' names for that same CURRENT work
+ * alongside it. Do not re-add a sector prohibition here.
+ *
+ * WHY THE CEILING IS 10 AND NOT HIGHER. More chips are free in SPEND terms --
+ * `DEFAULT_SCORE_THRESHOLD` caps scoring at 200 candidates per search no
+ * matter how many chips feed it, so breadth buys coverage at the same cost.
+ * The binding constraint is `MAX_KEYWORD_SEARCHES` (= 10) in
+ * `sources/usajobs.ts`, which runs one live search per chip and SILENTLY
+ * DROPS the rest in list order. Asking for 8-10 keeps the common case inside
+ * that budget. It can still be exceeded, because `splitConjoinedTitles` may
+ * add entries -- that is a known, accepted overflow rather than an oversight,
+ * and it costs USAJOBS coverage of the tail chips only, never correctness.
+ * Raising the request further without raising that cap would quietly waste
+ * the extra chips on that one source.
+ */
 const SCHEMA = {
   type: "object",
   properties: {
@@ -129,11 +203,31 @@ const SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "3-6 short job title keywords (e.g. 'Backend Engineer', 'Senior Full Stack Engineer', " +
+        "8-10 short job title keywords (e.g. 'Backend Engineer', 'Senior Full Stack Engineer', " +
         "'Technical Writer') this person would plausibly search for, based on their real " +
         "experience in the resume. Prefer the level/seniority actually evidenced in the " +
         "resume -- do not default to entry-level or omit senior/staff/principal titles if " +
-        "the resume supports them. Each title must be a short role phrase that could appear " +
+        "the resume supports them.\n\n" +
+        "MOST IMPORTANT: weight the person's MOST RECENT roles, and the roles those " +
+        "plausibly lead to next. A resume is a career history, not a menu of equally-likely " +
+        "search targets -- someone whose last several years are software engineering is " +
+        "searching for software engineering work even if their first job a decade ago had a " +
+        "different title. Titles drawn only from the EARLIEST entries are wrong unless the " +
+        "recent work genuinely still matches them. Read the dates. If the resume shows a " +
+        "clear direction of travel, suggest titles for where the person IS and is heading, " +
+        "not where they started. This is about ERA, not about sector: a stale title from ten " +
+        "years ago is wrong, while a different sector's CURRENT name for the work they do now " +
+        "is useful -- see the next paragraph.\n\n" +
+        "DO include cross-sector equivalents for the SAME current work where the resume " +
+        "supports them. This app searches federal job boards alongside private-sector ones, " +
+        "and the federal hiring system titles the same work differently -- so for a software " +
+        "resume with any public-sector or large-institution history, the federal job-series " +
+        "names for that work ('IT Specialist', 'Computer Scientist', 'Program Analyst') are " +
+        "genuinely useful search terms and should be included ALONGSIDE the private-sector " +
+        "titles, not instead of them. The requirement is that the person's current field is " +
+        "represented FIRST and fully, and never crowded out: list the titles real postings in " +
+        "their own current field use, then the equivalents another sector would use for that " +
+        "same current work. Each title must be a short role phrase that could appear " +
         "VERBATIM as a real job posting's title: no parentheses, no slashes, and no title " +
         "built by bolting a technology/framework/language onto a role word as a qualifier " +
         "(not 'Backend Engineer (Java/Node.js)', not 'React/Angular Frontend Developer', not " +
@@ -168,7 +262,7 @@ const SCHEMA = {
         "when it is load-bearing (distinguishes a genuinely different role a real board would " +
         "title differently, e.g. 'Machine Learning Engineer' vs. plain 'Engineer' would lose " +
         "real information), not merely descriptive of the resume's tech stack.\n\n" +
-        "Include a MIX of specificity, not 3-6 uniformly narrow variants: at least one or two " +
+        "Include a MIX of specificity rather than uniformly narrow variants: at least one or two " +
         "entries should be the person's most GENERIC, board-common role phrase on its own " +
         "(e.g. bare 'Software Engineer' for someone doing backend/full-stack/cloud software " +
         "work), even if more specific variants ('Senior Full Stack Engineer', 'Cloud " +
@@ -183,7 +277,11 @@ const SCHEMA = {
 const PROMPT_PREFIX =
   "You are helping someone search for jobs. Read their resume below and suggest job title " +
   "keywords they would plausibly search for -- grounded in their actual experience and " +
-  "seniority as shown in the resume, not a generic guess. Each suggested title must be a " +
+  "seniority as shown in the resume, not a generic guess. Weight their MOST RECENT roles " +
+  "and where those lead next: read the dates, and do not build the list out of their " +
+  "earliest job titles when the recent work points somewhere else. Aim for breadth within " +
+  "the field they are actually in now -- several genuine variants of the same current role, " +
+  "not a tour of their whole career history. Each suggested title must be a " +
   "short phrase that could appear verbatim on a real job board (employers title postings " +
   "'Backend Engineer', not 'Backend Software Engineer (Java/Node.js)') -- never bolt a " +
   "technology, framework, or language onto a role word as a parenthetical, a slash, or a " +
@@ -316,6 +414,15 @@ export function splitConjoinedTitles(titles: string[]): string[] {
  * not a broken page. The caller (routes/resumes.ts) is responsible for
  * logging the failure; this function stays silent on purpose so it has
  * exactly one return shape (a string array) for every outcome.
+ *
+ * CAVEAT, measured by ticket 6487ed8's review: the claim above that the caller
+ * logs the failure is NOT satisfied in practice. `routes/resumes.ts` logs only
+ * inside a `catch` around `await inferTitles(...)`, which this function can
+ * never trigger -- it does not throw. So a failure here is currently logged
+ * NOWHERE, and the route then persists `suggestedTitles: []`, which is not
+ * `null` and therefore never re-inferred. One transient truncation caches zero
+ * chips for that resume permanently. Tracked separately; do not read the
+ * paragraph above as a description of current behavior.
  *
  * Exported separately from `inferTitleKeywords` (ticket 976a782, opus
  * review round 1, F1) so a caller that needs to inspect what the MODEL
