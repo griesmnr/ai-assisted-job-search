@@ -121,7 +121,7 @@ const MODEL = "claude-sonnet-5";
 // attached), so a handful of short title strings is a large output budget
 // already -- nowhere near the per-job scorer's MAX_OUTPUT_TOKENS (2000).
 //
-// Ticket 6487ed8: raised from 300. At 300 this was SILENTLY TRUNCATING the
+// Ticket 6487ed8: raised from 300 (via 1000) to 2000. At 300 this was SILENTLY TRUNCATING the
 // response once the request went from 3-6 titles to 8-10 -- measured, two of
 // three live runs against a real resume failed with "Unterminated string in
 // JSON", which `fetchRawTitleSuggestions` then swallows into `[]` by design.
@@ -131,7 +131,15 @@ const MODEL = "claude-sonnet-5";
 // re-running `scripts/eval-title-inference-prompt.ts --live` and confirming
 // every shape still returns a full list on repeated runs; the budget has to
 // cover the model's own reasoning, not just the final JSON.
-const MAX_OUTPUT_TOKENS = 1000;
+//
+// Why 2000 and not 1000, which was the first fix: the review MEASURED
+// `output_tokens` across shapes at 89-504 while the final JSON is only ~90
+// tokens. The variance is entirely the model's own reasoning, so sizing to
+// "enough for today's prompt" is sizing to a moving target. `max_tokens` is a
+// ceiling billed on ACTUALS, so the extra headroom costs nothing and matches
+// the per-job scorer's budget. Measured per-resume cost either way:
+// ~$0.006-0.011, once per content-addressed resume.
+const MAX_OUTPUT_TOKENS = 2000;
 
 /**
  * Ticket 6487ed8 (Nicole, live on the first real deployment): two defects
@@ -254,7 +262,7 @@ const SCHEMA = {
         "when it is load-bearing (distinguishes a genuinely different role a real board would " +
         "title differently, e.g. 'Machine Learning Engineer' vs. plain 'Engineer' would lose " +
         "real information), not merely descriptive of the resume's tech stack.\n\n" +
-        "Include a MIX of specificity, not 3-6 uniformly narrow variants: at least one or two " +
+        "Include a MIX of specificity rather than uniformly narrow variants: at least one or two " +
         "entries should be the person's most GENERIC, board-common role phrase on its own " +
         "(e.g. bare 'Software Engineer' for someone doing backend/full-stack/cloud software " +
         "work), even if more specific variants ('Senior Full Stack Engineer', 'Cloud " +
@@ -406,6 +414,15 @@ export function splitConjoinedTitles(titles: string[]): string[] {
  * not a broken page. The caller (routes/resumes.ts) is responsible for
  * logging the failure; this function stays silent on purpose so it has
  * exactly one return shape (a string array) for every outcome.
+ *
+ * CAVEAT, measured by ticket 6487ed8's review: the claim above that the caller
+ * logs the failure is NOT satisfied in practice. `routes/resumes.ts` logs only
+ * inside a `catch` around `await inferTitles(...)`, which this function can
+ * never trigger -- it does not throw. So a failure here is currently logged
+ * NOWHERE, and the route then persists `suggestedTitles: []`, which is not
+ * `null` and therefore never re-inferred. One transient truncation caches zero
+ * chips for that resume permanently. Tracked separately; do not read the
+ * paragraph above as a description of current behavior.
  *
  * Exported separately from `inferTitleKeywords` (ticket 976a782, opus
  * review round 1, F1) so a caller that needs to inspect what the MODEL
