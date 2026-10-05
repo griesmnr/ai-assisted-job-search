@@ -73,6 +73,21 @@ const RESUME_SHAPES: { label: string; text: string }[] = [
   },
   {
     label:
+      "6487ed8: GOVERNMENT-sector career -- the MIRROR of the shape below. Nicole asked whether the cross-sector guidance generalizes or is tuned to her one resume; this is the direction that would expose over-fitting, since it should produce federal titles PROMINENTLY and private-sector equivalents alongside, not the other way round",
+    text: "Robert Alvarez. IT Specialist (Applications Software), GS-13, 12 years federal service. 2019-Present: IT Specialist, Department of Veterans Affairs -- led modernization of a claims-processing application, Java and Angular, Oracle database, managing contractor developers through the full SDLC. 2015-2019: Computer Scientist, Defense Logistics Agency -- designed data-integration services and automated reporting pipelines in Python. 2012-2015: Program Analyst -- requirements gathering, systems analysis, and acquisition support for an enterprise logistics system. Security clearance held. Education: BS Computer Science.",
+  },
+  {
+    label:
+      "6487ed8: NON-TECHNICAL career with no public-sector history at all -- checks the cross-sector guidance does NOT force federal job-series titles onto someone the resume gives no reason to suggest them for (the over-generalization risk of this ticket's own fix)",
+    text: "Sofia Marchetti. Senior Marketing Manager, 9 years, consumer packaged goods. 2021-Present: Senior Marketing Manager at a national beverage brand -- owned brand strategy, managed a $4M media budget, led a team of five. 2017-2021: Marketing Manager -- ran integrated campaigns across retail and digital, partnered with sales on category growth. 2015-2017: Brand Coordinator. Education: BA Communications, MBA Marketing.",
+  },
+  {
+    label:
+      "6487ed8: LONG multi-decade career whose EARLIEST titles are analyst-flavoured and whose recent years are all software engineering -- the shape every other entry here misses, and the one that produced Nicole's three federal-series chips live",
+    text: "Dana Whitfield. Full Stack Software Developer. Professional summary: enterprise web applications, REST APIs, and cloud-native microservices in Java, Python, Node.js, React, TypeScript, PostgreSQL, Docker, Kubernetes, Azure and AWS; currently building AI-powered applications with multiple LLM providers. 2026-Present: Software Developer, built an AI-powered platform with React, FastAPI and PostgreSQL. 2020-2025: Software Developer, Java Android applications for handheld scanners plus Node.js REST APIs on a Docker/Kubernetes microservices architecture. 2016-2019: Software Developer, backend APIs in Java, Node.js and Rails; containerized services on Kubernetes. 2014-2015: Software Developer, React front ends and Java backend services. 2011-2014: Programmer Analyst 2, Python/Django web application with a SQL database and a JavaScript interface. 2010-2011: Programmer Analyst 1, maintained small internal applications in MSAccess, VB and ASP.NET. Education: BS Mathematics, BA Computer Science.",
+  },
+  {
+    label:
       "976a782: senior backend engineer with NO full-stack or cloud framing at all -- checks the shortest-phrasing/generic-mix guidance generalizes to a plainer resume, not just the specific incident shape",
     text: "Marcus Chen. Senior Backend Engineer, 9 years, fintech and payments. Designed and maintained high-throughput Java services processing millions of transactions daily. Deep experience with PostgreSQL, Kafka, and distributed systems reliability. Mentored junior engineers and led on-call rotations. BS Computer Science.",
   },
@@ -91,6 +106,23 @@ const REPORTED_BAD_CHIPS = [
 
 async function main(): Promise<void> {
   loadEnvFile();
+
+  // Ticket 6487ed8: refuse to run live without a key, loudly. A git worktree
+  // has no `.env` of its own (it is gitignored, so `git worktree add` never
+  // carries it over -- see CLAUDE.md), so `loadEnvFile()` is a no-op there and
+  // every call fails auth. `fetchRawTitleSuggestions` swallows all failures
+  // into `[]` by design, so the symptom is an eval that reports empty chip
+  // lists for every shape -- indistinguishable from a prompt that produces
+  // nothing. That cost real time during this very ticket. Fail here instead.
+  if (isLive && (process.env.ANTHROPIC_API_KEY ?? "").trim().length === 0) {
+    console.error(
+      "ANTHROPIC_API_KEY is not set, so --live would make zero real calls and\n" +
+        "report an empty chip list for every shape -- which looks exactly like a\n" +
+        "broken prompt. If you are in a git worktree, it has no .env of its own:\n" +
+        "  export ANTHROPIC_API_KEY=$(grep -m1 '^ANTHROPIC_API_KEY=' /path/to/main/.env | cut -d= -f2-)",
+    );
+    process.exit(1);
+  }
 
   console.log(
     isLive
@@ -132,6 +164,33 @@ async function main(): Promise<void> {
       console.log(
         `  MODEL REPRODUCED A REPORTED BAD CHIP (pre-split): ${JSON.stringify(reproducedBadChips)}`,
       );
+    }
+
+    // Ticket 6487ed8: the live failure was not malformed chips -- every one was
+    // well-formed and well-punctuated, so nothing above would have caught it.
+    // It was that the person's CURRENT-FIELD titles were absent entirely,
+    // leaving only early-career/other-sector ones.
+    //
+    // Note what is deliberately NOT flagged: federal job-series names. A first
+    // draft of this check treated those as the defect; Nicole corrected it
+    // ("I do still want the government ones to come up"), and she is right --
+    // USAJOBS is one of this app's own sources, so those titles are how
+    // federal postings get found. Their PRESENCE is fine. Their presence
+    // *instead of* current-field titles is the bug.
+    const currentFieldChips = titles.filter((t) =>
+      /\b(engineer|developer|architect|product manager|scientist)\b/i.test(t),
+    );
+    if (currentFieldChips.length === 0) {
+      console.log(
+        `  NO CURRENT-FIELD CHIPS AT ALL -- this is the 6487ed8 failure: ${JSON.stringify(titles)}`,
+      );
+    }
+
+    // Ticket 6487ed8: three chips was a legal answer under the old "3-6"
+    // range and is what she actually got. Breadth is now the requirement,
+    // so a thin list is itself a finding.
+    if (titles.length < 6) {
+      console.log(`  THIN CHIP LIST: only ${titles.length} chips -- the prompt asks for 8-10`);
     }
 
     const degenerateChips = titles.filter((t) => !/\s/.test(t));
