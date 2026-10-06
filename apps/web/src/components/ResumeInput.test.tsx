@@ -663,6 +663,76 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     { id: "resume-14", resumeNickname: "Resume 14" },
   ];
 
+  /**
+   * Ticket e2b5f9c (Nicole, live, right after a magic-link sign-in): "it just
+   * says paste your resume. It doesn't offer me to choose an old resume."
+   *
+   * The gap was total -- the picker branch requires `resumeId !== undefined`
+   * and is only reachable from the collapsed bar's "Change", which requires
+   * the same; `MyResumes` has no activate affordance. So with no active resume
+   * there was NO path to a saved one. That state is guaranteed right after
+   * sign-in, because `MagicLinkLanding` clears app state on an identity
+   * switch.
+   */
+  it("offers saved resumes ABOVE the paste form when NO resume is active", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={RESUMES} />);
+
+    // All three, with none excluded -- there is no active resume to exclude.
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 14" })).toBeInTheDocument();
+    // And the paste form is still right there -- this is an addition, not a
+    // replacement. Pasting is still the path for a genuinely new resume.
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  it("fires onActivateResume, not onSubmit, when a saved resume is chosen with none active", () => {
+    const onActivateResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumes={RESUMES}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 8" }));
+
+    expect(onActivateResume).toHaveBeenCalledWith("resume-8");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("shows nothing extra when the account has no saved resumes -- a first-time visitor still just pastes", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={[]} />);
+
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Or paste a new one$/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  it("disables the saved-resume buttons while an activation is in flight", () => {
+    render(
+      <ResumeInput onSubmit={() => {}} submitting={false} resumes={RESUMES} activating={true} />,
+    );
+
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeDisabled();
+  });
+
+  it("surfaces an activation failure next to the saved list", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumes={RESUMES}
+        activateError="network down"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load that resume: network down");
+  });
+
   it("renders one toggle button per OTHER saved resume, excluding the currently active one, plus 'Paste a new resume' and 'Cancel'", () => {
     render(
       <ResumeInput

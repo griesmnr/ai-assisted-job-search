@@ -370,6 +370,43 @@ export function ResumeInput({
     );
   }
 
+  // Ticket e2b5f9c (Nicole, live, right after completing a magic-link
+  // sign-in): "now I'm on the new job search page, and it just says paste
+  // your resume. It doesn't offer me to choose an old resume."
+  //
+  // She was right, and the gap was total: the picker branch above requires
+  // `resumeId !== undefined`, and it is only reachable from the collapsed
+  // bar's "Change" button, which requires the same. `MyResumes` has no
+  // activate affordance at all. So with NO active resume there was no path to
+  // a SAVED one -- pasting text was the only way in, for someone whose
+  // account already held several.
+  //
+  // The no-active-resume state is not an edge case: it is the GUARANTEED
+  // state right after a magic-link sign-in, because `MagicLinkLanding` calls
+  // `clearAppState()` when the adopted user id differs (correct -- a cached
+  // `resumeId` names a row the adopted user does not own). So someone signing
+  // in specifically to recover their work landed on a blank textarea with
+  // their resumes unreachable. Ticket 5a7e957 built that whole way-back-in
+  // flow; this was the step immediately after it, dead-ending.
+  //
+  // Rendered ABOVE the paste form rather than as a separate branch, and
+  // deliberately NOT a copy of the picker above: there is no active resume to
+  // exclude from the list, nothing to "Cancel" back to, and no need for a
+  // "Paste a new resume" button because the paste form is right here. Reuses
+  // that branch's `sortResumesByNickname` (ticket 336f1e6 -- see its own doc
+  // comment for why `numeric: true`), its classes, and the same
+  // `onActivateResume`/`activating`/`activateError` wiring, so there is one
+  // activation path, not two.
+  //
+  // Gated on `resumeId === undefined`, which is the whole point and which a
+  // first draft of this fix omitted -- caught by the existing
+  // App.resumeLock.test.tsx case "'Paste a new resume' opens the ordinary
+  // expanded paste form". This branch is also reached WITH an active resume
+  // (via the picker's "Paste a new resume", which sets `resumeEditing`), and
+  // there the list must NOT reappear: the user just explicitly declined it,
+  // and re-offering it contradicts the choice they made one click ago.
+  const savedResumes = sortResumesByNickname(resumes ?? []);
+
   return (
     <form
       className="resume-input"
@@ -378,6 +415,34 @@ export function ResumeInput({
         if (text.trim().length > 0) onSubmit(text);
       }}
     >
+      {resumeId === undefined && savedResumes.length > 0 && (
+        <div className="resume-pick-saved">
+          <p className="resume-picker-heading">Use a saved resume:</p>
+          <div className="resume-picker-options">
+            {savedResumes.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                className="resume-picker-option"
+                disabled={activating}
+                onClick={() => onActivateResume?.(r.id)}
+              >
+                Use {r.resumeNickname}
+              </button>
+            ))}
+          </div>
+          {activateError !== null && activateError !== undefined && (
+            <p role="alert" className="resume-error">
+              Could not load that resume: {activateError}
+            </p>
+          )}
+          {/* Same "Or" divider the picker branch uses, for the same reason
+              (ticket 336f1e6, Nicole: "the or and Paste a new resume button
+              really clear that up") -- here it separates the saved list from
+              the paste form below rather than from a button. */}
+          <p className="resume-picker-or">Or paste a new one</p>
+        </div>
+      )}
       <label htmlFor="resume-text">Paste your resume</label>
       <textarea
         id="resume-text"
