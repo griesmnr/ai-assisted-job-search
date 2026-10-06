@@ -11,6 +11,7 @@ import {
   getResume,
   setJobStatus,
   updateResumeNickname,
+  updateResumeText,
 } from "./api/client";
 import {
   GroupedResultsList,
@@ -635,26 +636,52 @@ function JobSearchApp() {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
-      // Ticket 7701534: `resumeId` (this component's OWN current state, not
-      // a fresh value) is what lets the server tell "resubmitting my own
-      // unchanged text" apart from "this text already belongs to a
-      // DIFFERENT saved resume" -- see createResume's own doc comment. A
-      // duplicate rejects with a 409 whose message already names the
-      // colliding resume; caught below like any other failure, no special
-      // handling needed here (unlike the nickname-collision case, this one
-      // has no in-progress value to preserve -- the paste box already
-      // holds exactly what the user typed, untouched either way).
+      // TICKET 6ba221e: AN EDIT IS AN UPDATE, NOT A NEW RESUME. This one
+      // branch is the fix for Nicole's own report -- "if I'm on resume one
+      // and I make an edit and I hit save and it's still called resume
+      // one, it actually becomes resume 2". Every submit used to be
+      // `createResume`, and because resumes were content-addressed,
+      // different text meant a different row and a fresh "Resume N".
+      //
+      // WHY THE CONDITION IS `!resumeLocked` AND NOT A NEW STATE FLAG.
+      // There are exactly three ways to reach this function with a
+      // `resumeId` already set, and ticket 88f11d7's own design separates
+      // them cleanly:
+      //   - the collapsed bar's "Edit" (UNLOCKED only -- a locked resume's
+      //     button says "Change" and opens the picker instead), which is
+      //     an edit of this resume. -> PUT.
+      //   - the picker's "Paste a new resume" (reachable only when LOCKED,
+      //     since only a locked resume has a "Change" button at all),
+      //     which is explicitly a NEW resume while the old one stays
+      //     active in state. -> POST. Routing this to PUT would overwrite
+      //     the locked resume the user just declined to reuse -- the one
+      //     genuinely destructive mistake available here.
+      //   - a `resumeId` restored from sessionStorage, whose form is only
+      //     reachable via one of the two above.
+      // So `resumeLocked` already encodes "which of the two intents is
+      // this", and adding a parallel flag would be a second source of
+      // truth to drift. `resumeLocked` is kept current on every path that
+      // changes the active resume (see its own declaration).
+      //
+      // The resumes page (MyResumes.tsx) has its own, separate edit
+      // affordance that does NOT go through here and is NOT lock-gated --
+      // see `PUT /resumes/:id/text`'s route comment for why the endpoint
+      // itself permits a locked resume's text to change.
       const {
         id,
         suggestedTitles,
         resumeNickname: defaultNickname,
         isLocked,
-      } = await createResume(resumeText, resumeId);
+      } = resumeId !== undefined && !resumeLocked
+        ? await updateResumeText(resumeId, resumeText)
+        : await createResume(resumeText);
       setResumeId(id);
-      // Ticket 88f11d7: the server's real, just-computed answer -- a
-      // resubmission of `currentResumeId`'s own text is the one case that
-      // can land here already locked (every other path through this
-      // function is a genuinely new resume, never locked yet).
+      // Ticket 88f11d7: the server's real, just-computed answer, never
+      // assumed. `POST /resumes` can report `true` when the submitted text
+      // resolved to an already-searched resume; the `PUT` branch above can
+      // report it if a real search landed between the last time this state
+      // was refreshed and this save. Either way the server just looked, and
+      // this state follows it rather than guessing from the branch taken.
       setResumeLocked(isLocked);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
@@ -690,10 +717,15 @@ function JobSearchApp() {
       // `resumeEditing`'s own doc comment above). A no-op on the
       // first-ever submission, where this was already false.
       setResumeEditing(false);
-      // Ticket 303cff0: a genuinely new resume (or a resubmission that
-      // matched an existing one, per `createResume`'s find-or-create) --
-      // either way, "My Resumes" should reflect it without waiting for
-      // some unrelated action to happen to refresh it.
+      // Ticket 303cff0: a genuinely new resume, a resubmission that
+      // matched an existing one (per `createResume`'s find-or-create), or
+      // (ticket 6ba221e) an in-place text edit -- in all three cases "My
+      // Resumes" should reflect the current state without waiting for some
+      // unrelated action to happen to refresh it. An edit changes nothing
+      // the list itself displays (id/nickname/createdAt are all
+      // untouched), but the list is also what the resumes page renders its
+      // per-row text fetches from, and an unconditional refresh here is
+      // cheaper to reason about than a per-branch one.
       refreshResumesList();
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));

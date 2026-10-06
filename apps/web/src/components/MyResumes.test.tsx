@@ -17,6 +17,9 @@ beforeEach(() => {
 });
 
 const getResume = vi.fn();
+// Ticket 6ba221e: the resumes page can edit a resume's TEXT now, through
+// `PUT /resumes/:id/text` -- see MyResumes.tsx's `saveText`.
+const updateResumeText = vi.fn();
 
 // Ticket 303cff0 ("My Resumes" tab): mocked the same way ResultCard.test.tsx
 // mocks ../api/client, so this component-level test never makes a real
@@ -24,6 +27,7 @@ const getResume = vi.fn();
 // exercised here; `listResumes` is App.tsx's own concern, tested there.
 vi.mock("../api/client", () => ({
   getResume: (...args: unknown[]) => getResume(...args),
+  updateResumeText: (...args: unknown[]) => updateResumeText(...args),
 }));
 
 afterEach(() => {
@@ -306,5 +310,230 @@ describe("MyResumes — focusResume (ticket 1e183a4)", () => {
     );
 
     expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Ticket 6ba221e: editing a resume's TEXT from the resumes page. Nicole:
+ * "On the resume page, I want them to be able to edit both the names of the
+ * resumes and the resumes themselves."
+ *
+ * The NAME half is a separate ticket (e7666de) and is deliberately absent
+ * here. These tests cover the text half, including the two things that make
+ * an edit UI either trustworthy or not: a failed save must not lose the
+ * user's typing, and a response that lands after Cancel must not resurrect
+ * the editor.
+ */
+describe("MyResumes — editing resume text (ticket 6ba221e)", () => {
+  /** Expands the one row and waits for its text to load. */
+  async function expandAndLoad(text: string, nickname = "Resume 1") {
+    getResume.mockResolvedValue({
+      id: "resume-1",
+      resumeText: text,
+      resumeNickname: nickname,
+      isLocked: false,
+      suggestedTitles: [],
+    });
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: nickname })]} />);
+    fireEvent.click(screen.getByText(nickname));
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
+  }
+
+  it("offers no editor until the row is expanded and its text has actually loaded", async () => {
+    // Guards the specific hazard of opening a textarea over text that
+    // hasn't arrived: a Save from there would write a placeholder (or an
+    // empty string) over the real resume.
+    getResume.mockReturnValue(new Promise(() => {})); // never resolves
+    render(<MyResumes resumes={[makeSummary()]} />);
+    expect(screen.queryByRole("button", { name: "Edit Resume 1 text" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Resume 1"));
+    await waitFor(() => expect(screen.getByText("Loading resume text...")).toBeInTheDocument());
+    // Still loading -- still no editor.
+    expect(screen.queryByRole("button", { name: "Edit Resume 1 text" })).not.toBeInTheDocument();
+  });
+
+  it("saves edited text through updateResumeText and shows the server's own stored result", async () => {
+    await expandAndLoad("the original resume text");
+    updateResumeText.mockResolvedValue({
+      id: "resume-1",
+      resumeText: "the rewritten resume text",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+      isLocked: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "the rewritten resume text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(updateResumeText).toHaveBeenCalledWith("resume-1", "the rewritten resume text"),
+    );
+    // Back to the read-only view, showing what the server says it stored.
+    await waitFor(() => expect(screen.getByText("the rewritten resume text")).toBeInTheDocument());
+    expect(screen.queryByLabelText("Resume text for Resume 1")).not.toBeInTheDocument();
+    // The nickname is untouched -- the headline guarantee of this ticket.
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+  });
+
+  it("Cancel discards the draft and restores the saved text, without saving anything", async () => {
+    await expandAndLoad("the original resume text");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "a draft the user abandons" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(updateResumeText).not.toHaveBeenCalled();
+    expect(screen.getByText("the original resume text")).toBeInTheDocument();
+    expect(screen.queryByText("a draft the user abandons")).not.toBeInTheDocument();
+  });
+
+  it("keeps the user's typing when a save fails, and shows why", async () => {
+    await expandAndLoad("the original resume text");
+    updateResumeText.mockRejectedValue(new Error("Network error"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "a long and hard-won rewrite" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save resume text: Network error",
+    );
+    // THE PART THAT MATTERS: the rewrite is still in the box, editable.
+    // Dropping it back to the saved text on failure would throw away work
+    // the user cannot get back.
+    expect(screen.getByLabelText("Resume text for Resume 1")).toHaveValue(
+      "a long and hard-won rewrite",
+    );
+  });
+
+  it("offers no Save button for empty text", async () => {
+    await expandAndLoad("the original resume text");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "   " },
+    });
+
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("does not resurrect the editor when a save FAILS after the user already cancelled", async () => {
+    await expandAndLoad("the original resume text");
+    // A save that is still in flight when Cancel is clicked.
+    let rejectSave: (err: Error) => void = () => {};
+    updateResumeText.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "an abandoned rewrite" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // Cancel stays enabled during a save deliberately (see the button's own
+    // comment) -- this is the walk-away path.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await act(async () => {
+      rejectSave(new Error("Network error"));
+      await Promise.resolve();
+    });
+
+    // No error banner for an edit the user already walked away from, and no
+    // textarea reopened under them.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Resume text for Resume 1")).not.toBeInTheDocument();
+    expect(screen.getByText("the original resume text")).toBeInTheDocument();
+  });
+
+  it("still records a save that SUCCEEDS after a cancel, rather than showing stale text", async () => {
+    await expandAndLoad("the original resume text");
+    let resolveSave: (value: unknown) => void = () => {};
+    updateResumeText.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 1 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 1"), {
+      target: { value: "a rewrite that lands late" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await act(async () => {
+      resolveSave({
+        id: "resume-1",
+        resumeText: "a rewrite that lands late",
+        resumeNickname: "Resume 1",
+        suggestedTitles: [],
+        isLocked: false,
+      });
+      await Promise.resolve();
+    });
+
+    // Cancel abandons the EDITOR, not the request -- the write really did
+    // happen, so the view must show the new text rather than confidently
+    // displaying text the database no longer has.
+    expect(screen.getByText("a rewrite that lands late")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Resume text for Resume 1")).not.toBeInTheDocument();
+  });
+
+  it("edits the row it was clicked on, not another row with the same button label", async () => {
+    // Every row renders a button with the same VISIBLE text ("Edit text"),
+    // which is exactly how a per-row control gets wired to the wrong row.
+    // The accessible names carry the nickname to make them distinguishable.
+    getResume.mockImplementation((id: string) =>
+      Promise.resolve({
+        id,
+        resumeText: `text of ${id}`,
+        resumeNickname: id === "resume-1" ? "Resume 1" : "Resume 2",
+        isLocked: false,
+        suggestedTitles: [],
+      }),
+    );
+    updateResumeText.mockResolvedValue({
+      id: "resume-2",
+      resumeText: "rewritten text of resume-2",
+      resumeNickname: "Resume 2",
+      suggestedTitles: [],
+      isLocked: false,
+    });
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByText("Resume 1"));
+    fireEvent.click(screen.getByText("Resume 2"));
+    await waitFor(() => expect(screen.getByText("text of resume-2")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Resume 2 text" }));
+    fireEvent.change(screen.getByLabelText("Resume text for Resume 2"), {
+      target: { value: "rewritten text of resume-2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(updateResumeText).toHaveBeenCalledWith("resume-2", "rewritten text of resume-2"),
+    );
+    // Resume 1 was never opened for editing and never saved.
+    expect(updateResumeText).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("text of resume-1")).toBeInTheDocument();
   });
 });

@@ -89,8 +89,10 @@ export const users = pgTable("users", {
  * inventing a fake per-run identity that would break its own documented
  * "running this twice doesn't re-pay for identical work" guarantee (a
  * fresh random id per CLI run would make every run look like a different
- * user, and the resume-hash uniqueness this ticket makes PER-USER would
- * then never find the previous run's cached resume row). The nil UUID is
+ * user, and the PER-USER resume-hash LOOKUP this ticket introduced -- a
+ * database constraint then, an ordinary query since ticket 6ba221e, see
+ * `resumeHash` below -- would then never find the previous run's cached
+ * resume row). The nil UUID is
  * used deliberately for recognizability, not because it needs to be a
  * real `crypto.randomUUID()` -- nothing validates a `users.id` value's
  * shape at the database layer; only `apps/api/src/identity.ts`'s HTTP
@@ -109,33 +111,82 @@ export const resumes = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
+    // MUTABLE since ticket 6ba221e -- `PUT /resumes/:id/text`
+    // (routes/resumes.ts) rewrites this column in place, keeping the same
+    // `id`. Before that ticket a resume's text was effectively immutable:
+    // the only way to "change" it was to submit different text, which
+    // (see `resumeHash` below) minted a different row.
     resumeText: text("resume_text").notNull(),
-    // Content hash (sha256 hex) of resumeText, used as the find-or-create
-    // key in matching/pipeline.ts's getOrCreateResumeId. NOT `unique()` on
-    // resumeText itself: a real resume's text can exceed Postgres's
-    // ~2704-byte btree index row limit, which would fail at insert time
-    // for a long resume. Hashing first keeps the unique key small and
-    // fixed-size regardless of resume length, while still making "two
-    // identical resumes FROM THE SAME USER" resolve to one row under
-    // concurrent inserts (ON CONFLICT (user_id, resume_hash) DO NOTHING).
-    // See ticket 620ca30.
+    // Content hash (sha256 hex) of resumeText.
     //
-    // Ticket b2f9dfd: the uniqueness constraint moved from a bare
-    // `.unique()` on this column alone (global) to the COMPOSITE
-    // `unique(userId, resumeHash)` below (per-user) -- Nicole's own
-    // motivating case: she wants to use a friend's resume as test data
-    // without that friend's own later, real usage of the identical text
-    // ever colliding with hers. Two different users can now share
-    // byte-identical resume text; the SAME user resubmitting their own
-    // unchanged text still resolves to the one existing row, unchanged.
+    // AN ORDINARY COLUMN AS OF TICKET 6ba221e -- NOT AN IDENTITY. Read the
+    // history below before adding a constraint back to it.
+    //
+    // What it is still for: a cheap, fixed-size equality lookup for "does
+    // this user already have a row with exactly this text?", used by
+    // `getOrCreateResumeId` (matching/pipeline.ts) on the CREATE path so
+    // that re-pasting text you already have saved resolves to the row you
+    // already have instead of minting an indistinguishable second one, and
+    // by `runDemoMatch`'s CLI entry point so a repeat run doesn't re-pay
+    // for identical work. That is a CONVENIENCE, not an invariant: nothing
+    // in the database or the application depends on it being unique, and
+    // the lookup is deliberately deterministic (`ORDER BY created_at, id`)
+    // precisely because more than one row can now match it.
+    //
+    // Why hashed at all, rather than querying `resume_text` directly
+    // (ticket 620ca30, and still the reason): a real resume's text can
+    // exceed Postgres's ~2704-byte btree index row limit, so the column
+    // that gets an index has to be small and fixed-size. The hash is still
+    // the indexable stand-in for the text even with no unique constraint
+    // on it.
+    //
+    // HISTORY OF THE CONSTRAINT THAT USED TO LIVE HERE, kept because its
+    // reasoning was sound for what it was solving and a future change may
+    // need it:
+    //   - Ticket 620ca30 added `unique(resume_hash)` (global) and built
+    //     find-or-create on `ON CONFLICT (resume_hash) DO NOTHING`, which
+    //     made two concurrent submissions of identical text resolve to
+    //     exactly one row with no select-then-insert race.
+    //   - Ticket b2f9dfd widened it to the composite
+    //     `unique(user_id, resume_hash)` (per-user), for Nicole's own
+    //     motivating case: using a friend's resume as test data must never
+    //     collide with that friend's own later, real usage of the identical
+    //     text.
+    //   - Ticket 6ba221e DROPPED it (migration 0019) and replaced it with
+    //     nothing. Identity is `id`, the primary key, and always was; this
+    //     index was the one thing making text behave like a second,
+    //     competing identity, which is what surfaced to users as "I edited
+    //     Resume 1 and it became Resume 2" and as a 409 naming a resume
+    //     they never created. Nicole, verbatim: "I know that it was a
+    //     previous requirement of mine that it wouldn't let the exact same
+    //     text exist for two resumes before, but now I frankly don't care
+    //     about that... Let them do that. If they want to do that, that's
+    //     their business."
+    //
+    // WHAT WAS GIVEN UP WITH IT, stated plainly rather than left to be
+    // discovered: the race-free upsert. Two concurrent submissions of
+    // identical text can now produce TWO rows instead of one. That is the
+    // accepted outcome under the new rules (two identical-text resumes are
+    // legal), not a bug -- what matters is that it is not an ERROR, which
+    // `getOrCreateResumeId`'s select-then-insert guarantees and
+    // routes/resumes.test.ts's concurrency test proves.
     resumeHash: text("resume_hash").notNull(),
     // Ticket 39b4a48: job title keywords Claude infers from this resume,
-    // computed ONCE per resume (find-or-create already dedupes identical
-    // resume text to one row -- this is what makes inference cache-able at
-    // all: re-submitting the same text never re-pays for it). Nullable, not
-    // an empty array by default: null means "inference hasn't run yet or
-    // failed", [] means "ran, found nothing to suggest" -- the route
-    // distinguishes these to decide whether to retry. See routes/resumes.ts.
+    // computed lazily and then cached on the row. Nullable, not an empty
+    // array by default: null means "inference hasn't run yet or failed",
+    // [] means "ran, found nothing to suggest" -- the route distinguishes
+    // these to decide whether to retry. See routes/resumes.ts.
+    //
+    // 39b4a48's ORIGINAL justification for caching was that find-or-create
+    // deduped identical resume text to one row, so a resume's text could
+    // never change under its cached titles. TICKET 6ba221e ENDED THAT: the
+    // text is mutable now (`resumeText` above), so the cache is no longer
+    // safe on its own. What makes it safe instead is INVALIDATION:
+    // `PUT /resumes/:id/text` sets this column back to `null` whenever the
+    // text actually changes, and re-infers. The cost is explicit and
+    // recurring -- one paid Claude call per real text edit, where before
+    // there was at most one per resume, ever. See that route for why
+    // nulling without re-inferring was rejected.
     suggestedTitles: jsonb("suggested_titles").$type<string[]>(),
     // Ticket 38a7598: when this row was created. Added alongside
     // `resumeNickname` below purely so a deterministic backfill order
@@ -166,9 +217,24 @@ export const resumes = pgTable(
     // resumes.ts) and the "Resume N" numbering scheme (getOrCreateResumeId)
     // are now both scoped `WHERE user_id = ...` -- two different users can
     // each have their own "Resume 1".
+    //
+    // Ticket 6ba221e: SURVIVES A TEXT EDIT, and that is the whole point of
+    // that ticket as the user experienced it. Editing a resume's text used
+    // to produce a new row and therefore a fresh "Resume N+1" default
+    // (Nicole: "if I'm on resume one and I make an edit and I hit save and
+    // it's still called resume one, it actually becomes resume 2").
+    // `PUT /resumes/:id/text` never touches this column, so a rename the
+    // user made is never silently undone by editing the text afterwards.
     resumeNickname: text("resume_nickname").notNull(),
   },
-  (table) => [unique().on(table.userId, table.resumeHash)],
+  // NO table-level constraints. Ticket 6ba221e dropped the only one this
+  // table ever had (`unique(user_id, resume_hash)`, migration 0019) -- see
+  // the `resumeHash` column comment above for the full history and for
+  // what was given up with it. An empty extras array rather than the
+  // argument being removed entirely: drizzle accepts both, and keeping the
+  // callback makes it obvious at a glance that the absence of constraints
+  // here is a decision rather than an oversight.
+  () => [],
 );
 
 export const jobMatches = pgTable(
@@ -442,19 +508,36 @@ export const userJobStatuses = pgTable(
    * into mirroring `job_matches`'s `(resume_id, job_id)`.
    *
    * The failing scenario, concretely: the user applies to job X with
-   * resume v1. She then rewrites her resume — `resumes` is content-
-   * addressed by `resume_hash` (ticket 620ca30), so v2 is a genuinely
-   * different row with a different id, not an edit of v1. She searches
-   * again; X is still open, gets re-ingested and re-scored under v2. If
-   * this table were keyed `(resume_id, job_id)`, the lookup "have I applied
-   * to X?" made under v2 finds nothing — the only row is filed under v1 —
-   * and the app cheerfully recommends she apply to a job she already
-   * applied to. Worse, a second application would insert a SECOND row for
-   * the same job, so the table can no longer answer "did I apply to X"
-   * with one row.
+   * resume v1. She then starts a fresh resume — v2 is a genuinely different
+   * row with a different id. She searches again; X is still open, gets
+   * re-ingested and re-scored under v2. If this table were keyed
+   * `(resume_id, job_id)`, the lookup "have I applied to X?" made under v2
+   * finds nothing — the only row is filed under v1 — and the app cheerfully
+   * recommends she apply to a job she already applied to. Worse, a second
+   * application would insert a SECOND row for the same job, so the table can
+   * no longer answer "did I apply to X" with one row.
    *
    * "I applied to X" is a fact about (person, job). It must survive every
    * resume rewrite, and it does exactly when the resume is not in the key.
+   *
+   * TICKET 6ba221e NARROWS HOW THAT SCENARIO IS REACHED, AND CHANGES NOTHING
+   * ABOUT THIS KEY. The original wording above argued from
+   * content-addressing: `resumes` was keyed on `resume_hash` (ticket
+   * 620ca30), so ANY text change produced a different row and the v1/v2 split
+   * was unavoidable. 6ba221e dropped that constraint (migration 0019) and
+   * added `PUT /resumes/:id/text`, so "rewriting my resume" can now ALSO mean
+   * an in-place edit that keeps the same `resumes.id` — and that path would
+   * not break a `(resume_id, job_id)` key, because the id does not change.
+   *
+   * The scenario above is still live, just no longer the only way to rewrite:
+   * "Paste a new resume" (ticket 88f11d7's picker) and every first submission
+   * still create genuinely new rows, and a user with several resumes applying
+   * from one and later searching from another hits it without editing
+   * anything. So `resume_id` stays OUT of this key, the standing instruction
+   * below stands unchanged, and nothing in 6ba221e touched this table.
+   * In-place editing in fact makes this key MORE obviously right: it is the
+   * one thing that already guarantees "I applied to X" is unaffected by the
+   * text under a resume changing beneath it.
    *
    * DONE (ticket 3fc1e5e, epic 2b9e9dd, child 3). The instruction this
    * comment carried from ticket dba885e onward -- "widen this to

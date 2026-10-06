@@ -13,7 +13,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Job, LevelFit } from "@app/shared";
 import { MATCH_SCORE_FLOOR } from "@app/shared";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { seedSourceDescriptors } from "../db/seed.js";
 import {
@@ -145,6 +145,36 @@ export type RunDemoMatchOptions = {
    */
   sources: JobSource[];
   resumeText: string;
+  /**
+   * Ticket 6ba221e: WHICH resume row `resumeText` came from, when the
+   * caller already knows. Supplied, this function uses it directly and
+   * never calls `getOrCreateResumeId` at all.
+   *
+   * WHY THIS HAD TO EXIST. Before 6ba221e, `(user_id, resume_hash)` was
+   * UNIQUE, so resume text identified exactly one row and re-deriving the
+   * id from the text was lossless. 6ba221e dropped that constraint
+   * (migration 0019): a user can now hold two resumes with byte-identical
+   * text, so "the row whose text is this" is no longer a question with one
+   * answer. Re-deriving would then attach this run's `searches` row, its
+   * `job_matches` reads and its "already scored" accounting to whichever
+   * duplicate the hash lookup happened to order first -- NOT necessarily
+   * the resume the caller was asked about.
+   *
+   * Both REST callers pass it (`POST /searches/estimate` and `POST
+   * /searches`, routes/searches.ts) because both already hold a resumeId
+   * they have VERIFIED belongs to the requesting user (`loadResumeText`)
+   * -- so this is strictly more precise than the text, not a new trust
+   * assumption. Optional, because `demo-match.ts`'s CLI genuinely has only
+   * text (it reads a file) and wants the find-or-create behavior.
+   *
+   * NOT ownership-checked here: this is an internal primitive, and its
+   * callers are the ones holding a `userId`. Passing a `resumeId` the
+   * `userId` does not own would write this run's rows against someone
+   * else's resume -- exactly the class of bug ticket 3fc1e5e audited -- so
+   * a caller must scope the id before handing it over, as both current
+   * callers do.
+   */
+  resumeId?: string;
   /**
    * Ticket b2f9dfd: which user this resume belongs to, for
    * `getOrCreateResumeId`'s now-per-user find-or-create. Defaults to
@@ -767,28 +797,66 @@ export function describeSourceOutcome(entry: SourceOutcome): string {
 }
 
 /**
- * Deterministic content hash used as the resumes upsert key. Two identical
+ * Deterministic content hash stored on every `resumes` row. Two identical
  * resumes hash identically regardless of process/timing, which is what
- * makes `INSERT ... ON CONFLICT (resume_hash) DO NOTHING` a correct,
- * race-safe find-or-create — unlike a plain select-then-insert, this is
- * safe even if two `runDemoMatch` calls for the same resume text overlap.
+ * makes it usable as a small, fixed-size stand-in for the text in an
+ * equality lookup (`resume_text` itself can exceed Postgres's ~2704-byte
+ * btree index row limit — ticket 620ca30).
+ *
+ * Ticket 6ba221e: this is no longer an UPSERT KEY. The
+ * `unique(user_id, resume_hash)` constraint it used to target is gone
+ * (migration 0019), so `ON CONFLICT (user_id, resume_hash)` would now be a
+ * hard Postgres error ("there is no unique or exclusion constraint matching
+ * the ON CONFLICT specification", SQLSTATE 42P10), not a silent
+ * degradation. See `getOrCreateResumeId` below for what replaced it.
+ *
+ * EXPORTED as of ticket 6ba221e: `PUT /resumes/:id/text`
+ * (routes/resumes.ts) has to recompute this column when it rewrites the
+ * text, and a second hand-rolled `createHash("sha256")` in a route handler
+ * is exactly how the column's value and its definition drift apart. One
+ * definition, two callers.
  */
-function hashResumeText(resumeText: string): string {
+export function hashResumeText(resumeText: string): string {
   return createHash("sha256").update(resumeText, "utf8").digest("hex");
 }
 
 /**
- * Finds-or-creates the `resumes` row for this exact resume text, keyed on
- * `resume_hash` (a UNIQUE column — see db/schema.ts), not `resume_text`
- * directly: Postgres btree index rows are capped around 2704 bytes and a
- * real resume can exceed that, so `UNIQUE(resume_text)` would fail at
- * insert time for a long resume. Hashing first sidesteps that and doubles
- * as the concurrency fix: the upsert always attempts the insert (cheap —
- * one row, no Claude call involved), lets `ON CONFLICT DO NOTHING` resolve
- * a race for free, and then selects by the same hash. Two concurrent
- * callers for the same resume text are guaranteed to agree on exactly one
- * winning row afterward — no duplicate `resumes` rows, and no
- * `ORDER BY`-dependent ambiguity about which one "the" row is.
+ * Finds-or-creates the `resumes` row for this exact resume text, looked up
+ * by `(user_id, resume_hash)`.
+ *
+ * TICKET 6ba221e REWROTE THE MECHANISM HERE; READ THIS BEFORE CHANGING IT.
+ * This used to be `INSERT ... ON CONFLICT (user_id, resume_hash) DO NOTHING
+ * RETURNING id`, then a fallback SELECT by the same key — a genuinely
+ * race-free find-or-create that leaned entirely on the unique index. That
+ * index no longer exists, and an `ON CONFLICT` naming a non-existent
+ * constraint is a runtime error rather than a no-op, so the upsert had to
+ * go. What replaced it is an ordinary SELECT-then-INSERT.
+ *
+ * WHAT THAT GIVES UP, AND WHY IT IS ACCEPTABLE NOW. Two concurrent callers
+ * submitting identical text can both miss the SELECT and both INSERT,
+ * leaving TWO rows where the old upsert guaranteed one. Under 6ba221e that
+ * is a legal state, not a corrupt one: two resumes with byte-identical text
+ * are explicitly allowed (Nicole: "Let them do that. If they want to do
+ * that, that's their business"), and the rows are independent and
+ * individually usable. The property that actually matters — that neither
+ * caller gets an ERROR — holds, and is covered by a real two-connection
+ * concurrency test (routes/resumes.test.ts, "concurrent submission of
+ * identical text"). Restoring strictness would mean re-adding the very
+ * constraint this ticket exists to remove.
+ *
+ * The SELECT is deliberately ORDERED (`created_at, id`) rather than a bare
+ * `limit(1)`: once duplicate-text rows are reachable (via
+ * `PUT /resumes/:id/text`, or via the race above), an unordered `limit(1)`
+ * would return an arbitrary one of them and could silently return a
+ * DIFFERENT row on two successive calls for the same text. Oldest-first
+ * matches the "Resume 1, Resume 2, ..." numbering and `GET /resumes`'s own
+ * ordering, so "the row for this text" is at least a stable answer.
+ *
+ * NOT THE PATH AN EDIT TAKES. Changing a resume's text in place goes
+ * through `PUT /resumes/:id/text` (routes/resumes.ts), which UPDATEs the
+ * row named by its id. This function is only ever "I have text and no id;
+ * give me a row" — the create path (`POST /resumes`) and the CLI/estimate
+ * path (`runDemoMatch` without an explicit `resumeId`).
  */
 /**
  * Exported (ticket 59fdc52) so the REST API's `POST /resumes` can find-or-
@@ -836,14 +904,13 @@ export type GetOrCreateResumeResult = { id: string; isNew: boolean };
  * caller must always know and pass its own real user.
  *
  * Find-or-create is now scoped PER USER: the count that derives "Resume
- * N", the insert, and the upsert's conflict target (`(user_id,
- * resume_hash)`, not `resume_hash` alone) all key off `userId` --
- * Nicole's own motivating case is two different users legitimately
- * sharing byte-identical resume text (using a friend's resume as test
- * data) without colliding. The fallback SELECT below is scoped the same
- * way, and deliberately does NOT fall back to searching by hash alone: a
- * DIFFERENT user's row with a matching hash must never be returned here,
- * or a request for "my resume" could silently resolve to a stranger's.
+ * N", the insert, and the hash lookup all key off `userId` -- Nicole's own
+ * motivating case is two different users legitimately sharing
+ * byte-identical resume text (using a friend's resume as test data)
+ * without colliding. The lookup deliberately does NOT fall back to
+ * searching by hash alone: a DIFFERENT user's row with a matching hash
+ * must never be returned here, or a request for "my resume" could silently
+ * resolve to a stranger's.
  */
 export async function getOrCreateResumeId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -852,6 +919,25 @@ export async function getOrCreateResumeId(
   userId: string,
 ): Promise<GetOrCreateResumeResult> {
   const resumeHash = hashResumeText(resumeText);
+
+  // FIND first (ticket 6ba221e): the old implementation attempted the
+  // INSERT unconditionally and let `ON CONFLICT DO NOTHING` absorb the
+  // duplicate, which is no longer available (see this function's doc
+  // comment). Selecting first also means the common "I already have this
+  // resume" case no longer burns a `resumes.id` UUID and an insert attempt
+  // per call.
+  const existing = await db
+    .select({ id: resumes.id })
+    .from(resumes)
+    .where(and(eq(resumes.resumeHash, resumeHash), eq(resumes.userId, userId)))
+    // Deterministic, not arbitrary -- see the doc comment: duplicate-text
+    // rows are reachable now, so WHICH one "the" row is has to be a stable
+    // answer rather than whatever Postgres hands back first.
+    .orderBy(asc(resumes.createdAt), asc(resumes.id))
+    .limit(1);
+  if (existing.length > 0) {
+    return { id: existing[0]!.id, isNew: false };
+  }
 
   const countRows = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -868,26 +954,19 @@ export async function getOrCreateResumeId(
       resumeHash,
       resumeNickname: `Resume ${nextResumeNumber}`,
     })
-    .onConflictDoNothing({ target: [resumes.userId, resumes.resumeHash] })
     .returning({ id: resumes.id });
 
-  if (inserted.length > 0) {
-    return { id: inserted[0]!.id, isNew: true };
-  }
-
-  const rows = await db
-    .select({ id: resumes.id })
-    .from(resumes)
-    .where(and(eq(resumes.resumeHash, resumeHash), eq(resumes.userId, userId)))
-    .limit(1);
-  if (rows.length === 0) {
-    // Should be impossible: the insert above either created this row or
-    // no-opped because a row with this (userId, hash) already existed.
+  // A plain INSERT with no conflict target, so `RETURNING` always comes
+  // back with exactly the row just written -- there is no "the insert
+  // no-opped" case left to handle. An empty result here would mean the
+  // driver or the database broke its own contract, which is worth failing
+  // loudly on rather than returning a bogus id for.
+  if (inserted.length === 0) {
     throw new Error(
-      `getOrCreateResumeId: no resumes row found for user "${userId}", hash "${resumeHash}" after upsert`,
+      `getOrCreateResumeId: INSERT returned no row for user "${userId}", hash "${resumeHash}"`,
     );
   }
-  return { id: rows[0]!.id, isNew: false };
+  return { id: inserted[0]!.id, isNew: true };
 }
 
 /** The subset of a `jobs` row needed to build a `NormalizedJob` for
@@ -1162,6 +1241,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     db,
     sources,
     resumeText,
+    resumeId: providedResumeId,
     userId = LEGACY_USER_ID,
     scoreJob,
     criteria = {},
@@ -1188,12 +1268,18 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // database.
   await seedSourceDescriptors(db);
 
-  // Ticket 7701534: `getOrCreateResumeId` now also reports `isNew`, which
-  // only `POST /resumes` (routes/resumes.ts) needs to distinguish "a
-  // genuinely new resume" from "this text already belongs to another
-  // resume" -- irrelevant here, this CLI/worker path has always treated
+  // Ticket 6ba221e: use the caller's own resumeId when it has one (both
+  // REST callers do -- see `RunDemoMatchOptions.resumeId` for why
+  // re-deriving it from the text stopped being correct once duplicate-text
+  // resumes became legal). Only the CLI, which has text and nothing else,
+  // falls through to find-or-create.
+  //
+  // Ticket 7701534: `getOrCreateResumeId` also reports `isNew`, which only
+  // `POST /resumes` (routes/resumes.ts) needs to distinguish "a genuinely
+  // new resume" from "this text already belongs to another resume" --
+  // irrelevant here, this CLI/worker path has always treated
   // find-or-create as a single outcome either way.
-  const { id: resumeId } = await getOrCreateResumeId(db, resumeText, userId);
+  const resumeId = providedResumeId ?? (await getOrCreateResumeId(db, resumeText, userId)).id;
 
   // Ticket 59fdc52 review round 3, N2: the `searches` row (and its
   // `search_sources` links) used to be inserted AFTER fetch+filter below —

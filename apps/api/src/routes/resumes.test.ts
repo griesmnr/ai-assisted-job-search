@@ -1,6 +1,12 @@
-import { randomUUID } from "node:crypto";
-import type { CreateResumeResponse, UpdateResumeNicknameResponse } from "@app/shared";
-import { eq } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import type {
+  CreateResumeResponse,
+  GetResumeResponse,
+  GetResumeResultsResponse,
+  UpdateResumeNicknameResponse,
+  UpdateResumeTextResponse,
+} from "@app/shared";
+import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -16,7 +22,7 @@ import {
   sourceDescriptors,
   userJobStatuses,
 } from "../db/schema.js";
-import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
+import { createPooledTestDatabase, createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 
 // Node 22 can read .env itself — no dotenv dependency needed.
@@ -120,23 +126,20 @@ describe("POST /resumes", () => {
       expect(secondNickname).not.toBe(firstNickname);
     });
 
-    // Ticket 7701534: resubmitting a resume's OWN unchanged text (e.g.
-    // re-editing just to fix something else) must keep working exactly
-    // as before -- `currentResumeId` set to the first response's own id
-    // is what tells the server this is that case, not a genuine
-    // duplicate. See the "duplicate resume text" describe block below
-    // for what happens WITHOUT it.
-    it("a resubmission of identical text, with currentResumeId set to itself, returns the SAME existing nickname", async () => {
+    // Resubmitting a resume's OWN unchanged text (e.g. re-editing just to
+    // fix something else) resolves to that same resume and keeps its
+    // nickname. Ticket 7701534 needed `currentResumeId` to allow this
+    // without tripping its duplicate guardrail; ticket 6ba221e deleted
+    // that guardrail, so it works with or without the field -- the
+    // behavior under test here is the nickname, which must never be
+    // reassigned by a resubmission.
+    it("a resubmission of identical text returns the SAME existing nickname", async () => {
       const app = buildTestApp();
       const resumeText = `Idempotent nickname resume ${randomUUID()}`;
 
       const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-      const { id: firstId, resumeNickname: firstNickname } = first.json() as CreateResumeResponse;
-      const second = await app.inject({
-        method: "POST",
-        url: "/resumes",
-        payload: { resumeText, currentResumeId: firstId },
-      });
+      const { resumeNickname: firstNickname } = first.json() as CreateResumeResponse;
+      const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
 
       expect(second.statusCode).toBe(200);
       const secondNickname = (second.json() as CreateResumeResponse).resumeNickname;
@@ -144,29 +147,41 @@ describe("POST /resumes", () => {
     });
   });
 
-  it("is content-addressed: posting identical text twice with currentResumeId set to itself returns the same id", async () => {
+  it("posting identical text twice resolves to the same id rather than a second row", async () => {
     const app = buildTestApp();
     const resumeText = `Repeated resume text ${randomUUID()}`;
 
     const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     const firstId = (first.json() as { id: string }).id;
-    const second = await app.inject({
-      method: "POST",
-      url: "/resumes",
-      payload: { resumeText, currentResumeId: firstId },
-    });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
 
     expect(second.statusCode).toBe(200);
     const secondId = (second.json() as { id: string }).id;
     expect(secondId).toBe(firstId);
+    // And exactly one row exists for that text -- the create path's
+    // find-or-create convenience (ticket 6ba221e kept it deliberately;
+    // see the route's own comment) rather than a second "Resume N".
+    const rows = await db.select().from(resumes).where(eq(resumes.resumeText, resumeText));
+    expect(rows).toHaveLength(1);
   });
 
-  // Ticket 7701534, Nicole: "if it so happens that the pasted resume is
-  // the same text as another already saved resume... not allow them to
-  // continue... This resume has the exact same text as Resume 8. Please
-  // use Resume 8... you can't save an identical resume."
-  describe("duplicate resume text (ticket 7701534)", () => {
-    it("rejects a fresh paste (no currentResumeId) whose text already belongs to an existing resume", async () => {
+  // TICKET 6ba221e DELETED THE DUPLICATE-TEXT 409 (ticket 7701534) that
+  // this describe block used to assert, along with its three rejection
+  // tests. Nicole, reversing her own earlier requirement verbatim: "I know
+  // that it was a previous requirement of mine that it wouldn't let the
+  // exact same text exist for two resumes before, but now I frankly don't
+  // care about that. So I want to remove that requirement. Let them do
+  // that. If they want to do that, that's their business."
+  //
+  // The deleted cases, for the record, so a future reader can tell a
+  // removed requirement from a lost test: a fresh paste whose text already
+  // belonged to an existing resume 409'd; text matching a DIFFERENT resume
+  // than `currentResumeId` 409'd; and neither ran title inference. All
+  // three now simply succeed. What replaced them is the
+  // "no duplicate-text rejection" block below, which asserts the new
+  // behavior rather than leaving its absence untested.
+  describe("duplicate resume text is legal (ticket 6ba221e)", () => {
+    it("a fresh paste whose text already belongs to an existing resume is accepted, not 409'd", async () => {
       const app = buildTestApp();
       const resumeText = `Already-saved resume ${randomUUID()}`;
 
@@ -175,18 +190,18 @@ describe("POST /resumes", () => {
 
       const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
 
-      expect(second.statusCode).toBe(409);
-      const body = second.json() as {
-        error: string;
-        duplicateResumeId: string;
-        duplicateResumeNickname: string;
-      };
-      expect(body.duplicateResumeId).toBe(firstId);
-      expect(body.duplicateResumeNickname).toBe(firstNickname);
-      expect(body.error).toContain(firstNickname);
+      expect(second.statusCode).toBe(200);
+      const body = second.json() as CreateResumeResponse;
+      // Resolves to the resume that already holds this text (the create
+      // path's find-or-create convenience), carrying its real nickname --
+      // never an error naming a resume the user did not choose, which was
+      // the core of the complaint behind this ticket.
+      expect(body.id).toBe(firstId);
+      expect(body.resumeNickname).toBe(firstNickname);
+      expect(second.json()).not.toHaveProperty("duplicateResumeId");
     });
 
-    it("rejects text that matches a DIFFERENT resume than the one named by currentResumeId", async () => {
+    it("text matching a DIFFERENT resume than the one being edited is accepted too", async () => {
       const app = buildTestApp();
       const resumeTextA = `Resume A text ${randomUUID()}`;
       const resumeTextB = `Resume B text ${randomUUID()}`;
@@ -196,30 +211,18 @@ describe("POST /resumes", () => {
         url: "/resumes",
         payload: { resumeText: resumeTextA },
       });
-      const { id: idA, resumeNickname: nicknameA } = respA.json() as CreateResumeResponse;
-      const respB = await app.inject({
-        method: "POST",
-        url: "/resumes",
-        payload: { resumeText: resumeTextB },
-      });
-      const { id: idB } = respB.json() as CreateResumeResponse;
+      const { id: idA } = respA.json() as CreateResumeResponse;
+      await app.inject({ method: "POST", url: "/resumes", payload: { resumeText: resumeTextB } });
 
-      // Currently "editing" resume B, but the pasted text is actually A's.
+      // Was a 409 under ticket 7701534 ("the exact same text as Resume N").
       const attempt = await app.inject({
         method: "POST",
         url: "/resumes",
-        payload: { resumeText: resumeTextA, currentResumeId: idB },
+        payload: { resumeText: resumeTextA },
       });
 
-      expect(attempt.statusCode).toBe(409);
-      const body = attempt.json() as { duplicateResumeId: string; duplicateResumeNickname: string };
-      expect(body.duplicateResumeId).toBe(idA);
-      expect(body.duplicateResumeNickname).toBe(nicknameA);
-
-      // And no phantom row was created for the rejected attempt.
-      const rows = await db.select().from(resumes).where(eq(resumes.resumeText, resumeTextA));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.id).toBe(idA);
+      expect(attempt.statusCode).toBe(200);
+      expect((attempt.json() as CreateResumeResponse).id).toBe(idA);
     });
 
     it("does not reject a genuinely new resume's first-ever submission", async () => {
@@ -232,12 +235,11 @@ describe("POST /resumes", () => {
       expect(response.statusCode).toBe(200);
     });
 
-    // Opus review round 1 (N2): the primary reason `currentResumeId`
-    // exists at all -- editing an existing resume's text into something
-    // genuinely DIFFERENT (not matching any other saved resume) -- had no
-    // direct API test. This is boundary case (e) from the review's own
-    // enumeration: currentResumeId set to A, text now matches nothing.
-    it("accepts genuinely new text submitted WITH a currentResumeId set (the real edit-and-resubmit case)", async () => {
+    // Genuinely new text POSTed while another resume is active is still a
+    // genuinely NEW resume -- POST means "create". Editing an existing
+    // resume's text is `PUT /resumes/:id/text` (its own describe block
+    // below), and that distinction is the whole of ticket 6ba221e.
+    it("POSTing genuinely new text creates a DISTINCT resume, it does not edit any existing one", async () => {
       const app = buildTestApp();
       const first = await app.inject({
         method: "POST",
@@ -249,49 +251,35 @@ describe("POST /resumes", () => {
       const edited = await app.inject({
         method: "POST",
         url: "/resumes",
-        payload: {
-          resumeText: `Edit-rewritten resume ${randomUUID()}`,
-          currentResumeId: originalId,
-        },
+        payload: { resumeText: `Edit-rewritten resume ${randomUUID()}` },
       });
 
       expect(edited.statusCode).toBe(200);
       const { id: editedId } = edited.json() as CreateResumeResponse;
-      // A real, DISTINCT new resume -- editing into different text is not
-      // the same resume renamed in place (content-addressing, ticket
-      // 620ca30), and must not be treated as a duplicate of anything.
       expect(editedId).not.toBe(originalId);
     });
 
-    // Opus review round 1 (N3): the original version of this test asserted
-    // only a call COUNT, which stayed 0 for a reason unrelated to the
-    // thing being tested -- ticket 39b4a48's suggestedTitles cache already
-    // prevents a second inferTitles call for ANY resubmission of the same
-    // text, duplicate-rejected or not, so the count alone can't tell "the
-    // duplicate check ran first" apart from "the cache did its normal
-    // job." Asserting the REJECTED response's shape (no suggestedTitles
-    // field at all, since it's a 409 error body, not a 200
-    // CreateResumeResponse) is what actually distinguishes them.
-    it("does not run title inference for a rejected duplicate, and the 409 body carries no suggestedTitles", async () => {
-      let calls = 0;
-      const inferTitles = async () => {
-        calls++;
-        return ["Should never be called"];
-      };
-      const app = buildTestApp(inferTitles);
-      const resumeText = `Duplicate-inference-guard resume ${randomUUID()}`;
+    // Ticket 6ba221e: `currentResumeId` is accepted-and-ignored rather
+    // than removed from the body schema, which is
+    // `additionalProperties: false` -- a cached pre-6ba221e browser bundle
+    // still sends it, and dropping the property would 400 every resume
+    // creation from such a client. This is that back-compat promise as a
+    // test, not an aspiration in a comment.
+    it("still ACCEPTS a legacy currentResumeId field, ignoring it rather than 400ing on it", async () => {
+      const app = buildTestApp();
+      const resumeText = `Legacy currentResumeId resume ${randomUUID()}`;
+      const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const { id: firstId } = first.json() as CreateResumeResponse;
 
-      await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-      calls = 0; // reset -- only the SECOND (rejected) call matters here
-      const second = await app.inject({
+      // A pre-6ba221e client editing: same id in `currentResumeId`, new
+      // text. Under 7701534 this was the "allowed" branch; it must still
+      // not be a schema rejection.
+      const legacy = await app.inject({
         method: "POST",
         url: "/resumes",
-        payload: { resumeText },
+        payload: { resumeText: `${resumeText} rewritten`, currentResumeId: firstId },
       });
-
-      expect(second.statusCode).toBe(409);
-      expect(calls).toBe(0);
-      expect(second.json()).not.toHaveProperty("suggestedTitles");
+      expect(legacy.statusCode).toBe(200);
     });
   });
 
@@ -346,7 +334,7 @@ describe("POST /resumes", () => {
       const second = await injectAs(app, userId, {
         method: "POST",
         url: "/resumes",
-        payload: { resumeText, currentResumeId: firstId },
+        payload: { resumeText },
       });
 
       expect(second.statusCode).toBe(200);
@@ -749,7 +737,7 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     expect(body.suggestedTitles).toEqual(["Technical Writer", "Documentation Engineer"]);
   });
 
-  it("calls inferTitles at most once per resume: a resubmission of its own identical text (currentResumeId set) reuses the cached suggestions", async () => {
+  it("calls inferTitles at most once per resume: a resubmission of its own identical text reuses the cached suggestions", async () => {
     let calls = 0;
     const inferTitles = async () => {
       calls++;
@@ -759,12 +747,7 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     const resumeText = `Resume text ${randomUUID()}`;
 
     const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    const firstId = (first.json() as CreateResumeResponse).id;
-    const second = await app.inject({
-      method: "POST",
-      url: "/resumes",
-      payload: { resumeText, currentResumeId: firstId },
-    });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
 
     expect(calls).toBe(1);
     expect((first.json() as CreateResumeResponse).suggestedTitles).toEqual(["Software Engineer"]);
@@ -799,13 +782,8 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     const app = buildTestApp(inferTitles);
     const resumeText = `Resume text ${randomUUID()}`;
 
-    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
-    const firstId = (first.json() as CreateResumeResponse).id;
-    const second = await app.inject({
-      method: "POST",
-      url: "/resumes",
-      payload: { resumeText, currentResumeId: firstId },
-    });
+    await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
 
     expect(second.statusCode).toBe(200);
     expect(calls).toBe(1);
@@ -1013,11 +991,7 @@ describe("isLocked (ticket 88f11d7)", () => {
       isEstimate: false,
     });
 
-    const second = await app.inject({
-      method: "POST",
-      url: "/resumes",
-      payload: { resumeText, currentResumeId: id },
-    });
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
     expect(second.statusCode).toBe(200);
     expect((second.json() as CreateResumeResponse).isLocked).toBe(true);
   });
@@ -1268,6 +1242,508 @@ describe("PATCH /resumes/:id (ticket 38a7598)", () => {
       expect(responseA.statusCode).toBe(200);
       expect(responseB.statusCode).toBe(200);
     });
+  });
+});
+
+/**
+ * TICKET 6ba221e: `PUT /resumes/:id/text` -- the in-place text edit this
+ * whole ticket exists for.
+ *
+ * Every assertion below that matters is made against the ROW READ BACK FROM
+ * POSTGRES, not against the response body, because the response body is
+ * exactly what a broken implementation would still get right: a handler
+ * that created a new row and returned the OLD row's nickname would look
+ * fine from the outside. The failure these tests exist to catch is Nicole's
+ * own report -- "if I'm on resume one and I make an edit and I hit save and
+ * it's still called resume one, it actually becomes resume 2" -- which is a
+ * fact about the TABLE.
+ */
+describe("PUT /resumes/:id/text (ticket 6ba221e)", () => {
+  /** Creates a resume through the real route, returning its id and nickname. */
+  async function createResume(
+    app: ReturnType<typeof buildTestApp>,
+    resumeText: string,
+    userId: string = DEFAULT_TEST_USER_ID,
+  ): Promise<{ id: string; resumeNickname: string }> {
+    const response = await injectAs(app, userId, {
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as CreateResumeResponse;
+    return { id: body.id, resumeNickname: body.resumeNickname };
+  }
+
+  /** One scored job attached to `resumeId`. Returns the job's id. */
+  async function seedScoredJobFor(resumeId: string, matchScore: number): Promise<string> {
+    const jobId = randomUUID();
+    await db.insert(jobsTable).values({
+      id: jobId,
+      externalId: `put-text-${jobId}`,
+      dataSource: DATA_SOURCE,
+      title: "Senior Backend Engineer",
+      description: "a job description",
+      company: "Test Co",
+      linkToApply: `https://example.com/${jobId}`,
+      postedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await db.insert(jobMatches).values({
+      id: randomUUID(),
+      resumeId,
+      jobId,
+      matchScore,
+      rationale: "fake rationale",
+      strengths: [],
+      gaps: [],
+    });
+    return jobId;
+  }
+
+  it("keeps the same resumes.id and creates no new row -- verified by reading the table", async () => {
+    const app = buildTestApp();
+    const original = `Original text ${randomUUID()}`;
+    const { id } = await createResume(app, original);
+
+    const rowsBefore = await db
+      .select()
+      .from(resumes)
+      .where(eq(resumes.userId, DEFAULT_TEST_USER_ID));
+    const countBefore = rowsBefore.length;
+
+    const edited = `Edited text ${randomUUID()}`;
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: edited },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as UpdateResumeTextResponse).id).toBe(id);
+
+    // THE ROW ITSELF: same id, new text, and no sibling appeared.
+    const row = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(row).toHaveLength(1);
+    expect(row[0]?.resumeText).toBe(edited);
+    const rowsAfter = await db
+      .select()
+      .from(resumes)
+      .where(eq(resumes.userId, DEFAULT_TEST_USER_ID));
+    expect(rowsAfter).toHaveLength(countBefore);
+    // And the ORIGINAL text exists nowhere any more -- this was an edit,
+    // not a copy-on-write that left the old version behind.
+    const stale = await db.select().from(resumes).where(eq(resumes.resumeText, original));
+    expect(stale).toHaveLength(0);
+  });
+
+  it("keeps the resume's nickname across a text edit -- no 'Resume 2'", async () => {
+    const app = buildTestApp();
+    const { id, resumeNickname } = await createResume(app, `Nickname-keeping ${randomUUID()}`);
+    // Rename it first, so this proves the nickname is PRESERVED rather
+    // than merely re-derived to the same default by luck.
+    const renamed = `Tailored for platform roles ${randomUUID()}`;
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/resumes/${id}`,
+      payload: { resumeNickname: renamed },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(renamed).not.toBe(resumeNickname);
+
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: `Rewritten ${randomUUID()}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as UpdateResumeTextResponse).resumeNickname).toBe(renamed);
+    const row = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(row[0]?.resumeNickname).toBe(renamed);
+  });
+
+  it("recomputes resume_hash to match the new text", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Hash-check original ${randomUUID()}`);
+    const before = await db.select().from(resumes).where(eq(resumes.id, id));
+
+    const edited = `Hash-check edited ${randomUUID()}`;
+    await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: edited },
+    });
+
+    const after = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(after[0]?.resumeHash).not.toBe(before[0]?.resumeHash);
+    // Equal to the canonical hash of the new text, not merely "different":
+    // a handler that wrote a random value would also pass the line above.
+    expect(after[0]?.resumeHash).toBe(createHash("sha256").update(edited, "utf8").digest("hex"));
+  });
+
+  it("leaves previously scored jobs attached to the same resume", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Scored-jobs resume ${randomUUID()}`);
+    const jobId = await seedScoredJobFor(id, 88);
+
+    await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: `Scored-jobs rewritten ${randomUUID()}` },
+    });
+
+    // Ticket 6ba221e explicitly ACCEPTS that these scores now describe
+    // text that is no longer there (Nicole, twice). What must not happen
+    // is them going MISSING: before this ticket, an "edit" minted a new
+    // resume id whose results were empty, which read as "my search
+    // vanished".
+    const results = await app.inject({ method: "GET", url: `/resumes/${id}/results` });
+    expect(results.statusCode).toBe(200);
+    const body = results.json() as GetResumeResultsResponse;
+    expect(body.results.map((r) => r.jobId)).toEqual([jobId]);
+    expect(body.results[0]?.matchScore).toBe(88);
+  });
+
+  it("leaves job_statuses rows intact -- 'I applied to X' still answers correctly after a text edit", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Applied-status resume ${randomUUID()}`);
+    const jobId = await seedScoredJobFor(id, 70);
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/jobs/${jobId}/status`,
+      payload: { status: "applied" },
+    });
+    expect(applied.statusCode).toBe(200);
+
+    await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: `Applied-status rewritten ${randomUUID()}` },
+    });
+
+    // `user_job_statuses` is keyed (user_id, job_id) with resume_id
+    // deliberately absent (db/schema.ts's long comment on that key),
+    // precisely so this survives a resume rewrite. Asserted as BEHAVIOR
+    // through the results route -- the status the UI actually reads --
+    // not just as a row count.
+    const results = await app.inject({ method: "GET", url: `/resumes/${id}/results` });
+    const body = results.json() as GetResumeResultsResponse;
+    expect(body.results[0]?.jobId).toBe(jobId);
+    expect(body.results[0]?.status).toBe("applied");
+
+    const statusRows = await db
+      .select()
+      .from(userJobStatuses)
+      .where(eq(userJobStatuses.jobId, jobId));
+    expect(statusRows).toHaveLength(1);
+    expect(statusRows[0]?.status).toBe("applied");
+  });
+
+  it("lets the same user hold TWO resumes with byte-identical text, both usable", async () => {
+    const app = buildTestApp();
+    const userId = randomUUID();
+    const sharedText = `Identical text for two resumes ${randomUUID()}`;
+    const first = await createResume(app, sharedText, userId);
+    const second = await createResume(app, `A different second resume ${randomUUID()}`, userId);
+
+    // Editing the second one INTO the first one's exact text. This was
+    // impossible twice over before ticket 6ba221e: the unique index
+    // rejected the write, and the route 409'd before even trying.
+    const response = await injectAs(app, userId, {
+      method: "PUT",
+      url: `/resumes/${second.id}/text`,
+      payload: { resumeText: sharedText },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const rows = await db
+      .select()
+      .from(resumes)
+      .where(and(eq(resumes.userId, userId), eq(resumes.resumeText, sharedText)));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.id).sort()).toEqual([first.id, second.id].sort());
+    // Same hash on both rows -- the column is still maintained, it just
+    // isn't unique any more.
+    expect(rows[0]?.resumeHash).toBe(rows[1]?.resumeHash);
+
+    // BOTH USABLE, which is the half a bare row count would miss: each is
+    // independently readable, independently renameable, and carries its
+    // own scored results.
+    for (const r of [first, second]) {
+      const got = await injectAs(app, userId, { method: "GET", url: `/resumes/${r.id}` });
+      expect(got.statusCode).toBe(200);
+      expect((got.json() as GetResumeResponse).resumeText).toBe(sharedText);
+    }
+    const firstJob = await seedScoredJobFor(first.id, 61);
+    const secondJob = await seedScoredJobFor(second.id, 62);
+    const firstResults = await injectAs(app, userId, {
+      method: "GET",
+      url: `/resumes/${first.id}/results`,
+    });
+    const secondResults = await injectAs(app, userId, {
+      method: "GET",
+      url: `/resumes/${second.id}/results`,
+    });
+    expect((firstResults.json() as GetResumeResultsResponse).results.map((x) => x.jobId)).toEqual([
+      firstJob,
+    ]);
+    expect((secondResults.json() as GetResumeResultsResponse).results.map((x) => x.jobId)).toEqual([
+      secondJob,
+    ]);
+  });
+
+  it("cannot edit ANOTHER user's resume via a crafted id -- 404, and that row is untouched", async () => {
+    const app = buildTestApp();
+    const userA = randomUUID();
+    const userB = randomUUID();
+    const textA = `User A private text ${randomUUID()}`;
+    const { id: resumeA } = await createResume(app, textA, userA);
+
+    const attempt = await injectAs(app, userB, {
+      method: "PUT",
+      url: `/resumes/${resumeA}/text`,
+      payload: { resumeText: "user B's overwrite attempt" },
+    });
+
+    // 404, never 403 -- same convention every by-id route here uses, so a
+    // caller cannot distinguish "not yours" from "never existed".
+    expect(attempt.statusCode).toBe(404);
+    // Ticket 3fc1e5e's audit found exactly this class of bug in the rename
+    // path, where a check and an UPDATE disagreed about whose row was being
+    // changed. So assert the ROW, not just the status code.
+    const row = await db.select().from(resumes).where(eq(resumes.id, resumeA));
+    expect(row[0]?.resumeText).toBe(textA);
+    expect(row[0]?.userId).toBe(userA);
+  });
+
+  it("404s for an unknown resume id rather than creating one", async () => {
+    const app = buildTestApp();
+    const unknownId = randomUUID();
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${unknownId}/text`,
+      payload: { resumeText: "text for a resume that does not exist" },
+    });
+    expect(response.statusCode).toBe(404);
+    const rows = await db.select().from(resumes).where(eq(resumes.id, unknownId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects empty and whitespace-only text with 400, leaving the stored text alone", async () => {
+    const app = buildTestApp();
+    const text = `Validation resume ${randomUUID()}`;
+    const { id } = await createResume(app, text);
+
+    for (const payload of [{ resumeText: "" }, { resumeText: "   \n\t " }]) {
+      const response = await app.inject({ method: "PUT", url: `/resumes/${id}/text`, payload });
+      expect(response.statusCode).toBe(400);
+    }
+    const row = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(row[0]?.resumeText).toBe(text);
+  });
+
+  it("rejects text over the length ceiling with 400, not 500", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Length-ceiling resume ${randomUUID()}`);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: "x".repeat(200_001) },
+    });
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { error: string }).error).toContain("200000");
+  });
+
+  it("rejects a non-string resumeText with 400 rather than coercing it", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Type-check resume ${randomUUID()}`);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: 42 },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  describe("suggestedTitles on a text change (ticket 6ba221e's recorded decision)", () => {
+    it("re-infers from the NEW text and persists the result", async () => {
+      const calls: string[] = [];
+      const inferTitles = async (resumeText: string) => {
+        calls.push(resumeText);
+        return calls.length === 1 ? ["Technical Writer"] : ["Platform Engineer"];
+      };
+      const app = buildTestApp(inferTitles);
+      const { id } = await createResume(app, `Titles original ${randomUUID()}`);
+      expect(calls).toHaveLength(1);
+
+      const edited = `Titles rewritten ${randomUUID()}`;
+      const response = await app.inject({
+        method: "PUT",
+        url: `/resumes/${id}/text`,
+        payload: { resumeText: edited },
+      });
+
+      // Inference ran AGAINST THE NEW TEXT -- the whole point. A handler
+      // that re-inferred from the stale row would pass a call-count
+      // assertion and fail this one.
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toBe(edited);
+      expect((response.json() as UpdateResumeTextResponse).suggestedTitles).toEqual([
+        "Platform Engineer",
+      ]);
+      // Cached on the row, so the chips the user sees next time come from
+      // the edited text rather than re-paying or reverting.
+      const row = await db.select().from(resumes).where(eq(resumes.id, id));
+      expect(row[0]?.suggestedTitles).toEqual(["Platform Engineer"]);
+    });
+
+    it("does NOT re-infer (and spends nothing) when the saved text is unchanged", async () => {
+      let calls = 0;
+      const inferTitles = async () => {
+        calls++;
+        return ["Software Engineer"];
+      };
+      const app = buildTestApp(inferTitles);
+      const text = `Unchanged-save resume ${randomUUID()}`;
+      const { id } = await createResume(app, text);
+      expect(calls).toBe(1);
+
+      const response = await app.inject({
+        method: "PUT",
+        url: `/resumes/${id}/text`,
+        payload: { resumeText: text },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The cost control: a save with nothing changed, or a double-click
+      // on Save, must not be billable.
+      expect(calls).toBe(1);
+      const body = response.json() as UpdateResumeTextResponse;
+      expect(body.suggestedTitles).toEqual(["Software Engineer"]);
+      const row = await db.select().from(resumes).where(eq(resumes.id, id));
+      expect(row[0]?.suggestedTitles).toEqual(["Software Engineer"]);
+    });
+
+    it("stores NULL (not []) when inference fails after an edit, so a later attempt can still retry", async () => {
+      let shouldThrow = false;
+      const inferTitles = async (): Promise<string[]> => {
+        if (shouldThrow) throw new Error("simulated inference failure");
+        return ["Initial Title"];
+      };
+      const app = buildTestApp(inferTitles);
+      const { id } = await createResume(app, `Inference-failure resume ${randomUUID()}`);
+
+      shouldThrow = true;
+      const response = await app.inject({
+        method: "PUT",
+        url: `/resumes/${id}/text`,
+        payload: { resumeText: `Inference-failure rewritten ${randomUUID()}` },
+      });
+
+      // The EDIT still succeeds -- the text is what the user asked for.
+      expect(response.statusCode).toBe(200);
+      expect((response.json() as UpdateResumeTextResponse).suggestedTitles).toEqual([]);
+      // But the row records "not inferred yet", NOT an authoritative
+      // empty list: ticket 82ae975 is an open bug about `[]` being cached
+      // forever behind a `suggestedTitles === null` retry gate, and this
+      // new write path deliberately does not walk into it.
+      const row = await db.select().from(resumes).where(eq(resumes.id, id));
+      expect(row[0]?.suggestedTitles).toBeNull();
+    });
+  });
+
+  // Ticket 88f11d7 locks a resume on its first REAL search, and the SEARCH
+  // page honors that (its collapsed bar offers "Change", never "Edit").
+  // This endpoint deliberately does not, per this ticket's own recorded
+  // decision -- Nicole: "I'm confident that I want that text editable,
+  // even if it makes things not true anymore... already previously
+  // searched things." Asserted so the decision is a tested behavior rather
+  // than a comment someone later "fixes".
+  it("permits editing a LOCKED resume's text, and reports it as still locked", async () => {
+    const app = buildTestApp();
+    const { id } = await createResume(app, `Locked resume ${randomUUID()}`);
+    await db.insert(searches).values({
+      id: randomUUID(),
+      resumeId: id,
+      searchedAt: new Date(),
+      status: "complete",
+      isEstimate: false,
+    });
+
+    const edited = `Locked resume rewritten ${randomUUID()}`;
+    const response = await app.inject({
+      method: "PUT",
+      url: `/resumes/${id}/text`,
+      payload: { resumeText: edited },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as UpdateResumeTextResponse;
+    expect(body.isLocked).toBe(true);
+    const row = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(row[0]?.resumeText).toBe(edited);
+  });
+
+  /**
+   * CONCURRENT SUBMISSION OF IDENTICAL TEXT (ticket 6ba221e required this
+   * to be established, not assumed).
+   *
+   * Dropping `unique(user_id, resume_hash)` took the race-free upsert with
+   * it: `getOrCreateResumeId` is a SELECT-then-INSERT now, so two
+   * simultaneous POSTs of the same text can both miss the SELECT and both
+   * insert. Two rows is the ACCEPTED outcome under the new rules -- what
+   * must not happen is an ERROR (which is exactly what would happen if the
+   * old `ON CONFLICT (user_id, resume_hash)` had been left in place: a
+   * conflict target with no matching index raises SQLSTATE 42P10).
+   *
+   * Runs on a real connection POOL, not this file's shared single client:
+   * a single `pg.Client` is one session and serializes everything through
+   * it, so a concurrency test written against it cannot tell a correct
+   * implementation from a broken one (see `createPooledTestDatabase`'s own
+   * doc comment). The assertion is deliberately written to accept EITHER
+   * outcome (one row or two), because which one happens depends on real
+   * interleaving -- asserting a specific count would be a flaky test
+   * asserting something this ticket does not promise.
+   */
+  it("does not error when identical text is submitted twice concurrently", async () => {
+    const pooled = createPooledTestDatabase(testDb.testDbName);
+    try {
+      const app = buildApp({
+        db: pooled.db,
+        getScoreJob: () => {
+          throw new Error("not used by these tests");
+        },
+        inferTitles: async () => [],
+      });
+      const userId = randomUUID();
+      const resumeText = `Concurrent identical text ${randomUUID()}`;
+
+      const [a, b] = await Promise.all([
+        injectAs(app, userId, { method: "POST", url: "/resumes", payload: { resumeText } }),
+        injectAs(app, userId, { method: "POST", url: "/resumes", payload: { resumeText } }),
+      ]);
+
+      expect(a.statusCode).toBe(200);
+      expect(b.statusCode).toBe(200);
+
+      const rows = await db
+        .select()
+        .from(resumes)
+        .where(and(eq(resumes.userId, userId), eq(resumes.resumeText, resumeText)));
+      // One (one request won the SELECT race) or two (both missed it) --
+      // both are legal. Never zero, and never an error.
+      expect(rows.length).toBeGreaterThanOrEqual(1);
+      expect(rows.length).toBeLessThanOrEqual(2);
+      // Every id either response handed back is a real, readable row --
+      // the thing a caller actually depends on.
+      const ids = new Set(rows.map((r) => r.id));
+      for (const response of [a, b]) {
+        expect(ids.has((response.json() as CreateResumeResponse).id)).toBe(true);
+      }
+    } finally {
+      await pooled.close();
+    }
   });
 });
 

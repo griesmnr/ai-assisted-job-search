@@ -5,15 +5,25 @@ import { sortResumesByNickname } from "../resumeSort";
  * Paste-only resume input (decided 2026-08-29 on git-bug a217859 — no file
  * upload; see `POST /resumes`'s actual accepted shape,
  * apps/api/src/routes/resumes.ts, which takes raw `resumeText`, nothing
- * else). Content-addressed server-side, so re-submitting THIS SAME
- * resume's own unchanged text is cheap and idempotent (returns the same
- * resumeId) — this component doesn't need to guard against accidental
- * double-submission for correctness, only for UX. Ticket 7701534: text
- * that instead matches a DIFFERENT already-saved resume is no longer
- * silently accepted as if new — `App.tsx`'s `handleResumeSubmit` sends
- * along the currently-active `resumeId` specifically so the server can
- * tell those two cases apart, and surfaces the DIFFERENT-resume case as a
- * real, blocking `resumeError` this component just renders like any other.
+ * else).
+ *
+ * Ticket 6ba221e: `onSubmit` no longer always means "create a resume".
+ * `App.tsx`'s `handleResumeSubmit` routes a submit for an already-active,
+ * unlocked resume to `PUT /resumes/:id/text` (an in-place text edit,
+ * keeping the id and the nickname) and only a first-ever paste — or the
+ * locked picker's explicit "Paste a new resume" — to `POST /resumes`. See
+ * that function for the branch and why `resumeLocked` is what decides it.
+ * This component is unchanged by that and deliberately knows nothing about
+ * it: it collects text and hands it up.
+ *
+ * Re-submitting unchanged text stays cheap and idempotent either way (the
+ * PUT short-circuits a no-change save; the POST finds the existing row by
+ * hash), so this component still doesn't need to guard against accidental
+ * double-submission for correctness, only for UX. Ticket 7701534's
+ * duplicate-text 409 — text matching a DIFFERENT already-saved resume
+ * being rejected outright — is GONE as of 6ba221e: two resumes with
+ * identical text are legal now (Nicole: "Let them do that... that's their
+ * business"), so there is no such `resumeError` to render any more.
  *
  * Ticket 38a7598 (Nicole: "right next to the 'use this resume' button...
  * when they use this resume, they should be at that moment... choosing the
@@ -37,12 +47,20 @@ import { sortResumesByNickname } from "../resumeSort";
  * pure horizontal reorder, same gating as 5a79aa4 above, unchanged --
  * the nickname field renders BEFORE the button (once both are showing,
  * which only ever happens after a first successful submission, since
- * that's what makes `resumeId` exist). Also: the textarea becomes
- * read-only once `resumeId` exists, so the submitted text stays visible
- * as a reference but can't be edited into a silent identity change
- * (this app's resumes are content-addressed by resumeText -- editing
- * the box post-submission would, on the next submit, look like an
- * entirely different resume, not an update to this one).
+ * that's what makes `resumeId` exist). That ticket ALSO made the textarea
+ * read-only once `resumeId` existed, so the submitted text stayed visible
+ * as a reference but couldn't be edited into a silent identity change:
+ * resumes were content-addressed by their text, so editing the box
+ * post-submission would, on the next submit, look like an entirely
+ * different resume rather than an update to this one.
+ *
+ * BOTH HALVES OF THAT ARE NOW HISTORY, and this comment is kept only so
+ * the removals read as decisions. Ticket ac141d0 replaced the read-only
+ * lock with the collapse/expand design below (the textarea in the
+ * expanded form has been plainly editable since), and ticket 6ba221e
+ * removed the PREMISE: a resume is identified by its id, not its text, so
+ * an edited box is no longer a different resume -- `handleResumeSubmit`
+ * saves it onto the same row. There is nothing left here to guard.
  *
  * Adversarial review of cdc2c39 (opus), round 1: caught a real gap in
  * a read-only lock (textarea stayed visible but uneditable once
@@ -73,11 +91,13 @@ import { sortResumesByNickname } from "../resumeSort";
  * nickname, an in-flight search's identity) stays intact; only
  * `editingResume` and whatever App.tsx separately chooses to gate on
  * it (the sources/criteria/search sections, per this ticket) react to
- * the expand/collapse. `resumeId` only actually changes on the NEXT
- * successful submit, via the same content-addressed `createResume`
- * call this component always made. `handleResumeSubmit` (App.tsx) is
- * what clears `editingResume` again on success, not this component's
- * click handler -- the edit isn't "done" until a submission lands.
+ * the expand/collapse. `resumeId` only ever changes on the NEXT
+ * successful submit -- and as of ticket 6ba221e an unlocked resume's
+ * submit does not change it at all, since it UPDATEs that same row
+ * (`updateResumeText`) rather than creating one.
+ * `handleResumeSubmit` (App.tsx) is what clears `editingResume` again
+ * on success, not this component's click handler -- the edit isn't
+ * "done" until a submission lands.
  *
  * The collapsed summary bar's nickname is display-only (Nicole,
  * correcting an early draft of this ticket: "I don't want it
@@ -100,10 +120,15 @@ import { sortResumesByNickname } from "../resumeSort";
  * resume. Picking an existing resume fires `onActivateResume` -- a pure
  * client-side "pick, not paste" (Nicole: "already exists in full, use
  * resume 8... it just needs to say the active resume is now 8"), never
- * `onSubmit`/`POST /resumes` -- so it can never trip the ticket
- * 7701534 duplicate-text guardrail (that check only fires on a real
- * POST body). An UNLOCKED resume's "Edit" is completely unchanged:
- * still goes straight to the expanded form, no picker involved.
+ * `onSubmit`/`POST /resumes`. (That also kept it clear of ticket
+ * 7701534's duplicate-text guardrail, which only ever fired on a real
+ * POST body -- moot since ticket 6ba221e deleted the guardrail, but the
+ * "pick, not paste" shape stands on its own: there is nothing to submit.)
+ * An UNLOCKED resume's "Edit" is completely unchanged: still goes
+ * straight to the expanded form, no picker involved -- though as of
+ * 6ba221e its Submit saves ONTO that resume instead of creating a new
+ * one (App.tsx's `handleResumeSubmit`), which is also why the LOCKED
+ * path's "Paste a new resume" has to stay a POST: see that function.
  *
  * `searching` (Nicole: "I don't think that we should allow a change of
  * resume while a search is in progress"): disables the collapsed bar's
@@ -229,15 +254,20 @@ export function ResumeInput({
   onCancelChange?: () => void;
   /** Fires on the picker's "Paste a new resume" -- App.tsx closes the
    * picker and opens the ordinary expanded form (`editingResume = true`),
-   * same form an unlocked "Edit" already opens. */
+   * same form an unlocked "Edit" already opens. The two look identical
+   * here but save DIFFERENTLY as of ticket 6ba221e (new resume vs. edit
+   * in place); `handleResumeSubmit` tells them apart by `resumeLocked`,
+   * since only a locked resume has a picker to reach this from. */
   onStartPasteNew?: () => void;
   /** Fires with an existing resume's id when its picker button is
    * clicked -- App.tsx's `handleActivateResume` fetches it via `GET
    * /resumes/:id` and adopts it directly. Deliberately NOT `onSubmit`:
    * this is a pick of an already-complete record, never a paste (Nicole:
    * "it just needs to say the active resume is now 8... it's a pick, not
-   * a paste"), so it can never trip the ticket 7701534 duplicate-text
-   * guardrail, which only fires on a real `POST /resumes` body. */
+   * a paste"). It therefore writes nothing at all -- which is what keeps
+   * it from being confusable with either save path, and which also kept
+   * it clear of ticket 7701534's duplicate-text guardrail back when that
+   * existed (deleted by ticket 6ba221e). */
   onActivateResume?: (resumeId: string) => void;
   /** Every other saved resume, for the picker's toggle buttons (ticket
    * 303cff0's `ResumeSummary` shape -- id/nickname only, no text). The
@@ -430,12 +460,14 @@ export function ResumeInput({
               here while a paste was in flight, so the interleaving was
               impossible; now a click during an in-flight POST /resumes runs
               both handlers. The end state stays self-consistent, but a
-              `createResume` that then 409s on the ticket 7701534
-              duplicate-text guardrail sets `resumeError` AFTER
+              `createResume` that then FAILS sets `resumeError` AFTER
               `handleActivateResume` already cleared it -- rendering "Could
               not save resume" under a collapsed bar correctly reading "Using
               Resume 1". That is the stale-error class ac141d0 review round 2
-              (N1) exists to prevent. */}
+              (N1) exists to prevent. (The concrete failure originally named
+              here was ticket 7701534's duplicate-text 409, deleted by ticket
+              6ba221e; the interleaving is unchanged for every other failure,
+              e.g. a network error or the length-limit 400.) */}
           <div className="resume-picker-options">
             {savedResumes.map((r) => (
               <button
@@ -490,10 +522,13 @@ export function ResumeInput({
               // <form> (which has its own submit button), so without this,
               // pressing Enter here triggered the form's implicit submit --
               // RESUBMITTING the resume text -- instead of committing the
-              // nickname edit. Because `createResume` is content-addressed,
-              // that resubmission returned the SAME resume id carrying its
-              // OLD nickname, silently overwriting whatever was just typed
-              // with zero error or explanation. `preventDefault` stops the
+              // nickname edit. That resubmission resolved to the SAME resume
+              // id carrying its OLD nickname, silently overwriting whatever
+              // was just typed with zero error or explanation. (Still true
+              // after ticket 6ba221e, by a different route: the resubmit now
+              // goes to `PUT /resumes/:id/text`, whose response carries the
+              // row's stored `resumeNickname` -- which App.tsx pushes back
+              // into state exactly as before.) `preventDefault` stops the
               // keypress from reaching the form's submit; committing
               // explicitly here (rather than just letting blur handle it)
               // means Enter behaves the same way a real "save" action would,

@@ -491,6 +491,67 @@ describe("POST /searches/estimate", () => {
     expect(rows[0]?.isEstimate).toBe(true);
   });
 
+  /**
+   * TICKET 6ba221e: this route now hands `runDemoMatch` the resumeId it was
+   * ASKED about, instead of letting it re-derive one from the resume text's
+   * hash.
+   *
+   * Why that became necessary: dropping `unique(user_id, resume_hash)`
+   * (migration 0019) means a user can hold two resumes with byte-identical
+   * text, so "the row whose text is this" stopped being a question with one
+   * answer. A hash lookup would resolve to whichever duplicate it ordered
+   * first -- filing this estimate's `searches` row, and its already-scored
+   * accounting, under a resume the caller never named.
+   *
+   * The fixture reaches that state the only way a real user can: create two
+   * resumes, then EDIT the second one's text into the first's. The estimate
+   * then names the SECOND, deliberately -- `getOrCreateResumeId`'s lookup is
+   * oldest-first, so the stale code path would have returned the FIRST.
+   * Naming the older one instead would make this test pass either way.
+   */
+  it("ticket 6ba221e: files the searches row under the resumeId it was given, not whichever row shares that text", async () => {
+    const jobs = [matchingJob(`dup-text-estimate-${randomUUID()}`)];
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: () => {
+        throw new Error("estimate must never need a real scorer");
+      },
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+    });
+    const firstId = await createResume(app);
+    const secondId = await createResume(app);
+    const firstText = (await app.inject({ method: "GET", url: `/resumes/${firstId}` })).json() as {
+      resumeText: string;
+    };
+    const edited = await app.inject({
+      method: "PUT",
+      url: `/resumes/${secondId}/text`,
+      payload: { resumeText: firstText.resumeText },
+    });
+    expect(edited.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/searches/estimate",
+      payload: { resumeId: secondId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as { resumeId: string }).resumeId).toBe(secondId);
+    // THE ASSERTION THAT CATCHES THE BUG: the durable row. Under the old
+    // hash-derived path this landed on `firstId` (older row, same hash),
+    // leaving `secondId` with no search of its own and `firstId` carrying
+    // one it never asked for.
+    const second = await db
+      .select()
+      .from(searchesTable)
+      .where(eq(searchesTable.resumeId, secondId));
+    expect(second).toHaveLength(1);
+    const first = await db.select().from(searchesTable).where(eq(searchesTable.resumeId, firstId));
+    expect(first).toHaveLength(0);
+  });
+
   // Review fix (F1, ticket b2f9dfd, blocking -- opus review round 1
   // proved this live against a real migrated database). Before the fix,
   // an unscoped `loadResumeText` fed straight into `getOrCreateResumeId`,

@@ -11,6 +11,13 @@ import App from "./App";
  * "This resume nickname is already in use" with a red-outlined field, and
  * "This resume has the exact same text as Resume 8... you can't save an
  * identical resume."
+ *
+ * TICKET 6ba221e REVERSED THE SECOND HALF OF THAT. Duplicate text is legal
+ * now ("Let them do that... that's their business"), so the blocking
+ * duplicate-text error and its test are GONE -- see the describe block
+ * below, which asserts the replacement behavior (an edit saves onto the
+ * same resume) rather than leaving the removal untested. The
+ * nickname-collision half is untouched and still asserted further down.
  */
 const getSources = vi.fn();
 const createResume = vi.fn();
@@ -21,6 +28,7 @@ const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
 const setJobStatus = vi.fn();
 const updateResumeNickname = vi.fn();
+const updateResumeText = vi.fn();
 
 vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
@@ -33,6 +41,7 @@ vi.mock("./api/client", () => ({
   listResumes: () => Promise.resolve({ resumes: [] }),
   getResume: () => Promise.reject(new Error("no resume text fetched in this test")),
   updateResumeNickname: (...args: unknown[]) => updateResumeNickname(...args),
+  updateResumeText: (...args: unknown[]) => updateResumeText(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));
@@ -53,8 +62,13 @@ async function submitResume(text = "some resume text") {
   fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 }
 
-describe("App — duplicate resume text (ticket 7701534)", () => {
-  it("passes the currently active resumeId as currentResumeId on a resubmission", async () => {
+describe("App — editing a resume's text saves onto the SAME resume (ticket 6ba221e)", () => {
+  // THE REGRESSION TEST FOR NICOLE'S OWN REPORT: "if I'm on resume one and
+  // I make an edit and I hit save and it's still called resume one, it
+  // actually becomes resume 2." This test used to assert the opposite
+  // behavior (that the resubmit went to `createResume` carrying
+  // `currentResumeId`), which is precisely the bug.
+  it("routes an unlocked resume's re-submit to updateResumeText, never createResume", async () => {
     getSources.mockResolvedValue(SOURCES);
     getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
     getAllResults.mockResolvedValue(EMPTY_RESULTS);
@@ -62,16 +76,22 @@ describe("App — duplicate resume text (ticket 7701534)", () => {
       id: "resume-1",
       resumeNickname: "Resume 1",
       suggestedTitles: [],
+      isLocked: false,
+    });
+    updateResumeText.mockResolvedValue({
+      id: "resume-1",
+      resumeText: "second version of the text",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+      isLocked: false,
     });
 
     render(<App />);
     await submitResume("first version of the text");
-    await waitFor(() =>
-      expect(createResume).toHaveBeenCalledWith("first version of the text", undefined),
-    );
+    // A FIRST paste is still a create, and it no longer passes a second
+    // argument at all (`currentResumeId` is gone from the client).
+    await waitFor(() => expect(createResume).toHaveBeenCalledWith("first version of the text"));
 
-    // Re-open for editing and resubmit -- the second call must carry the
-    // resumeId this same session already has active.
     fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "second version of the text" },
@@ -79,43 +99,54 @@ describe("App — duplicate resume text (ticket 7701534)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     await waitFor(() =>
-      expect(createResume).toHaveBeenCalledWith("second version of the text", "resume-1"),
+      expect(updateResumeText).toHaveBeenCalledWith("resume-1", "second version of the text"),
     );
+    // The point: no second resume was created. One `createResume` call
+    // total, the first paste.
+    expect(createResume).toHaveBeenCalledTimes(1);
+    // And the nickname is unchanged -- no "Resume 2".
+    await waitFor(() => expect(screen.getByText("Using Resume 1")).toBeInTheDocument());
   });
 
-  it("shows a blocking, red-styled error naming the existing resume, and does NOT adopt it as active", async () => {
+  // The one case that must stay a CREATE even though a resumeId is active:
+  // the locked resume's picker offering "Paste a new resume". Routing this
+  // to `updateResumeText` would overwrite the very resume the user just
+  // declined to reuse.
+  it("the locked picker's 'Paste a new resume' still creates a new resume, it does not overwrite the locked one", async () => {
     getSources.mockResolvedValue(SOURCES);
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
     getAllResults.mockResolvedValue(EMPTY_RESULTS);
-    createResume.mockRejectedValue(
-      Object.assign(
-        new Error(
-          'This resume has the exact same text as an already-saved resume, "Resume 8". You can\'t save it again as a new resume.',
-        ),
-        {
-          status: 409,
-          body: {
-            error:
-              'This resume has the exact same text as an already-saved resume, "Resume 8". You can\'t save it again as a new resume.',
-            duplicateResumeId: "resume-8",
-            duplicateResumeNickname: "Resume 8",
-          },
-        },
-      ),
-    );
+    createResume
+      .mockResolvedValueOnce({
+        id: "resume-1",
+        resumeNickname: "Resume 1",
+        suggestedTitles: [],
+        // Already locked on arrival -- the same shape `POST /resumes`
+        // returns for text that resolved to an already-searched resume.
+        isLocked: true,
+      })
+      .mockResolvedValueOnce({
+        id: "resume-2",
+        resumeNickname: "Resume 2",
+        suggestedTitles: [],
+        isLocked: false,
+      });
 
     render(<App />);
-    await submitResume();
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      'Could not save resume: This resume has the exact same text as an already-saved resume, "Resume 8"',
+    await submitResume("the locked resume's text");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Change resume" })).toBeInTheDocument(),
     );
-    expect(alert).toHaveClass("resume-error");
 
-    // Not adopted: the sources/criteria section (gated on a real resumeId)
-    // never appears, and the paste box is still the full editable form.
-    expect(screen.queryByText(/Which sources do you want to search/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "a brand new resume's text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(createResume).toHaveBeenCalledWith("a brand new resume's text"));
+    expect(updateResumeText).not.toHaveBeenCalled();
   });
 
   it("a genuinely new resume's first submission is unaffected", async () => {

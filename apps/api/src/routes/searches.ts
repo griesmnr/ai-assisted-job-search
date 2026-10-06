@@ -936,12 +936,23 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
+        // Ticket 6ba221e: the resume row this estimate is actually ABOUT,
+        // passed explicitly instead of letting `runDemoMatch` re-derive it
+        // from `resumeText`'s hash. `loadResumeText` above has already
+        // verified this id belongs to `userId`, so handing it over is safe
+        // (see `RunDemoMatchOptions.resumeId`, which spells out that the
+        // caller owns that check). It is also now the only correct option:
+        // with `unique(user_id, resume_hash)` dropped, a user can hold two
+        // resumes with identical text, and a hash lookup could resolve to
+        // the OTHER one -- filing this estimate's `searches` row and its
+        // already-scored accounting under a resume the caller never named.
+        resumeId,
         // Ticket b2f9dfd (review fix F1): the requester's own identity --
         // `loadResumeText` above already verified `resumeId` actually
-        // belongs to this same user, so `getOrCreateResumeId` inside
-        // `runDemoMatch` can never mistake "an estimate that happens to
-        // create/touch a resume row" for "silently copying someone else's
-        // resume text into this user's account."
+        // belongs to this same user, so nothing inside `runDemoMatch` can
+        // mistake "an estimate that happens to create/touch a resume row"
+        // for "silently copying someone else's resume text into this
+        // user's account."
         userId,
         criteria: buildFetchCriteria(criteria),
         scoreJob: NEVER_SCORE,

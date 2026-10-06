@@ -1,0 +1,44 @@
+-- Ticket 6ba221e: a resume is identified by its `id`. `resume_hash` becomes
+-- an ORDINARY COLUMN, not an identity.
+--
+-- WHAT THIS UNDOES, AND WHY. Migration 0004 (ticket 620ca30) made
+-- `resume_hash` globally UNIQUE; migration 0016 (ticket b2f9dfd) widened that
+-- to the per-user composite `unique(user_id, resume_hash)`. Both were
+-- deliberate: identity WAS content, so posting the same text twice had to
+-- resolve to one row. Three separate pieces of reported user confusion turned
+-- out to be that one mechanism wearing three faces (git-bug 6ba221e):
+--
+--   1. Editing "Resume 1" and saving produced "Resume 2" -- new text means a
+--      new hash means a new row, which is content-addressing working exactly
+--      as specified.
+--   2. There was no way to edit a resume's text at all; the resumes page
+--      could only create.
+--   3. A duplicate-text 409 (ticket 7701534) rejected submitting text
+--      identical to another of your own resumes -- and named a resume the
+--      user had never chosen to create, which was the core of the complaint.
+--
+-- Nicole, 2026-10-06, on (3) verbatim: "I know that it was a previous
+-- requirement of mine that it wouldn't let the exact same text exist for two
+-- resumes before, but now I frankly don't care about that. So I want to
+-- remove that requirement. Let them do that. If they want to do that, that's
+-- their business."
+--
+-- NOTHING REPLACES THIS CONSTRAINT. That is the point, not an omission:
+-- identity is `resumes.id` (the primary key) and always was; this index was
+-- the one thing making text behave like a second, competing identity. Two
+-- rows with byte-identical `resume_text` for the SAME user are now legal and
+-- supported (see db/schema.ts's `resumeHash` comment for what the column is
+-- still FOR, and matching/pipeline.ts's `getOrCreateResumeId` for the
+-- select-then-insert that replaced the `ON CONFLICT (user_id, resume_hash)`
+-- upsert this constraint used to make possible).
+--
+-- SAFE AGAINST EXISTING DATA, unconditionally: dropping a unique constraint
+-- only ever widens what the table accepts, so no pre-existing row can
+-- violate the post-migration schema and no backfill is needed (contrast
+-- migrations 0004/0010/0013/0016/0017, each of which had to add or narrow
+-- something and therefore needed the "nullable, backfill, then NOT NULL"
+-- shape). `resume_hash` itself is left in place, still NOT NULL, still
+-- maintained -- see db/migration-0019.test.ts, which proves both halves
+-- against a database that already contains resumes, job_matches and
+-- user_job_statuses rows rather than against an empty schema.
+ALTER TABLE "resumes" DROP CONSTRAINT "resumes_user_id_resume_hash_unique";
