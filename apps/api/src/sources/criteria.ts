@@ -42,6 +42,7 @@ import type { SearchCriteria } from "@app/shared";
 import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
+  looksLikeContractOrTemp,
 } from "../matching/swe-filter.js";
 import { compileMetroAreaMatchers } from "./metroAreas.js";
 import { expandTitlePhrase } from "./titleSynonyms.js";
@@ -152,6 +153,300 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
   return REMOTE_TEXT.test(job.location ?? "");
 }
 
+// ---------------------------------------------------------------------------
+// COMMITMENT AUDIT, 2026-10-06 — which sources actually POPULATE
+// `Job.commitment` from real upstream data (ticket 623098e)
+// ---------------------------------------------------------------------------
+//
+// MEASURED BY DRIVING EACH ADAPTER'S REAL `search()` against the captured
+// fixtures in `__fixtures__/` with an injected `fetchImpl`, then counting
+// `commitment` on the `NormalizedJob`s that actually came out. That method
+// matters, and an earlier version of this table got two rows wrong by
+// counting raw fixture fields instead: it is the adapter, not the payload,
+// that decides what a posting ends up as. SmartRecruiters skips list
+// postings whose detail fetch fails and Workable collapses duplicate
+// shortcodes into one posting, so counting raw rows over-counts both.
+// "normalized" is what `search()` returned; "mapped" is how many of those
+// have a non-undefined `commitment`.
+//
+//   source           upstream field                  mapped/normalized  rate
+//   ---------------- ------------------------------ ------------------ ------
+//   greenhouse       (NONE — no such field exists)              0/6     0.0%
+//   lever            categories.commitment                     10/13   76.9%
+//   ashby            employmentType                             8/10   80.0%
+//   rippling         employmentType.label (detail)              7/8    87.5%
+//   recruitee        employment_type_code                      16/17   94.1%
+//   smartrecruiters  typeOfEmployment.id                        5/5   100.0%
+//   usajobs          PositionSchedule[0].Code                   2/2   100.0%
+//   workable         employment_type                            6/6   100.0%
+//
+// Corpus totals: 67 normalized postings, 66 unique titles, 54 with a
+// structured commitment (49 full-time, 4 contract, 1 part-time), 13 unknown.
+//
+// Rippling deserves one note so the 7/8 is not misread: its LIST rows carry
+// no `employmentType` key AT ALL, so the field is readable only on the
+// per-posting DETAIL response — which rippling.ts's Finding 1 makes
+// mandatory anyway. The 14 list rows also collapse to 8 distinct postings by
+// uuid. A list-only denominator would score this source 0%, not 87.5%.
+//
+// GREENHOUSE IS THE ONLY STRUCTURAL ZERO, and it is not a thin-fixture
+// artifact: greenhouse.ts's header records that every job object's key set
+// was inspected across all nine boards then checked, plus every board's
+// custom `metadata` question names, at BOTH the list and single-job detail
+// endpoints — the field does not exist in Greenhouse's public schema. The
+// other seven all carry a real upstream field; their sub-100% rates are
+// honest `undefined`s for values with no home in Job's 3-value enum
+// ("Intern", "Temporary", "Fixed-Term", "Scholarship", "TEMP",
+// "internship"), not missing plumbing.
+//
+// WHY THAT ZERO WAS ENOUGH TO EMPTY THE WHOLE PAGE: Greenhouse is not one
+// source among eight by volume, it dominates the corpus. `.env.example`
+// configures 25 Greenhouse boards against 4 Ashby / a handful elsewhere, and
+// `compileFilter`'s own doc comment above measures the real Greenhouse pool
+// at 6,203 postings. So "exclude every unknown-commitment job" deleted most
+// of the result set, which is exactly the 50-results-to-zero Nicole and Jay
+// both hit.
+//
+// payType — REPORTED, DELIBERATELY NOT FIXED HERE: greenhouse.ts and
+// smartrecruiters.ts both record that `payType` has no reliable upstream
+// source and is ALWAYS `undefined`, so the identical
+// unknown-excluded-by-policy bug is latent for any future `payTypeIn`
+// filter. There is no such filter today (`SearchCriteria` has no payType
+// field), so there is nothing to fix yet and nothing user-visible is broken.
+// Out of this ticket's scope on purpose; it needs its own ticket if a
+// payType filter is ever added.
+// ---------------------------------------------------------------------------
+
+/**
+ * Title phrasing that reads as part-time. Separate from
+ * `looksLikeContractOrTemp` (swe-filter.ts) only because that function
+ * answers the contract/temp question and there is no part-time equivalent
+ * to reuse.
+ *
+ * `[\s-]?` so "Part-Time", "Part Time" and "Parttime" all match.
+ * `\b`-anchored at both ends, which is what keeps it off "Department Time"
+ * ("De|part" has no word boundary before "part", so it cannot fire there).
+ *
+ * MEASURED FALSE-POSITIVE RATE, 2026-10-06: 0 of the 49 real fixture
+ * postings whose STRUCTURED commitment is "full-time" have a title matching
+ * this, and 0 of all 66 unique real fixture titles match it at all.
+ *
+ * HONEST GAP, disclosed rather than dressed up (same disclosure ashby.ts's
+ * `mapCommitment` makes about its own untested PartTime branch): no real
+ * fixture posting demonstrates a TRUE positive either. The corpus has
+ * exactly one genuinely part-time posting — a SmartRecruiters Bosch
+ * "Werkstudent Supply Chain Management & Logistik" — and its title says
+ * "Werkstudent", not "part-time", so this regex does not fire on it and
+ * wouldn't have mattered there (SmartRecruiters reports that posting's
+ * commitment structurally anyway, so it never reaches this inference). This
+ * branch is therefore backed by the ordinary English phrasing of job titles,
+ * not by an observed example, and its real target is the one source that has
+ * no structured field at all: Greenhouse.
+ */
+const PART_TIME_TITLE = /\bpart[\s-]?time\b/i;
+
+/**
+ * Title phrasing that reads as an internship.
+ *
+ * The suffix handling is ticket 06b09cf's lesson, reused rather than
+ * re-derived (see swe-filter.ts's header, which documents it at length, and
+ * the `intern(ships?|s)?` branch of its own `NOT` regex). Both halves are
+ * load-bearing: a bare `\bintern\b` MISSES "Internship" (the trailing `\b`
+ * needs a boundary right after "intern", and "s" is a word character),
+ * while a bare `\bintern` OVER-matches "internal", "international" and
+ * "internationalize" — all real, wanted title words. Allowing only the
+ * "s"/"ship"/"ships" suffixes before the closing `\b` catches the real
+ * spellings and rejects the others, verified 2026-10-06: "Intern",
+ * "Interns", "Internship", "Internships" all match; "internal",
+ * "International Growth Lead", "Internationalization Engineer" and
+ * "Internist" all do not.
+ *
+ * MEASURED, 2026-10-06: matches 4 of the 13 unknown-commitment fixture
+ * postings, with 0 false positives against all 54 postings that DO have a
+ * structured commitment.
+ */
+const INTERNSHIP_TITLE = /\bintern(?:ships?|s)?\b/i;
+
+/**
+ * Sentinel: this posting reads as a real employment type that
+ * `Job["commitment"]`'s three values cannot express, so it matches NO
+ * requested commitment and is filtered out whenever any restriction is set.
+ *
+ * It exists for internships. Folding them into one of the three real values
+ * was the obvious alternative and is measurably worse: routing them to
+ * "contract" takes a `["contract"]` search on the fixture corpus from 4
+ * postings to 8, half of them internships — which is exactly the
+ * "meaninglessly permissive" failure this ticket exists to avoid, just
+ * relocated from full-time onto contract. Routing them to "part-time" is
+ * worse still, since plenty of internships are full-time hours.
+ *
+ * So an internship matches nothing: it is visible in an UNFILTERED search
+ * (where `commitmentIn` is empty and this code never runs) and absent from
+ * all three filtered ones. That is the honest answer for a value the enum
+ * cannot represent, and it follows this project's standing rule against
+ * forcing a closed enum from data that does not fit it (greenhouse.ts's
+ * `mapPayType`). The real fix — distinguishing "source has no field" from
+ * "source reported a value this enum cannot hold", which needs a pg enum
+ * migration — is filed separately as git-bug 9b13e58.
+ */
+const MATCHES_NO_COMMITMENT = "matches-no-commitment";
+
+/**
+ * The commitment this filter will TREAT a posting as having — the reversal
+ * of ticket 18c9f18's unknown-is-excluded ruling (ticket 623098e,
+ * 2026-10-06). See `SearchCriteria.commitmentIn`'s doc comment in
+ * @app/shared for the full record of the reversal, and the COMMITMENT AUDIT
+ * table above for the measurement that forced it.
+ *
+ * Three stages, in this order:
+ *
+ *   1. A STRUCTURED value always wins. Where a source reports commitment,
+ *      that is the answer and no inference runs — the same "structured beats
+ *      substring" principle `resolveWorkArrangement` and
+ *      `looksLikeContractOrTemp` already follow. This is what keeps the
+ *      seven sources that DO populate the field behaving exactly as they did
+ *      before this ticket.
+ *   2. TITLE INFERENCE, only when the structured field is absent —
+ *      contract/temp, then internship, then part-time. This narrows the
+ *      unknown bucket with evidence instead of guessing about it, and unlike
+ *      stage 3 it helps part-time and contract rather than only full-time.
+ *      An internship resolves to `MATCHES_NO_COMMITMENT`, matching none of
+ *      the three rather than being forced into one.
+ *   3. IMPUTE "full-time" for whatever is left.
+ *
+ * Measured effect of the whole chain on the fixture corpus, 2026-10-06, for
+ * `commitmentIn: ["full-time"]`: 49 of 67 postings survived under 18c9f18's
+ * rule, 58 of 67 survive now. `["part-time"]` returns 1 and `["contract"]`
+ * returns 4 — in both cases exactly the postings whose SOURCE says so, with
+ * no unknown admitted to either.
+ *
+ * WHY IMPUTATION RATHER THAN A SPECIAL CASE. The behavior could be written
+ * as "unknown passes when the requested set contains full-time", but stating
+ * it as an imputed value is the same behavior with a reason attached: the
+ * claim being made is "an unlabelled professional posting is a full-time
+ * posting", which is a statement about the corpus that can be argued with,
+ * and the ordinary membership test then follows from it unchanged. It also
+ * composes correctly over every subset without further case analysis —
+ * ["full-time","contract"] admits unknowns, ["part-time","contract"] does
+ * not — where a hand-written special case would need re-deriving each time
+ * a value was added.
+ *
+ * WHY THE REVERSAL IS NOT UNIFORM ACROSS THE THREE VALUES. 18c9f18 treated
+ * "cannot verify" as "does not match", which is cautious in the abstract and
+ * wrong on this data. But the correction is NOT "include unknowns" — that
+ * would fix full-time by breaking the other two in the opposite direction,
+ * flooding a part-time or contract search with full-time roles and making
+ * those filters meaningless. Unknown is PROBABLY full-time and probably NOT
+ * part-time or contract, so it is imputed to full-time only: selecting
+ * part-time or contract alone still excludes unknowns, and those two filters
+ * keep exactly the precision they have today.
+ *
+ * NEVER WRITTEN DOWN, ONLY FILTERED ON. This imputation exists inside the
+ * filter and nowhere else. It is deliberately NOT applied at normalization
+ * time, because `Job.commitment` is what the SOURCE said and a posting that
+ * stated nothing must keep reporting `undefined` — the project owner made
+ * the field optional for exactly that reason (greenhouse.ts). Two concrete
+ * things would go wrong if it were imputed upstream instead: a fabricated
+ * "full-time" would be PERSISTED to Postgres (`jobs.commitment`), and it
+ * would be fed to Claude in the scoring prompt, which interpolates
+ * `job.commitment` directly (`matching/scoring.ts`'s `Type:` line) — so the
+ * model would be told, as fact, something no employer said. Answering "did
+ * the user ask for this posting" with a documented assumption is a different
+ * act from recording a fact; only the former happens here.
+ *
+ * (It would NOT reach the UI: `routes/resumes.ts` deliberately destructures
+ * `commitment` out of the response and nothing in `apps/web` renders it,
+ * per ticket 8f5a79c. The Postgres and scoring-prompt reasons are the real
+ * ones and they are enough.)
+ *
+ * TITLE ONLY, NOT DESCRIPTION — and this one is measured, 2026-10-06. Taking
+ * the 49 real fixture postings whose structured commitment is "full-time" as
+ * ground truth and running the contract/temp pattern against their
+ * DESCRIPTION text produces 8 false positives (16%): Recruitee's Dutch
+ * postings advertise a bonus "bij een contract" and list "Permanent
+ * contract" as a BENEFIT — i.e. the word appears to assert the exact
+ * opposite of contract work — a Lever account manager "owns the relationship
+ * with current customers, including contract…", and a Rippling commercial
+ * counsel's duties list "vendor and procurement contract". The same pattern
+ * against their TITLES produces 0 false positives out of those 49, and 0 out
+ * of all 66 unique real fixture titles. Descriptions are prose that discusses
+ * employment and commerce; titles are where a posting LABELS itself. Hence
+ * title only.
+ *
+ * Contract is tested before part-time because `looksLikeContractOrTemp` is
+ * the hardened pattern of the two (it carries a real "Smart Contract"
+ * false-positive fix); no real fixture title matches both, so the ordering
+ * is not currently load-bearing.
+ *
+ * Reusing `looksLikeContractOrTemp` rather than writing a second
+ * contract-matching regex is deliberate: it already carries scar tissue this
+ * code would otherwise have to re-earn — the `(?<!\bsmart\s)` lookbehind
+ * that stops "Smart Contract Engineer" (a real FULL-TIME title at coinbase
+ * and robinhood, both configured Greenhouse boards here) from being read as
+ * contract work, and the `contract(?:ors?|ing)?` suffix handling. A second
+ * copy would be a second thing to keep in sync and a second place for that
+ * bug to come back.
+ *
+ * It also brings this filter CLOSER to the contract/temp judgment the app
+ * already publishes — `ScoredJobResult`'s `isContractOrTemp` is computed
+ * from the same function — but it is NOT an agreement guarantee, and the
+ * difference is worth stating precisely rather than overclaiming. The helper
+ * is structured-OR-title; this resolver is structured-WINS. So a posting
+ * whose source reports "full-time" while its title says "Contract" is
+ * admitted to a full-time search here and still tagged contract/temp there:
+ * a full-time-only search CAN show a card carrying that tag. Zero fixture
+ * postings have that shape (0 of the 49 structurally-full-time postings have
+ * a contract/temp title), and the tag erring toward caution is the
+ * defensible side for a tag whose only job is to let a user hide rows — but
+ * it is a real divergence, not an invariant.
+ *
+ * Note it also folds "Temp"/"Temporary" titles into "contract". That is not
+ * a claim that temp and contract are the same employment relationship; it is
+ * the only available answer, since `Job["commitment"]` has no temp member
+ * (swe-filter.ts's audit comment records this gap and why widening the enum
+ * is its own schema-migration ticket). It is also consistent with how the
+ * app already groups them for the user, in the "Hide contract/temp roles"
+ * toggle. The effect that matters is that a temp-titled posting is kept OUT
+ * of a full-time-only search.
+ *
+ * KNOWN RESIDUAL, measured rather than estimated. A posting whose source
+ * reports an employment type with no home in the 3-value enum arrives with
+ * `commitment: undefined` and is indistinguishable here from a source that
+ * has no field at all. If its title doesn't say so either, it is imputed
+ * full-time. On the fixture corpus that is 7 of the 61 non-Greenhouse
+ * postings (11.5%) before title inference — and notably these come from
+ * sources that DO have the field and said something explicitly
+ * not-full-time:
+ *
+ *   Lever      "Deployment Strategist, Internship"      (Internship)
+ *   Lever      "Workplace Operations Analyst"           (Fixed-Term)
+ *   Lever      "American Tech Fellowship"               (Scholarship)
+ *   Ashby      "Software Engineer Internship, Android"  (Intern)
+ *   Ashby      "IT Site Specialist"                     (Temporary)
+ *   Rippling   "ML Software Engineer Intern - Winter 2027" (TEMP)
+ *   Recruitee  "Copywriting Intern"                     (internship)
+ *
+ * `INTERNSHIP_TITLE` catches 4 of those 7 from their titles, leaving 3:
+ * Ashby's "IT Site Specialist" (Temporary) and Lever's "Workplace
+ * Operations Analyst" (Fixed-Term) and "American Tech Fellowship"
+ * (Scholarship) — 3 of 61, 4.9%. Nothing in those three titles signals the
+ * employment type, so no title pattern can reach them; they are imputed
+ * full-time and will appear in a full-time search. That is still strictly
+ * better than 18c9f18's behavior of returning nothing at all, and the real
+ * fix is distinguishing "no field" from "unmappable value" so the latter
+ * can resolve to `MATCHES_NO_COMMITMENT` — a pg enum migration, filed as
+ * git-bug 9b13e58.
+ */
+function resolveCommitmentForFilter(
+  job: Pick<NormalizedJob, "commitment" | "title">,
+): NonNullable<NormalizedJob["commitment"]> | typeof MATCHES_NO_COMMITMENT {
+  if (job.commitment !== undefined) return job.commitment;
+  if (looksLikeContractOrTemp({ title: job.title })) return "contract";
+  if (INTERNSHIP_TITLE.test(job.title)) return MATCHES_NO_COMMITMENT;
+  if (PART_TIME_TITLE.test(job.title)) return "part-time";
+  return "full-time";
+}
+
 /**
  * Compiles `criteria` into a `NormalizedJob[] => NormalizedJob[]` filter.
  *
@@ -173,13 +468,37 @@ function isConfirmedRemote(job: Pick<NormalizedJob, "location" | "locationType">
  * flag is an ADDITION to `nearLocations`, never a restriction of its own: an
  * `expandMetroAreas: true` with no `nearLocations` has nothing to expand and
  * leaves `hasLocationRestriction` exactly as it was),
- * then `commitmentIn` (ticket 18c9f18: a job's `commitment` must be IN the
- * set; empty/omitted means no restriction; a job whose commitment is
- * unknown/undefined is EXCLUDED once this restriction is non-empty -- see
- * `SearchCriteria.commitmentIn`'s own doc comment in @app/shared for the
- * full reasoning on why this one field doesn't follow the
- * unmatched-data-passes-through pattern the location fields use), then the
- * same company|title dedupe `filterSoftwareEngineeringJobs` uses.
+ * then `commitmentIn` (a job's resolved `commitment` must be IN the set;
+ * empty/omitted means no restriction), then the same company|title dedupe
+ * `filterSoftwareEngineeringJobs` uses.
+ *
+ * `commitmentIn`'s UNKNOWN-COMMITMENT RULE WAS REVERSED ON 2026-10-06
+ * (ticket 623098e), and the reversal is recorded here rather than silently
+ * applied. Ticket 18c9f18 ruled that a job whose `commitment` is unknown is
+ * EXCLUDED the moment this restriction is non-empty, on the reasoning that a
+ * job the app cannot verify as full-time does not satisfy a request for
+ * full-time. What overturned it is a measurement, not a change of taste:
+ * Greenhouse's public schema carries NO employment-type field at all
+ * (greenhouse.ts, verified across all nine boards at both endpoints), and
+ * Greenhouse dominates this corpus — 25 configured boards in `.env.example`,
+ * 6,203 postings in the real pool measured above. So EVERY Greenhouse
+ * posting has `commitment: undefined`, and 18c9f18's rule discarded all of
+ * them: checking "full-time" turned a 50-result search into zero, reproduced
+ * independently by Nicole and by Jay (git-bug 623098e). "Full-time" in
+ * practice meant "only jobs from whichever sources happen to state
+ * employment type", which is near-nothing.
+ *
+ * The replacement is NOT "include unknowns", which would fix one filter by
+ * making the other two meaninglessly permissive. Unknown is resolved
+ * per-value — structured value wins, else title inference, else imputed
+ * full-time — so full-time becomes usable while part-time and contract keep
+ * their precision. See `resolveCommitmentForFilter` above for the full
+ * argument, the COMMITMENT AUDIT table beside it for the per-source
+ * evidence, and `SearchCriteria.commitmentIn`'s doc comment in @app/shared.
+ *
+ * Note this makes `commitmentIn` consistent with, rather than an exception
+ * to, the unmatched-data-still-passes spirit of `nearLocations`/`remoteOk`
+ * that 18c9f18 explicitly carved itself out of.
  *
  * Ticket 0298b20: both title axes go through `makeTitleMatcher`, which adds
  * curated role-word synonyms (see `titleSynonyms.ts` for the table and the
@@ -229,12 +548,20 @@ export function compileFilter(
     return remoteOk && isConfirmedRemote(job);
   }
 
-  function passesCommitment(job: Pick<NormalizedJob, "commitment">): boolean {
+  function passesCommitment(job: Pick<NormalizedJob, "commitment" | "title">): boolean {
     if (commitmentIn.length === 0) return true;
-    // `job.commitment` is undefined for a source that didn't/couldn't
-    // report it -- excluded here on purpose, not passed through. See this
-    // function's own doc comment above.
-    return job.commitment !== undefined && commitmentIn.includes(job.commitment);
+    // A job whose source didn't report commitment is NO LONGER excluded
+    // outright (ticket 623098e reversed ticket 18c9f18's ruling on
+    // 2026-10-06 -- that is what emptied the full-time filter). It is
+    // resolved to the commitment this filter treats it as having: structured
+    // value, else title inference, else imputed full-time. See
+    // `resolveCommitmentForFilter` above for the per-value reasoning and the
+    // COMMITMENT AUDIT table for the measurement.
+    const resolved = resolveCommitmentForFilter(job);
+    // An internship matches none of the three values rather than being
+    // forced into one of them -- see `MATCHES_NO_COMMITMENT`.
+    if (resolved === MATCHES_NO_COMMITMENT) return false;
+    return commitmentIn.includes(resolved);
   }
 
   return (jobs: NormalizedJob[]) => {
