@@ -264,11 +264,20 @@ const MAX_OUTPUT_TOKENS = 2000;
  * current work" (plural) to "then the federal equivalent for that SAME
  * current field" (singular) as a wording consequence of naming four fields
  * instead of one, and the live eval shows software-field resumes now
- * typically return ONE federal chip (e.g. just "IT Specialist") where they
- * previously returned the whole trio. Flagging this explicitly because the
- * owner has separately complained about getting too few chips before
- * (6487ed8) -- this drop was not a deliberate tightening, and should not be
- * read as one if someone later asks why the federal chip count went down.
+ * typically return ONE federal chip (e.g. just "IT Specialist").
+ *
+ * Measured against main's prompt on 2026-10-06, the direction is NOT a
+ * uniform drop, and the first draft of this paragraph overstated it as one
+ * (caught in re-review): the plain software shape went from ZERO federal
+ * chips on main to one here -- an increase -- while the government-career
+ * shape went from three to two. The gov-career shape was the only one that
+ * ever returned the full trio. So the honest statement is that the
+ * gov-career shape previously returned three and now returns two.
+ *
+ * Flagging it at all because the owner has separately complained about
+ * getting too few chips (6487ed8) -- the gov-career reduction was not a
+ * deliberate tightening and should not be read as one if someone later asks
+ * why that count went down.
  */
 const SCHEMA = {
   type: "object",
