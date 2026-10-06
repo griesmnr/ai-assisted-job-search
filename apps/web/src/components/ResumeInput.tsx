@@ -536,7 +536,7 @@ export function ResumeInput({
         )}
         {text.trim().length > 0 && (
           <button type="submit" disabled={submitting}>
-            {submitting ? "Saving..." : "Use this resume"}
+            {submitting ? "Saving..." : "Submit"}
           </button>
         )}
       </div>

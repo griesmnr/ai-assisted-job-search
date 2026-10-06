@@ -50,7 +50,7 @@ const EMPTY_RESULTS = { results: [] };
 
 async function submitResume(text = "some resume text") {
   fireEvent.change(screen.getByLabelText("Paste your resume"), { target: { value: text } });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 }
 
 describe("App — duplicate resume text (ticket 7701534)", () => {
@@ -76,7 +76,7 @@ describe("App — duplicate resume text (ticket 7701534)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "second version of the text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     await waitFor(() =>
       expect(createResume).toHaveBeenCalledWith("second version of the text", "resume-1"),

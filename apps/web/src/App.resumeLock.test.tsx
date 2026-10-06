@@ -93,7 +93,7 @@ function makeEstimate(): EstimateSearchResponse {
 
 async function submitResume(text = "some resume text") {
   fireEvent.change(screen.getByLabelText("Paste your resume"), { target: { value: text } });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 }
 
 /**

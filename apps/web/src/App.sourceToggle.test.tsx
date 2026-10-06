@@ -114,7 +114,7 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     // Resume submitted -> resumeId set -> useResults fires its one fetch.
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
@@ -167,7 +167,7 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: /^Already Scored Jobs/ }));
   }
@@ -245,7 +245,7 @@ describe("App — Already Scored Jobs tab always shows a heading, content varies
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     expect(
       await screen.findByRole("button", { name: "Already Scored Jobs (3)" }),
@@ -382,7 +382,7 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
     // Opus review round 2 (ticket c49c088): App.tsx:568-575 auto-checks
@@ -419,7 +419,7 @@ describe("App — Already Scored Jobs tab is independent of the New Job Search s
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
     // Both sources start checked (App.tsx:568-575's auto-select, same as
@@ -456,7 +456,7 @@ describe("App — no separate 'Resume ready.' text (ticket 0308d7e)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     expect(await screen.findByText("Using Resume 1")).toBeInTheDocument();
     expect(screen.queryByText("Resume ready.")).not.toBeInTheDocument();

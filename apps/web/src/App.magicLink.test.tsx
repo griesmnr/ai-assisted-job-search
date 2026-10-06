@@ -169,7 +169,7 @@ async function submitResume() {
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
     target: { value: "some resume text" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   await vi.waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
   fireEvent.click(screen.getByLabelText(/Any location/));
 }
@@ -349,7 +349,7 @@ describe("the way back in appears only where the results prompt cannot (ticket 5
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByRole("button", { name: /been here before/i })).not.toBeInTheDocument();
@@ -510,7 +510,7 @@ describe("the way back in appears only where the results prompt cannot (ticket 5
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
     // The offer is correctly withdrawn from view, but the record of the link
@@ -555,7 +555,7 @@ describe("the way back in appears only where the results prompt cannot (ticket 5
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await vi.waitFor(() => expect(getResults).toHaveBeenCalledTimes(1));
 
     release({ email: "returning@example.com", expiresAt: new Date().toISOString() });
@@ -804,7 +804,7 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
    * `.results-section` -- never `.resume-section` -- so with those
    * conditions gone it floated over the resume picker, occluding its
    * bottom rows (and, under the narrow-viewport rule where it goes
-   * full-width, the "Use this resume" button itself) with no way to scroll
+   * full-width, the "Submit" button itself) with no way to scroll
    * out from under it. Exactly the occlusion class the clearance rule
    * exists to prevent, reintroduced where the clearance cannot reach.
    */
