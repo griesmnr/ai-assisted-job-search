@@ -246,6 +246,19 @@ section {
   font-size: 0.9rem;
 }
 
+/* Ticket e2b5f9c: the saved-resume list shown ABOVE the paste form when no
+   resume is active (the guaranteed state right after a magic-link sign-in).
+   Reuses `.resume-picker-*` for the list itself; this rule only separates the
+   block from the textarea below it, since `.resume-input`'s own `gap` alone
+   reads as one continuous form rather than two choices. */
+.resume-pick-saved {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
 /* Ticket 88f11d7: the "Change" picker -- one toggle button per existing
    saved resume, plus "Paste a new resume". */
 .resume-picker-heading {

@@ -663,6 +663,136 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     { id: "resume-14", resumeNickname: "Resume 14" },
   ];
 
+  /**
+   * Ticket e2b5f9c (Nicole, live, right after a magic-link sign-in): "it just
+   * says paste your resume. It doesn't offer me to choose an old resume."
+   *
+   * The gap was total -- the picker branch requires `resumeId !== undefined`
+   * and is only reachable from the collapsed bar's "Change", which requires
+   * the same; `MyResumes` has no activate affordance. So with no active resume
+   * there was NO path to a saved one. That state is guaranteed right after
+   * sign-in, because `MagicLinkLanding` clears app state on an identity
+   * switch.
+   */
+  it("offers saved resumes ABOVE the paste form when NO resume is active", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={RESUMES} />);
+
+    // All three, with none excluded -- there is no active resume to exclude.
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 14" })).toBeInTheDocument();
+    // And the paste form is still right there -- this is an addition, not a
+    // replacement. Pasting is still the path for a genuinely new resume.
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  it("fires onActivateResume, not onSubmit, when a saved resume is chosen with none active", () => {
+    const onActivateResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumes={RESUMES}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 8" }));
+
+    expect(onActivateResume).toHaveBeenCalledWith("resume-8");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Opus review of e2b5f9c (D2): the `resumeId === undefined` half of the gate
+   * -- which this fix's own comment calls "the whole point" -- was caught by
+   * exactly ONE pre-existing test in another file (App.resumeLock.test.tsx,
+   * "'Paste a new resume' opens the ordinary expanded paste form") and by none
+   * of this ticket's own. Verified by mutation: dropping that half of the gate
+   * fails this test.
+   */
+  it("does NOT re-offer the saved list in the expanded paste form once a resume IS active", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    // This is the branch the picker's "Paste a new resume" lands on: the user
+    // declined the saved list one click ago, so re-offering it here would
+    // contradict the choice they just made.
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Resume 8" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  /**
+   * Opus review of e2b5f9c (D3): `sortResumesByNickname` could be deleted from
+   * this new path with the whole suite still green -- the RESUMES fixture above
+   * is three entries already in sorted order, with no 2-vs-10 pair to expose a
+   * lexicographic sort. That is the exact regression ticket 336f1e6 was filed
+   * for ("the numbers are seriously hopping around weirdly"), re-introducible
+   * silently in the new code path. `numeric: true` is load-bearing -- see
+   * resumeSort.ts's own doc comment.
+   */
+  it("sorts the saved list numerically, not lexicographically", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumes={[
+          { id: "resume-10", resumeNickname: "Resume 10" },
+          { id: "resume-2", resumeNickname: "Resume 2" },
+        ]}
+      />,
+    );
+
+    const names = screen.getAllByRole("button", { name: /^Use Resume / }).map((b) => b.textContent);
+    // A plain localeCompare puts "Resume 10" first.
+    expect(names).toEqual(["Use Resume 2", "Use Resume 10"]);
+  });
+
+  it("disables the saved-resume buttons while a PASTE is in flight too (review D1)", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={true} resumes={RESUMES} />);
+
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeDisabled();
+  });
+
+  it("shows nothing extra when the account has no saved resumes -- a first-time visitor still just pastes", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={[]} />);
+
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Or paste a new one$/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  it("disables the saved-resume buttons while an activation is in flight", () => {
+    render(
+      <ResumeInput onSubmit={() => {}} submitting={false} resumes={RESUMES} activating={true} />,
+    );
+
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeDisabled();
+  });
+
+  it("surfaces an activation failure next to the saved list", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumes={RESUMES}
+        activateError="network down"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load that resume: network down");
+  });
+
   it("renders one toggle button per OTHER saved resume, excluding the currently active one, plus 'Paste a new resume' and 'Cancel'", () => {
     render(
       <ResumeInput

@@ -1061,6 +1061,39 @@ describe("the emailed link's landing view takes over the whole page (ticket 9f06
 });
 
 describe("lands on Already Scored Jobs after a successful magic-link verification (ticket bb2f275)", () => {
+  /**
+   * Ticket e2b5f9c. The state right after a magic-link sign-in is the one that
+   * matters: `MagicLinkLanding` calls `clearAppState()` on an identity switch,
+   * so there is no active resume, and before this fix the New Job Search tab
+   * offered a blank textarea with the adopted account's resumes unreachable.
+   * Nicole hit exactly this on the live deployment -- she signed in to recover
+   * her work and could not get to it.
+   *
+   * Asserted at App level rather than only on the component, because the gap
+   * was in the WIRING: `resumesListState` was already fetched and already in
+   * scope; nothing passed it anywhere a user with no active resume could see.
+   */
+  it("offers the adopted account's saved resumes on New Job Search, with no active resume", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    listResumes.mockResolvedValue({
+      resumes: [
+        { id: "resume-1", resumeNickname: "Resume 1" },
+        { id: "resume-2", resumeNickname: "Resume 2" },
+      ],
+    });
+    // Signed in, and no session state -- exactly what clearAppState() leaves.
+    localStorage.setItem("jobsearch.web.userEmail.v1", "alice@example.com");
+    sessionStorage.clear();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Use Resume 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 2" })).toBeInTheDocument();
+    // Pasting is still available -- this adds a path, it does not replace one.
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
   it("defaults to Already Scored Jobs when the URL carries the landing marker, and consumes it", async () => {
     mockHappyPath(ONE_RESULT);
     // The state a real page load is in right after MagicLinkLanding's
