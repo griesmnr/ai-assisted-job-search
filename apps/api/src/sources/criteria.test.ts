@@ -967,7 +967,7 @@ describe("compileFilter — commitmentIn title inference for unknown commitment 
       job({
         externalId: "3",
         dataSource: "recruitee",
-        company: "Channable",
+        company: "bunq",
         title: "Copywriting Intern",
         commitment: undefined,
       }),
