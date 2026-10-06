@@ -1057,8 +1057,15 @@ button[aria-disabled="true"] {
    total, against exactly 1rem below it and between every other pair of
    result cards. Zeroed here, scoped to this one placement, rather than on
    the base `.magic-link-prompt` rule: the base rule still serves the
-   verified-user-aside and any future non-flex caller, where the original
-   1.5rem is still the correct spacing. Caught by inspection, not a
+   FALLBACK-ANCHOR placement -- plain block flow at the end of `<main>`,
+   where no flex gap is in play and the original 1.5rem is still correct --
+   plus any future non-flex caller. (Re-review correction: an earlier draft
+   of this comment named "the verified-user aside" as the surviving
+   beneficiary. There is no such thing -- `MagicLinkPrompt` returns null
+   once `verifiedEmail` is defined, since ticket a5c8fa9 moved that
+   reassurance to `SignedInCue`, and two tests pin `.magic-link-prompt` at
+   count 0 in the verified state. The scoping decision was right; the
+   consumer named for it was not.) Caught by inspection, not a
    screenshot -- there is no working headless browser in this container
    (ticket 9c78da1) -- which is exactly why this is recorded instead of
    assumed fine. */
