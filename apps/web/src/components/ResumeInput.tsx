@@ -405,6 +405,13 @@ export function ResumeInput({
   // (via the picker's "Paste a new resume", which sets `resumeEditing`), and
   // there the list must NOT reappear: the user just explicitly declined it,
   // and re-offering it contradicts the choice they made one click ago.
+  //
+  // No `searching` guard here, unlike the collapsed bar's "Change" button, and
+  // that is provably safe rather than an oversight (opus review): `setResumeId`
+  // has exactly two call sites, both with real ids, and `resumeId` is never
+  // cleared -- while `SearchFlow` is mounted only inside `{resumeId && ...}`.
+  // So `searchRunning` cannot be true while `resumeId === undefined`, and this
+  // block is unreachable with a search running.
   const savedResumes = sortResumesByNickname(resumes ?? []);
 
   return (
@@ -418,20 +425,31 @@ export function ResumeInput({
       {resumeId === undefined && savedResumes.length > 0 && (
         <div className="resume-pick-saved">
           <p className="resume-picker-heading">Use a saved resume:</p>
+          {/* Opus review (D1): disabled by `submitting` too, not just
+              `activating`. Before this block existed there were no buttons
+              here while a paste was in flight, so the interleaving was
+              impossible; now a click during an in-flight POST /resumes runs
+              both handlers. The end state stays self-consistent, but a
+              `createResume` that then 409s on the ticket 7701534
+              duplicate-text guardrail sets `resumeError` AFTER
+              `handleActivateResume` already cleared it -- rendering "Could
+              not save resume" under a collapsed bar correctly reading "Using
+              Resume 1". That is the stale-error class ac141d0 review round 2
+              (N1) exists to prevent. */}
           <div className="resume-picker-options">
             {savedResumes.map((r) => (
               <button
                 key={r.id}
                 type="button"
                 className="resume-picker-option"
-                disabled={activating}
+                disabled={activating || submitting}
                 onClick={() => onActivateResume?.(r.id)}
               >
                 Use {r.resumeNickname}
               </button>
             ))}
           </div>
-          {activateError !== null && activateError !== undefined && (
+          {activateError && (
             <p role="alert" className="resume-error">
               Could not load that resume: {activateError}
             </p>

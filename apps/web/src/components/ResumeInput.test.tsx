@@ -704,6 +704,66 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  /**
+   * Opus review of e2b5f9c (D2): the `resumeId === undefined` half of the gate
+   * -- which this fix's own comment calls "the whole point" -- was caught by
+   * exactly ONE pre-existing test in another file (App.resumeLock.test.tsx,
+   * "'Paste a new resume' opens the ordinary expanded paste form") and by none
+   * of this ticket's own. Verified by mutation: dropping that half of the gate
+   * fails this test.
+   */
+  it("does NOT re-offer the saved list in the expanded paste form once a resume IS active", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    // This is the branch the picker's "Paste a new resume" lands on: the user
+    // declined the saved list one click ago, so re-offering it here would
+    // contradict the choice they just made.
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Resume 8" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  });
+
+  /**
+   * Opus review of e2b5f9c (D3): `sortResumesByNickname` could be deleted from
+   * this new path with the whole suite still green -- the RESUMES fixture above
+   * is three entries already in sorted order, with no 2-vs-10 pair to expose a
+   * lexicographic sort. That is the exact regression ticket 336f1e6 was filed
+   * for ("the numbers are seriously hopping around weirdly"), re-introducible
+   * silently in the new code path. `numeric: true` is load-bearing -- see
+   * resumeSort.ts's own doc comment.
+   */
+  it("sorts the saved list numerically, not lexicographically", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumes={[
+          { id: "resume-10", resumeNickname: "Resume 10" },
+          { id: "resume-2", resumeNickname: "Resume 2" },
+        ]}
+      />,
+    );
+
+    const names = screen.getAllByRole("button", { name: /^Use Resume / }).map((b) => b.textContent);
+    // A plain localeCompare puts "Resume 10" first.
+    expect(names).toEqual(["Use Resume 2", "Use Resume 10"]);
+  });
+
+  it("disables the saved-resume buttons while a PASTE is in flight too (review D1)", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={true} resumes={RESUMES} />);
+
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeDisabled();
+  });
+
   it("shows nothing extra when the account has no saved resumes -- a first-time visitor still just pastes", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={[]} />);
 
