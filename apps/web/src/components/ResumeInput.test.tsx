@@ -221,41 +221,41 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     expect(onSubmit).toHaveBeenCalledWith("some resume text");
   });
 });
 
-// Ticket 5a79aa4: "Use this resume" itself follows the same not-yet-
+// Ticket 5a79aa4: "Submit" itself follows the same not-yet-
 // actionable-means-absent treatment as the nickname field, not merely
 // disabled-with-nothing-to-explain-why.
-describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => {
-  it("does not render 'Use this resume' with an empty textarea", () => {
+describe("ResumeInput — 'Submit' visibility (ticket 5a79aa4)", () => {
+  it("does not render 'Submit' with an empty textarea", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
 
-    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
   });
 
-  it("does not render 'Use this resume' for whitespace-only text", () => {
+  it("does not render 'Submit' for whitespace-only text", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
 
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "   " },
     });
 
-    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
   });
 
-  it("renders 'Use this resume' once real text is typed, and it disappears again if the text is cleared", () => {
+  it("renders 'Submit' once real text is typed, and it disappears again if the text is cleared", () => {
     render(<ResumeInput onSubmit={() => {}} submitting={false} />);
     const textarea = screen.getByLabelText("Paste your resume");
 
     fireEvent.change(textarea, { target: { value: "real resume text" } });
-    expect(screen.getByRole("button", { name: "Use this resume" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeInTheDocument();
 
     fireEvent.change(textarea, { target: { value: "" } });
-    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
   });
 });
 
@@ -266,9 +266,9 @@ describe("ResumeInput — 'Use this resume' visibility (ticket 5a79aa4)", () => 
 // ticket ac141d0's collapse/expand design -- see that ticket's describe
 // blocks below -- but the ordering requirement itself still holds, now
 // inside the expanded form specifically (the only place nickname field and
-// "Use this resume" ever render together).
+// "Submit" ever render together).
 describe("ResumeInput — nickname-first ordering in the expanded form (ticket cdc2c39)", () => {
-  it("places the nickname field before the 'Use this resume' button, horizontally, once both are showing", () => {
+  it("places the nickname field before the 'Submit' button, horizontally, once both are showing", () => {
     render(
       <ResumeInput
         onSubmit={() => {}}
@@ -281,7 +281,7 @@ describe("ResumeInput — nickname-first ordering in the expanded form (ticket c
     );
 
     const nicknameField = screen.getByLabelText("Resume Nickname");
-    const button = screen.getByRole("button", { name: "Use this resume" });
+    const button = screen.getByRole("button", { name: "Submit" });
 
     // DOCUMENT_POSITION_FOLLOWING means `button` comes AFTER `nicknameField`
     // in document order -- the direct proof of "nickname first, button last
@@ -297,7 +297,7 @@ describe("ResumeInput — nickname-first ordering in the expanded form (ticket c
 // offering an Edit Resume button... I think we should hide that whole
 // section, and a little thing should pop up that says Using Resume 8...
 // if they say Edit, it's gonna open again this resume, and then you can
-// say Use this resume again, and then it will collapse it"). Replaces
+// say Submit again, and then it will collapse it"). Replaces
 // cdc2c39's lock-in-place + always-visible-Edit-button design entirely.
 describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
   it("does not render a summary bar with no resumeId yet -- nothing to summarize", () => {
@@ -324,7 +324,7 @@ describe("ResumeInput — collapsed summary bar (ticket ac141d0)", () => {
     // approach, which this ticket replaced).
     expect(screen.queryByLabelText("Paste your resume")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Resume Nickname")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
   });
 
   // Nicole, correcting an early draft of this ticket before any code was
@@ -533,7 +533,7 @@ describe("ResumeInput — 'Cancel' escape hatch during a re-edit (review fix, ti
   });
 
   // The actual dead-end scenario the review caught: clearing the box
-  // removes "Use this resume" (empty text), and this branch has no Edit
+  // removes "Submit" (empty text), and this branch has no Edit
   // button at all (that only exists in the collapsed branch) -- Cancel
   // must survive regardless of what's in the box, or there is no way out.
   it("stays available even when the textarea is cleared to empty -- the actual dead end this fix closes", () => {
@@ -550,7 +550,7 @@ describe("ResumeInput — 'Cancel' escape hatch during a re-edit (review fix, ti
 
     fireEvent.change(screen.getByLabelText("Paste your resume"), { target: { value: "" } });
 
-    expect(screen.queryByRole("button", { name: "Use this resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 });

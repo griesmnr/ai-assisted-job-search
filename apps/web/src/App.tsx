@@ -984,7 +984,7 @@ function JobSearchApp() {
   // inside: with those gone, clicking "Change" or "Edit" on the collapsed
   // resume bar left this fixed-position card floating over the resume
   // picker, whose own section gets no clearance padding -- occluding the
-  // bottom rows and, on a narrow viewport, the "Use this resume" button
+  // bottom rows and, on a narrow viewport, the "Submit" button
   // itself, with no way to scroll out from under it. That is the exact
   // occlusion class the clearance rule below exists to prevent,
   // reintroduced somewhere the clearance does not reach.

@@ -137,7 +137,7 @@ describe("App 'My Resumes' tab (ticket 303cff0)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "My Resumes (1)" })).toBeInTheDocument();

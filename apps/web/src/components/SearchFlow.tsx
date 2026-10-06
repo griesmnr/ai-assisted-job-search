@@ -760,8 +760,12 @@ export function SearchFlow({
             <dd>${phase.estimate.costEstimate.maxCostUsd.toFixed(2)}</dd>
             <dt>Probable cost</dt>
             <dd>${phase.estimate.costEstimate.probableCostUsd.toFixed(2)}</dd>
-            <dt>Already scored (free, reused)</dt>
-            <dd>{phase.estimate.alreadyScored}</dd>
+            {phase.estimate.alreadyScored > 0 && (
+              <>
+                <dt>Already scored (free, reused)</dt>
+                <dd>{phase.estimate.alreadyScored}</dd>
+              </>
+            )}
             {phase.estimate.cappedCount > 0 && (
               <>
                 <dt>Deferred this run (over the cap)</dt>

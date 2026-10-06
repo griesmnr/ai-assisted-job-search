@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EstimateSearchResponse } from "@app/shared";
+import type { EstimateSearchResponse, SourceOutcome } from "@app/shared";
 import { SearchFlow } from "./SearchFlow";
 
 // Same reasoning as SourceToggles.test.tsx / ResultsList.test.tsx: this
@@ -1307,5 +1307,111 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
 
     await screen.findByRole("heading", { name: "Search complete" });
     expect(onRunningChange).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe("SearchFlow — SourceOutcomesList text changes (ticket bd37f8a)", () => {
+  it("renders 'matched your job titles' text instead of 'found' and 'passed filtering'", async () => {
+    const outcome: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 127,
+      skippedCount: 115, // 127 - 12 matched = 115 filtered out
+      skipRate: 0.906, // 115/127
+      survivedFilter: 12,
+      excludedForMissingWorkArrangement: 0,
+      boardCoverage: [],
+    };
+    estimateSearch.mockResolvedValue(
+      makeEstimate({
+        sourceOutcomes: [outcome],
+      }),
+    );
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    // The new text should appear in the source outcomes list
+    expect(screen.getByText(/matched your job titles/)).toBeInTheDocument();
+    // The old text should not appear - check that "passed filtering" is NOT in the document
+    expect(screen.queryByText(/passed filtering/)).not.toBeInTheDocument();
+    // The old "found" text should also not appear
+    expect(screen.queryByText(/found/)).not.toBeInTheDocument();
+  });
+
+  it("renders '0 matched your job titles' for a source with no matches", async () => {
+    const outcome: SourceOutcome = {
+      dataSource: "greenhouse",
+      status: "ok",
+      jobsFound: 300,
+      skippedCount: 300, // all jobs filtered out
+      skipRate: 1, // 100% skip rate
+      survivedFilter: 0,
+      excludedForMissingWorkArrangement: 0,
+      boardCoverage: [],
+    };
+    estimateSearch.mockResolvedValue(
+      makeEstimate({
+        sourceOutcomes: [outcome],
+      }),
+    );
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    // The zero case should show the full text with 0
+    expect(screen.getByText(/matched your job titles/)).toBeInTheDocument();
+    // Should find the complete "0 matched your job titles" in the source outcomes
+    const sourceOutcomeSection = screen.getByText(/greenhouse/).closest("li");
+    expect(sourceOutcomeSection?.textContent).toMatch(/0 matched your job titles/);
+  });
+});
+
+describe("SearchFlow — cost panel 'Already scored' visibility (ticket 83654fd)", () => {
+  it("does not render the 'Already scored' row when alreadyScored is 0", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 0 }));
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    // The row with "Already scored" should not appear at all
+    expect(screen.queryByText("Already scored (free, reused)")).not.toBeInTheDocument();
+  });
+
+  it("renders the 'Already scored' row when alreadyScored is greater than 0", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 5 }));
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    // The row with "Already scored" should appear with the correct value
+    expect(screen.getByText("Already scored (free, reused)")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+  });
+
+  it("renders no orphaned <dt> or <dd> for 'Already scored' when alreadyScored is 0", async () => {
+    estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 0 }));
+
+    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    await screen.findByRole("button", { name: "Run search" });
+
+    const dlElement = screen
+      .getByRole("button", { name: "Run search" })
+      .closest(".cost-panel")
+      ?.querySelector("dl");
+    expect(dlElement).toBeTruthy(); // Must find the dl element
+    if (!dlElement) return;
+
+    // Both <dt> and <dd> must be absent when alreadyScored is 0
+    const dtElements = Array.from(dlElement.querySelectorAll("dt"));
+    const dtLabels = dtElements.map((dt) => dt.textContent);
+
+    expect(dtLabels).not.toContain("Already scored (free, reused)");
+    expect(screen.queryByText("Already scored (free, reused)")).not.toBeInTheDocument();
   });
 });

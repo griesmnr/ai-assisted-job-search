@@ -87,7 +87,7 @@ async function submitResume() {
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
     target: { value: "some resume text" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
   fireEvent.click(screen.getByLabelText(/Any location/));
 }

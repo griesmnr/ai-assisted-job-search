@@ -119,7 +119,7 @@ async function setUpRealState() {
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
     target: { value: RESUME_TEXT },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   // Wait for CHECKED, not merely present — same race App.criteria.test.tsx
   // documents: the toggles render one render before the auto-select effect
   // populates them.
@@ -204,7 +204,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // But nothing underneath was reset: resubmitting (identical text,
     // same resumeId) re-collapses, and the same selections are right
     // back, not defaults.
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
     expect(screen.getByLabelText(/Locations you'd commute to/)).toHaveValue("seattle, bellevue");
@@ -264,7 +264,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
     createResume.mockRejectedValueOnce(new Error("Network error"));
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not save resume: Network error",
     );
@@ -281,7 +281,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: RESUME_TEXT },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     fireEvent.click(screen.getByLabelText(/Any location/));
     expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
@@ -421,7 +421,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: RESUME_TEXT },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() =>
       expect(getResults).toHaveBeenCalledWith("resume-1", {
         minScore: MATCH_SCORE_FLOOR,

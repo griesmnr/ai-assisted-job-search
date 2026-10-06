@@ -34,7 +34,7 @@ export function SourceOutcomesList({
             <li key={o.dataSource} className={`source-outcome-${o.status}`}>
               <strong>{o.dataSource}</strong>: {o.status}
               {o.status !== "error"
-                ? ` — ${o.jobsFound} found, ${o.survivedFilter} passed filtering`
+                ? ` — ${o.survivedFilter} matched your job titles`
                 : o.errorMessage
                   ? ` — ${o.errorMessage}`
                   : ""}

@@ -22,9 +22,9 @@ import { sortResumesByNickname } from "../resumeSort";
  *
  * Ticket 5a79aa4 (Nicole, live dogfooding right after 38a7598 shipped:
  * "let's hide the resume nickname and the attempted helper text until
- * they use the resume... let's hide even the use this resume [button]
+ * they use the resume... let's hide even the submit [button]
  * also"): both controls are ABSENT, not disabled-with-explanation, until
- * they're actually actionable -- "Use this resume" only once there's real
+ * they're actually actionable -- "Submit" only once there's real
  * text to submit, the nickname field only once a real resumeId (and with
  * it, the server's real default nickname) exists to attach a rename to.
  * No placeholder text explaining an ordering the user can't act on yet;
@@ -536,7 +536,7 @@ export function ResumeInput({
         )}
         {text.trim().length > 0 && (
           <button type="submit" disabled={submitting}>
-            {submitting ? "Saving..." : "Use this resume"}
+            {submitting ? "Saving..." : "Submit"}
           </button>
         )}
       </div>

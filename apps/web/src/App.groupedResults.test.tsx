@@ -101,7 +101,7 @@ async function submitResume() {
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
     target: { value: "some resume text" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
   // Ticket b9e6251: an empty location now requires the explicit "Any
   // location" opt-in before "Estimate search cost" is enabled.

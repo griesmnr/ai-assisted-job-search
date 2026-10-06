@@ -118,7 +118,7 @@ async function submitResume() {
   fireEvent.change(screen.getByLabelText("Paste your resume"), {
     target: { value: "some resume text" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Use this resume" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   // Wait for CHECKED, not just present: the checkbox renders as soon as
   // sourcesState is "ready", one render BEFORE App.tsx's own auto-select
   // effect populates selectedSourceIds and re-renders it checked. Clicking
