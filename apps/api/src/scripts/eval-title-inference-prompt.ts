@@ -79,6 +79,25 @@ import { fetchRawTitleSuggestions, splitConjoinedTitles } from "../resume-title-
  * equivalent should come from, if any. Used only by the example-leakage
  * check further down -- it has no bearing on `currentField`, which is
  * unrelated and pre-existing.
+ *
+ * HONEST LIMITATION, stated plainly rather than papered over: this tag
+ * conflates two different things -- "what profession is this resume in"
+ * and "is this resume licensed to emit a federal title at all" -- and that
+ * conflation produces OPPOSITE verdicts for the same underlying model
+ * behavior. Jane Doe (full-stack engineer, no government employer
+ * anywhere in her text) is tagged `"software"` below, so her "IT
+ * Specialist" chip reads as a correct field match. Priya Shah (product
+ * manager, also no government employer anywhere in her text) is tagged
+ * `"none"`, so her "Program Analyst" chip (seen live, 2026-10-06) reads as
+ * leakage. Both resumes give the model the identical amount of
+ * public-sector evidence -- zero -- and the only reason one chip is
+ * "clean" and the other is "leaked" is which word got typed into this
+ * field for that shape, not anything the check actually measured. Left as
+ * is rather than re-tagged: re-tagging Priya to `"software"`-adjacent (or
+ * anything else) to make the asymmetry disappear would hide it, not
+ * resolve it, and the underlying question -- whether a resume with zero
+ * public-sector evidence should get ANY federal chip -- is the same design
+ * question noted at the leakage check below, not this ticket's to settle.
  */
 type Field = "software" | "writing" | "nursing" | "accounting" | "none";
 
@@ -297,10 +316,27 @@ async function main(): Promise<void> {
     // trio). A chip is flagged here if it exactly matches one of the
     // prompt's own hardcoded examples for a field OTHER than this resume's
     // own `field` -- i.e. it looks copied from the prompt's example list
-    // rather than derived from the resume in front of the model. For a
-    // `field: "none"` shape (no public-sector history at all), ANY example
-    // from ANY field is leakage, which doubles as 6487ed8's own
-    // over-generalization guard for federal titles specifically.
+    // rather than derived from the resume in front of the model.
+    //
+    // WHAT THIS CHECK DOES NOT COVER, stated precisely so it isn't
+    // over-trusted: it is an EXACT-STRING match against the nine titles in
+    // `EXAMPLE_TITLES_BY_FIELD` -- nothing broader, and in particular NOT a
+    // general "is this federal title appropriate for this field" judgment.
+    // It does NOT double as 6487ed8's own over-generalization guard ("no
+    // public-sector history means no federal titles at all") -- that guard
+    // has no check here at all beyond this narrow one. Counterexample,
+    // live, 2026-10-06: the marketing shape (`field: "none"`, no
+    // public-sector history per its own label) returned "Public Affairs
+    // Specialist" -- the real federal series for marketing/communications
+    // work (GS-1035) -- in the trailing position the prompt reserves for
+    // the federal equivalent, on 1 of 6 runs, and this check printed
+    // nothing, because that string isn't in `EXAMPLE_TITLES_BY_FIELD` at
+    // all. Deliberately NOT widening this to catch that: whether a
+    // no-public-sector-history resume should get ANY federal title is a
+    // separate design question this ticket does not own (the owner has
+    // twice asked for federal titles to keep appearing at all), and a
+    // pattern-based widening here would start flagging behavior that may be
+    // exactly what she wants. Tracked separately, not fixed here.
     const leakedExampleChips = titles.filter((t) =>
       (Object.entries(EXAMPLE_TITLES_BY_FIELD) as [Exclude<Field, "none">, string[]][]).some(
         ([exampleField, examples]) =>

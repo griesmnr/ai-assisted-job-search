@@ -111,7 +111,10 @@
  * See `splitConjoinedTitles`'s own doc comment for the split mechanics, and
  * `scripts/eval-title-inference-prompt.ts` for the live-model evidence this
  * combination was checked against (not just reasoned about) across resume
- * shapes that reproduce tonight's specific incident plus two others.
+ * shapes that reproduce tonight's specific incident plus several others --
+ * that script has grown with each round since (10 shapes as of ticket
+ * 17a5c8f, spanning multiple unrelated fields), so "two others" is this
+ * paragraph's original count at the time of 976a782, not the current one.
  */
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -224,34 +227,48 @@ const MAX_OUTPUT_TOKENS = 2000;
  * (a) Describe the CATEGORY with no concrete instances at all -- e.g. "the
  *     job-series name the federal hiring system uses for this person's own
  *     current work" -- and name nothing.
- * (b) Keep concrete examples (6487ed8 measured that cross-sector compliance
- *     benefits from them -- an unillustrated instruction is exactly the kind
- *     of thing models under-follow), but spread them across SEVERAL
- *     unrelated fields, so no single trio reads as "the answer" regardless
- *     of input, plus an explicit instruction naming the failure mode
- *     directly ("do not output 'IT Specialist'... for a resume whose
- *     current field is not software").
+ * (b) Keep concrete examples, but spread them across SEVERAL unrelated
+ *     fields, so no single trio reads as "the answer" regardless of input,
+ *     plus an explicit instruction naming the failure mode directly ("do
+ *     not output 'IT Specialist'... for a resume whose current field is not
+ *     software").
  *
- * Went with (b). Reasoning: 6487ed8's whole premise was that a bare
- * instruction with no examples under-produces compliant output -- that is
- * why those three strings were added as examples in the first place, and
- * removing all illustration risks silently regressing exactly that,
- * trading this bug for a quieter one (the eval could not tell the
- * difference between "fewer, worse-complied cross-sector chips" and
- * "no regression" without a live A/B this ticket does not have time to
- * run). One illustrated field, however many caveats are bolted onto it,
- * reads to the model as the target rather than a sample -- which is the
- * actual, measured failure here, not a hypothesis. Four fields spread
- * across software/writing/nursing/accounting, each doing the same "maps to
- * something like X or Y" framing with no single pair emphasized, forces
- * the model to generalize the PATTERN instead of pattern-matching one
- * instance -- plus the explicit negative instruction gives something for
- * an eval assertion to hold it to (see `EXAMPLE_LEAKAGE` in the eval
- * script). If a future resume in a fifth field still gets a software/
- * writing/nursing/accounting title it has no business getting, that is the
- * signal this needs to move to (a) instead -- re-run the eval `--live`
- * across several fields before concluding that, per this same ticket's own
- * standard of live evidence over a single run.
+ * Went with (b). Reasoning, stated as the judgment it is, not as a
+ * measurement that does not exist: 6487ed8 added the three examples on the
+ * THEORY that an unillustrated instruction under-performs a worked example
+ * -- that was never A/B'd in 6487ed8 (its own measurements are six stable
+ * engineering titles / zero federal from two software resumes, and
+ * output_tokens 89-504; there is no examples-vs-no-examples comparison
+ * anywhere in it), and this ticket did not run that A/B either -- removing
+ * all illustration (option a) is a real candidate this ticket cannot rule
+ * out from first principles. What this ticket DID run instead: the live
+ * eval, `--live`, repeatedly, dated 2026-10-06. Across every run so far (my
+ * own 3 plus an independent reviewer's 4 more against the technical-writer
+ * shape, 24 total cross-field runs in the reviewer's own pass), the
+ * software trio has not once appeared on the writer or nurse shapes, and
+ * the writer/nurse shapes correctly produce their own fields' examples
+ * ("Writer-Editor"/"Technical Information Specialist",
+ * "Nurse"/"Public Health Nurse"/"VA Staff Nurse") while software shapes
+ * keep producing theirs ("IT Specialist"/"Computer Scientist"). That is the
+ * actual evidence behind (b), not a claim that the examples were proven
+ * necessary -- only that diversifying them measurably stopped the observed
+ * copying without measurably breaking the feature. If a future resume in a
+ * fifth field still gets a software/writing/nursing/accounting title it has
+ * no business getting, that is the signal this needs to move to (a)
+ * instead -- re-run the eval `--live` across several fields before
+ * concluding that, per this same ticket's own standard of live evidence
+ * over a single run.
+ *
+ * ONE MEASURED SIDE EFFECT, not a decision: the SCHEMA text below also
+ * tightened "then the equivalents another sector would use for that same
+ * current work" (plural) to "then the federal equivalent for that SAME
+ * current field" (singular) as a wording consequence of naming four fields
+ * instead of one, and the live eval shows software-field resumes now
+ * typically return ONE federal chip (e.g. just "IT Specialist") where they
+ * previously returned the whole trio. Flagging this explicitly because the
+ * owner has separately complained about getting too few chips before
+ * (6487ed8) -- this drop was not a deliberate tightening, and should not be
+ * read as one if someone later asks why the federal chip count went down.
  */
 const SCHEMA = {
   type: "object",
