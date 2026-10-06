@@ -174,4 +174,96 @@ describe("api entrypoint", () => {
       );
     });
   });
+
+  // Ticket 6e7008e. Every test above this point uses GET, which is a CORS
+  // "simple" method and therefore always allowed -- so the whole suite passed
+  // while both of the app's non-simple methods were blocked in every browser.
+  // These tests exist to close that specific blind spot.
+  //
+  // They assert on `access-control-allow-methods`, NOT on the preflight's
+  // status code, and that distinction is the entire point: the broken
+  // configuration returned a perfectly healthy 204 with the origin echoed and
+  // the headers allowed. A test asserting `statusCode === 204` passes against
+  // the bug. The method list is the only thing that moved.
+  describe("CORS preflight allows the app's non-simple methods (ticket 6e7008e)", () => {
+    const ORIGINAL = process.env.CORS_ALLOWED_ORIGIN;
+    afterEach(() => {
+      if (ORIGINAL === undefined) delete process.env.CORS_ALLOWED_ORIGIN;
+      else process.env.CORS_ALLOWED_ORIGIN = ORIGINAL;
+    });
+
+    const ORIGIN = "https://jobsearch.example.com";
+
+    function preflight(app: ReturnType<typeof buildApp>, method: string, url: string) {
+      return app.inject({
+        method: "OPTIONS",
+        url,
+        headers: {
+          origin: ORIGIN,
+          // Mirrors what `api/client.ts`'s shared `request()` helper actually
+          // sends on every call, so the preflight under test is the one a
+          // browser really issues rather than a simplified stand-in.
+          "access-control-request-method": method,
+          "access-control-request-headers": "content-type,x-user-id",
+        },
+      });
+    }
+
+    function buildAppUnderTest() {
+      return buildApp({
+        db: fakeDb,
+        inferTitles: async () => [],
+        getScoreJob: () => {
+          throw new Error("not used by this test");
+        },
+      });
+    }
+
+    // DELETE /jobs/:id/status -- unsaving a job (api/client.ts's
+    // `clearJobStatus`). This is the call Nicole reproduced failing on the
+    // deployed app as "Could not reach the API ... Failed to fetch".
+    it("permits DELETE, which unsaving a job depends on", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = ORIGIN;
+      const response = await preflight(buildAppUnderTest(), "DELETE", "/jobs/abc/status");
+      expect(response.headers["access-control-allow-methods"]).toContain("DELETE");
+    });
+
+    // PATCH /resumes/:id -- renaming a resume (routes/resumes.ts). Had no UI
+    // caller when this was found, which is the only reason it was never
+    // reported; ticket e7666de wires it up.
+    it("permits PATCH, which renaming a resume depends on", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = ORIGIN;
+      const response = await preflight(buildAppUnderTest(), "PATCH", "/resumes/abc");
+      expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
+    });
+
+    // The methods are configured as a flat option, independent of how
+    // `origin` resolves -- so the localhost-regex dev branch must allow them
+    // too. Local dev is genuinely cross-origin (5173 -> the API port; there
+    // is no Vite proxy), so a developer hits the same wall Nicole did.
+    it("permits them on the localhost dev branch too, not just a configured origin", async () => {
+      delete process.env.CORS_ALLOWED_ORIGIN;
+      const app = buildAppUnderTest();
+      const response = await app.inject({
+        method: "OPTIONS",
+        url: "/jobs/abc/status",
+        headers: {
+          origin: "http://localhost:5173",
+          "access-control-request-method": "DELETE",
+          "access-control-request-headers": "content-type,x-user-id",
+        },
+      });
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+      expect(response.headers["access-control-allow-methods"]).toContain("DELETE");
+    });
+
+    // Guards the other direction: the explicit list must not have been
+    // written so broadly that it stops meaning anything. PUT is not served by
+    // this API, so it should not be advertised.
+    it("does not advertise methods the API does not serve", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = ORIGIN;
+      const response = await preflight(buildAppUnderTest(), "GET", "/sources");
+      expect(response.headers["access-control-allow-methods"]).not.toContain("PUT");
+    });
+  });
 });
