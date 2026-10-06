@@ -196,6 +196,36 @@ describe("inferTitleKeywords prompt/schema content (ticket 5ba5cca)", () => {
   });
 
   /**
+   * Ticket 17a5c8f: the three examples above ('IT Specialist', 'Computer
+   * Scientist', 'Program Analyst') were themselves found to be a defect --
+   * the model copied them onto every resume regardless of field (reported
+   * live: a technical writer got the identical software trio). The fix
+   * diversifies the examples across several unrelated fields so no single
+   * trio reads as "the answer", plus an explicit instruction naming the
+   * failure mode. This pins both halves so a future edit cannot quietly
+   * narrow back to one field's examples.
+   */
+  it("spreads federal-title examples across several unrelated fields and explicitly forbids copying the software examples onto a non-software resume", async () => {
+    const { anthropic, capturedParams } = makeFakeAnthropicClient(["Staff Backend Engineer"]);
+    await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+    const schemaDescription = titlesSchemaDescription(capturedParams[0]!);
+
+    // Software examples (pre-existing, and still asserted by the ALONGSIDE
+    // test above).
+    expect(schemaDescription).toMatch(/IT Specialist/);
+    // At least one non-software field's example must also appear, so this
+    // is not just the old trio with new words bolted around it.
+    expect(schemaDescription).toMatch(/Writer-Editor/);
+    expect(schemaDescription).toMatch(/\bNurse\b/);
+    expect(schemaDescription).toMatch(/Accountant/);
+    // The explicit negative instruction this ticket's fix relies on: naming
+    // the exact leaked chips and saying not to produce them off-field.
+    expect(schemaDescription).toMatch(
+      /do not output 'it specialist', 'computer scientist', 'program analyst'.*for a resume whose current field is not software/i,
+    );
+  });
+
+  /**
    * Ticket 6487ed8: at 300, the longer request truncated the response JSON
    * mid-string on two of three live runs, and `fetchRawTitleSuggestions`
    * swallows a parse failure into `[]` -- intermittently EMPTY chips, logged
