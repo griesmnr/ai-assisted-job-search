@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   MATCH_SCORE_FLOOR,
   type ScoredJobResult,
@@ -1002,6 +1003,121 @@ function JobSearchApp() {
   const showMagicLinkPrompt =
     (activeTab === "search" && searchArmReady) || (activeTab === "scored" && scoredArmReady);
 
+  // Ticket 931df8a, Jay's feedback relayed by Nicole: the prompt was
+  // `position: fixed` bottom-right, so it appeared next to the search
+  // controls the instant a search finished -- Jay was still scrolled at the
+  // top and had no idea any results existed yet. "The trigger ... is great,
+  // ... When he happens to scroll down is when he should start being able
+  // to see that email message." So the fix is WHERE this renders, not WHEN
+  // -- `searchArmReady`/`scoredArmReady`/`showMagicLinkPrompt` above are
+  // untouched.
+  //
+  // `ResultsList`/`GroupedResultsList` hand back the DOM node right after
+  // the topmost result via `onFirstResultAnchorChange`, computed into
+  // `magicLinkAnchor` below. Placed after the FIRST result, not the last:
+  // the old `position: fixed` design (ticket d3a95d1) exists on the
+  // historical record specifically because "inline at the end of the
+  // results list... meant a long results list could push it far below the
+  // fold -- never reached in practice". Anchoring to the END would
+  // reintroduce exactly that failure the first time either tab's list
+  // grows (the "Already Scored Jobs" tab spans every resume ever scored,
+  // per ticket 3f0883f, so it is not even bounded the way a single
+  // search's curated list is). Anchoring ABOVE the topmost result would
+  // satisfy the ticket's literal rule too, but makes the ask the first
+  // thing a scrolling user meets, ahead of the results they opened the tab
+  // for -- the thing Jay was actually looking for. After the first result
+  // is the compromise: a user who scrolls past result #1 has necessarily
+  // seen that there ARE results (fixing Jay's exact complaint), without
+  // the ask outranking them.
+  const [searchResultsAnchor, setSearchResultsAnchor] = useState<HTMLLIElement | null>(null);
+  const [scoredResultsAnchor, setScoredResultsAnchor] = useState<HTMLLIElement | null>(null);
+  // Fallback for the one case neither list can offer an anchor: all of a
+  // tab's results filtered down to zero VISIBLE cards by ResultsList's/
+  // GroupedResultsList's own hide-overqualified/underqualified/contract
+  // checkboxes (data.results.length > 0, so the arm is still "ready" --
+  // see searchArmReady/scoredArmReady above, which key off the UNFILTERED
+  // fetch -- but `visible.length` is 0, so no `<ResultCard>`, and therefore
+  // no anchor, is rendered). Without this, that filter state would leave
+  // `magicLinkPortalRoot` (below) with nowhere to live, which would have
+  // the same practical effect as unmounting it -- losing a dismissal, a
+  // half-typed address, or a just-sent "check your inbox" receipt over
+  // nothing but a checkbox click, the exact class of bug ticket d0a7074's
+  // review F2 already fixed once. Always mounted (independent of any
+  // gate) and empty unless actually pressed into service, so it costs
+  // nothing in the common case.
+  const [fallbackMagicLinkAnchor, setFallbackMagicLinkAnchor] = useState<HTMLDivElement | null>(
+    null,
+  );
+  // Prefers the anchor belonging to the ACTIVE tab (so the card appears in
+  // the right section when visible), falls back to whichever other anchor
+  // exists (keeps `magicLinkPortalRoot` attached SOMEWHERE in the live DOM
+  // while the active tab's own list is between renders or filtered to
+  // nothing), and only reaches the fallback above when neither results
+  // list currently offers one at all.
+  const magicLinkAnchor =
+    (activeTab === "scored" ? scoredResultsAnchor : searchResultsAnchor) ??
+    searchResultsAnchor ??
+    scoredResultsAnchor ??
+    fallbackMagicLinkAnchor;
+
+  // The portal target `<MagicLinkPrompt />` always renders into (see the
+  // mount site, near the end of this component). Created exactly ONCE --
+  // the lazy `useState` initializer runs again under StrictMode's dev-only
+  // double-invoke, but only one of the two resulting elements is ever kept
+  // and used, and discarding the other is harmless since nothing has been
+  // attached to it yet (the same "safe to double-invoke" shape as `useState(
+  // () => new Map())`) -- and NEVER replaced, which is the whole point:
+  // this is not the same thing as `magicLinkAnchor` above, and the
+  // difference is load-bearing. An earlier version of this fix portaled
+  // `MagicLinkPrompt` directly into `magicLinkAnchor`, which changes
+  // identity on every tab switch -- and confirmed by running it (two of
+  // this ticket's own new tests failed, each showing the card reset to its
+  // untouched pitch state after a tab switch that should have preserved
+  // "dismissed" or "check your inbox"): React's portal reconciliation
+  // compares the CONTAINER, not just the children, so handing `createPortal`
+  // a different DOM node unmounts and remounts whatever it was told to
+  // render, destroying `dismissed`/`email`/`phase` -- exactly the F2
+  // failure ticket d0a7074 already fixed once, reintroduced by a different
+  // mechanism. Portaling into THIS node instead, and separately moving
+  // *this node itself* between anchors with plain imperative DOM calls
+  // (the effect below) rather than through `createPortal`'s own container
+  // prop, keeps the container React sees constant, so it never tears the
+  // portaled component down no matter which anchor currently holds it.
+  const [magicLinkPortalRoot] = useState(() => {
+    const el = document.createElement("div");
+    el.className = "magic-link-prompt-host";
+    return el;
+  });
+
+  // Moves `magicLinkPortalRoot` to whichever anchor is currently correct,
+  // via plain `Node.appendChild` -- which also REMOVES it from wherever it
+  // was previously attached, so one call both detaches and reattaches.
+  // This is pure DOM manipulation outside React's tree entirely (React
+  // only ever manages `magicLinkPortalRoot`'s CONTENTS via the portal at
+  // the mount site, never its parent), which is exactly why it does not
+  // trigger the remount described above: nothing about this changes what
+  // `createPortal` is told to target.
+  //
+  // `useLayoutEffect`, not `useEffect`: runs synchronously after the DOM
+  // mutations of this same commit but before the browser paints, so a
+  // freshly-available anchor (e.g. the moment a search completes) does not
+  // have even one paint where the card is attached to its old position (or
+  // nowhere at all, on the very first anchor it ever gets).
+  useLayoutEffect(() => {
+    if (magicLinkAnchor && magicLinkPortalRoot.parentNode !== magicLinkAnchor) {
+      magicLinkAnchor.appendChild(magicLinkPortalRoot);
+    }
+  }, [magicLinkAnchor, magicLinkPortalRoot]);
+
+  // `showMagicLinkPrompt` is unchanged (see above) -- what changed is HOW
+  // it hides the card. The old JSX-authored host div could set `hidden`
+  // declaratively; `magicLinkPortalRoot` is a plain DOM node React does not
+  // render attributes onto, so this effect is the direct equivalent.
+  // `useLayoutEffect` for the same before-paint reason as the move above.
+  useLayoutEffect(() => {
+    magicLinkPortalRoot.hidden = !showMagicLinkPrompt;
+  }, [magicLinkPortalRoot, showMagicLinkPrompt]);
+
   // Ticket 5a7e957: the "been here before?" entry point, for someone who
   // saved their email and then lost this browser's storage. Nicole's own rule
   // for when it belongs on screen: "on any site run where there's no data?
@@ -1330,6 +1446,7 @@ function JobSearchApp() {
                     onSetStatus={handleSetStatus}
                     onClearStatus={handleClearStatus}
                     onViewResume={handleViewResume}
+                    onFirstResultAnchorChange={setSearchResultsAnchor}
                   />
                 ) : (
                   <p>No jobs matched this search.</p>
@@ -1374,6 +1491,7 @@ function JobSearchApp() {
                 onSetStatus={handleSetStatus}
                 onClearStatus={handleClearStatus}
                 onViewResume={handleViewResume}
+                onFirstResultAnchorChange={setScoredResultsAnchor}
               />
             ) : (
               // Ticket f4a7f07: unlike ticket 093d9fe's inline-surprise
@@ -1407,10 +1525,10 @@ function JobSearchApp() {
       </div>
 
       {/* Ticket 9f06f8f (epic 2b9e9dd child 4): THE ONE PLACE the email is
-          ever asked for. Ticket d0a7074 hoisted it here, out of the search
-          tab's own results section, so that a SINGLE instance can serve
-          both results tabs -- see `showMagicLinkPrompt` above for the gate
-          it now carries instead of physical nesting, and for why one
+          ever asked for. Ticket d0a7074 hoisted the HOST here, out of the
+          search tab's own results section, so that a SINGLE instance can
+          serve both results tabs -- see `showMagicLinkPrompt` above for the
+          gate it carries instead of physical nesting, and for why one
           instance rather than one per tab.
 
           `hidden`, NOT conditional rendering, for the tab half of that
@@ -1426,22 +1544,58 @@ function JobSearchApp() {
           half-typed address was wiped by the same trip; and worst, the
           "Check your inbox" confirmation vanished, so the app stopped
           showing any record of a link it had just sent AND re-armed the
-          send button for a silent double-send. Mounting on
-          `searchArmReady || scoredArmReady` and hiding with `hidden` keeps
+          send button for a silent double-send. Hiding with `hidden` keeps
           one instance alive across every tab switch while still removing
           it visually and from the a11y tree.
+
+          Ticket 931df8a: this JSX call site -- where `<MagicLinkPrompt />`
+          sits in the REACT TREE -- stays exactly where it always was, for
+          exactly the reason above: moving it would unmount/remount it on
+          every tab switch, destroying the state d0a7074 and F2 fought to
+          keep. `createPortal`'s container here is `magicLinkPortalRoot`
+          (declared above, next to `showMagicLinkPrompt`) -- a single
+          imperatively-created div that NEVER changes identity, so this
+          portal is never told to target a different container and
+          therefore never gets torn down by React on that account. What
+          actually moves is `magicLinkPortalRoot` ITSELF, between anchors,
+          via plain `appendChild` in a `useLayoutEffect` -- invisible to
+          React, since React only manages this node's contents. See that
+          effect's own comment for why the more obvious version of this fix
+          (portaling straight into the anchor, which changes identity on
+          every tab switch) does NOT work -- it was tried, and it visibly
+          failed two of this ticket's own new tests before being replaced
+          with this one.
+
+          The anchor itself is the node right after the topmost result in
+          whichever results list is relevant, handed back by `ResultsList`/
+          `GroupedResultsList` via `onFirstResultAnchorChange`.
+          `position: fixed` and the `.results-section` clearance padding it
+          required (index.css) are both gone with it; see that file's
+          comment at the old `.magic-link-prompt-floating` site for why
+          in-flow placement retires the whole occlusion-bug class that
+          fixed positioning kept reopening, rather than adding another fix
+          to it.
 
           Still genuinely unmounts when NEITHER arm is ready -- e.g. a
           criteria or source change resets `hasFreshSearchResults`. That
           matches the old behavior exactly (the old mount died with its
           results section) and is the right call anyway: that reset means
           "you're composing a different search now," so a dismissal of the
-          previous one carries no information. */}
-      {(searchArmReady || scoredArmReady) && (
-        <div className="magic-link-prompt-host" hidden={!showMagicLinkPrompt}>
-          <MagicLinkPrompt />
-        </div>
-      )}
+          previous one carries no information. (`magicLinkPortalRoot` can
+          still be attached somewhere in that window via the fallback
+          anchor below, but the `hidden` toggled on it by the other effect
+          above -- unaffected by any of this -- is what actually keeps a
+          STILL-MOUNTED card off screen between tab switches; here, the
+          JSX condition unmounts the card outright, which is the deliberate
+          difference.) */}
+      {(searchArmReady || scoredArmReady) && createPortal(<MagicLinkPrompt />, magicLinkPortalRoot)}
+      {/* The fallback anchor itself: see `fallbackMagicLinkAnchor`'s own
+          comment above for the one case it exists for. Always rendered,
+          deliberately outside any tab's `hidden` panel so it is never
+          itself unmounted by a tab switch -- an empty `<div>` with no
+          layout footprint unless `magicLinkAnchor` actually resolves to
+          it. */}
+      <div ref={setFallbackMagicLinkAnchor} />
     </main>
   );
 }

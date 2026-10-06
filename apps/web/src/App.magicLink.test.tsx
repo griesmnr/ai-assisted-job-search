@@ -185,7 +185,8 @@ async function runSearchToCompletion() {
 }
 
 /**
- * The floating prompt's bottom-clearance rule (index.css), restated.
+ * Ticket 931df8a's replacement for the old floating prompt's bottom-
+ * clearance rule (ticket d0a7074), restated the same way that rule was.
  *
  * KNOWN LIMIT, STATED SO NOBODY OVER-TRUSTS THIS: because the selector is
  * restated here, these tests pin its SEMANTICS against a real DOM -- they do
@@ -199,22 +200,29 @@ async function runSearchToCompletion() {
  * test out of `src` hides it from `vitest.config.ts`'s `include`. Ticket
  * 5c93a51 tracks the stronger version.
  *
- * What these DO catch is ticket d0a7074's F3 logic error and its
- * predecessor, both of which were WRONG selectors rather than absent ones --
- * verified by substituting each historical selector here and watching them
- * fail. The `index.css` rule carries a pointer back to this test so an
- * editor of one sees the other.
+ * The old rule decided whether to PAD `.results-section`; this one decides
+ * whether to COLLAPSE `.magic-link-prompt-anchor` (the portal target just
+ * after the topmost result -- see App.tsx's `magicLinkAnchor` and
+ * `ResultsList.tsx`'s `onFirstResultAnchorChange`), but the underlying
+ * question -- and the two-part reasoning behind it -- is identical:
+ * `:not([hidden])` because the host survives MOUNTED-but-`hidden` across
+ * tab switches (ticket d0a7074 review F2), so merely EXISTING is not
+ * enough; `> .magic-link-prompt` because `MagicLinkPrompt` returns `null`
+ * once dismissed or verified while its host div survives un-hidden, so a
+ * merely-unhidden host is not enough either (ticket d0a7074 review F3,
+ * which broke this exact conjunction's predecessor once already). The
+ * `index.css` rule carries a pointer back to this test so an editor of one
+ * sees the other.
  *
- * Module-scoped (ticket a5c8fa9 review) so the verified-user tests can pin
- * clearance too, off ONE definition of the string rather than a second copy.
- * This rule has silently broken twice, which is exactly why it is worth
- * asserting from more than one angle.
+ * Module-scoped (ticket a5c8fa9 review, carried forward) so the
+ * verified-user tests can pin this too, off ONE definition of the string
+ * rather than a second copy.
  */
-const CLEARANCE_SELECTOR =
-  ".app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section";
+const ANCHOR_VISIBLE_SELECTOR =
+  ".magic-link-prompt-anchor:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt)";
 
-function clearedSections() {
-  return document.querySelectorAll(CLEARANCE_SELECTOR).length;
+function visibleAnchorCount() {
+  return document.querySelectorAll(ANCHOR_VISIBLE_SELECTOR).length;
 }
 
 describe("the sign-in prompt is offered only after scored results land (ticket 9f06f8f)", () => {
@@ -604,7 +612,7 @@ describe("a verified user gets a quiet header cue, not a floating card (ticket a
     ],
   };
 
-  it("shows the cue on all three tabs, and renders no floating prompt anywhere", async () => {
+  it("shows the cue on all three tabs, and renders no sign-in prompt anywhere", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue(SCORED_FOR_CUE);
     localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
@@ -621,12 +629,12 @@ describe("a verified user gets a quiet header cue, not a floating card (ticket a
     expect(await screen.findByText("Scored While Signed In")).toBeInTheDocument();
     expect(screen.getByText(/these results are saved to/i)).toBeInTheDocument();
     expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
-    expect(document.querySelectorAll(".magic-link-prompt-floating")).toHaveLength(0);
-    // Acceptance criterion: with nothing floating, nothing is padded for it.
-    // Asserted directly rather than inferred from the count above, since this
-    // selector has silently broken twice (ticket d0a7074 F3 and its
-    // predecessor).
-    expect(clearedSections()).toBe(0);
+    // Acceptance criterion (ticket 931df8a): with no card anywhere, no
+    // anchor is expanded for one either. Asserted directly rather than
+    // inferred from the count above, since this selector has silently
+    // broken twice in its previous life as the clearance rule (ticket
+    // d0a7074 F3 and its predecessor).
+    expect(visibleAnchorCount()).toBe(0);
 
     // My Resumes -- the cue is persistent app chrome, not tied to results.
     fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
@@ -940,59 +948,152 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
   });
 
   /**
-   * Opus review, F3 (BLOCKING, and a regression introduced by the F2 fix
-   * itself). The clearance rule in index.css keeps the last result card
-   * from being permanently occluded by the floating prompt. It has now
-   * silently broken TWICE -- once because the hoist made its original
-   * `.results-section:has(...)` selector unmatchable, and once because
-   * keying it on a merely-present, non-hidden HOST kept it matching after
-   * `MagicLinkPrompt` returns `null` on dismissal, leaving 8rem of dead
-   * space under the results section forever.
+   * Ticket 931df8a's analog of the old "review F3" coverage (ticket
+   * d0a7074) for the NEW mechanism: the anchor-collapse rule in index.css
+   * keeps an invisible or dismissed card from leaving a permanent ~1rem
+   * gap between the first and second result (see that rule's own
+   * comment). This asserts the selector directly, across the whole
+   * matrix, rather than just the happy path -- jsdom's selector engine
+   * (nwsapi) evaluates `:has()`, `>` inside `:has()`, and `:not([attr])`
+   * correctly, so the real production selector string can be queried
+   * as-is, the one piece of this feature no rendering assertion reaches
+   * on its own.
    *
-   * So this asserts the selector directly, across the whole matrix, rather
-   * than just the happy path. jsdom's selector engine (nwsapi) evaluates
-   * `:has()`, `>` inside `:has()`, and `:not([attr])` correctly, so the
-   * real production selector string can be queried as-is -- the one piece
-   * of this feature no rendering assertion can reach, since jsdom computes
-   * no layout.
+   * Exactly ONE anchor expands, not both results sections' worth the way
+   * the old clearance rule padded both (that rule targeted `.results-
+   * section` broadly on purpose, "costs nothing" for the hidden tab's own
+   * copy -- see its deleted comment). This mechanism has no such
+   * redundancy: there is exactly one portaled prompt, so exactly one
+   * anchor (`magicLinkAnchor`'s target) can ever match.
    */
-  it("applies bottom clearance only while a card is really on screen (review F3)", async () => {
+  it("expands the anchor only while a card is really on screen (ticket 931df8a)", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue(SCORED);
 
     await submitResume();
     await runSearchToCompletion();
 
-    // Visible card -> clearance on. Both results sections match; the
-    // hidden tab's padding costs nothing (display:none lays out nothing),
-    // and that breadth is deliberate -- see the CSS comment.
-    expect(clearedSections()).toBe(2);
+    // Visible card -> exactly the active (search) tab's anchor expands.
+    expect(visibleAnchorCount()).toBe(1);
 
     // Dismissed -> the host survives UN-hidden but renders no card, which
-    // is exactly the case the first version of this selector got wrong.
+    // is exactly the case the `> .magic-link-prompt` half of the selector
+    // exists to catch.
     fireEvent.click(screen.getByRole("button", { name: /not now/i }));
     expect(document.querySelectorAll(".magic-link-prompt")).toHaveLength(0);
     expect(document.querySelectorAll(".magic-link-prompt-host")).toHaveLength(1);
-    expect(clearedSections()).toBe(0);
+    expect(visibleAnchorCount()).toBe(0);
   });
 
-  it("drops bottom clearance while the host is mounted but hidden (review F3)", async () => {
+  it("collapses the anchor while the host is mounted but hidden (ticket 931df8a)", async () => {
     mockHappyPath(ONE_RESULT);
     getAllResults.mockResolvedValue(SCORED);
 
     await submitResume();
     await runSearchToCompletion();
-    expect(clearedSections()).toBe(2);
+    expect(visibleAnchorCount()).toBe(1);
 
     // Picker open: host stays mounted (F2's state preservation) but hidden,
-    // so no card is on screen and nothing should be padded for one.
+    // so no card is on screen and no anchor should be expanded for one.
     fireEvent.click(screen.getByRole("button", { name: "Change resume" }));
-    expect(clearedSections()).toBe(0);
+    expect(visibleAnchorCount()).toBe(0);
 
     // And back on cancel, proving the rule tracks visibility rather than
     // latching off permanently.
     fireEvent.click(screen.getByRole("button", { name: /^My Resumes/ }));
-    expect(clearedSections()).toBe(0);
+    expect(visibleAnchorCount()).toBe(0);
+  });
+
+  /**
+   * Ticket 931df8a. `searchArmReady` checks the UNFILTERED fetch
+   * (`resultsState.data.results.length > 0`), but `ResultsList`'s own
+   * hide-overqualified/underqualified/contract-temp checkboxes can filter
+   * that down to zero VISIBLE cards -- no `<ResultCard>`, and therefore no
+   * anchor, is rendered in that state (see `ResultsList.tsx`'s
+   * `onFirstResultAnchorChange`). Without `fallbackMagicLinkAnchor` to fall
+   * back to, `magicLinkPortalRoot` would have nowhere to be attached,
+   * which has the same practical effect as unmounting it -- a filter
+   * checkbox would wipe whatever MagicLinkPrompt was holding, the exact
+   * class of bug ticket d0a7074's review F2 already fixed once.
+   */
+  it("stays mounted and visible even when the active tab's own list is filtered to zero cards", async () => {
+    mockHappyPath({
+      resumeId: "resume-1",
+      resumeNickname: "Resume 1",
+      results: [{ ...ONE_RESULT.results[0]!, levelFit: "overqualified" }],
+    });
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+    // The normal in-list anchor is in use before the filter is touched.
+    expect(visibleAnchorCount()).toBe(1);
+
+    // Filter the one result out entirely -- zero VISIBLE cards, even
+    // though the underlying fetch still has one, so `searchArmReady` (and
+    // therefore `showMagicLinkPrompt`) stays true throughout.
+    fireEvent.click(screen.getByRole("checkbox", { name: /hide roles i'm overqualified for/i }));
+    await screen.findByText(/uncheck "hide roles i'm overqualified for" to see them/i);
+
+    // Still on screen -- not reset to the untouched pitch, and not gone --
+    // even though `visibleAnchorCount()` is necessarily 0 now (there is no
+    // `.magic-link-prompt-anchor` left in the DOM at all to match: the
+    // selector only ever matches the in-list anchor, never the fallback).
+    expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
+    expect(document.querySelectorAll(".magic-link-prompt-anchor")).toHaveLength(0);
+  });
+
+  /**
+   * Ticket 931df8a's actual acceptance criterion: the host must never
+   * render ABOVE the topmost result. Checked as DOM order within the
+   * results region, which is the one piece of "where does this appear"
+   * jsdom can answer without a real layout engine -- see the ticket's own
+   * note that visual placement at desktop/phone widths could not be
+   * screenshotted in this environment (no working headless browser; see
+   * ticket 9c78da1) and must be eyeballed separately.
+   */
+  it("never renders above the topmost result on the search tab", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    await submitResume();
+    await runSearchToCompletion();
+
+    const resultsSection = screen
+      .getByRole("heading", { name: "Results from this search" })
+      .closest(".results-section");
+    expect(resultsSection).not.toBeNull();
+
+    const inOrder = Array.from(
+      resultsSection!.querySelectorAll(".result-card, .magic-link-prompt-host"),
+    );
+    const firstResultIndex = inOrder.findIndex((el) => el.classList.contains("result-card"));
+    const hostIndex = inOrder.findIndex((el) => el.classList.contains("magic-link-prompt-host"));
+    expect(firstResultIndex).toBe(0);
+    expect(hostIndex).toBeGreaterThan(firstResultIndex);
+  });
+
+  it("never renders above the topmost result on Already Scored Jobs either", async () => {
+    mockHappyPath(ONE_RESULT);
+    getAllResults.mockResolvedValue(SCORED);
+
+    render(<App />);
+    openScoredTab();
+    await screen.findByText("Previously Scored Engineer");
+
+    const resultsSection = screen
+      .getByRole("heading", { name: /^Already Scored Jobs/ })
+      .closest(".results-section");
+    expect(resultsSection).not.toBeNull();
+
+    const inOrder = Array.from(
+      resultsSection!.querySelectorAll(".result-card, .magic-link-prompt-host"),
+    );
+    const firstResultIndex = inOrder.findIndex((el) => el.classList.contains("result-card"));
+    const hostIndex = inOrder.findIndex((el) => el.classList.contains("magic-link-prompt-host"));
+    expect(firstResultIndex).toBe(0);
+    expect(hostIndex).toBeGreaterThan(firstResultIndex);
   });
 
   it("carries a submitted address across a tab switch, rather than asking again on the other tab", async () => {

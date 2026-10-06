@@ -26,21 +26,31 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * and nothing at all on "My Resumes". Read that gate, not this file, for
  * exactly when the prompt is allowed on screen.
  *
- * WHY IT FLOATS RATHER THAN SITTING INLINE (ticket d3a95d1, Nicole, live
- * design discussion): the original inline placement, at the end of the
- * results list, meant a long list could push it far below the fold --
- * "never reached" is the same practical failure as never offering it at
- * all. Nicole's own framing of the tradeoff: top competes with results and
- * gets skipped past; bottom (inline, long list) is often never scrolled to;
- * "off to the side" is neither -- a small persistent element, visible
- * without scrolling, that doesn't block the first look at results. The
- * `magic-link-prompt-floating` class (index.css) does this with
- * `position: fixed`, which was a pure CSS/presentation change -- d3a95d1
- * itself touched neither when this component mounts nor any of its
- * internal states below. (Ticket d0a7074 later DID change the mounting, as
- * the paragraph above describes; that float-vs-inline reasoning is
- * unaffected by it, and `position: fixed` is in fact why one hoisted
- * instance works at all.)
+ * WHY THIS NO LONGER FLOATS (ticket 931df8a, superseding d3a95d1): d3a95d1
+ * made this `position: fixed`, bottom-right of the viewport, precisely to
+ * avoid the old inline-at-the-end-of-the-list placement, where a long
+ * results list could push it below the fold -- "never reached" in
+ * practice. That traded one failure for a worse one: Jay's search finished
+ * while he was still scrolled at the top, at the search controls, and the
+ * fixed card appeared right next to them -- "out of nowhere," before he had
+ * any idea results existed. Nicole, after first hearing this mis-read as a
+ * timing bug: "the timing was correct. The placement was not... When he
+ * happens to scroll down is when he should start being able to see that
+ * email message."
+ *
+ * The fix is neither of the two placements d3a95d1 weighed: App.tsx now
+ * portals this component's rendered DOM to a node sitting just after the
+ * TOPMOST result (never above it, never at the list's end), so scrolling
+ * to the results is what brings the card into view, and a short list never
+ * buries it. `createPortal` is what makes that compatible with the one-
+ * hoisted-instance requirement below: the component's position in the
+ * REACT TREE does not move (it still mounts once, where d0a7074 put it),
+ * only its rendered DOM does -- so this stays exactly one instance with
+ * exactly one local `dismissed`/`email`/`phase`, same as when it floated.
+ * See App.tsx's own comment at the mount site for the portal wiring, and
+ * index.css's comment at the old `.magic-link-prompt-floating` site for
+ * why in-flow placement also retires the occlusion-bug class that fixed
+ * positioning kept reopening (N1/N2/N3 in that file's history).
  *
  * WHY IT IS FRAMED AS "SO YOU CAN FIND THIS AGAIN" AND NOT AS A LOGIN WALL
  * (Nicole's framing, on the ticket): nothing here is gated. The results are
@@ -95,7 +105,7 @@ export function MagicLinkPrompt() {
   if (verifiedEmail !== undefined) return null;
 
   return (
-    <section className="magic-link-prompt magic-link-prompt-floating">
+    <section className="magic-link-prompt">
       {/* Ticket 5a7e957: the field, the send, the phases and the "check your
           inbox" panel all live in `MagicLinkForm` now, shared with
           `SignInRecovery`. The pitch below is passed IN rather than rendered

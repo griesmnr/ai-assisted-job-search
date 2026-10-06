@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { GetAllResultsResponse, ScoredJobResult, UserJobStatus } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
@@ -59,6 +59,7 @@ export function GroupedResultsList({
   onSetStatus,
   onClearStatus,
   onViewResume,
+  onFirstResultAnchorChange,
 }: {
   // Ticket 3f0883f: widened from `GetResumeResultsResponse` (which this
   // component never actually read the `resumeId`/`resumeNickname` half of
@@ -77,6 +78,11 @@ export function GroupedResultsList({
   onClearStatus: (jobId: string) => Promise<void>;
   /** Ticket 1e183a4: passthrough to ResultCard -- see its own doc comment. */
   onViewResume: (resumeId: string) => void;
+  /** Ticket 931df8a: see `ResultsList.tsx`'s identical prop for the full
+   * reasoning. Here the "topmost result" is the first card of the first
+   * non-empty GROUP in `GROUP_ORDER` (see the render loop below), since
+   * this tab groups by status rather than rendering one flat list. */
+  onFirstResultAnchorChange?: (node: HTMLLIElement | null) => void;
 }) {
   // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter -- see
   // ResultsList.tsx's identical filter for the full reasoning (never a
@@ -258,31 +264,59 @@ export function GroupedResultsList({
           ))}
         </nav>
       )}
-      {GROUP_ORDER.map((key) => {
-        const results = buckets.get(key)!;
-        if (results.length === 0) return null;
-        return (
-          <section key={key} id={`results-group-${key}`} className="results-group">
-            <h3>{GROUP_LABELS[key]}</h3>
-            <ul className="result-cards">
-              {results.map((result) => (
-                // Ticket 3f0883f: composite key, not just `result.jobId` --
-                // the same posting can legitimately appear twice here now,
-                // once per resume that scored it, and a bare `jobId` key
-                // would collide (React would treat the second occurrence
-                // as an update to the first, not a distinct list item).
-                <ResultCard
-                  key={`${result.jobId}-${result.resumeId}`}
-                  result={result}
-                  onSetStatus={onSetStatus}
-                  onClearStatus={onClearStatus}
-                  onViewResume={onViewResume}
-                />
-              ))}
-            </ul>
-          </section>
-        );
-      })}
+      {(() => {
+        // Ticket 931df8a: tracks whether the anchor has already been
+        // placed, so it lands after the FIRST card of the FIRST non-empty
+        // group only -- not after the first card of every group. A plain
+        // local, recomputed fresh on every render (never carried across
+        // renders), the same way `anchorPlaced` would be if it were a
+        // single inline `let` -- wrapped in an IIFE only so it can live
+        // next to the loop it governs instead of above the whole return.
+        let anchorPlaced = false;
+        return GROUP_ORDER.map((key) => {
+          const results = buckets.get(key)!;
+          if (results.length === 0) return null;
+          return (
+            <section key={key} id={`results-group-${key}`} className="results-group">
+              <h3>{GROUP_LABELS[key]}</h3>
+              <ul className="result-cards">
+                {results.map((result) => {
+                  // Ticket 3f0883f: composite key, not just `result.jobId`
+                  // -- the same posting can legitimately appear twice here
+                  // now, once per resume that scored it, and a bare
+                  // `jobId` key would collide (React would treat the
+                  // second occurrence as an update to the first, not a
+                  // distinct list item).
+                  const compositeKey = `${result.jobId}-${result.resumeId}`;
+                  const placeAnchorHere = !anchorPlaced;
+                  if (placeAnchorHere) anchorPlaced = true;
+                  return (
+                    <Fragment key={compositeKey}>
+                      <ResultCard
+                        result={result}
+                        onSetStatus={onSetStatus}
+                        onClearStatus={onClearStatus}
+                        onViewResume={onViewResume}
+                      />
+                      {/* Ticket 931df8a: see ResultsList.tsx's identical
+                          marker for the full reasoning (portal target,
+                          `role="presentation"` so it doesn't count as a
+                          result to assistive tech). */}
+                      {placeAnchorHere && onFirstResultAnchorChange && (
+                        <li
+                          className="magic-link-prompt-anchor"
+                          role="presentation"
+                          ref={onFirstResultAnchorChange}
+                        />
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        });
+      })()}
     </div>
   );
 }

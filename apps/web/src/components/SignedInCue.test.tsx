@@ -46,17 +46,24 @@ describe("SignedInCue (ticket a5c8fa9)", () => {
   /**
    * The point of the ticket was to stop this being floating chrome. `position:
    * fixed` is a CSS concern jsdom cannot render or measure, so what is
-   * testable is that the element does NOT carry the class that drives the
-   * float, and is NOT a dismissible panel. Same limitation, and the same
-   * class-based workaround, that ticket d3a95d1's own tests used in the
-   * opposite direction.
+   * testable is that the element does NOT carry the markup of the full
+   * sign-in prompt card, and is NOT a dismissible panel.
+   *
+   * Ticket 931df8a retired the `.magic-link-prompt-floating` modifier class
+   * this test used to check for outright (that whole concept -- a
+   * `position: fixed` card -- is gone from the app, not just from here), so
+   * checking for its absence here would now be true unconditionally and
+   * prove nothing. `.magic-link-prompt` (the base class MagicLinkPrompt
+   * still uses, in flow) is the meaningful thing to rule out instead: it
+   * would only appear here if this component started rendering the OTHER
+   * component's markup, which is the actual bug this test guards against.
    */
-  it("is a plain in-flow label, not a floating dismissible card", () => {
+  it("is a plain in-flow label, not the sign-in prompt card", () => {
     localStorage.setItem("jobsearch.web.userEmail.v1", "signed-in@example.com");
 
     const { container } = render(<SignedInCue />);
 
-    expect(container.querySelector(".magic-link-prompt-floating")).toBeNull();
+    expect(container.querySelector(".magic-link-prompt")).toBeNull();
     expect(container.querySelector(".signed-in-cue")).not.toBeNull();
     // Nothing to close, so nothing that offers to close it -- this is what
     // retires opus review finding B2 (ticket d3a95d1) rather than re-solving
