@@ -902,6 +902,12 @@ button[aria-disabled="true"] {
   padding: 1rem;
   border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
   border-radius: 8px;
+  /* Ticket 931df8a: folded in from the now-deleted `.magic-link-prompt-
+     floating` modifier -- the one property there that wasn't about making
+     `position: fixed` behave, so it survives the move in-flow unchanged.
+     See this file's comment near `.magic-link-prompt-anchor` below for the
+     rest of that rule's history. */
+  box-shadow: 0 4px 16px color-mix(in srgb, currentColor 15%, transparent);
   background: color-mix(in srgb, currentColor 5%, transparent);
 }
 
@@ -957,118 +963,114 @@ button[aria-disabled="true"] {
   color: #b3261e;
 }
 
-/* Ticket d3a95d1, Nicole (live design discussion): the prompt used to sit
-   inline at the end of the results list, which meant a long results list
-   could push it far below the fold -- "never reached" in practice. Her own
-   framing of the placement tradeoff: top competes with results and gets
-   skipped; bottom (inline, long list) is often never scrolled to; "off to
-   the side" is neither. `position: fixed` takes it out of document flow
-   entirely, so it stays visible without scrolling regardless of how long
-   the results list runs. `z-index` only needs to clear ordinary page
-   content -- nothing else on this page uses a stacking context above the
-   base layer.
+/* Ticket 931df8a, superseding d3a95d1 and its N1-N3 follow-ups: this used
+   to be `.magic-link-prompt-floating` -- `position: fixed`, bottom-right,
+   plus a `.results-section` clearance hack (below the old N2 rule used to
+   sit) and a narrow-viewport override (the old N3 rule), because a FIXED
+   card needs both: something to stop it permanently occluding the last
+   result card, and something to stop a right-anchored fixed width box from
+   crowding a phone screen's edges. All three are gone outright, not
+   reworked -- in-flow placement doesn't occlude anything, so there is
+   nothing left for either rule to guard against. That is the point made at
+   length on this ticket: moving the card in-flow retires this whole class
+   of bug rather than adding a fourth occlusion workaround to the pile (N1,
+   N2, N3 were three separate rounds of patching the SAME problem: a fixed
+   card sitting on top of real content).
 
-   Opus review, B1 (BLOCKING): `.magic-link-prompt`'s `background` is a
-   95%-transparent tint -- correct when the card sat IN FLOW with only the
-   page canvas behind it, but `position: fixed` now sits it ON TOP of
-   scrolled results, and at 95% transparency their text showed straight
-   through. `background: Canvas` (the CSS system color for the page's own
-   background, correct in both light and dark since `:root` declares
-   `color-scheme: light dark` above) makes the floating card opaque without
-   hardcoding a palette this stylesheet otherwise avoids. */
-.magic-link-prompt-floating {
-  position: fixed;
-  right: 1.25rem;
-  bottom: 1.25rem;
-  z-index: 20;
+   d3a95d1's original reason to float at all was itself a placement
+   problem: inline at the end of a potentially long results list "could
+   push it far below the fold -- never reached in practice." Floating fixed
+   that but created a worse one Jay actually hit: a completed search can
+   finish while the user is still scrolled at the top, at the search
+   controls, and a bottom-right fixed card appears right next to them --
+   before the user has any idea results exist. Nicole: "the timing was
+   correct. The placement was not... When he happens to scroll down is when
+   he should start being able to see that email message."
+
+   The resolution is a third placement, not a return to either of the first
+   two: App.tsx now portals this card's DOM to a node sitting just after
+   the TOPMOST result (see `ResultsList.tsx`/`GroupedResultsList.tsx`'s
+   `onFirstResultAnchorChange` and App.tsx's `magicLinkAnchor`) -- never
+   above the first result (it isn't the first thing a scrolling user
+   meets, ahead of the results they came for), and never at the list's end
+   (it isn't buried the way the original inline placement was). Scrolling
+   to the results is what brings it into view, which is exactly Jay's
+   complaint fixed at the root rather than worked around.
+
+   `box-shadow` is the one `.magic-link-prompt-floating` property that
+   survives, folded into the base rule above -- it was always just "this
+   card reads as distinct from the page," which is still true in flow, and
+   nothing about it depended on `position: fixed`. Everything else in that
+   old rule (`position`, `right`, `bottom`, `z-index`, `margin-top: 0`,
+   `width`, `max-width`, the viewport-relative `max-height`/`overflow-y`
+   pair from N1) existed ONLY to make fixed positioning behave, and is
+   simply gone: `margin-top: 0` would have wrongly suppressed the base
+   rule's normal 1.5rem spacing above an in-flow card; `max-height`/
+   `overflow-y: auto` caps relative to the VIEWPORT specifically because a
+   fixed box cannot otherwise scroll with a short window -- in flow, the
+   page itself scrolls, so that pair would now be actively wrong (an
+   incongruous inner scrollbar on an ordinary page element) rather than
+   merely unnecessary. */
+.magic-link-prompt-anchor {
+  /* Ticket 931df8a: the portal target is an otherwise-empty `<li>` (see
+     the component files for why) sitting between two result cards in a
+     `display: flex; gap: 1rem` list (`.result-cards` above) -- every flex
+     item claims its share of that gap whether or not it has visible
+     content, so an anchor with nothing (or nothing VISIBLE) inside it
+     would otherwise leave a permanent extra ~1rem blank gap between the
+     first and second result, on every render, whether or not the prompt
+     is actually on screen. Collapsing it out of layout whenever it is not
+     actively hosting a visible card avoids that. The selector mirrors the
+     deleted `.app:has(...) .results-section` clearance rule it replaces --
+     same shape (`:not([hidden])` for "the host survives mounted-but-hidden
+     across tab switches, so EXISTS is not enough", `> .magic-link-prompt`
+     for "MagicLinkPrompt returns `null` once dismissed/verified while its
+     host div survives, so a merely-unhidden host is not enough either" --
+     see that rule's own, now-deleted history for why each half was
+     added), just inverted: it used to decide whether to PAD a sibling,
+     now it decides whether to COLLAPSE itself.
+
+     IF YOU EDIT THIS SELECTOR, edit `ANCHOR_VISIBLE_SELECTOR` in
+     `App.magicLink.test.tsx` too -- same reasoning as that old rule's
+     comment: jsdom's selector engine evaluates `:has()` correctly, so the
+     production string can be pinned directly against a real DOM, but a
+     change here does not fail any test on its own since the test restates
+     the string rather than reading this file (ticket 5c93a51). */
+  display: none;
+}
+.magic-link-prompt-anchor:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) {
+  /* `block`, not the `<li>` default of `list-item` -- `.result-cards`
+     already sets `list-style: none`, so there is no marker to preserve,
+     and `block` is the unambiguous choice as a child of `display: flex`
+     regardless of how any given engine treats a `list-item` flex item. */
+  display: block;
+}
+
+/* Review round 2, required fix: `.magic-link-prompt` keeps `margin-top:
+   1.5rem` from when it was either `position: fixed` (no margin collapsing
+   question at all) or a plain sibling after `</ul>` in normal block flow
+   (where that 1.5rem was originally calibrated). Inside `.result-cards`
+   (`display: flex; flex-direction: column; gap: 1rem`), margins on flex
+   items never collapse with the flex container's own `gap` -- each flex
+   item is its own independent formatting context -- so the card was
+   getting `1rem` (the gap) PLUS `1.5rem` (this margin) above it, 2.5rem
+   total, against exactly 1rem below it and between every other pair of
+   result cards. Zeroed here, scoped to this one placement, rather than on
+   the base `.magic-link-prompt` rule: the base rule still serves the
+   FALLBACK-ANCHOR placement -- plain block flow at the end of `<main>`,
+   where no flex gap is in play and the original 1.5rem is still correct --
+   plus any future non-flex caller. (Re-review correction: an earlier draft
+   of this comment named "the verified-user aside" as the surviving
+   beneficiary. There is no such thing -- `MagicLinkPrompt` returns null
+   once `verifiedEmail` is defined, since ticket a5c8fa9 moved that
+   reassurance to `SignedInCue`, and two tests pin `.magic-link-prompt` at
+   count 0 in the verified state. The scoping decision was right; the
+   consumer named for it was not.) Caught by inspection, not a
+   screenshot -- there is no working headless browser in this container
+   (ticket 9c78da1) -- which is exactly why this is recorded instead of
+   assumed fine. */
+.magic-link-prompt-anchor .magic-link-prompt {
   margin-top: 0;
-  width: 20rem;
-  max-width: calc(100vw - 2.5rem);
-  background: Canvas;
-  box-shadow: 0 4px 16px color-mix(in srgb, currentColor 15%, transparent);
-  /* Opus review, N1: bottom-anchored + fixed means this cannot scroll --
-     on a short viewport (a landscape phone) the card's own content could
-     otherwise overflow off the TOP of the screen with no way to reach it.
-     Capped to the viewport's own height (minus the same margin used on
-     the other three sides) with internal scrolling as the fallback. */
-  max-height: calc(100vh - 2.5rem);
-  overflow-y: auto;
-}
-
-/* Ticket a5c8fa9: the `.magic-link-prompt-floating.magic-link-prompt-signed-in`
-   panel and its `.magic-link-prompt-signed-in-dismiss` button lived here and
-   are gone. They existed only for the floating signed-in card, which Nicole
-   asked to be replaced by a quiet header label ("no pop-up after a successful
-   magic link") -- see `.signed-in-cue` above and SignedInCue.tsx. Worth
-   recording what went with them: opus review B2 on ticket d3a95d1 added that
-   dismiss button because permanent fixed-position chrome with no way to close
-   it occludes content forever. An in-flow header label cannot occlude
-   anything, so B2's finding is retired rather than re-solved, and neither the
-   panel treatment nor the dismiss affordance has any remaining caller. */
-
-/* Opus review, N2: a floating, fixed-position card sits ON TOP of the
-   results section's own natural end -- without extra clearance, its last
-   card(s) can end up permanently occluded (scrolling further does nothing,
-   since the floating card scrolls with the viewport too).
-
-   Ticket d0a7074: the prompt is no longer a CHILD of the results section
-   (it's one hoisted instance at `main.app` level now, serving both results
-   tabs -- see App.tsx's `showMagicLinkPrompt`), so the original
-   `.results-section:has(.magic-link-prompt-floating)` selector would never
-   match again and the clearance would silently vanish. Rekeyed one level
-   up. This keeps the original intent intact: only `.results-section` gets
-   the padding, never a blanket `.app` bump that would add dead space under
-   every tab. Both results sections get it rather than just the visible
-   one, which costs nothing -- the other is inside a `hidden`
-   (display:none) panel, so its padding isn't laid out at all -- and "My
-   Resumes" uses `.resumes-section`, so it is untouched either way.
-
-   The test has to satisfy BOTH halves of the conjunction below, and each
-   half alone gets exactly one case wrong -- this rule has now silently
-   broken twice, so the reasoning for each is worth spelling out:
-
-     - `:not([hidden])` on the host is required because the host stays
-       MOUNTED-but-`hidden` across tab switches (see App.tsx's F2 note --
-       that's what preserves the dismissal and the "check your inbox"
-       state). Asking only whether the prompt EXISTS would pad a results
-       section while the card is invisible, reachable whenever one arm is
-       ready and the other tab is the one on screen.
-     - `> .magic-link-prompt` inside the host is required because
-       MagicLinkPrompt returns `null` when dismissed (see its `dismissed`
-       check) while its host div survives, un-hidden. Asking only whether
-       a visible host EXISTS would therefore leave 8rem of dead space
-       under the results section forever after a user clicks "Not now" --
-       which is a first-class option, not an edge case. That was opus
-       review F3 on this very rule: measured `HOST_HIDDEN: false,
-       PROMPT_COUNT: 0, CSS_CLEARANCE_ACTIVE: 2`.
-
-   Together: pad only when a real card is actually on screen. Note the `>`
-   combinators are load-bearing -- wrapping the host one level deeper
-   silently drops the clearance again, the same fragility the original
-   `.results-section:has(...)` selector had.
-
-   IF YOU EDIT THIS SELECTOR, edit it in `App.magicLink.test.tsx` too. Its
-   `CLEARANCE_SELECTOR` restates this string (see that constant's comment
-   for why it cannot read this file, and ticket 5c93a51 to close that), so
-   a change here does not fail any test on its own -- the coverage is of
-   the selector's behavior, not of this file's contents. */
-.app:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) .results-section {
-  padding-bottom: 8rem;
-}
-
-/* Narrow viewports: a right-anchored fixed width card can crowd a phone
-   screen's edges. Full-width-minus-margins reads better than a narrower
-   fixed box at that size. Opus review, N3: widened from 30rem -- a
-   right-anchored 20rem box still overlaps most of a near-full-width
-   content column well above phone widths (e.g. a 48rem/768px tablet, where
-   `.app`'s own content column is not yet at its own max-width either). */
-@media (max-width: 48rem) {
-  .magic-link-prompt-floating {
-    left: 1rem;
-    right: 1rem;
-    width: auto;
-    max-width: none;
-  }
 }
 
 /* The landing view is a full-page takeover (MagicLinkLanding.tsx), so it

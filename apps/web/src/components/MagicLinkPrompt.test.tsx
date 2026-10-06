@@ -182,7 +182,7 @@ describe("MagicLinkPrompt", () => {
    * of contradictory copy on a 20rem card.
    *
    * The existing sent-state test could not see it -- it only asserted the
-   * outer `section.magic-link-prompt-floating` was present, which stayed true
+   * outer `section.magic-link-prompt` was present, which stayed true
    * because that section never unmounts any more.
    */
   it("replaces the pitch with the confirmation when sent, rather than showing both", async () => {
@@ -249,22 +249,35 @@ describe("MagicLinkPrompt", () => {
     expect(screen.queryByRole("button", { name: /dismiss/i })).not.toBeInTheDocument();
   });
 
-  // Ticket d3a95d1, Nicole (live design discussion): moved from sitting
-  // inline at the end of a potentially long results list (where it could
-  // sit below the fold and never get seen) to a floating element that
-  // stays visible without scrolling. `position: fixed` is a CSS concern
-  // jsdom can't render/measure, so this pins the one thing that IS testable
-  // -- the class that drives it -- present in every rendered state, not
-  // just the default idle one.
-  describe("floats instead of sitting inline (ticket d3a95d1)", () => {
+  // Ticket 931df8a, superseding d3a95d1: d3a95d1 moved this from sitting
+  // inline at the end of a potentially long results list to a
+  // `position: fixed` floating element, specifically so it stayed visible
+  // without scrolling. That traded one placement problem (buried below a
+  // long list) for a worse one Jay actually hit: the fixed card appeared
+  // right next to the search controls the instant a search finished, while
+  // he was still scrolled at the top with no idea results existed. The fix
+  // is a third placement (App.tsx portals this component's rendered DOM to
+  // a node just after the topmost result), not a return to the original
+  // inline-at-the-end design -- so there is no `-floating` modifier class
+  // to turn on any more, in ANY rendered state, which is what these two
+  // tests pin. `position`/`display` are CSS concerns jsdom can't render or
+  // measure; the class name is the one thing that's testable, the same
+  // limitation d3a95d1's own version of these tests had in the opposite
+  // direction.
+  describe("sits in the document flow, not floating (ticket 931df8a)", () => {
     it("in the idle/form state", () => {
       const { container } = render(<MagicLinkPrompt />);
-      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
+      const section = container.querySelector("section.magic-link-prompt");
+      expect(section).not.toBeNull();
+      // Exactly the base class, nothing else -- a `-floating` (or any
+      // other positioning) modifier reappearing would fail this even
+      // though `section.magic-link-prompt` itself still matches.
+      expect(section!.className.trim().split(/\s+/)).toEqual(["magic-link-prompt"]);
     });
 
     // Ticket a5c8fa9: the "already-verified state" case that sat here is
-    // gone -- there is no floating card in that state any more, so there is
-    // no float to assert. The verified state's own test is above.
+    // gone -- there is no card in that state at all any more, floating or
+    // otherwise. The verified state's own test is above.
 
     it("in the 'sent' state", async () => {
       requestMagicLink.mockResolvedValue({
@@ -278,7 +291,9 @@ describe("MagicLinkPrompt", () => {
       fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
       await screen.findByRole("heading", { name: /check your inbox/i });
 
-      expect(container.querySelector("section.magic-link-prompt-floating")).not.toBeNull();
+      const section = container.querySelector("section.magic-link-prompt");
+      expect(section).not.toBeNull();
+      expect(section!.className.trim().split(/\s+/)).toEqual(["magic-link-prompt"]);
     });
   });
 });

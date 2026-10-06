@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { GetResumeResultsResponse, UserJobStatus } from "@app/shared";
 import { ResultCard } from "./ResultCard";
 
@@ -20,6 +20,7 @@ export function ResultsList({
   onSetStatus,
   onClearStatus,
   onViewResume,
+  onFirstResultAnchorChange,
 }: {
   data: GetResumeResultsResponse;
   selectedSourceIds: ReadonlySet<string>;
@@ -30,6 +31,20 @@ export function ResultsList({
   onClearStatus: (jobId: string) => Promise<void>;
   /** Ticket 1e183a4: passthrough to ResultCard -- see its own doc comment. */
   onViewResume: (resumeId: string) => void;
+  /**
+   * Ticket 931df8a: App.tsx's single hoisted `MagicLinkPrompt` instance is
+   * `createPortal`-ed into the DOM node this ref callback hands back, which
+   * sits right after the first visible `ResultCard` (see the marker `<li>`
+   * below). That gets the card out of `position: fixed` and into document
+   * flow, adjacent to results, WITHOUT giving it a second mount point --
+   * `createPortal` relocates only the rendered DOM, not the component's
+   * position in the React tree, so the portaled component's local state
+   * (`dismissed`/`email`/`phase`) survives exactly as it did when the host
+   * was a fixed sibling of `.app` (ticket d0a7074's whole reason for one
+   * instance). Optional because every other caller of this list (its own
+   * test file included) has no such anchor to offer.
+   */
+  onFirstResultAnchorChange?: (node: HTMLLIElement | null) => void;
 }) {
   // Ticket b182bde: opt-in, DEFAULT-OFF client-side filter on already-
   // fetched results, same pattern as `selectedSourceIds` above -- never a
@@ -229,14 +244,42 @@ export function ResultsList({
       )}
       {visible.length > 0 && (
         <ul className="result-cards">
-          {visible.map((result) => (
-            <ResultCard
-              key={result.jobId}
-              result={result}
-              onSetStatus={onSetStatus}
-              onClearStatus={onClearStatus}
-              onViewResume={onViewResume}
-            />
+          {visible.map((result, index) => (
+            <Fragment key={result.jobId}>
+              <ResultCard
+                result={result}
+                onSetStatus={onSetStatus}
+                onClearStatus={onClearStatus}
+                onViewResume={onViewResume}
+              />
+              {/* Ticket 931df8a: the portal target, immediately after the
+                  TOPMOST result -- never above it, and never pushed all the
+                  way to the end of a list that (per ticket d3a95d1) can run
+                  long enough that "inline at the end" was "never reached in
+                  practice". `role="presentation"` strips the implicit
+                  `listitem` role so a screen reader doesn't count the
+                  sign-in prompt as one of the N results in this list -- the
+                  form inside keeps its own real semantics (heading, inputs)
+                  regardless. Only rendered when a caller actually wants the
+                  anchor (App.tsx); every other caller, including this
+                  component's own test file, renders nothing extra here.
+
+                  MUST stay self-closing -- no React children. App.tsx's
+                  `appendChild` effect attaches `magicLinkPortalRoot` to
+                  this exact DOM node OUTSIDE React, which is only
+                  invisible to React because React itself renders nothing
+                  inside this `<li>` to reconcile. Give it real children
+                  here and the next render's reconciliation diffs this
+                  node's children against what THIS component rendered --
+                  which won't include the portal root -- and can drop it. */}
+              {index === 0 && onFirstResultAnchorChange && (
+                <li
+                  className="magic-link-prompt-anchor"
+                  role="presentation"
+                  ref={onFirstResultAnchorChange}
+                />
+              )}
+            </Fragment>
           ))}
         </ul>
       )}
