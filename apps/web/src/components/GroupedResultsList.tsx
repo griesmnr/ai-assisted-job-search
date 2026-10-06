@@ -301,7 +301,13 @@ export function GroupedResultsList({
                       {/* Ticket 931df8a: see ResultsList.tsx's identical
                           marker for the full reasoning (portal target,
                           `role="presentation"` so it doesn't count as a
-                          result to assistive tech). */}
+                          result to assistive tech). MUST stay
+                          self-closing -- no React children, same reason as
+                          that file's comment: App.tsx's `appendChild`
+                          effect attaches `magicLinkPortalRoot` to this
+                          node OUTSIDE React, and that is only invisible to
+                          React because React renders nothing of its own
+                          inside this `<li>` to reconcile against. */}
                       {placeAnchorHere && onFirstResultAnchorChange && (
                         <li
                           className="magic-link-prompt-anchor"

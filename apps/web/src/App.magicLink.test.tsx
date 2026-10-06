@@ -804,17 +804,30 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
   });
 
   /**
-   * Opus review, F1 (BLOCKING). The hoisted gate was transcribed from the
-   * old mount's INLINE `results.length > 0` check and dropped the two
-   * ancestor wrappers it used to live inside: `{resumeId && ...}` and
-   * `hidden={resumeEditing || resumeChanging}` (App.tsx). The card is
-   * `position: fixed`, and the clearance rule only pads
-   * `.results-section` -- never `.resume-section` -- so with those
+   * Opus review, F1 (BLOCKING), ticket d0a7074. The hoisted gate was
+   * transcribed from the old mount's INLINE `results.length > 0` check and
+   * dropped the two ancestor wrappers it used to live inside: `{resumeId &&
+   * ...}` and `hidden={resumeEditing || resumeChanging}` (App.tsx). At the
+   * time, the card was `position: fixed`, and the clearance rule only
+   * padded `.results-section` -- never `.resume-section` -- so with those
    * conditions gone it floated over the resume picker, occluding its
-   * bottom rows (and, under the narrow-viewport rule where it goes
+   * bottom rows (and, under the narrow-viewport rule where it went
    * full-width, the "Use this resume" button itself) with no way to scroll
-   * out from under it. Exactly the occlusion class the clearance rule
-   * exists to prevent, reintroduced where the clearance cannot reach.
+   * out from under it.
+   *
+   * Ticket 931df8a removed `position: fixed` and the clearance rule
+   * outright, so THAT specific failure mode is no longer physically
+   * possible: the card now lives in flow, inside the results list itself,
+   * which is a different region of the DOM from the resume picker's own
+   * section -- it cannot overlap something it is not a sibling of. This
+   * test still earns its place for an orthogonal reason: `searchArmReady`
+   * (the gate itself, untouched by 931df8a -- see that ticket's own note on
+   * App.tsx) still requires `!resumeEditing && !resumeChanging`, and the
+   * picker reopening is still the natural way to get there. Keeping this
+   * test pins that the trigger's own "don't ask while results might be
+   * about to change" rule survived the placement rewrite intact, even
+   * though the specific occlusion bug that motivated adding it originally
+   * can no longer occur.
    */
   it("disappears while the resume picker is open, and comes back on cancel (review F1)", async () => {
     mockHappyPath(ONE_RESULT);
@@ -1011,18 +1024,39 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
    * that down to zero VISIBLE cards -- no `<ResultCard>`, and therefore no
    * anchor, is rendered in that state (see `ResultsList.tsx`'s
    * `onFirstResultAnchorChange`). Without `fallbackMagicLinkAnchor` to fall
-   * back to, `magicLinkPortalRoot` would have nowhere to be attached,
-   * which has the same practical effect as unmounting it -- a filter
-   * checkbox would wipe whatever MagicLinkPrompt was holding, the exact
-   * class of bug ticket d0a7074's review F2 already fixed once.
+   * back to, `magicLinkPortalRoot` would have nowhere VISIBLE to be
+   * attached, which has the same practical effect as unmounting it -- a
+   * filter checkbox would wipe whatever MagicLinkPrompt was holding, the
+   * exact class of bug ticket d0a7074's review F2 already fixed once.
+   *
+   * Review round 2, required fix: the first version of this test left
+   * `getAllResults` returning an EMPTY list, which made `scoredResultsAnchor`
+   * null too -- the one condition under which the ORIGINAL (buggy) anchor
+   * chain and the fixed one compute the exact same thing, so the test could
+   * not tell them apart (it passed against both). This version gives the
+   * scored tab a real, live anchor -- inside ITS OWN `hidden` panel, since
+   * the active tab is still "search" -- which is the reviewer's own
+   * reproduction: the buggy chain (`searchResultsAnchor ?? scoredResultsAnchor
+   * ?? fallbackMagicLinkAnchor`) borrows that hidden anchor before ever
+   * reaching the fallback, attaching `magicLinkPortalRoot` inside a
+   * `display: none` subtree while `magicLinkPortalRoot.hidden` stays
+   * `false` -- on screen by the app's own bookkeeping, invisible and out
+   * of the accessibility tree in fact. `getByRole` (unlike a bare DOM
+   * query) is what actually tells these apart: a heading inside a
+   * `[hidden]` ancestor is not in the accessibility tree, so this query
+   * fails under the borrow and only passes once the card is genuinely
+   * reachable via the always-visible fallback.
    */
-  it("stays mounted and visible even when the active tab's own list is filtered to zero cards", async () => {
+  it("stays mounted and ACCESSIBLY visible when the active tab's own list is filtered to zero cards, even with a live anchor sitting in the other (hidden) tab", async () => {
     mockHappyPath({
       resumeId: "resume-1",
       resumeNickname: "Resume 1",
       results: [{ ...ONE_RESULT.results[0]!, levelFit: "overqualified" }],
     });
-    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    // The scored tab has a real result too -- so `scoredResultsAnchor` is
+    // live, sitting inside that tab's `hidden` panel, while "search" stays
+    // the active tab throughout this test.
+    getAllResults.mockResolvedValue(SCORED);
 
     await submitResume();
     await runSearchToCompletion();
@@ -1030,18 +1064,23 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
     // The normal in-list anchor is in use before the filter is touched.
     expect(visibleAnchorCount()).toBe(1);
 
-    // Filter the one result out entirely -- zero VISIBLE cards, even
-    // though the underlying fetch still has one, so `searchArmReady` (and
-    // therefore `showMagicLinkPrompt`) stays true throughout.
+    // Filter the one result out entirely -- zero VISIBLE cards on the
+    // active (search) tab, even though the underlying fetch still has one,
+    // so `searchArmReady` (and therefore `showMagicLinkPrompt`) stays true
+    // throughout. `scoredResultsAnchor` remains live and non-null the
+    // whole time, inside the scored tab's own `hidden` panel.
     fireEvent.click(screen.getByRole("checkbox", { name: /hide roles i'm overqualified for/i }));
     await screen.findByText(/uncheck "hide roles i'm overqualified for" to see them/i);
 
-    // Still on screen -- not reset to the untouched pitch, and not gone --
-    // even though `visibleAnchorCount()` is necessarily 0 now (there is no
-    // `.magic-link-prompt-anchor` left in the DOM at all to match: the
-    // selector only ever matches the in-list anchor, never the fallback).
+    // Still on screen, and -- the point of this test -- genuinely
+    // ACCESSIBLE: `getByRole` throws if the heading is inside a `[hidden]`
+    // ancestor, which is exactly where the borrow used to leave it.
     expect(screen.getByRole("heading", { name: /find these results again/i })).toBeInTheDocument();
-    expect(document.querySelectorAll(".magic-link-prompt-anchor")).toHaveLength(0);
+    // No in-list anchor is active anywhere: the search tab's own anchor is
+    // gone (filtered to zero), and the scored tab's anchor -- live but
+    // never borrowed -- correctly never expands for a card it isn't
+    // hosting.
+    expect(visibleAnchorCount()).toBe(0);
   });
 
   /**

@@ -962,12 +962,23 @@ function JobSearchApp() {
   // state. Two mount points would therefore be two INDEPENDENT states:
   // "Not now" on one tab and the prompt is still sitting there on the
   // other, or submit the address on one tab and the other still shows an
-  // empty form asking again. Since the prompt is `position: fixed`
-  // (ticket d3a95d1) it is already visually detached from whatever section
-  // contains it, so a single instance at `main.app` level is the honest
-  // structure rather than a workaround -- the tab it "belongs to" is
-  // decided by this gate, and the card renders in the same corner either
-  // way.
+  // empty form asking again.
+  //
+  // Ticket 931df8a superseded the mechanism this paragraph used to
+  // describe, so it is rewritten rather than left to describe a design
+  // that no longer exists: the prompt was `position: fixed` (ticket
+  // d3a95d1), which made it trivially detached from any particular
+  // section -- "the card renders in the same corner either way" was true
+  // precisely because it rendered nowhere in document flow at all. It is
+  // now in-flow, after the topmost result of whichever tab is active (see
+  // `magicLinkAnchor`/`magicLinkPortalRoot`, declared below this
+  // function's `showMagicLinkPrompt`), which is the opposite property:
+  // which section it visually belongs to is no longer incidental, it is
+  // exactly the gate below. What hasn't changed is the REASON for one
+  // hoisted instance -- `<MagicLinkPrompt />` still mounts once, at this
+  // same JSX call site, never duplicated per tab -- only how its RENDERED
+  // DOM gets to the right section (a portal moved between anchors,
+  // instead of a fixed box that didn't need to move at all).
   //
   // WHAT THE GATE PRESERVES: ticket 9f06f8f's placement rule is unchanged
   // -- the email is asked for only after real scored results are on
@@ -1048,17 +1059,37 @@ function JobSearchApp() {
   const [fallbackMagicLinkAnchor, setFallbackMagicLinkAnchor] = useState<HTMLDivElement | null>(
     null,
   );
-  // Prefers the anchor belonging to the ACTIVE tab (so the card appears in
-  // the right section when visible), falls back to whichever other anchor
-  // exists (keeps `magicLinkPortalRoot` attached SOMEWHERE in the live DOM
-  // while the active tab's own list is between renders or filtered to
-  // nothing), and only reaches the fallback above when neither results
-  // list currently offers one at all.
+  // Uses the anchor belonging to the ACTIVE tab, and ONLY that one -- never
+  // borrows the other tab's anchor as a stand-in. Review round 2 (BLOCKING):
+  // an earlier version fell through to `searchResultsAnchor ?? scoredResultsAnchor`
+  // before reaching the fallback below, on the theory that any live anchor
+  // beats none. That reasoning ignored WHERE the borrowed anchor lives:
+  // both tab panels are `<div hidden={activeTab !== ...}>` (`display:
+  // none` on the inactive one), so borrowing the other tab's anchor
+  // attaches `magicLinkPortalRoot` inside a `display: none` subtree while
+  // `showMagicLinkPrompt` -- and therefore `magicLinkPortalRoot.hidden` --
+  // is `false`. The app believes the card is on screen; it is invisible
+  // and out of the accessibility tree. Reproduced concretely: one search
+  // result with `levelFit: "overqualified"` (so `searchArmReady` stays
+  // true -- it keys off the unfiltered fetch) plus one scored job on the
+  // OTHER tab (so `scoredResultsAnchor` is set, but inside that tab's
+  // hidden panel); checking "Hide roles I'm overqualified for" empties
+  // `visible`, nulling `searchResultsAnchor`; the old chain fell through to
+  // the hidden `scoredResultsAnchor` instead of the fallback, and the
+  // heading query failed with the host measurably `hidden: false` inside a
+  // `[hidden]` ancestor. It is reachable in the owner's own data too: both
+  // of her real applied-to postings are in the overqualified bucket
+  // (ResultsList.tsx's own comment on `hideOverqualified`), and "Already
+  // Scored Jobs" accumulates every job ever scored, so this is the normal
+  // steady state after her first search, not a contrived edge case.
+  //
+  // The fallback below already does, strictly better, what the borrow was
+  // trying to do: it is always mounted AND visible (never inside a
+  // `hidden` tab panel), so it keeps `magicLinkPortalRoot` attached
+  // somewhere live without ever attaching it somewhere invisible. The
+  // "filtered to zero cards" test exercises exactly this path.
   const magicLinkAnchor =
-    (activeTab === "scored" ? scoredResultsAnchor : searchResultsAnchor) ??
-    searchResultsAnchor ??
-    scoredResultsAnchor ??
-    fallbackMagicLinkAnchor;
+    (activeTab === "scored" ? scoredResultsAnchor : searchResultsAnchor) ?? fallbackMagicLinkAnchor;
 
   // The portal target `<MagicLinkPrompt />` always renders into (see the
   // mount site, near the end of this component). Created exactly ONCE --
@@ -1103,6 +1134,22 @@ function JobSearchApp() {
   // freshly-available anchor (e.g. the moment a search completes) does not
   // have even one paint where the card is attached to its old position (or
   // nowhere at all, on the very first anchor it ever gets).
+  //
+  // Review round 2, required: the invariant this `appendChild` depends on,
+  // stated explicitly because nothing else in this file says it. `magicLinkAnchor`
+  // is a `<li className="magic-link-prompt-anchor" ... />` that React
+  // renders with NO children of its own (see ResultsList.tsx/
+  // GroupedResultsList.tsx -- it is always a self-closing element). That is
+  // load-bearing, not incidental: React only reconciles a DOM node's
+  // children if IT rendered that node with children in the first place.
+  // Appending `magicLinkPortalRoot` here, outside React, is invisible to
+  // React precisely because React has nothing of its own to reconcile
+  // inside this `<li>` on the next render -- it never looks inside and
+  // never notices (let alone removes) a node it didn't put there. If
+  // either component is ever changed to give this `<li>` real React
+  // children, that next render's reconciliation WILL diff the `<li>`'s
+  // child list against what React itself rendered, which does not include
+  // `magicLinkPortalRoot` -- and can drop it.
   useLayoutEffect(() => {
     if (magicLinkAnchor && magicLinkPortalRoot.parentNode !== magicLinkAnchor) {
       magicLinkAnchor.appendChild(magicLinkPortalRoot);

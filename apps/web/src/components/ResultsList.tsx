@@ -262,7 +262,16 @@ export function ResultsList({
                   form inside keeps its own real semantics (heading, inputs)
                   regardless. Only rendered when a caller actually wants the
                   anchor (App.tsx); every other caller, including this
-                  component's own test file, renders nothing extra here. */}
+                  component's own test file, renders nothing extra here.
+
+                  MUST stay self-closing -- no React children. App.tsx's
+                  `appendChild` effect attaches `magicLinkPortalRoot` to
+                  this exact DOM node OUTSIDE React, which is only
+                  invisible to React because React itself renders nothing
+                  inside this `<li>` to reconcile. Give it real children
+                  here and the next render's reconciliation diffs this
+                  node's children against what THIS component rendered --
+                  which won't include the portal root -- and can drop it. */}
               {index === 0 && onFirstResultAnchorChange && (
                 <li
                   className="magic-link-prompt-anchor"

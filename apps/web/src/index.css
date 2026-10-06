@@ -1046,6 +1046,26 @@ button[aria-disabled="true"] {
   display: block;
 }
 
+/* Review round 2, required fix: `.magic-link-prompt` keeps `margin-top:
+   1.5rem` from when it was either `position: fixed` (no margin collapsing
+   question at all) or a plain sibling after `</ul>` in normal block flow
+   (where that 1.5rem was originally calibrated). Inside `.result-cards`
+   (`display: flex; flex-direction: column; gap: 1rem`), margins on flex
+   items never collapse with the flex container's own `gap` -- each flex
+   item is its own independent formatting context -- so the card was
+   getting `1rem` (the gap) PLUS `1.5rem` (this margin) above it, 2.5rem
+   total, against exactly 1rem below it and between every other pair of
+   result cards. Zeroed here, scoped to this one placement, rather than on
+   the base `.magic-link-prompt` rule: the base rule still serves the
+   verified-user-aside and any future non-flex caller, where the original
+   1.5rem is still the correct spacing. Caught by inspection, not a
+   screenshot -- there is no working headless browser in this container
+   (ticket 9c78da1) -- which is exactly why this is recorded instead of
+   assumed fine. */
+.magic-link-prompt-anchor .magic-link-prompt {
+  margin-top: 0;
+}
+
 /* The landing view is a full-page takeover (MagicLinkLanding.tsx), so it
    gets the page's own centered column rather than sitting inside a
    section. */
