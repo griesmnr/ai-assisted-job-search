@@ -652,23 +652,70 @@ export type SearchCriteria = {
   remoteOk?: boolean;
   /**
    * Which `Job["commitment"]` values are acceptable. Omitted/empty means
-   * no restriction (same pattern as every other field here). A posting
-   * whose commitment is genuinely unknown (not every source reports it —
-   * see swe-filter.ts's Greenhouse comment, which never populates this
-   * field at all) is EXCLUDED once this restriction is non-empty, not
-   * included permissively (ticket 18c9f18's PM ruling): the user
-   * explicitly asked for e.g. "full-time only", and a job this app cannot
-   * verify as full-time does not satisfy that ask. This is a real,
-   * deliberate exception to `nearLocations`/`remoteOk`'s own "unmatched
-   * data still doesn't get penalized beyond what was asked" spirit --
-   * those fields only restrict what a caller opted into; commitment is
-   * the first field here that also has real ambiguity in the underlying
-   * source data (not every ATS reports it), and treating "can't verify"
-   * as "assume it matches" would silently show jobs the user said they
-   * didn't want. See apps/api/src/sources/criteria.ts's `compileFilter`
-   * for the implementation and apps/api/src/sources/*.ts's `mapCommitment`
-   * functions for which sources actually populate this (USAJOBS, Lever,
-   * Ashby, SmartRecruiters -- Greenhouse never does).
+   * no restriction (same pattern as every other field here).
+   *
+   * UNKNOWN-COMMITMENT POSTINGS ARE NOT EXCLUDED. This REVERSES ticket
+   * 18c9f18's PM ruling, on 2026-10-06, under ticket 623098e. The reversal
+   * is recorded here instead of quietly applied, because the old reasoning
+   * was sound-sounding and someone will otherwise re-derive it.
+   *
+   * WHAT 18c9f18 RULED: a posting whose commitment is genuinely unknown
+   * (not every source reports it) is EXCLUDED once this restriction is
+   * non-empty, rather than included permissively — the user explicitly
+   * asked for e.g. "full-time only", and a job the app cannot verify as
+   * full-time does not satisfy that ask. It called itself a deliberate
+   * exception to the "unmatched data isn't penalized beyond what was asked"
+   * spirit of `nearLocations`/`remoteOk`, on the grounds that commitment was
+   * the first field here with real ambiguity in the upstream data.
+   *
+   * WHAT OVERTURNED IT — a measurement, not a change of taste. Greenhouse's
+   * public schema carries NO employment-type field whatsoever: not a
+   * structured field, not board-specific `metadata`, at neither the list nor
+   * the single-job detail endpoint, verified across all nine boards checked
+   * (apps/api/src/sources/greenhouse.ts's header comment). Greenhouse also
+   * DOMINATES this corpus — `.env.example` configures 25 Greenhouse boards,
+   * and the real pool measured in criteria.ts is 6,203 postings. So every
+   * Greenhouse posting has `commitment: undefined` and 18c9f18's rule
+   * discarded all of them: checking "full-time" turned a 50-result search
+   * into ZERO results, reproduced independently twice (git-bug 623098e).
+   * "Full-time" meant "only jobs from whichever sources happen to state
+   * employment type", which is empirically near-zero. Treating "cannot
+   * verify" as "does not match" is cautious in the abstract but inaccurate
+   * on this data, and it fails in the direction that returns an empty page —
+   * which the project owner has ruled out explicitly: "I need these people
+   * to be getting results so that the service is useful."
+   *
+   * There is an irony worth recording: the project owner had already made
+   * `commitment` OPTIONAL on `Job` because of that same Greenhouse finding,
+   * specifically so these postings would not be dropped — and 18c9f18 then
+   * dropped them anyway, at filter time instead of normalization time.
+   *
+   * WHAT REPLACED IT, AND WHY IT IS NOT JUST "INCLUDE UNKNOWNS". A blanket
+   * include would fix full-time by breaking the other two values in the
+   * opposite direction: unknown is probably full-time, but it is probably
+   * NOT part-time or contract, so admitting unknowns everywhere would flood
+   * a part-time or contract search with full-time roles and leave those
+   * filters meaningless. The resolution is per-value instead: a posting's
+   * STRUCTURED commitment wins wherever a source reports one; failing that,
+   * its TITLE is consulted (contract/temp, internship and part-time
+   * phrasing, measured 0 false positives against all 54 fixture postings
+   * that have a structured commitment to check against — an internship
+   * matches none of the three values rather than being forced into one);
+   * failing that, it is
+   * IMPUTED to "full-time". So full-time admits unknowns, part-time and
+   * contract do not, and both keep exactly the precision they have today.
+   *
+   * The imputation lives in the FILTER ONLY and is never written down.
+   * `Job.commitment` still reports what the source actually said, and a
+   * posting that stated nothing still reports `undefined` — imputing at
+   * normalization time would persist a fabricated "Full-time" into Postgres
+   * and show the user a claim no employer made.
+   *
+   * See apps/api/src/sources/criteria.ts for the implementation: its
+   * `resolveCommitmentForFilter` carries the per-value argument, and the
+   * COMMITMENT AUDIT table beside it records, per source with evidence and a
+   * date, which sources actually populate this field (Greenhouse is the only
+   * structural zero; the other seven all carry a real upstream field).
    */
   commitmentIn?: Job["commitment"][];
 };

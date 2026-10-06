@@ -598,7 +598,7 @@ describe("compileFilter — commitmentIn (ticket 18c9f18)", () => {
     ).toEqual(["1", "3"]);
   });
 
-  it("a job with unknown/undefined commitment is EXCLUDED once commitmentIn is a real, non-empty restriction — this app can't verify it matches what the caller asked for (ticket 18c9f18's PM ruling, see SearchCriteria.commitmentIn's doc comment)", () => {
+  it("THE REVERSAL (ticket 623098e, 2026-10-06): a job with unknown/undefined commitment now PASSES a full-time restriction instead of being excluded. Ticket 18c9f18 ruled the opposite; Greenhouse populates commitment for zero postings and dominates the corpus, so that ruling emptied the page", () => {
     const jobs: NormalizedJob[] = [
       job({
         externalId: "1",
@@ -614,7 +614,7 @@ describe("compileFilter — commitmentIn (ticket 18c9f18)", () => {
       }),
     ];
     const filter = compileFilter({ commitmentIn: ["full-time"] });
-    expect(filter(jobs).map((j) => j.externalId)).toEqual(["1"]);
+    expect(filter(jobs).map((j) => j.externalId)).toEqual(["1", "2"]);
   });
 
   it("compileFilter(undefined) — the CLI/no-criteria default — is unaffected by commitmentIn entirely (it doesn't exist on that path)", () => {
@@ -627,6 +627,491 @@ describe("compileFilter — commitmentIn (ticket 18c9f18)", () => {
       }),
     ];
     expect(compileFilter(undefined)(jobs).map((j) => j.externalId)).toEqual(["1"]);
+  });
+});
+
+/**
+ * Ticket 623098e. The full-time filter returned ZERO results against real
+ * data, reproduced independently twice, and the 38 KB of `commitmentIn`
+ * tests above did not catch it -- because every one of them gave every job
+ * in its set a KNOWN commitment, or asserted the unknown-exclusion rule that
+ * was itself the bug. A suite that only ever tests all-known sets will pass
+ * forever while the real multi-source case fails, and that is precisely what
+ * happened.
+ *
+ * So these tests are organized around the two things the old block lacked:
+ * a MIXED known/unknown set (what real multi-source results always are), and
+ * an explicit check that fixing full-time did not make part-time and
+ * contract permissive in the other direction.
+ *
+ * The job data below is REAL: every title/commitment pair is copied from a
+ * captured fixture in `__fixtures__/` with its source named in a comment,
+ * rather than invented to suit the assertion. Values come from
+ * criteria.ts's dated COMMITMENT AUDIT table.
+ */
+describe("compileFilter — commitmentIn against a MIXED known/unknown set (ticket 623098e)", () => {
+  // A realistic multi-source result set, in the proportions the audit
+  // measured: Greenhouse supplies the bulk of the corpus (25 configured
+  // boards in .env.example, a 6,203-posting real pool) and reports
+  // commitment for NOTHING, while the other sources report it for most
+  // postings. Titles and commitments are real fixture values.
+  function mixedSourceJobs(): NormalizedJob[] {
+    return [
+      // --- greenhouse: commitment ALWAYS undefined (0/6 in the audit).
+      // Titles from greenhouse-real-response-{airbnb,discord}.json.
+      job({
+        externalId: "gh-1",
+        company: "Airbnb",
+        title: "Acquisition Manager",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "gh-2",
+        company: "Airbnb",
+        title: "AMER Gathering Programs Manager",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "gh-3",
+        company: "Airbnb",
+        title: "Associate Principal, Strategic Finance & Analytics",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "gh-4",
+        company: "Discord",
+        title: "Account Manager, Advertising Solutions",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "gh-5",
+        company: "Discord",
+        title: "Data Engineer",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "gh-6",
+        company: "Discord",
+        title: "Associate Product Counsel, Safety",
+        commitment: undefined,
+      }),
+      // --- workable: employment_type "Full-time" (6/6 in the audit).
+      job({
+        externalId: "wk-1",
+        dataSource: "workable",
+        company: "Dispel",
+        title: "Senior Systems Engineer II - Edge Platform & Packaging (On-Prem)",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "wk-2",
+        dataSource: "workable",
+        company: "TetraScience",
+        title: "Principal Cloud Engineer",
+        commitment: "full-time",
+      }),
+      // --- lever: categories.commitment, real mix of values.
+      job({
+        externalId: "lv-1",
+        dataSource: "lever",
+        company: "Outreach",
+        title: "Account Manager, Commercial",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "lv-2",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "Talent Sourcer (Contractor)",
+        commitment: "contract",
+      }),
+      // "Internship"/"Fixed-Term" have no home in Job's 3-value enum, so
+      // Lever's mapCommitment honestly returns undefined for them. lv-3's
+      // TITLE still says "Internship", so title inference catches it and it
+      // matches none of the three values; lv-4's does not, so it is imputed
+      // full-time -- the measured residual gap.
+      job({
+        externalId: "lv-3",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "Deployment Strategist, Internship",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "lv-4",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "Workplace Operations Analyst",
+        commitment: undefined,
+      }),
+      // --- ashby: employmentType.
+      job({
+        externalId: "as-1",
+        dataSource: "ashby",
+        company: "Temporal",
+        title: "Senior Software Engineer, Infrastructure Foundations",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "as-2",
+        dataSource: "ashby",
+        company: "Ramp",
+        title: "Marketing Media Strategist, International (Contract)",
+        commitment: "contract",
+      }),
+      // --- smartrecruiters: typeOfEmployment.id (5/5 in the audit) --
+      // the corpus's ONLY genuinely part-time posting.
+      job({
+        externalId: "sr-1",
+        dataSource: "smartrecruiters",
+        company: "BoschGroup",
+        title: "Werkstudent Supply Chain Management & Logistik bei Bosch eBike Systems (w/m/div.)",
+        commitment: "part-time",
+      }),
+      // --- usajobs: PositionSchedule Code "1".
+      job({
+        externalId: "us-1",
+        dataSource: "usajobs",
+        company: "Department of the Navy",
+        title: "Civil Engineer (Structural)",
+        commitment: "full-time",
+      }),
+    ];
+  }
+
+  it("the reproduction: a mixed set that returns a useful count unfiltered does NOT collapse to zero with full-time selected, and the Greenhouse postings specifically survive", () => {
+    const jobs = mixedSourceJobs();
+    const unfiltered = compileFilter({})(jobs);
+    expect(unfiltered).toHaveLength(16);
+
+    const fullTimeOnly = compileFilter({ commitmentIn: ["full-time"] })(jobs);
+
+    // The headline property: not zero, and not a rump.
+    expect(fullTimeOnly.length).toBeGreaterThan(0);
+    expect(fullTimeOnly.length).toBeGreaterThanOrEqual(unfiltered.length / 2);
+
+    // Under ticket 18c9f18's rule this was 5 of 16 -- every unknown-
+    // commitment posting dropped, i.e. all six Greenhouse postings plus the
+    // three Lever ones. Greenhouse surviving is the whole point of the fix.
+    //
+    // lv-3 is NOT here: its title says "Internship", so it resolves to
+    // "matches no commitment" rather than being imputed full-time. lv-4 IS
+    // here -- its source also said Fixed-Term, but nothing in "Workplace
+    // Operations Analyst" says so, which is the measured residual gap
+    // (git-bug 9b13e58).
+    expect(fullTimeOnly.map((j) => j.externalId)).toEqual([
+      "gh-1",
+      "gh-2",
+      "gh-3",
+      "gh-4",
+      "gh-5",
+      "gh-6",
+      "wk-1",
+      "wk-2",
+      "lv-1",
+      "lv-4",
+      "as-1",
+      "us-1",
+    ]);
+  });
+
+  it("an internship in the mixed set matches NONE of the three commitment values — not full-time, and not folded into contract where it would pad that filter with non-contract work", () => {
+    const jobs = mixedSourceJobs();
+
+    for (const commitmentIn of [
+      ["full-time"],
+      ["part-time"],
+      ["contract"],
+      ["full-time", "part-time", "contract"],
+    ] as ("full-time" | "part-time" | "contract")[][]) {
+      expect(
+        compileFilter({ commitmentIn })(jobs).map((j) => j.externalId),
+        `commitmentIn=${JSON.stringify(commitmentIn)}`,
+      ).not.toContain("lv-3");
+    }
+
+    // But it is still visible in an unfiltered search -- the imputation and
+    // the sentinel only exist while a restriction is set.
+    expect(compileFilter({})(jobs).map((j) => j.externalId)).toContain("lv-3");
+  });
+
+  it("part-time does NOT become meaninglessly permissive: the mixed set's unknown-commitment jobs are still excluded, and only the genuinely part-time posting comes back", () => {
+    const jobs = mixedSourceJobs();
+    const partTimeOnly = compileFilter({ commitmentIn: ["part-time"] })(jobs);
+
+    // One real part-time posting in a 16-job set. If unknowns leaked in this
+    // would be 8+ and the filter would be useless.
+    expect(partTimeOnly.map((j) => j.externalId)).toEqual(["sr-1"]);
+  });
+
+  it("contract does NOT become meaninglessly permissive: only the two genuinely-contract postings come back, not the unknowns", () => {
+    const jobs = mixedSourceJobs();
+    const contractOnly = compileFilter({ commitmentIn: ["contract"] })(jobs);
+
+    expect(contractOnly.map((j) => j.externalId)).toEqual(["lv-2", "as-2"]);
+  });
+
+  it("part-time + contract together still excludes unknowns — neither value licenses the full-time imputation", () => {
+    const jobs = mixedSourceJobs();
+    const filter = compileFilter({ commitmentIn: ["part-time", "contract"] });
+
+    expect(filter(jobs).map((j) => j.externalId)).toEqual(["lv-2", "as-2", "sr-1"]);
+  });
+
+  it("a requested set that CONTAINS full-time admits unknowns, because the imputed value is in the set", () => {
+    const jobs = mixedSourceJobs();
+    const filter = compileFilter({ commitmentIn: ["full-time", "contract"] });
+    const ids = filter(jobs).map((j) => j.externalId);
+
+    expect(ids).toContain("gh-1"); // unknown -> imputed full-time -> in set
+    expect(ids).toContain("as-2"); // structurally contract -> in set
+    expect(ids).not.toContain("sr-1"); // structurally part-time -> not in set
+  });
+});
+
+describe("compileFilter — commitmentIn title inference for unknown commitment (ticket 623098e)", () => {
+  it("a STRUCTURED commitment is never overridden by contradicting title text — structured beats substring, so the seven sources that report commitment behave exactly as before", () => {
+    const jobs: NormalizedJob[] = [
+      // Real shape: a posting whose title says "(Contract)" AND whose source
+      // reports it structurally. The structured value must be what counts --
+      // if inference ran first, a source-confirmed full-time posting with
+      // "contract" anywhere in its title would vanish from a full-time
+      // search.
+      job({
+        externalId: "1",
+        company: "A Co",
+        title: "Software Engineer (Contract) - Smart Home",
+        commitment: "full-time",
+      }),
+      job({
+        externalId: "2",
+        company: "B Co",
+        title: "Part-Time Software Engineer",
+        commitment: "full-time",
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+      "2",
+    ]);
+    expect(compileFilter({ commitmentIn: ["contract"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["part-time"] })(jobs)).toEqual([]);
+  });
+
+  it("an unknown-commitment posting whose TITLE says contract is treated as contract, not imputed full-time — so it stays OUT of a full-time search and shows up in a contract one", () => {
+    // Real title from ashby-real-response-ramp.json, but with commitment
+    // undefined -- the Greenhouse case, where no structured field exists.
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        company: "Greenhouse Co",
+        title: "Marketing Media Strategist, International (Contract)",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["contract"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+    ]);
+  });
+
+  it("an unknown-commitment posting whose TITLE says part-time is treated as part-time — the case the asymmetric policy would otherwise strand", () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        company: "GH Co",
+        title: "Part-Time Data Engineer",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "2",
+        company: "GH Co",
+        title: "Part Time Data Engineer",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "3",
+        company: "GH Co",
+        title: "Parttime Data Engineer",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["part-time"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  it("an unknown-commitment posting whose TITLE says internship matches none of the three values, and is NOT folded into contract — real titles from four different source fixtures", () => {
+    // All four are real unknown-commitment postings whose sources reported
+    // Intern/Internship/TEMP: ashby ramp, lever palantir, recruitee, and
+    // rippling. Routing these to "contract" would take the fixture corpus's
+    // contract filter from 4 postings to 8, half of them internships.
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        dataSource: "ashby",
+        company: "Ramp",
+        title: "Software Engineer Internship, Android",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "2",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "Deployment Strategist, Internship",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "3",
+        dataSource: "recruitee",
+        company: "bunq",
+        title: "Copywriting Intern",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "4",
+        dataSource: "rippling",
+        company: "Rippling",
+        title: "Machine Learning Software Engineer Intern - Winter 2027",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["contract"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["part-time"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["full-time", "part-time", "contract"] })(jobs)).toEqual(
+      [],
+    );
+    // Unfiltered still shows all four.
+    expect(compileFilter({})(jobs)).toHaveLength(4);
+  });
+
+  it('the internship pattern does not over-match "internal"/"international" titles — ticket 06b09cf\'s suffix lesson, which a bare \\bintern would fail', () => {
+    const titles = [
+      "Internal Tools Engineer",
+      "International Growth Lead",
+      "Internationalization Engineer",
+      "Internist, Occupational Health",
+    ];
+    const jobs = titles.map((title, i) =>
+      job({ externalId: String(i), company: `Co ${i}`, title, commitment: undefined }),
+    );
+    // All imputed full-time, none treated as internships.
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toHaveLength(titles.length);
+  });
+
+  it('a "Temp"/"Temporary" title is kept out of a full-time search, folded in with contract (Job["commitment"] has no temp member; this matches the app\'s own "Hide contract/temp roles" grouping)', () => {
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        company: "GH Co",
+        title: "Software Engineer, Temp",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "2",
+        company: "GH Co",
+        title: "Temporary Site Reliability Engineer",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toEqual([]);
+    expect(compileFilter({ commitmentIn: ["contract"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it('does NOT read "Smart Contract Engineer" as contract work — a real FULL-TIME title at coinbase and robinhood, both configured Greenhouse boards (so both arrive with commitment undefined, straight into this inference path)', () => {
+    // This is the regression that reusing `looksLikeContractOrTemp` buys
+    // instead of writing a second contract regex: that function already
+    // carries the `(?<!\bsmart\s)` fix from ticket 8f5a79c's opus review.
+    // Without it, a full-time search would silently drop these.
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        company: "Coinbase",
+        title: "Smart Contract Engineer",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "2",
+        company: "Robinhood",
+        title: "Senior Smart Contract Engineer, Protocols",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+      "2",
+    ]);
+    expect(compileFilter({ commitmentIn: ["contract"] })(jobs)).toEqual([]);
+  });
+
+  it("does not over-match ordinary titles into part-time or contract — plain unknown-commitment titles are imputed full-time", () => {
+    // "Department" contains "part" but has no word boundary before it;
+    // "Contractual"/"Attempt"/"Contemporary" are the documented
+    // near-misses in swe-filter.ts's own regex comments.
+    const titles = [
+      "Department Time Lead",
+      "Contractual Services Analyst",
+      "Attempted Delivery Operations Manager",
+      "Contemporary Art Program Manager",
+      "Data Engineer",
+    ];
+    const jobs = titles.map((title, i) =>
+      job({ externalId: String(i), company: `Co ${i}`, title, commitment: undefined }),
+    );
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs)).toHaveLength(titles.length);
+    expect(compileFilter({ commitmentIn: ["part-time", "contract"] })(jobs)).toEqual([]);
+  });
+
+  it("KNOWN RESIDUAL, asserted so it is visible rather than forgotten: a genuinely temp/intern posting whose source value has no home in the 3-value enum AND whose title doesn't say so is imputed full-time", () => {
+    // These are the EXACT three postings left over after title inference,
+    // measured 2026-10-06 by driving every adapter's real search() over the
+    // fixtures: 3 of the 61 non-Greenhouse postings (4.9%), down from 7
+    // (11.5%) before internship detection. Their sources each reported
+    // something explicitly not-full-time (Ashby "Temporary", Lever
+    // "Fixed-Term", Lever "Scholarship") which has no home in Job's 3-value
+    // enum, so each adapter honestly returns undefined -- and nothing in
+    // these three titles signals the employment type, so no title pattern
+    // can reach them. They are imputed full-time.
+    //
+    // Still strictly better than 18c9f18's behavior of returning nothing at
+    // all. The real fix is distinguishing "no field" from "unmappable
+    // value", a pg enum migration filed as git-bug 9b13e58. This test exists
+    // so the gap stays visible and so that ticket has a precise target.
+    const jobs: NormalizedJob[] = [
+      job({
+        externalId: "1",
+        dataSource: "ashby",
+        company: "Ramp",
+        title: "IT Site Specialist",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "2",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "Workplace Operations Analyst",
+        commitment: undefined,
+      }),
+      job({
+        externalId: "3",
+        dataSource: "lever",
+        company: "Palantir",
+        title: "American Tech Fellowship",
+        commitment: undefined,
+      }),
+    ];
+    expect(compileFilter({ commitmentIn: ["full-time"] })(jobs).map((j) => j.externalId)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
   });
 });
 
