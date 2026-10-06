@@ -207,6 +207,36 @@ export function buildApp(deps: BuildAppDeps) {
   const configuredOrigin = process.env.CORS_ALLOWED_ORIGIN?.trim().replace(/\/+$/, "");
   void app.register(cors, {
     origin: configuredOrigin ? configuredOrigin : /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
+    // Ticket 6e7008e: `methods` MUST be set explicitly and must list every
+    // verb this API serves. `@fastify/cors@11.3.0` defaults it to
+    // `'GET,HEAD,POST'` — read at `node_modules/.pnpm/@fastify+cors@11.3.0/
+    // node_modules/@fastify/cors/index.js:11`, not from the docs — which
+    // silently blocked BOTH of the app's non-simple methods for as long as
+    // this option was omitted: `DELETE /jobs/:id/status` (unsaving a job)
+    // and `PATCH /resumes/:id` (renaming a resume).
+    //
+    // The failure is nasty to diagnose because the preflight SUCCEEDS.
+    // Measured 2026-10-06 with a prod-like origin and a real
+    // `OPTIONS /jobs/abc/status` carrying
+    // `access-control-request-method: DELETE`:
+    //
+    //   204, access-control-allow-origin echoed,
+    //   access-control-allow-headers: content-type,x-user-id,
+    //   access-control-allow-methods: GET,HEAD,POST   <-- no DELETE
+    //
+    // The BROWSER then compares its intended method against that list, finds
+    // it absent, and never sends the real request. So `fetch` rejects with a
+    // TypeError, `api/client.ts`'s catch reports "Could not reach the API",
+    // and the API logs show NOTHING — it was never contacted. Nicole hit this
+    // on the deployed app and read it, reasonably, as the API being down.
+    //
+    // Not production-only in cause: there is no Vite dev proxy
+    // (`apps/web/vite.config.ts`), so local dev is cross-origin too and the
+    // same block applies there.
+    //
+    // No `PUT` — this API serves none. Add the verb here in the same commit
+    // that adds the route, or the route is unreachable from a browser.
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"],
   });
 
   // Ticket dba885e (epic 2b9e9dd): every route below now requires the
