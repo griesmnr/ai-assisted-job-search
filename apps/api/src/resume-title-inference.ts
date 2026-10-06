@@ -195,6 +195,63 @@ const MAX_OUTPUT_TOKENS = 2000;
  * and it costs USAJOBS coverage of the tail chips only, never correctness.
  * Raising the request further without raising that cap would quietly waste
  * the extra chips on that one source.
+ *
+ * ---------------------------------------------------------------------------
+ * TICKET 17a5c8f -- THE THREE EXAMPLES ABOVE WERE THEMSELVES THE NEXT BUG
+ * ---------------------------------------------------------------------------
+ *
+ * Jay (a technical writer, Nicole relaying his feedback 2026-10-06) got
+ * exactly the same three chips Nicole did: "IT Specialist", "Computer
+ * Scientist", "Program Analyst". Those three were never a menu -- they were
+ * Nicole's own live incident, lifted into the prompt as an illustration --
+ * but the model was not reading them as an illustration. It was copying
+ * them, for every resume, regardless of field. Jay's correct federal
+ * equivalents are in the Writing and Editing job series ("Writer-Editor",
+ * "Technical Information Specialist"), nowhere near those three.
+ *
+ * This is NOT the same defect as the one this comment documents above
+ * (missing/crowded-out current-field titles) -- breadth and recency were
+ * never the problem for Jay. It is a narrower, nastier failure: a
+ * well-formed, well-punctuated, plausibly-federal chip that is simply
+ * wrong for the person, which is exactly why 6487ed8's own eval shapes
+ * (the "GOVERNMENT-sector career" one included) never caught it -- that
+ * shape is itself a software resume, so "derived correctly" and "copied the
+ * examples" look identical on it. See `scripts/eval-title-inference-prompt.ts`
+ * for the fix on the eval side.
+ *
+ * TWO WAYS TO CLOSE THIS WERE CONSIDERED:
+ *
+ * (a) Describe the CATEGORY with no concrete instances at all -- e.g. "the
+ *     job-series name the federal hiring system uses for this person's own
+ *     current work" -- and name nothing.
+ * (b) Keep concrete examples (6487ed8 measured that cross-sector compliance
+ *     benefits from them -- an unillustrated instruction is exactly the kind
+ *     of thing models under-follow), but spread them across SEVERAL
+ *     unrelated fields, so no single trio reads as "the answer" regardless
+ *     of input, plus an explicit instruction naming the failure mode
+ *     directly ("do not output 'IT Specialist'... for a resume whose
+ *     current field is not software").
+ *
+ * Went with (b). Reasoning: 6487ed8's whole premise was that a bare
+ * instruction with no examples under-produces compliant output -- that is
+ * why those three strings were added as examples in the first place, and
+ * removing all illustration risks silently regressing exactly that,
+ * trading this bug for a quieter one (the eval could not tell the
+ * difference between "fewer, worse-complied cross-sector chips" and
+ * "no regression" without a live A/B this ticket does not have time to
+ * run). One illustrated field, however many caveats are bolted onto it,
+ * reads to the model as the target rather than a sample -- which is the
+ * actual, measured failure here, not a hypothesis. Four fields spread
+ * across software/writing/nursing/accounting, each doing the same "maps to
+ * something like X or Y" framing with no single pair emphasized, forces
+ * the model to generalize the PATTERN instead of pattern-matching one
+ * instance -- plus the explicit negative instruction gives something for
+ * an eval assertion to hold it to (see `EXAMPLE_LEAKAGE` in the eval
+ * script). If a future resume in a fifth field still gets a software/
+ * writing/nursing/accounting title it has no business getting, that is the
+ * signal this needs to move to (a) instead -- re-run the eval `--live`
+ * across several fields before concluding that, per this same ticket's own
+ * standard of live evidence over a single run.
  */
 const SCHEMA = {
   type: "object",
@@ -220,14 +277,28 @@ const SCHEMA = {
         "is useful -- see the next paragraph.\n\n" +
         "DO include cross-sector equivalents for the SAME current work where the resume " +
         "supports them. This app searches federal job boards alongside private-sector ones, " +
-        "and the federal hiring system titles the same work differently -- so for a software " +
-        "resume with any public-sector or large-institution history, the federal job-series " +
-        "names for that work ('IT Specialist', 'Computer Scientist', 'Program Analyst') are " +
-        "genuinely useful search terms and should be included ALONGSIDE the private-sector " +
-        "titles, not instead of them. The requirement is that the person's current field is " +
-        "represented FIRST and fully, and never crowded out: list the titles real postings in " +
-        "their own current field use, then the equivalents another sector would use for that " +
-        "same current work. Each title must be a short role phrase that could appear " +
+        "and the federal hiring system has its OWN job-series name for a huge range of " +
+        "fields, not only software -- so for ANY resume with public-sector or " +
+        "large-institution history, that field's federal job-series name for the SAME " +
+        "current work is a genuinely useful search term and should be included ALONGSIDE " +
+        "the private-sector titles, not instead of them. DERIVE the federal name from THIS " +
+        "resume's own current field -- it varies enormously by field. These four are " +
+        "illustrations of how DIFFERENTLY fields map, not a menu to pick from regardless of " +
+        "the resume in front of you: a software background maps to something like 'IT " +
+        "Specialist' or 'Computer Scientist'; a technical-writing background maps to " +
+        "something like 'Writer-Editor' or 'Technical Information Specialist'; a nursing " +
+        "background maps to something like 'Nurse' or 'Public Health Nurse'; an accounting " +
+        "background maps to something like 'Accountant' or 'Internal Revenue Agent'. Do NOT " +
+        "output 'IT Specialist', 'Computer Scientist', 'Program Analyst', or any other " +
+        "software-sector federal title for a resume whose current field is not software -- " +
+        "and the same rule applies in the other direction for each of the other three " +
+        "fields above, and for any field not listed here at all: derive THAT field's own " +
+        "federal job-series name instead of reaching for one of these four examples. The " +
+        "federal title must match THIS resume's own current field exactly as precisely as " +
+        "the private-sector titles already do. The requirement is that the person's current " +
+        "field is represented FIRST and fully, and never crowded out: list the titles real " +
+        "postings in their own current field use, then the federal equivalent for that SAME " +
+        "current field. Each title must be a short role phrase that could appear " +
         "VERBATIM as a real job posting's title: no parentheses, no slashes, and no title " +
         "built by bolting a technology/framework/language onto a role word as a qualifier " +
         "(not 'Backend Engineer (Java/Node.js)', not 'React/Angular Frontend Developer', not " +
