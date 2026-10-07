@@ -309,7 +309,9 @@ section {
    15 saved resumes: measured directly (same technique, a standalone fixture
    for that branch's markup), "Paste a new resume".top = 925.4px and
    Cancel.bottom = 946.4px on the 1366x768 laptop viewport -- 178.4px below
-   the 768px fold -- and 970.2px / 991.2px on the 390x844 phone viewport,
+   the 768px fold -- and 997.2px / 1018.2px on the 390x844 phone viewport
+   (an earlier draft said 970.2 / 991.2: measured with the short `<span>`
+   cue placeholder this same commit replaced, so it was 27px optimistic),
    147.2px below that fold. The escape hatch out of a locked resume is
    buried, arguably worse than burying the paste form this ticket fixes. Left
    uncapped anyway, because the ticket's own scope puts changing
@@ -388,42 +390,43 @@ section {
    that changes `.resume-pick-saved`'s own markup, is ever touched. But the
    figures above are sensitive to more than that: they are sensitive to
    ANYTHING that changes the height of what sits ABOVE this block on the
-   page, not just to this rule itself -- and that already happened once,
-   mid-ticket. Ticket 9e00bc9 (merged to `main` while this ticket was in
-   review, not yet on this branch) adds a welcome paragraph as a sibling of
-   `.app-header`, above `.resume-section` entirely.
+   page, not just to this rule itself.
 
-   Re-measured directly with that paragraph present (a combined build: this
-   rule plus 9e00bc9's change), at 15 saved resumes: this rule stays the
-   reason the TICKET'S OWN CRITERION still holds -- uncapped, the label would
-   sit at 1084.8px on the laptop viewport (BELOW the 768px fold, confirmed by
-   re-running the pre-this-rule CSS with the paragraph added); capped, it
-   sits at 588.8px (visible). Divider/label/textarea-top stay visible at both
-   viewports, at every N measured, with the paragraph present -- the fold
-   criterion this rule exists for still holds. What does NOT survive is this
-   comment's own EXTRA claim above ("textarea's full bottom edge... on-screen
-   ... at both viewports"): with the paragraph present, textarea.bottom moves
-   to 817.2px (laptop) and 1001.0px (phone) at N=8/15 -- both clipped -- and
-   even N=3 clips on BOTH viewports (752.7px fits at laptop by a hair but
-   936.5px does not on phone). No max-height value fixes that: it is a
-   consequence of a paragraph landing above this block, not a defect in this
-   rule's own cap, and this rule is not the place to chase it.
+   Ticket 9e00bc9 looked like exactly such a case and provably is not, which
+   is a more useful warning than a number. It adds a welcome paragraph as a
+   sibling of `.app-header`, above `.resume-section` entirely -- but that
+   paragraph and THIS BLOCK cannot be on screen together.
+   `showWelcomeParagraph` (App.tsx) requires `!hasOwnResumes`, and
+   `hasOwnResumes` is the SAME expression that feeds `ResumeInput`'s
+   `resumes` prop, which is what gates this saved-resume list at all. So the
+   paragraph renders only when there are no saved resumes, and this block
+   renders only when there are. (It is mutually exclusive with
+   `.signed-in-cue` too, by `verifiedEmail`.) Every figure above is therefore
+   unchanged by that merge -- re-measured against the merged tree and
+   bit-identical.
 
-   A second, smaller interaction, also durability-relevant: `SignedInCue.tsx`
-   renders a real sentence ("These results are saved to <email>"), not a
-   bare email address, and on THIS branch's current heading text
-   ("AI-Assisted Job Search") that sentence's own length doesn't matter --
-   confirmed bit-for-bit identical numbers whether the cue is short or long,
-   because the long heading alone already forces `.app-header` to wrap at
-   the 390px phone viewport regardless. It stops being irrelevant once
-   9e00bc9's "FitScore" rename (also merged to `main`, also not yet on this
-   branch) shortens the heading enough to fit beside the OLD, short
-   placeholder on one line -- re-measured directly, combining the rename
-   with the real sentence (not the placeholder) costs a further +27.1px at
-   the phone viewport specifically (confirmed three independent ways; see
-   apps/web/scripts/resume-list-fold-check.mjs's own fixture-fidelity
-   comment for the detail, including a measurement mismatch against an
-   earlier-cited 19.1px figure that this comment does not try to resolve). */
+   Caught in re-review AFTER an earlier draft of this comment had confidently
+   measured the combined screen at 588.8px capped / 1084.8px uncapped and
+   declared the textarea's bottom edge clipped. Those numbers described a
+   screen the app cannot render. Recorded because a confident measurement of
+   an unreachable state is worse than no measurement: the arithmetic was
+   right and the premise was never checked against the gate.
+
+   A second, smaller fidelity note, also durability-relevant: `SignedInCue.tsx`
+   renders a real sentence ("These results are saved to <email>"), not a bare
+   email address, and the fixture used to use a short `<span>` placeholder.
+   Swapping in the real `<p>` markup costs +27.1px at the 390px phone
+   viewport -- but only given the current short "FitScore" heading, which fits
+   beside a short cue on one line where the previous longer heading forced
+   `.app-header` to wrap regardless. That +27.1px is the cost of CORRECTING
+   THE FIXTURE, not a change to the shipped figures, which are identical
+   either way.
+
+   An earlier review cited +19.1px here. That is resolved rather than left
+   open: that measurement swapped the element AND the email address in one
+   step, and the longer address wraps the cue to a THIRD line at 390px
+   (header 79.7px vs 60.6px) under `.signed-in-cue { overflow-wrap: anywhere }`.
+   It measured email wrapping, not markup. Reproduced both ways. */
 .resume-pick-saved .resume-picker-options {
   max-height: 12rem;
   overflow-y: auto;

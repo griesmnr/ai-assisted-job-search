@@ -192,7 +192,7 @@ function buildFixtureHtml(css, n) {
 <body>
 <div class="app">
   <div class="app-header">
-    <h1>AI-Assisted Job Search</h1>
+    <h1>FitScore</h1>
     <!-- Real markup/text from SignedInCue.tsx (verified against that file
          2026-10-07, corrected in review -- F4): a p element, not a span,
          and the component's actual sentence ("These results are saved to
@@ -203,34 +203,25 @@ function buildFixtureHtml(css, n) {
 
          Re-measured directly (byte-identical copies of this file with only
          the h1 text and this cue element swapped, N=15, both viewports):
-         on THIS BRANCH's current h1 text ("AI-Assisted Job Search", 22
-         chars), the old short span and the real sentence produce IDENTICAL
-         numbers at both viewports -- confirmed bit-for-bit, not just
-         "close": the long h1 text alone already forces .app-header to
-         wrap at the 390px phone viewport regardless of the cue's own
-         length, so the cue's text length is moot there today. (Isolated
-         two-element check, header row alone: 60.6px wrapped either way at
-         390px; 33.6px unwrapped either way at 1366px.)
+         with the app's real <h1>FitScore</h1> (ticket 9e00bc9, merged).
+         Swapping the short <span> placeholder for this real <p> markup
+         costs +27.1px at the 390px phone viewport and 0.0px at 1366px.
 
-         It stops being moot once ticket 9e00bc9's rename ("FitScore", 8
-         chars -- merged to the main branch while this ticket was in
-         review, not yet on this branch) is in the mix: with the SHORTER
-         heading, the old short span fits on the header's one line (header
-         height 33.6px) while the real sentence does not and wraps to a
-         second line (60.6px) -- a genuine +27.1px at the phone viewport,
-         confirmed the same way. A review comment attributed a +19.1px
-         phone delta to this same interaction; this script's own
-         re-measurement (same method, N=15, byte-identical fixture copies)
-         gets +27.1px, not 19.1px -- recorded as a discrepancy rather than
-         silently adopting either number, since the two measurements
-         disagree and the exact source of that disagreement (a different N,
-         a different exact fixture, or something else) was not tracked
-         down. Either way the fixture fix here is correct independent of
-         the number: it matches what SignedInCue.tsx actually renders,
-         which is what this script claims to measure. See the long comment
-         above the .resume-pick-saved .resume-picker-options rule in
-         index.css for how this interacts with that rule's own durability
-         once the rename lands on this branch. -->
+         That cost is specific to the SHORT heading: "FitScore" fits beside a
+         short cue on one line, where the previous longer heading forced
+         .app-header to wrap at 390px regardless, making the cue's own
+         length moot. Confirmed bit-for-bit both ways.
+
+         It is the cost of CORRECTING THIS FIXTURE, not a change to the
+         figures this ticket ships -- those are identical either way.
+
+         A review initially cited +19.1px here and that is now RESOLVED, not
+         left open: that measurement changed the element AND the email address
+         in one step, and the longer address wraps the cue to a THIRD line at
+         390px (header 79.7px vs 60.6px) under
+         .signed-in-cue { overflow-wrap: anywhere }. It measured email
+         wrapping, not markup. Both halves reproduced independently.
+    -->
     <p class="signed-in-cue">These results are saved to <strong>verified@example.com</strong></p>
   </div>
   <nav class="tab-nav" aria-label="Sections">
