@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ResumeSummary } from "@app/shared";
-import { getResume, updateResumeText } from "../api/client";
+import { getResume, updateResumeNickname, updateResumeText } from "../api/client";
 import { sortResumesByNickname } from "../resumeSort";
 
 type ResumeTextState =
@@ -20,6 +20,36 @@ type ResumeTextState =
  * `"editing"` with an error attached.
  */
 type ResumeEditState =
+  | { mode: "viewing" }
+  | { mode: "editing"; draft: string; error?: string }
+  | { mode: "saving"; draft: string };
+
+/**
+ * Ticket e7666de: per-row rename state for the resume's NICKNAME -- the
+ * NAME half of Nicole's "edit both the names of the resumes and the
+ * resumes themselves," where `ResumeEditState` above (ticket 6ba221e) is
+ * the TEXT half. Same three-state shape and the same reasons: `"editing"`
+ * holds a local draft so Cancel can drop it for free, and a failed save
+ * lands back in `"editing"` with the draft intact plus an error, never
+ * reverted -- there is nothing wrong with the typed value on a transient
+ * network failure, and on a genuine collision (`PATCH /resumes/:id`'s
+ * `409`) the offending value is exactly what the user needs to see and
+ * fix in place. Unlike `handleNicknameCommit` (App.tsx), which auto-
+ * commits on blur and therefore has to special-case a collision (keep the
+ * value) against every other failure (revert it), this is an explicit
+ * Save/Cancel form -- there is no blur-commit to distinguish from, so one
+ * rule ("never revert, always show the error") covers every failure mode
+ * without needing `isNicknameConflictError`/`apiErrorStatus` (App.tsx) to
+ * tell them apart. Those helpers are module-private there anyway (already
+ * duplicated once, into SearchFlow.tsx, rather than shared -- see
+ * `apiErrorStatus`'s own comment there), and `request()` (api/client.ts)
+ * already puts the server's exact `{ error }` text on `err.message` for
+ * every failure shape (400 empty/too-long, 409 collision, network), so
+ * this file's `err instanceof Error ? err.message : String(err)` (same
+ * line `saveText` below already uses) surfaces the right message without
+ * re-deriving it from the status code at all.
+ */
+type NicknameEditState =
   | { mode: "viewing" }
   | { mode: "editing"; draft: string; error?: string }
   | { mode: "saving"; draft: string };
@@ -71,7 +101,27 @@ const FOCUS_HIGHLIGHT_MS = 2000;
  * `loading`/`ready` (not `error`) makes the next expand after a failure
  * retry the fetch, same as if it had never been attempted.
  */
-function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume?: FocusResume }) {
+function ResumeRow({
+  resume,
+  focusResume,
+  onRenamed,
+}: {
+  resume: ResumeSummary;
+  focusResume?: FocusResume;
+  /**
+   * Ticket e7666de: fires after a rename actually lands on the server.
+   * Wired by `MyResumes` to `App.tsx`'s `refreshResumesList` in the real
+   * app -- this row's OWN display updates immediately off the PATCH
+   * response (`displayNickname` below), but the `resumes` array this
+   * component sorts (`sortResumesByNickname`, in `MyResumes` below) lives
+   * one level up, in `App.tsx`'s `resumesListState`, and a rename that
+   * changes sort position (e.g. "Resume 2" -> "Aardvark resume") needs
+   * THAT array refetched to actually move. Optional, and a no-op if
+   * omitted, so every existing test render site that doesn't care about
+   * sort order keeps compiling unchanged.
+   */
+  onRenamed?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [textState, setTextState] = useState<ResumeTextState>({ status: "idle" });
   // Ticket 6ba221e: the resumes page can now edit a resume's TEXT, not just
@@ -81,6 +131,26 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
   // Ticket 6ba221e: generation counter for in-flight text saves -- see
   // `saveText` below for the stale-response it rules out.
   const saveTokenRef = useRef(0);
+  // Ticket e7666de: the NAME half -- see `NicknameEditState`'s own comment.
+  const [nicknameState, setNicknameState] = useState<NicknameEditState>({ mode: "viewing" });
+  // The nickname actually displayed by this row. Starts from the prop and
+  // tracks it (so a rename that lands via `onRenamed`'s refetch, or from
+  // another tab entirely, still shows up here), but a SUCCESSFUL save
+  // updates it immediately from the PATCH response -- server-confirmed,
+  // not merely optimistic, the same thing `handleNicknameCommit` (App.tsx)
+  // already does -- rather than making the user wait on `onRenamed`'s
+  // slower `GET /resumes` round trip before the summary line reflects what
+  // they just typed.
+  const [displayNickname, setDisplayNickname] = useState(resume.resumeNickname);
+  useEffect(() => {
+    setDisplayNickname(resume.resumeNickname);
+  }, [resume.resumeNickname]);
+  // Generation counter for in-flight nickname saves, same stale-response
+  // guard `saveTokenRef`/`saveText` already use for text: a response that
+  // lands after the user has already clicked Cancel must not resurrect the
+  // editor, but a save that actually SUCCEEDED must still be recorded in
+  // `displayNickname` -- see `saveNickname` below.
+  const nicknameSaveTokenRef = useRef(0);
   // Opus review, ticket 1e183a4 (F3): the TOKEN that's currently driving
   // the highlight, not a plain boolean. A boolean can't tell "still
   // highlighted from the last focus" apart from "just focused again" --
@@ -167,6 +237,66 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
       });
   }
 
+  /**
+   * Ticket e7666de: renames this resume via `PATCH /resumes/:id`. Mirrors
+   * `saveText` above exactly, including the stale-response guard --
+   * `nicknameSaveTokenRef` plays the same role `saveTokenRef` plays there.
+   *
+   * On success, `displayNickname` is set from the SERVER's returned
+   * `resumeNickname` (the route trims it; see routes/resumes.ts), not the
+   * raw draft, so this row can never show a value the database doesn't
+   * actually have -- unconditionally, even if the user has already
+   * clicked Cancel, for the same reason `saveText` unconditionally updates
+   * `textState`: the write really happened. `onRenamed` fires right after,
+   * also unconditionally, so the PARENT list -- which is what
+   * `sortResumesByNickname` actually sorts -- catches up too; see this
+   * function's own `onRenamed` prop comment for why that is a second,
+   * necessary step rather than redundant with `displayNickname`.
+   *
+   * `nicknameState` itself (the editor's open/closed-ness) DOES respect
+   * the token: a response landing after Cancel must not resurrect the
+   * editor with a stale "viewing" transition the user never asked for, or
+   * -- on a late failure -- an error banner for an edit already abandoned.
+   *
+   * KNOWN GAP (opus review, ticket e7666de, F2 -- recorded, not fixed):
+   * `setDisplayNickname` above is deliberately UNGATED by the token (that
+   * is the point of F1's fix), but that same lack of gating means two
+   * in-flight PATCHes on this row can still land out of order: Save
+   * "Aardvark", Cancel, Rename again, Save "Zebra" -- if the FIRST
+   * response (Aardvark) resolves after the second (Zebra), this row shows
+   * "Aardvark" while the server actually holds "Zebra". `onRenamed`'s
+   * refetch usually corrects this on the next render, but there is one
+   * interleaving where the prop never actually changes (e.g. the refetch
+   * that already ran for "Zebra" raced ahead of "Aardvark" landing) so the
+   * sync effect above never re-fires, and the row stays wrong until an
+   * unrelated reload. Low probability, display-only, and `saveText`
+   * above has the identical shape already -- a carried-forward idiom, not
+   * something new here. A real fix would need `saveNickname` to ignore a
+   * response order-independent of `nicknameSaveTokenRef` entirely (e.g. a
+   * monotonically increasing "last applied" counter kept separately from
+   * the cancel token), which is a second idiom this ticket was told not
+   * to invent on its own.
+   */
+  function saveNickname(draft: string) {
+    const token = ++nicknameSaveTokenRef.current;
+    setNicknameState({ mode: "saving", draft });
+    updateResumeNickname(resume.id, draft)
+      .then((data) => {
+        setDisplayNickname(data.resumeNickname);
+        onRenamed?.();
+        if (nicknameSaveTokenRef.current !== token) return;
+        setNicknameState({ mode: "viewing" });
+      })
+      .catch((err: unknown) => {
+        if (nicknameSaveTokenRef.current !== token) return;
+        setNicknameState({
+          mode: "editing",
+          draft,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
   // Ticket 1e183a4: reacts to a NEW `focusResume` naming this row (a
   // result card's "Searched with:" link) by opening it, fetching its text,
   // scrolling it into view, and flashing a brief highlight -- Nicole's own
@@ -217,7 +347,7 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
         }}
       >
         <summary>
-          <span className="resume-nickname">{resume.resumeNickname}</span>
+          <span className="resume-nickname">{displayNickname}</span>
           <span className="resume-created-at">
             Saved {new Date(resume.createdAt).toLocaleDateString()}
           </span>
@@ -241,7 +371,7 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
               <button
                 type="button"
                 className="resume-text-edit-button"
-                aria-label={`Edit ${resume.resumeNickname} text`}
+                aria-label={`Edit ${displayNickname} text`}
                 onClick={() => setEditState({ mode: "editing", draft: textState.resumeText })}
               >
                 Edit text
@@ -252,7 +382,7 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
         {textState.status === "ready" && editState.mode !== "viewing" && (
           <div className="resume-text-editor">
             <label htmlFor={`resume-text-edit-${resume.id}`}>
-              Resume text for {resume.resumeNickname}
+              Resume text for {displayNickname}
             </label>
             <textarea
               id={`resume-text-edit-${resume.id}`}
@@ -307,6 +437,119 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
           </div>
         )}
       </details>
+      {/* Ticket e7666de: the NAME half, deliberately a SIBLING of
+          `<details>` rather than nested inside it like "Edit text" is --
+          unlike resume text, the nickname is already on hand from
+          `GET /resumes` (no per-row fetch to gate on), so there is no
+          "ready" state to wait for and no reason to make renaming a
+          collapsed resume require expanding it first. Also deliberately
+          NOT inside `<summary>`: a native `<summary>`'s own click toggles
+          the `<details>` open/closed on ANY click landing inside it
+          (calling `preventDefault` on every nested interactive element's
+          click to suppress that is exactly the kind of fragile second
+          idiom this ticket was told to avoid), so the rename control lives
+          here instead, where the existing toggle logic above is
+          untouched.
+
+          KNOWN LAYOUT COST (opus review, ticket e7666de, F6 -- recorded,
+          not fixed): placing the control AFTER `<details>` means that with
+          a row EXPANDED, it renders below the entire resume text (and,
+          mid-edit, below that text's own editor too) -- far from the name
+          it renames, which is still up in `<summary>`. Putting it BEFORE
+          `<details>` instead would fix that distance but reopen the worse
+          problem this placement avoids (the `<summary>`-click-toggle
+          conflict and the per-row-fetch coupling "Edit text" has and this
+          control does not need), so the reviewer judged this placement
+          correct on balance; the cost is real on an expanded row with a
+          long resume and is just being named rather than solved. */}
+      {nicknameState.mode === "viewing" ? (
+        // Ticket e7666de review fix (F5): `.resume-text-actions` (not a
+        // new, unstyled `.resume-nickname-actions`) -- that class is what
+        // right-aligns "Edit text" just above (`index.css:912`,
+        // `justify-content: flex-end`), and the editor's own Save/Cancel
+        // row below already reuses it. Without this the trigger alone sat
+        // flush-left while every other action on this row sits flush-right.
+        <div className="resume-text-actions">
+          {/* aria-label carries the CURRENT nickname so a screen-reader
+              user hears WHICH resume this button renames -- every row
+              renders a button with the same visible text. Same shape as
+              `Edit ${displayNickname} text` above (ticket 6ba221e). */}
+          <button
+            type="button"
+            className="resume-nickname-rename-button"
+            aria-label={`Rename ${displayNickname}`}
+            onClick={() => setNicknameState({ mode: "editing", draft: displayNickname })}
+          >
+            Rename
+          </button>
+        </div>
+      ) : (
+        <div className="resume-text-editor resume-nickname-editor">
+          <label htmlFor={`resume-nickname-edit-${resume.id}`}>
+            New name for {displayNickname}
+          </label>
+          <div className="resume-nickname-field">
+            <input
+              id={`resume-nickname-edit-${resume.id}`}
+              value={nicknameState.draft}
+              // Disabled, not unmounted, while the PATCH is in flight --
+              // same reasoning as the text editor's textarea above.
+              disabled={nicknameState.mode === "saving"}
+              // Ticket e7666de review fix (F4): the same red-outline
+              // treatment ResumeInput.tsx's own nickname field gets
+              // (ticket 7701534, Nicole: "it should highlight... red
+              // outline on the field") -- `index.css:224` keys that rule
+              // off `aria-invalid="true"` on an element already inside
+              // `.resume-nickname-field`, which this input reuses, so
+              // setting the attribute is the only piece this row was
+              // missing. True for the SAME condition the error message
+              // below renders on, so the two always appear and disappear
+              // together.
+              aria-invalid={
+                nicknameState.mode === "editing" && nicknameState.error !== undefined
+                  ? true
+                  : undefined
+              }
+              onChange={(e) => setNicknameState({ mode: "editing", draft: e.target.value })}
+            />
+          </div>
+          <div className="resume-text-actions">
+            {/* Save hidden (not merely disabled) for an empty/whitespace-
+                only draft -- the same convention the text editor's Save
+                follows just above. The API rejects an empty nickname with
+                a 400 regardless (routes/resumes.ts); this is about not
+                offering a dead button for a value the server would bounce
+                anyway. */}
+            {nicknameState.draft.trim().length > 0 && (
+              <button
+                type="button"
+                className="resume-nickname-save-button"
+                disabled={nicknameState.mode === "saving"}
+                onClick={() => saveNickname(nicknameState.draft)}
+              >
+                {nicknameState.mode === "saving" ? "Saving..." : "Save"}
+              </button>
+            )}
+            {/* Left ENABLED during a save, deliberately -- same walk-away
+                tradeoff the text editor's Cancel makes just above. */}
+            <button
+              type="button"
+              className="resume-nickname-cancel-button"
+              onClick={() => {
+                nicknameSaveTokenRef.current++;
+                setNicknameState({ mode: "viewing" });
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+          {nicknameState.mode === "editing" && nicknameState.error !== undefined && (
+            <p role="alert" className="resume-error">
+              Could not save resume name: {nicknameState.error}
+            </p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -326,30 +569,41 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
  * text", saving through `PUT /resumes/:id/text`, which mutates the
  * existing row rather than creating a new one).
  *
- * The NAME half is still not here: `PATCH /resumes/:id` has accepted a
- * rename since ticket 38a7598, but surfacing it on this page is its own
- * ticket (e7666de), filed separately precisely so the two changes don't
- * collide in this file. Delete and "search again with this" remain
- * undecided and absent.
+ * The NAME half is HERE NOW too (ticket e7666de, filed separately
+ * precisely so the two changes didn't collide in this file while both were
+ * in flight): a per-row "Rename" control, saving through the same
+ * `PATCH /resumes/:id` ticket 38a7598 already built and nothing had called
+ * until now. Delete and "search again with this" remain undecided and
+ * absent.
  *
  * `focusResume` (ticket 1e183a4, optional): when set, names the one
  * resume a result card's "Searched with:" link just asked to jump to --
  * passed straight through to every row, which only the matching one acts
  * on (see `ResumeRow`'s own comment).
  *
+ * `onRenamed` (ticket e7666de, optional): fires after a rename lands on
+ * the server, so `App.tsx` can refetch the list this component sorts --
+ * see `ResumeRow`'s own `onRenamed` prop comment for why a per-row local
+ * update alone isn't enough to keep sort order correct.
+ *
  * Ticket 7da6904 (Nicole, after the "Change" picker got the same fix in
  * ticket 336f1e6: "go ahead and make them alphanumeric on the resume page
  * too"): sorted via `sortResumesByNickname` rather than left in `resumes`'
  * own oldest-created-first order (`ListResumesResponse`'s doc comment) --
  * the same natural/numeric sort the picker uses, from the same shared
- * helper, so the two never drift out of sync with each other again.
+ * helper, so the two never drift out of sync with each other again. A
+ * rename is exactly the case this sort has to keep working across: see
+ * this file's test suite for a rename that crosses another resume's
+ * position in the sorted list.
  */
 export function MyResumes({
   resumes,
   focusResume,
+  onRenamed,
 }: {
   resumes: ResumeSummary[];
   focusResume?: FocusResume;
+  onRenamed?: () => void;
 }) {
   if (resumes.length === 0) {
     return <p>No resumes saved yet.</p>;
@@ -358,7 +612,12 @@ export function MyResumes({
   return (
     <ul className="resume-list">
       {sortResumesByNickname(resumes).map((resume) => (
-        <ResumeRow key={resume.id} resume={resume} focusResume={focusResume} />
+        <ResumeRow
+          key={resume.id}
+          resume={resume}
+          focusResume={focusResume}
+          onRenamed={onRenamed}
+        />
       ))}
     </ul>
   );
