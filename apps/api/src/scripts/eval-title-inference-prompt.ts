@@ -58,7 +58,30 @@
  *      chip is well-formed, well-punctuated, and plausibly federal; only
  *      knowing which field the RESUME is in makes it visible.
  *
- * COST: real, billed Anthropic calls, but tiny -- now 10 resumes x
+ * TICKET 16738f4: found by opus during 6487ed8's review, by inventing resume
+ * shapes outside this existing eval set -- this script's own blind spot.
+ * `splitConjoinedTitles` applied its 2+-word floor to EVERY fragment
+ * `.split()` produces, including the one-element array a title with no
+ * comma/semicolon returns unchanged -- so a single-word title the model
+ * returned WHOLE and on purpose ("Veterinarian", "Nurse") was deleted
+ * identically to a fragment manufactured by splitting a qualifier off a
+ * real title. Measured: VET raw n=8 -> final n=7 (dropped "Veterinarian");
+ * RN raw n=9 -> final n=8 (dropped "Nurse"). Fixed two ways:
+ *   1. Added a VETERINARIAN shape -- a profession whose most generic,
+ *      most-matchable title is a single bare word, exactly the shape this
+ *      bug ate. (The existing writer/nurse shapes from 17a5c8f are also
+ *      relevant -- "Writer" and "Nurse" are each that profession's own
+ *      one-word generic chip -- but a dedicated shape names the exact
+ *      measured incident directly.)
+ *   2. Added a DROPPED-WHOLE-CHIP check: flags any raw single-word title
+ *      with no comma/semicolon that failed to survive into the final chip
+ *      list. Re-scoped the pre-existing "degenerate one-word chip" check
+ *      (976a782) to only flag a single-word fragment that was actually
+ *      MANUFACTURED by splitting a joined raw title -- a one-word FINAL
+ *      chip is no longer inherently bad, since a whole one-word title is
+ *      now a legitimate outcome.
+ *
+ * COST: real, billed Anthropic calls, but tiny -- now 11 resumes x
  * MAX_OUTPUT_TOKENS (2000, a ceiling billed on actuals) each, same call this app already makes once per
  * real resume submission. Default is DRY RUN (prints the resumes and
  * exits without calling anything); pass `--live` to actually call the API.
@@ -188,6 +211,13 @@ const RESUME_SHAPES: { label: string; text: string; currentField: RegExp; field:
     currentField: /\b(nurse|nursing|rn)\b/i,
     field: "nursing",
   },
+  {
+    label:
+      "16738f4: VETERINARIAN -- the exact single-word-profession shape measured in the bug report (raw n=8 -> final n=7, DROPPED chip was the bare 'Veterinarian' the model returned whole, on purpose, as its most generic entry). Added specifically to catch the regression this ticket fixes: a one-word title with no comma/semicolon must survive `splitConjoinedTitles`, not just a multi-word one",
+    text: "Dr. Alyssa Novak, DVM. Veterinarian, small-animal and exotic pet medicine, 8 years. 2019-Present: Associate Veterinarian at a multi-doctor small-animal practice -- surgery, diagnostics, and primary care for dogs, cats, and exotic pets; mentors incoming graduate veterinarians. 2016-2019: Associate Veterinarian at a mixed-animal rural practice, covering both small-animal and livestock cases. Education: DVM, Doctor of Veterinary Medicine.",
+    currentField: /\bveterinar(y|ian)\b/i,
+    field: "none",
+  },
 ];
 
 /**
@@ -301,12 +331,52 @@ async function main(): Promise<void> {
       console.log(`  THIN CHIP LIST: only ${titles.length} chips -- the prompt asks for 8-10`);
     }
 
-    const degenerateChips = titles.filter((t) => !/\s/.test(t));
-    if (degenerateChips.length > 0) {
-      // Should be structurally impossible after the 2+-word floor in
-      // splitConjoinedTitles -- checked anyway so a regression there is
-      // visible here too, not just in the unit tests.
-      console.log(`  DEGENERATE ONE-WORD CHIP SURVIVED SPLIT: ${JSON.stringify(degenerateChips)}`);
+    // Ticket 16738f4, 2026-10-07: a one-word FINAL chip is no longer
+    // inherently degenerate -- a title the model returned WHOLE, with no
+    // comma/semicolon at all, is legitimately admitted as a single word now
+    // ("Veterinarian", "Nurse"; see the new shape above and
+    // resume-title-inference.ts's splitConjoinedTitles doc comment). What
+    // must still be structurally impossible is a single-word chip that came
+    // FROM SPLITTING a comma/semicolon-joined raw title -- that's 976a782's
+    // actual property, re-checked here directly against the raw output
+    // rather than assuming every one-word final chip is bad.
+    const rawTitlesWithJoins = rawTitles.filter((t) => /[,;]/.test(t));
+    const splitSingleWordFragments = new Set(
+      rawTitlesWithJoins
+        .flatMap((t) => t.split(/\s*,\s*|\s*;\s*/))
+        .map((f) => f.trim())
+        .filter((f) => f.length > 0 && !/\s/.test(f))
+        .map((f) => f.toLowerCase()),
+    );
+    const splitDegenerateSurvivors = titles.filter((t) =>
+      splitSingleWordFragments.has(t.toLowerCase()),
+    );
+    if (splitDegenerateSurvivors.length > 0) {
+      console.log(
+        `  976a782 REGRESSION -- a single-word fragment MANUFACTURED BY SPLITTING survived as a final chip: ${JSON.stringify(splitDegenerateSurvivors)}`,
+      );
+    }
+
+    // Ticket 16738f4: THE check this ticket exists to add. A one-word title
+    // the model returned WHOLE (no comma/semicolon anywhere in the raw
+    // string) must survive into the final chip list -- the bug this ticket
+    // fixes was `splitConjoinedTitles` dropping exactly this case, because
+    // `"Nurse".split(JOIN_PATTERN)` returns `["Nurse"]`, structurally
+    // identical to a real split fragment, and the old code applied the
+    // 2+-word floor to it regardless.
+    const droppedWholeSingleWordChips = rawTitles.filter((raw) => {
+      const trimmed = raw.trim();
+      return (
+        trimmed.length > 0 &&
+        !/[,;]/.test(trimmed) &&
+        !/\s/.test(trimmed) &&
+        !titles.some((t) => t.toLowerCase() === trimmed.toLowerCase())
+      );
+    });
+    if (droppedWholeSingleWordChips.length > 0) {
+      console.log(
+        `  ONE-WORD TITLE RETURNED WHOLE BY THE MODEL WAS DROPPED (ticket 16738f4): ${JSON.stringify(droppedWholeSingleWordChips)}`,
+      );
     }
 
     // Ticket 17a5c8f: THE check this ticket exists to add. Every check above

@@ -365,6 +365,36 @@ describe("splitConjoinedTitles behavior via inferTitleKeywords (ticket 976a782)"
     expect(titles).toEqual([]);
   });
 
+  it("ticket 16738f4: admits a one-word title the model returned WHOLE (no comma/semicolon at all) -- a bare profession is not split debris", async () => {
+    // This is the actual bug: a single-word title containing no comma or
+    // semicolon was never split, but the old code applied the 2+-word floor
+    // to it anyway because `"Nurse".split(JOIN_PATTERN)` still returns
+    // `["Nurse"]`, a one-element array identical in shape to a real split
+    // fragment. Measured against the real function pre-fix: a vet resume's
+    // raw n=8 became final n=7 (dropped "Veterinarian"); an RN resume's raw
+    // n=9 became final n=8 (dropped "Nurse").
+    const { anthropic } = makeFakeAnthropicClient([
+      "Veterinarian",
+      "Nurse",
+      "Senior Backend Engineer",
+    ]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(titles).toEqual(["Veterinarian", "Nurse", "Senior Backend Engineer"]);
+  });
+
+  it("ticket 16738f4: still drops a single-word fragment MANUFACTURED by splitting a comma-joined entry -- the 976a782 floor is not removed", async () => {
+    // 976a782's own property, re-asserted directly against the fix above so
+    // a future change cannot quietly admit split debris while fixing the
+    // whole-title case: "Billing" here comes FROM splitting, unlike "Nurse"
+    // in the test above which was never joined to anything.
+    const { anthropic } = makeFakeAnthropicClient(["Product Manager, Billing", "Nurse"]);
+    const titles = await inferTitleKeywords(anthropic, INCIDENT_SHAPED_RESUME);
+
+    expect(titles).toEqual(["Product Manager", "Nurse"]);
+    expect(titles).not.toContain("Billing");
+  });
+
   it("dedupes a fragment produced by splitting against an existing chip, case-insensitively", async () => {
     const { anthropic } = makeFakeAnthropicClient([
       "Backend Engineer, Platform Engineer",

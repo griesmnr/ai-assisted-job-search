@@ -487,19 +487,111 @@ const PROMPT_PREFIX =
  * role-word allowlist -- but "essentially never happens" is a claim about
  * the one observed case, not a property of every 2-word fragment this could
  * produce. Revisit if a real search is ever measurably hurt by it.
+ *
+ * ---------------------------------------------------------------------------
+ * TICKET 16738f4, 2026-10-07 -- THE 2+-WORD FLOOR WAS ALSO EATING TITLES
+ * THAT WERE NEVER SPLIT AT ALL
+ * ---------------------------------------------------------------------------
+ *
+ * Found by opus during 6487ed8's review, by inventing resume shapes outside
+ * the existing eval set. The floor above was applied to EVERY fragment
+ * `title.split(JOIN_PATTERN)` produces -- and when `title` contains no comma
+ * or semicolon, `.split()` on it still returns a one-element array
+ * containing the whole, untouched string. So a single-word title the model
+ * returned WHOLE and ON PURPOSE ("Veterinarian", "Nurse") went through the
+ * exact same "drop if no whitespace" check as a fragment manufactured by
+ * splitting a qualifier off a real title, and was deleted identically.
+ * Measured against the real function, pre-fix: VET resume raw n=8 -> final
+ * n=7 (dropped "Veterinarian"); RN resume raw n=9 -> final n=8 (dropped
+ * "Nurse"). In both cases the deleted chip was the single most generic,
+ * most matchable term for that profession -- exactly what the SCHEMA's own
+ * "include your most GENERIC role phrase" instruction (6487ed8) asks the
+ * model to produce, and 6487ed8 made the model produce it MORE often by
+ * widening the count and adding the generic-mix instruction, so it also
+ * widened how often this silently deleted a real chip.
+ *
+ * This is a DIFFERENT bug from the one the floor exists to fix, not a
+ * reason to remove the floor: a fragment MANUFACTURED by splitting a
+ * comma/semicolon-joined entry (e.g. "Billing" out of "Product Manager,
+ * Billing") is still exactly the false-positive risk documented above, and
+ * still gets dropped. The fix distinguishes the two cases using information
+ * the function already has -- whether the ORIGINAL `title` string contained
+ * a comma or semicolon at all. If it did not, it was never split in any
+ * sense this function's own floor was written to guard against (`.split()`
+ * returning `[title]` unchanged is not "splitting"), and the whole string
+ * is admitted even if it is one word. If it did, every fragment that string
+ * produces is still subject to the floor, including when only one of the
+ * fragments happens to be a single word (the "Product Manager, Billing"
+ * case above is unchanged by this).
+ *
+ * WHAT THIS ADMITS THAT THE FLOOR USED TO BLOCK, measured 2026-10-07 in
+ * review. The floor was doing two jobs and only one of them was split
+ * debris: it also silently deleted ANY whole single-word chip, including an
+ * over-broad one. `["Billing"]` on its own now returns `["Billing"]`, and
+ * "Engineering" or "Healthcare" would likewise pass. There is NO downstream
+ * guard -- verified: `criteria.ts`'s matcher compiles `/\bEngineering\b/i`,
+ * and `\b` only stops a match INSIDE a word ("Nursery"), not a word matching
+ * as one token of a longer title, so "Engineering" would match "Sales
+ * Engineering Manager" and "Nurse" matches "Nurse Practitioner". No
+ * min-length, word-count, stopword or blocklist exists anywhere between the
+ * model's output and the matcher.
+ *
+ * The bounded cost if one ever appears: 7 of 8 sources ignore `keywords` and
+ * apply `titleInclude` locally as an OR, so there is no fetch amplification;
+ * USAJOBS spends one of its 10 keyword slots; and `DEFAULT_SCORE_THRESHOLD`
+ * is a shared per-search budget consumed in raw board order, so loose-chip
+ * matches can displace specific-chip ones and spend real Claude calls.
+ * `MATCH_SCORE_FLOOR = 55` then hides genuinely bad matches from the ranked
+ * list. So the cost is spend and tail coverage, not visible garbage.
+ *
+ * Measured exposure: across 2 full 11-shape live eval runs (22 shape-runs,
+ * ~210 raw titles) the model emitted exactly TWO single-word titles, "Nurse"
+ * and "Veterinarian". Zero over-broad ones -- no "Engineering",
+ * "Technology", "Healthcare", "Marketing" or "Writing". The marketing shape
+ * returned "Marketing Specialist"/"Marketing Manager"/"Brand Manager", never
+ * bare "Marketing", in either run. The SCHEMA's own constraint is what holds
+ * it: a title "must be a short role phrase that could appear VERBATIM as a
+ * real job posting's title", and a bare field noun is not a posting title.
+ *
+ * So the trade is deliberate and lopsided in this fix's favour: at worst one
+ * displaced scoring slot, against a nurse losing the chip that matches the
+ * most postings. Recorded rather than left for the next reader to re-derive.
+ *
+ * KNOWN RESIDUAL, unchanged from before this fix and NOT a regression: a
+ * stray or doubled delimiter still defeats `wasJoined`. `["Nurse,"]` and
+ * `[", Nurse"]` return `[]`, and two legitimate single-word professions
+ * comma-joined (`["Nurse, Veterinarian"]`) lose BOTH. Zero raw titles
+ * contained a comma or semicolon across those 22 shape-runs, so live
+ * exposure is low. Note this undercuts 976a782's justification above for
+ * dropping both halves ("the discarded halves would have been exactly this
+ * same false-positive risk, so losing them is the safe outcome") -- that
+ * claim does not hold for two bare professions. Deriving `wasJoined` from
+ * whether splitting actually yielded two or more non-empty fragments would
+ * close the stray-delimiter rows outright; the two-professions case is a
+ * separate judgement, pinned today by an existing test. Filed as its own
+ * ticket rather than widened into this one.
  */
 export function splitConjoinedTitles(titles: string[]): string[] {
   const JOIN_PATTERN = /\s*,\s*|\s*;\s*/g;
   const seen = new Set<string>();
   const result: string[] = [];
   for (const title of titles) {
+    // Ticket 16738f4: only a title that actually contains a comma or
+    // semicolon was ever split. `.split()` on a title with neither still
+    // returns a one-element array holding the original string unchanged, so
+    // this distinguishes "a fragment manufactured by splitting" from "the
+    // whole title, never touched" -- see the doc comment above.
+    const wasJoined = /[,;]/.test(title);
     for (const fragment of title.split(JOIN_PATTERN)) {
       const trimmed = fragment.trim();
       if (trimmed.length === 0) continue;
-      // Drop single-word fragments -- see the doc comment above for why a
-      // bare word split out of a qualifier is a false-positive risk, not a
-      // useful chip.
-      if (!/\s/.test(trimmed)) continue;
+      // Drop single-word fragments ONLY when they came from splitting a
+      // comma/semicolon-joined entry -- see the doc comment above for why a
+      // bare word split out of a qualifier is a false-positive risk. A
+      // title the model returned whole, with no comma/semicolon anywhere in
+      // it, is admitted even if it is a single word (ticket 16738f4):
+      // "Veterinarian" and "Nurse" are legitimate chips, not split debris.
+      if (wasJoined && !/\s/.test(trimmed)) continue;
       const key = trimmed.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
