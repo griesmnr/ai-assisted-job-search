@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ResumeSummary } from "@app/shared";
-import { getResume } from "../api/client";
+import { getResume, updateResumeText } from "../api/client";
 import { sortResumesByNickname } from "../resumeSort";
 
 type ResumeTextState =
@@ -8,6 +8,21 @@ type ResumeTextState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; resumeText: string };
+
+/**
+ * Ticket 6ba221e: per-row edit state for the resume text.
+ *
+ * `"viewing"` is the pre-existing read-only `<pre>`. `"editing"` holds the
+ * textarea's own draft -- deliberately local to this state, not pushed back
+ * into `ResumeTextState` on every keystroke, so Cancel can restore the
+ * saved text by simply dropping it. `"saving"` keeps the draft (a failed
+ * save must not lose what the user typed) and carries it straight back into
+ * `"editing"` with an error attached.
+ */
+type ResumeEditState =
+  | { mode: "viewing" }
+  | { mode: "editing"; draft: string; error?: string }
+  | { mode: "saving"; draft: string };
 
 /**
  * Ticket 1e183a4: which resume a result card's "Searched with:" link most
@@ -59,6 +74,13 @@ const FOCUS_HIGHLIGHT_MS = 2000;
 function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume?: FocusResume }) {
   const [open, setOpen] = useState(false);
   const [textState, setTextState] = useState<ResumeTextState>({ status: "idle" });
+  // Ticket 6ba221e: the resumes page can now edit a resume's TEXT, not just
+  // view it. See this file's bottom-of-file component comment for why that
+  // reverses ticket 303cff0's deliberate view-only scope.
+  const [editState, setEditState] = useState<ResumeEditState>({ mode: "viewing" });
+  // Ticket 6ba221e: generation counter for in-flight text saves -- see
+  // `saveText` below for the stale-response it rules out.
+  const saveTokenRef = useRef(0);
   // Opus review, ticket 1e183a4 (F3): the TOKEN that's currently driving
   // the highlight, not a plain boolean. A boolean can't tell "still
   // highlighted from the last focus" apart from "just focused again" --
@@ -86,6 +108,61 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
         setTextState({
           status: "error",
           message: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
+  /**
+   * Ticket 6ba221e: saves the edited text via `PUT /resumes/:id/text`,
+   * which mutates THIS row -- same `resumes.id`, same nickname, same
+   * attached scores. It is deliberately not `createResume`: that is what
+   * used to happen on an "edit" and is exactly what produced a surprise
+   * "Resume 2" (git-bug 6ba221e).
+   *
+   * On success the server's OWN stored text is what lands in `textState`,
+   * not the local draft: the route echoes back what it wrote, so the
+   * `<pre>` below can never show something the database doesn't have. On
+   * failure the draft is preserved in `editing` with the message attached
+   * -- losing a rewritten resume to a transient network error would be
+   * the worst possible behavior here.
+   *
+   * `saveTokenRef` guards against a response landing AFTER the user has
+   * already left the editor (Cancel stays enabled during a save, see the
+   * button's own comment). Without it, a save that failed after a Cancel
+   * would silently re-open the editor with an error banner for an edit the
+   * user had already walked away from -- the same stale-response class
+   * App.tsx's `activationTokenRef` exists for, and the same fix: snapshot
+   * a counter before the call, and only apply the result if nothing bumped
+   * it in between.
+   *
+   * Nothing is propagated up to App.tsx, and that is deliberate rather
+   * than lazy: `GET /resumes` (the list this component renders from)
+   * carries no text, so the list is already current; and a SEARCH sends
+   * only a `resumeId`, with the API reading the text from the row itself
+   * (`loadResumeText`, routes/searches.ts) -- so a search started right
+   * after this save uses the new text whether or not App.tsx's cached
+   * copy caught up. The one thing that can lag is the chip list seeded
+   * from the active resume's titles, which is cosmetic, user-editable
+   * anyway, and refreshes on the next activation or reload.
+   */
+  function saveText(draft: string) {
+    const token = ++saveTokenRef.current;
+    setEditState({ mode: "saving", draft });
+    updateResumeText(resume.id, draft)
+      .then((data) => {
+        // The SAVE itself landed, so the row's text really did change --
+        // record that even if the user walked away from the editor, or the
+        // `<pre>` would keep showing text the database no longer has.
+        setTextState({ status: "ready", resumeText: data.resumeText });
+        if (saveTokenRef.current !== token) return;
+        setEditState({ mode: "viewing" });
+      })
+      .catch((err: unknown) => {
+        if (saveTokenRef.current !== token) return;
+        setEditState({
+          mode: "editing",
+          draft,
+          error: err instanceof Error ? err.message : String(err),
         });
       });
   }
@@ -149,7 +226,86 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
         {textState.status === "error" && (
           <p role="alert">Could not load resume text: {textState.message}</p>
         )}
-        {textState.status === "ready" && <pre className="resume-text">{textState.resumeText}</pre>}
+        {/* Ticket 6ba221e: the view/edit split. Both branches are gated on
+            `textState.status === "ready"` -- there is nothing to edit until
+            the real text has actually loaded, so "Edit text" can never open
+            a textarea pre-filled with a placeholder or an empty string that
+            a Save would then write over the real resume. */}
+        {textState.status === "ready" && editState.mode === "viewing" && (
+          <>
+            <pre className="resume-text">{textState.resumeText}</pre>
+            <div className="resume-text-actions">
+              {/* aria-label carries the nickname so a screen-reader user
+                  hears WHICH resume this button edits -- every row renders
+                  a button with the same visible text. */}
+              <button
+                type="button"
+                className="resume-text-edit-button"
+                aria-label={`Edit ${resume.resumeNickname} text`}
+                onClick={() => setEditState({ mode: "editing", draft: textState.resumeText })}
+              >
+                Edit text
+              </button>
+            </div>
+          </>
+        )}
+        {textState.status === "ready" && editState.mode !== "viewing" && (
+          <div className="resume-text-editor">
+            <label htmlFor={`resume-text-edit-${resume.id}`}>
+              Resume text for {resume.resumeNickname}
+            </label>
+            <textarea
+              id={`resume-text-edit-${resume.id}`}
+              className="resume-text-edit-input"
+              value={editState.draft}
+              rows={14}
+              // Disabled, not unmounted, while the PUT is in flight: the
+              // draft stays visible and in place, so a failure lands the
+              // user back exactly where they were rather than re-rendering
+              // a different control.
+              disabled={editState.mode === "saving"}
+              onChange={(e) => setEditState({ mode: "editing", draft: e.target.value })}
+            />
+            <div className="resume-text-actions">
+              {/* Save is hidden (not merely disabled) for empty text, the
+                  same "controls aren't there before their moment arrives"
+                  convention ResumeInput.tsx's submit button follows (ticket
+                  5a79aa4). The API rejects an empty resumeText with a 400
+                  regardless, so this is about not offering a dead button. */}
+              {editState.draft.trim().length > 0 && (
+                <button
+                  type="button"
+                  className="resume-text-save-button"
+                  disabled={editState.mode === "saving"}
+                  onClick={() => saveText(editState.draft)}
+                >
+                  {editState.mode === "saving" ? "Saving..." : "Save"}
+                </button>
+              )}
+              {/* Left ENABLED during a save, deliberately: this is a way to
+                  walk away from an in-flight request, not a competing one.
+                  The request itself is not cancelled -- `saveText`'s own
+                  `.then` would still fire -- so this only takes effect for
+                  the user's view; the same tradeoff ResumeInput's picker
+                  Cancel already makes (ticket 88f11d7, review fix F2). */}
+              <button
+                type="button"
+                className="resume-text-cancel-button"
+                onClick={() => {
+                  saveTokenRef.current++;
+                  setEditState({ mode: "viewing" });
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+            {editState.mode === "editing" && editState.error !== undefined && (
+              <p role="alert" className="resume-error">
+                Could not save resume text: {editState.error}
+              </p>
+            )}
+          </div>
+        )}
       </details>
     </li>
   );
@@ -160,11 +316,21 @@ function ResumeRow({ resume, focusResume }: { resume: ResumeSummary; focusResume
  * resumes going on, at least for me... I think it's reasonable that if a
  * user's got a resume on here, they should be able to at least view it."
  *
- * View-only, deliberately: no rename, no delete, no "search again with
- * this" link from here. The ticket's own Scope excludes all three --
- * Nicole hasn't decided how she wants resume management to work yet
- * ("I haven't determined how I'm going to further manage them"), so this
- * makes the existing data visible without foreclosing any of that.
+ * NO LONGER VIEW-ONLY. 303cff0 deliberately shipped with no rename, no
+ * delete and no "search again with this" link, because Nicole hadn't
+ * decided how she wanted resume management to work ("I haven't determined
+ * how I'm going to further manage them"). She has now decided part of it,
+ * and ticket 6ba221e is that decision: "On the resume page, I want them to
+ * be able to edit both the names of the resumes and the resumes
+ * themselves." This component implements the TEXT half (per-row "Edit
+ * text", saving through `PUT /resumes/:id/text`, which mutates the
+ * existing row rather than creating a new one).
+ *
+ * The NAME half is still not here: `PATCH /resumes/:id` has accepted a
+ * rename since ticket 38a7598, but surfacing it on this page is its own
+ * ticket (e7666de), filed separately precisely so the two changes don't
+ * collide in this file. Delete and "search again with this" remain
+ * undecided and absent.
  *
  * `focusResume` (ticket 1e183a4, optional): when set, names the one
  * resume a result card's "Searched with:" link just asked to jump to --

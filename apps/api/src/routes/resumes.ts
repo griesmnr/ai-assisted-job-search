@@ -5,10 +5,20 @@
  * that ticket's comments for the PDF-extraction failure mode this avoids;
  * as of this ticket its own docs/adr/002-resume-input.md acceptance
  * criterion is still unwritten) — a `POST` taking raw text, never a file
- * upload. Resumes are content-addressed by `resumeHash`, so this reuses
- * `getOrCreateResumeId` from the matching pipeline (`matching/pipeline.ts`,
- * via `matching/index.ts`) rather than reimplementing the hash-then-upsert
- * logic.
+ * upload. Creating a resume reuses `getOrCreateResumeId` from the matching
+ * pipeline (`matching/pipeline.ts`, via `matching/index.ts`) rather than
+ * reimplementing its hash-lookup-then-insert logic.
+ *
+ * IDENTITY (ticket 6ba221e, read this before changing anything resume-ish
+ * in here): a resume is identified by its `id`. It is NOT content-addressed
+ * any more. `resume_hash` is an ordinary column -- the
+ * `unique(user_id, resume_hash)` index is gone (migration 0019) -- and a
+ * user may legitimately hold two resumes with byte-identical text. Two
+ * consequences live in this file: the duplicate-text 409 ticket 7701534
+ * added here is DELETED (see `CreateResumeDuplicateError`'s obituary in
+ * @app/shared for Nicole's own words on it), and `PUT /resumes/:id/text`
+ * below is the one path that changes an existing resume's text, mutating
+ * the row rather than minting a new one.
  *
  * `GET /resumes/:id/results` is the filtering endpoint the frontend's source
  * toggles and score-floor slider hit — decision #1 (git-bug 484889d,
@@ -39,7 +49,6 @@
  * identical Drizzle query for one conditional clause's difference.
  */
 import {
-  type CreateResumeDuplicateError,
   type CreateResumeResponse,
   type GetAllResultsResponse,
   type GetResumeResponse,
@@ -47,6 +56,7 @@ import {
   type ListResumesResponse,
   type UpdateResumeNicknameConflictError,
   type UpdateResumeNicknameResponse,
+  type UpdateResumeTextResponse,
   type UserJobStatus,
   USER_JOB_STATUSES,
 } from "@app/shared";
@@ -57,7 +67,7 @@ import type { FastifyInstance } from "fastify";
 import { jobMatches, jobs as jobsTable, resumes, searches, userJobStatuses } from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 import { requireUserId } from "../identity.js";
-import { getOrCreateResumeId } from "../matching/index.js";
+import { getOrCreateResumeId, hashResumeText } from "../matching/index.js";
 import { looksLikeContractOrTemp } from "../matching/swe-filter.js";
 
 /**
@@ -103,8 +113,14 @@ const createResumeBodySchema = {
   required: ["resumeText"],
   properties: {
     resumeText: { type: "string" },
-    // Ticket 7701534: optional -- see CreateResumeRequest's own doc
-    // comment (@app/shared) for what this distinguishes.
+    // Ticket 6ba221e: ACCEPTED AND IGNORED. Ticket 7701534 used this to
+    // decide whether duplicate text was a real duplicate or a
+    // self-resubmission; there is no duplicate rejection any more, so the
+    // handler never reads it. Still listed because this schema is
+    // `additionalProperties: false` and a cached pre-6ba221e browser
+    // bundle still sends it -- removing the property would turn every
+    // resume creation from such a client into a 400. See
+    // `CreateResumeRequest.currentResumeId` (@app/shared).
     currentResumeId: { type: "string" },
   },
   additionalProperties: false,
@@ -119,6 +135,19 @@ const updateResumeNicknameBodySchema = {
   additionalProperties: false,
 } as const;
 
+/** Ticket 6ba221e: body of `PUT /resumes/:id/text`. Deliberately a
+ * separate schema (and a separate route) from the nickname PATCH above --
+ * see `UpdateResumeTextRequest`'s doc comment (@app/shared) for the four
+ * reasons text did not simply join that body. */
+const updateResumeTextBodySchema = {
+  type: "object",
+  required: ["resumeText"],
+  properties: {
+    resumeText: { type: "string" },
+  },
+  additionalProperties: false,
+} as const;
+
 /**
  * Ticket 88f11d7: `true` once `resumeId` has ever had a real (non-
  * estimate) search run against it -- see schema.ts's `searches
@@ -129,11 +158,14 @@ const updateResumeNicknameBodySchema = {
  * real searches happen later.
  *
  * AUDIT VERDICT (ticket 3fc1e5e): COVERED TRANSITIVELY, no `userId`
- * parameter needed. Takes no user id and needs none: both call sites reach
- * it with a `resumeId` this request has ALREADY established belongs to the
- * caller -- `POST /resumes` with the id `getOrCreateResumeId` just
- * resolved under the caller's own `userId`, and `GET /resumes/:id` after
- * its ownership-scoped lookup. `searches.resumeId` is
+ * parameter needed. Takes no user id and needs none: every call site
+ * reaches it with a `resumeId` this request has ALREADY established
+ * belongs to the caller -- `POST /resumes` with the id
+ * `getOrCreateResumeId` just resolved under the caller's own `userId`,
+ * `GET /resumes/:id` after its ownership-scoped lookup, and (ticket
+ * 6ba221e) `PUT /resumes/:id/text` after its own
+ * `and(eq(id), eq(userId))` lookup, which 404s before reaching here if
+ * the row is not the caller's. `searches.resumeId` is
  * `notNull().references(() => resumes.id)`, so scoping on the resume is
  * scoping on its owner (b2f9dfd's `resume_id -> user_id` chain). Adding a
  * `userId` argument here would be a second, redundant copy of a check the
@@ -168,22 +200,21 @@ export function registerResumeRoutes(
    * AUDIT VERDICT (ticket 3fc1e5e): ALREADY SCOPED (ticket b2f9dfd),
    * unchanged by this ticket. Every write and read here keys off the
    * `userId` below: `getOrCreateResumeId(db, resumeText, userId)` does the
-   * per-user find-or-create, and the two `eq(resumes.id, id)` lookups
-   * afterwards (the duplicate-nickname message, and the
-   * suggestedTitles/nickname read-back) are by-id on the row that call
-   * JUST resolved FOR THIS USER -- not on a caller-supplied id, so there
-   * is no foreign id for them to reach. `currentResumeId` comes from the
-   * request body but is only ever COMPARED (`id !== currentResumeId`),
-   * never used as a lookup key, so a caller naming a stranger's resume id
-   * there learns nothing: the comparison merely fails and they get the
-   * ordinary 409 about their own duplicate text.
+   * per-user find-or-create, and the `eq(resumes.id, id)` lookup
+   * afterwards (the suggestedTitles/nickname read-back) is by-id on the
+   * row that call JUST resolved FOR THIS USER -- not on a caller-supplied
+   * id, so there is no foreign id for it to reach.
+   *
+   * Ticket 6ba221e: `currentResumeId` is no longer read AT ALL (the
+   * duplicate-text comparison it existed for is gone), which removes the
+   * only place a caller-supplied id entered this handler.
    */
   app.post<{ Body: { resumeText: string; currentResumeId?: string } }>(
     "/resumes",
     { schema: { body: createResumeBodySchema } },
     async (request, reply) => {
       const userId = requireUserId(request);
-      const { resumeText, currentResumeId } = request.body;
+      const { resumeText } = request.body;
       const trimmed = resumeText.trim();
 
       if (trimmed.length === 0) {
@@ -195,58 +226,57 @@ export function registerResumeRoutes(
         });
       }
 
-      // Content-addressed find-or-create (ticket 620ca30, now per-user as
-      // of ticket b2f9dfd): posting the same text twice returns the same
-      // id rather than duplicating a row, and a genuinely new resume gets
-      // a new id whose scores start empty (no job_matches rows exist for
-      // it yet — see GET /resumes/:id/results).
-      const { id, isNew } = await getOrCreateResumeId(db, resumeText, userId);
+      // Find-or-create (ticket 620ca30, per-user as of ticket b2f9dfd):
+      // posting the same text twice returns the same id rather than
+      // duplicating a row, and a genuinely new resume gets a new id whose
+      // scores start empty (no job_matches rows exist for it yet — see GET
+      // /resumes/:id/results).
+      //
+      // TICKET 6ba221e KEPT THIS, DELIBERATELY, and that is worth
+      // justifying because the ticket's headline is "resume_hash is not an
+      // identity". It isn't: the database no longer enforces it (migration
+      // 0019), two identical-text resumes are legal, and this handler no
+      // longer REJECTS anything on the strength of a hash match. What
+      // survives is a create-path CONVENIENCE -- re-pasting text you
+      // already have saved lands on the resume you already have, instead
+      // of minting a second row indistinguishable from the first except
+      // for its "Resume N". The alternative (always INSERT) was
+      // considered and rejected: it would make a double-click, or an Edit
+      // -> Submit with nothing actually changed, silently mint "Resume 2",
+      // which is the exact user-visible complaint this ticket exists to
+      // fix. Two identical-text resumes remain fully reachable, via
+      // `PUT /resumes/:id/text` below -- which is how a real user gets
+      // there anyway, and which this ticket's own tests cover.
+      //
+      // KNOWN SEAM that falls out of keeping it, recorded rather than fixed
+      // (fable review of 6ba221e). Reached like this: a LOCKED Resume 1 ->
+      // "Change" -> "Paste a new resume" -> paste text byte-identical to
+      // Resume 1 -> Submit. The user explicitly declined to reuse Resume 1
+      // one click ago, and this find-or-create hands them Resume 1 anyway,
+      // still locked, with no message saying so -- the collapsed bar just
+      // reads "Using Resume 1" again. Nothing is lost or corrupted and no
+      // error is wrong, which is why it is not being fixed here: the
+      // alternatives are ticket 7701534's 409 (deleted by this ticket, by
+      // the owner's explicit instruction) or always-INSERT (rejected just
+      // above, for a worse failure). But it IS a silent no-op where the
+      // user asked for something, so it is named here instead of waiting to
+      // be rediscovered. If it ever needs addressing, the honest fix is in
+      // the UI -- say "that's the text of Resume 1, which you're already
+      // using" -- not by reinstating a rejection.
+      //
+      // `isNew` is no longer destructured: ticket 7701534's duplicate
+      // rejection was its only consumer here, so reading it would be dead
+      // code. It is still returned by `getOrCreateResumeId` for callers
+      // that have a use for it.
+      const { id } = await getOrCreateResumeId(db, resumeText, userId);
 
-      // Ticket 7701534, Nicole: "if it so happens that the pasted resume
-      // is the same text as another already saved resume... not allow
-      // them to continue... This resume has the exact same text as
-      // Resume 8. Please use Resume 8." `!isNew` means this text already
-      // belonged to SOME resume before this request; `id !== currentResumeId`
-      // means that resume ISN'T the one the client was already editing --
-      // i.e. this is a genuinely different resume's text, not the user
-      // resubmitting their own unchanged text (which must keep working
-      // exactly as before, per this ticket's own acceptance criteria).
-      if (!isNew && id !== currentResumeId) {
-        const existing = await db
-          .select({ resumeNickname: resumes.resumeNickname })
-          .from(resumes)
-          .where(eq(resumes.id, id))
-          .limit(1);
-        const duplicateResumeNickname = existing[0]?.resumeNickname;
-        if (duplicateResumeNickname === undefined) {
-          // Should be impossible: getOrCreateResumeId just guaranteed
-          // this row exists, and every row has had a NOT NULL
-          // resume_nickname since migration 0010.
-          throw new Error(`resume ${id} has no resume_nickname after getOrCreateResumeId`);
-        }
-        // Review round 1 (F2): the ORIGINAL wording ("Please use Resume 8
-        // instead") told the user to do something this app cannot
-        // actually do -- there is no "activate an existing resume for a
-        // new search" action anywhere (My Resumes, ticket 303cff0, is
-        // view-only; see this ticket's own Notes on git-bug for the
-        // tracked follow-up). Promising an unavailable remedy is worse
-        // than the silent-reuse behavior this ticket replaces, so the
-        // message now states the fact (it's already saved, under this
-        // name) without instructing an action the UI can't fulfill.
-        const duplicateResponse: CreateResumeDuplicateError = {
-          error: `This resume has the exact same text as an already-saved resume, "${duplicateResumeNickname}". You can't save it again as a new resume.`,
-          duplicateResumeId: id,
-          duplicateResumeNickname,
-        };
-        return reply.code(409).send(duplicateResponse);
-      }
-
-      // Ticket 39b4a48: suggested title keywords, computed at most ONCE per
-      // resume and cached on the row — `suggestedTitles === null` means
-      // inference has never run for this id (schema.ts's column doc
-      // comment). Since `id` is content-addressed, a resubmission of
-      // identical resume text reuses the same row and never re-pays for
-      // this. `inferTitles` itself is documented to never throw (see
+      // Ticket 39b4a48: suggested title keywords, cached on the row —
+      // `suggestedTitles === null` means inference has never run for this
+      // id, OR that a text edit invalidated it (schema.ts's column doc
+      // comment; `PUT /resumes/:id/text` below is what nulls it). A
+      // resubmission of identical resume text reuses the same row and
+      // never re-pays for this.
+      // `inferTitles` itself is documented to never throw (see
       // resume-title-inference.ts) — a failure degrades to `[]` — but this
       // is wrapped in its own try/catch anyway, defense in depth: resume
       // creation succeeding must never depend on a callee honoring its own
@@ -393,9 +423,12 @@ export function registerResumeRoutes(
   });
 
   // Ticket 38a7598: renames a resume's nickname. Deliberately minimal --
-  // the only writable field is `resumeNickname` (never `resumeText`, which
-  // would break content-addressing -- see UpdateResumeNicknameRequest's
-  // doc comment in @app/shared). This is the one endpoint a rename made
+  // the only writable field is `resumeNickname`, never `resumeText`. That
+  // exclusion's ORIGINAL reason (it "would break content-addressing") died
+  // with ticket 6ba221e; see `UpdateResumeTextRequest`'s doc comment
+  // (@app/shared) for the grounds it stands on now, and
+  // `PUT /resumes/:id/text` below for where text actually goes. This is
+  // the one endpoint a rename made
   // AFTER the initial submission (per the ticket's own acceptance
   // criteria: "editable, not just at creation") goes through -- the
   // submission-time default/edit in ResumeInput.tsx also lands here, via
@@ -441,6 +474,19 @@ export function registerResumeRoutes(
       // is left with two identically-named resumes, the exact state the
       // nickname check exists to prevent. Both halves now name
       // `resumes.userId`.
+      //
+      // RE-CHECKED UNDER IN-PLACE EDITING (ticket 6ba221e, which flagged
+      // this query as something its change might have invalidated):
+      // unaffected, and the reason is that nothing about nicknames moved.
+      // The assumption 6ba221e removed is "new text means a new row",
+      // which lived in `getOrCreateResumeId`'s "Resume N" numbering -- not
+      // here. This query compares nicknames within one user and excludes
+      // the row being renamed; `PUT /resumes/:id/text` never writes
+      // `resume_nickname` and never inserts a row, so an edit cannot mint
+      // a nickname for this check to collide with, and the count that
+      // derives "Resume N" is no longer reached by an edit at all. The one
+      // thing 6ba221e genuinely changes nearby is that two resumes may now
+      // hold identical TEXT -- which this query does not read.
       const collision = await db
         .select({ id: resumes.id })
         .from(resumes)
@@ -470,6 +516,226 @@ export function registerResumeRoutes(
         return reply.code(404).send({ error: `No resume with id "${request.params.id}".` });
       }
       const response: UpdateResumeNicknameResponse = rows[0]!;
+      return reply.send(response);
+    },
+  );
+
+  /**
+   * TICKET 6ba221e: replaces a resume's TEXT in place, keeping the same
+   * `resumes.id`. This is the endpoint the whole ticket is for.
+   *
+   * WHAT IT FIXES. Before this, "edit a resume" meant POSTing different
+   * text, which (resumes being content-addressed) minted a DIFFERENT row
+   * with a fresh "Resume N" default -- Nicole, hitting it herself: "if I'm
+   * on resume one and I make an edit and I hit save and it's still called
+   * resume one, it actually becomes resume 2... the saving doesn't work
+   * intuitively." `getOrCreateResumeId` is deliberately NOT involved here:
+   * an edit names a row, so it UPDATEs that row.
+   *
+   * WHY IT IS ITS OWN ROUTE rather than a `resumeText` field on
+   * `PATCH /resumes/:id` -- see `UpdateResumeTextRequest`'s doc comment
+   * (@app/shared) for the four reasons, argued rather than assumed as the
+   * ticket required.
+   *
+   * SCOPED ON `userId`, NOT ON `id` ALONE, in the single UPDATE that does
+   * the work. This is the specific shape ticket 3fc1e5e's audit found
+   * broken in the rename path above (a collision check scoped one way and
+   * an UPDATE scoped another, so a request could rewrite a stranger's
+   * row). This handler does use two statements -- the ownership SELECT
+   * below and the UPDATE after it (fable review of 6ba221e, F5, correcting
+   * an earlier version of this comment that claimed one). What actually
+   * defeats 3fc1e5e's failure shape is that BOTH carry the same
+   * `and(eq(resumes.id, ...), eq(resumes.userId, userId))`, so they cannot
+   * disagree about whose row is in play: the SELECT 404s a foreign id
+   * before anything is written, and the UPDATE would match zero rows even
+   * if it were somehow reached. Keep both conjuncts on both statements --
+   * dropping either from the UPDATE is not currently reachable, which is
+   * exactly the kind of "safe today" argument that ticket stopped
+   * accepting. A resume belonging to someone else 404s exactly as a
+   * nonexistent one does -- the convention every by-id route in this app
+   * uses, so a caller cannot use the status code to probe for valid ids.
+   *
+   * NOT GATED ON `isLocked`, which is a real decision and not an
+   * oversight. Ticket 88f11d7 established that a resume locks on its first
+   * REAL search ("once that has happened, then a user can't change the
+   * text on the resume anymore"), and that lock still shapes the SEARCH
+   * page: the collapsed bar offers "Change" (pick another resume / paste a
+   * new one), never "Edit", for a locked resume, and `handleResumeSubmit`
+   * (App.tsx) only routes an UNLOCKED resume's submit here. But this
+   * ticket's own recorded decision covers the locked case directly, in
+   * Nicole's words: "I'm confident that I want that text editable, even if
+   * it makes things not true anymore... I'm assuming they won't abuse that
+   * edit such that it will negate all of their work and already previously
+   * searched things." So the resumes page can edit any resume, and the
+   * endpoint does not second-guess that. The cost -- `job_matches` rows
+   * keyed `(resume_id, job_id)` now hanging off text they were not
+   * computed against -- is accepted, explicitly and twice, and this ticket
+   * is forbidden from building a staleness warning for it.
+   *
+   * `job_statuses` ARE UNAFFECTED, by construction: `user_job_statuses` is
+   * keyed `(user_id, job_id)` with `resume_id` deliberately absent
+   * (db/schema.ts's long comment on that key), so "I applied to job X"
+   * cannot be disturbed by this UPDATE -- it does not mention the table,
+   * and the fact it stores is not about a resume. There is an explicit
+   * regression test for that anyway (routes/resumes.test.ts), because "the
+   * code does not touch it" is an argument about today's code.
+   */
+  app.put<{ Params: { id: string }; Body: { resumeText: string } }>(
+    "/resumes/:id/text",
+    { schema: { body: updateResumeTextBodySchema } },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      const { resumeText } = request.body;
+      // Same two validations, same limits and wording as `POST /resumes`
+      // above -- an edit that produces an empty or absurd resume must fail
+      // for the same reason and with the same message a paste of it does.
+      if (resumeText.trim().length === 0) {
+        return reply.code(400).send({ error: "resumeText must not be empty." });
+      }
+      if (resumeText.length > MAX_RESUME_TEXT_LENGTH) {
+        return reply.code(400).send({
+          error: `resumeText exceeds the ${MAX_RESUME_TEXT_LENGTH}-character limit (got ${resumeText.length}).`,
+        });
+      }
+
+      const existing = await db
+        .select({
+          id: resumes.id,
+          resumeText: resumes.resumeText,
+          resumeNickname: resumes.resumeNickname,
+          suggestedTitles: resumes.suggestedTitles,
+        })
+        .from(resumes)
+        .where(and(eq(resumes.id, request.params.id), eq(resumes.userId, userId)))
+        .limit(1);
+      if (existing.length === 0) {
+        return reply.code(404).send({ error: `No resume with id "${request.params.id}".` });
+      }
+      const row = existing[0]!;
+
+      // AN UNCHANGED SAVE IS A NO-OP, and that is a cost control, not
+      // politeness. Everything below this point spends a paid Claude call
+      // (`inferTitles`), so "the user opened the editor, changed nothing,
+      // and hit Save" -- or double-clicked Save -- must not be billable.
+      // Byte-for-byte comparison against the stored text, deliberately not
+      // against a trimmed/normalized form: the stored value is whatever
+      // was last saved, and anything that would alter it is a real change.
+      if (row.resumeText === resumeText) {
+        const unchanged: UpdateResumeTextResponse = {
+          id: row.id,
+          resumeText: row.resumeText,
+          resumeNickname: row.resumeNickname,
+          // Whatever is cached stays cached -- `null` (never inferred, or
+          // a previous inference that failed) degrades to `[]` the same
+          // way `GET /resumes/:id` already does it.
+          suggestedTitles: row.suggestedTitles ?? [],
+          isLocked: await isResumeLocked(db, row.id),
+        };
+        return reply.send(unchanged);
+      }
+
+      // THE ACTUAL EDIT: text, its hash, and the suggestedTitles
+      // invalidation, in ONE statement. Ordering matters -- the cache is
+      // cleared in the same UPDATE that changes the text, so the row is
+      // never observable in a state where `suggested_titles` describes
+      // text that is no longer there, even if this process dies on the
+      // next line.
+      //
+      // WHY NULL AND RE-INFER, rather than either alternative (the ticket
+      // required this decision to be made and its cost stated):
+      //   - Leaving the old titles would show chips inferred from text the
+      //     user just replaced. That is the obvious failure mode, and
+      //     ticket 39b4a48's cache was only ever safe BECAUSE
+      //     content-addressing made a row's text immutable -- which this
+      //     ticket ends.
+      //   - Nulling WITHOUT re-inferring here looks cheaper but is worse:
+      //     the lazy gate that re-infers on `null` lives in `POST
+      //     /resumes`, and an edit no longer goes through that route, so
+      //     nothing would ever re-infer. `GET /resumes/:id` coerces `null`
+      //     to `[]`, which the frontend reads as "inference ran and found
+      //     nothing" -- so the resume would silently lose its title chips
+      //     for good.
+      // COST, stated plainly: one Claude call per REAL text edit, where
+      // before this ticket it was at most one per resume, ever. Bounded by
+      // how often a human edits a resume, and skipped entirely by the
+      // unchanged-save branch above.
+      // Hoisted rather than inlined: the follow-up write below needs the
+      // SAME value to prove the row still holds this request's text.
+      const resumeHash = hashResumeText(resumeText);
+      await db
+        .update(resumes)
+        .set({
+          resumeText,
+          resumeHash,
+          suggestedTitles: null,
+        })
+        .where(and(eq(resumes.id, row.id), eq(resumes.userId, userId)));
+
+      // Same defense-in-depth as `POST /resumes`: `inferTitles` is
+      // documented never to throw, and is wrapped anyway because it is an
+      // injected dependency. A failure must not fail the EDIT -- the text
+      // is already saved by this point, which is the part the user asked
+      // for.
+      let suggestedTitles: string[] | null = null;
+      try {
+        suggestedTitles = await inferTitles(resumeText);
+      } catch (err) {
+        request.log.error({ err, id: row.id }, "title inference failed after a resume text edit");
+      }
+      try {
+        // On FAILURE this writes `null`, not `[]`, and that is deliberate:
+        // ticket 82ae975 is an open bug about `[]` being cached forever
+        // behind a `suggestedTitles === null` retry gate, and there is no
+        // reason for a brand-new write path to walk into it. `null` keeps
+        // the row honestly marked "not inferred yet" so a later edit (or
+        // a POST of this text, or scripts/reinfer-resume-titles.ts's own
+        // successor) can still try. The row is ALREADY `null` from the
+        // UPDATE above, so the failure case re-writes the same value
+        // rather than relying on that -- one statement either way, and it
+        // cannot be read as "we meant to store []".
+        //
+        // GUARDED ON `resumeHash` (fable review of 6ba221e, F5b): this
+        // write lands AFTER a slow network call to Claude, so a second
+        // `PUT /resumes/:id/text` for the same resume can have replaced the
+        // text in between. Without the guard, the loser's chips would be
+        // written over the winner's text -- the exact
+        // titles-describing-absent-text failure this whole re-inference
+        // path exists to prevent, just reached by a different route. Naming
+        // the hash this request wrote makes the statement a no-op (zero
+        // rows matched) when someone else has moved on, so the last text to
+        // land keeps its own titles and the loser's are simply dropped. The
+        // row is then left `null` by the winner's own first UPDATE until
+        // its inference returns, which is the honest state. `userId` is
+        // here for the same reason it is on the UPDATE above: both
+        // conjuncts on every statement, uniformly.
+        await db
+          .update(resumes)
+          .set({ suggestedTitles })
+          .where(
+            and(
+              eq(resumes.id, row.id),
+              eq(resumes.userId, userId),
+              eq(resumes.resumeHash, resumeHash),
+            ),
+          );
+      } catch (err) {
+        // A failed WRITE of already-computed suggestions must not fail the
+        // edit either; the response below still carries what this request
+        // computed, and the row stays `null` so a future call re-infers.
+        request.log.error({ err, id: row.id }, "failed to persist suggestedTitles after an edit");
+      }
+
+      const response: UpdateResumeTextResponse = {
+        id: row.id,
+        resumeText,
+        // READ BACK FROM THE ROW AS IT WAS, never recomputed: this
+        // endpoint's central promise is that a text edit does not rename
+        // anything (no "Resume 2"), and the only way to keep that promise
+        // is to not have a nickname-assigning code path here at all.
+        resumeNickname: row.resumeNickname,
+        suggestedTitles: suggestedTitles ?? [],
+        isLocked: await isResumeLocked(db, row.id),
+      };
       return reply.send(response);
     },
   );

@@ -124,10 +124,12 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
   // Ticket 38a7598 review fix: the nickname <input> sits INSIDE the resume
   // <form> (which has its own submit button), so without a keydown guard,
   // pressing Enter here triggered the form's implicit submit -- silently
-  // RESUBMITTING the resume text instead of committing the rename. Because
-  // `createResume` is content-addressed, that resubmission would return the
-  // SAME resume id carrying its OLD nickname, discarding whatever was just
-  // typed with zero error or explanation.
+  // RESUBMITTING the resume text instead of committing the rename -- which
+  // resolved to the SAME resume id carrying its OLD nickname, discarding
+  // whatever was just typed with zero error or explanation. (Still the
+  // hazard after ticket 6ba221e, by a different route: the resubmit now
+  // goes to `PUT /resumes/:id/text`, whose response carries the row's
+  // stored nickname.)
   it("pressing Enter in the nickname field commits the rename and does not submit the resume", () => {
     const onSubmit = vi.fn();
     const onNicknameCommit = vi.fn();

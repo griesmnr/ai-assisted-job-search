@@ -12,10 +12,19 @@
  * and the obvious-looking shape to copy — every assertion below about the
  * SECOND run fails: the lookup made under v2 finds nothing, the app
  * re-recommends an already-applied job, and recording the application again
- * inserts a second row for the same job. `resumes` is content-addressed by
- * `resume_hash` (ticket 620ca30), so "rewriting the resume" genuinely
- * produces a different row with a different id — not an edit of v1 — which
- * is what makes the resume the wrong thing to key on.
+ * inserts a second row for the same job. The v1/v2 split the scenario rests
+ * on is real: a fresh resume (every first submission, and ticket 88f11d7's
+ * "Paste a new resume") is a different row with a different id, which is
+ * what makes the resume the wrong thing to key on.
+ *
+ * Ticket 6ba221e narrows how that split is REACHED, and changes nothing
+ * here. This comment used to argue from content-addressing -- `resumes` was
+ * keyed on `resume_hash` (ticket 620ca30), so ANY text change forced a new
+ * row. That constraint is dropped (migration 0019) and an edit can now keep
+ * the same id, so the in-place-edit path alone would not break a
+ * `(resume_id, job_id)` key. Starting a genuinely new resume still does,
+ * which is why this key is still right -- see db/schema.ts's own comment on
+ * it for the full argument.
  *
  * Requires a live Postgres (like every other DB-backed test in this repo).
  */

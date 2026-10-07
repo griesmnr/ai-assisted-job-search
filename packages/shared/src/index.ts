@@ -104,13 +104,21 @@ export type SourceDescriptor = {
 export type CreateResumeRequest = {
   resumeText: string;
   /**
-   * Ticket 7701534: the resume already active THIS session, if any --
-   * lets `POST /resumes` tell "resubmitting my own unchanged text" (e.g.
-   * re-editing just to fix a typo elsewhere) apart from "this text
-   * already belongs to a DIFFERENT saved resume" (a real duplicate).
-   * Omitted on a genuinely first-ever submission this session. See
-   * `CreateResumeDuplicateError`'s doc comment for what happens on the
-   * latter.
+   * @deprecated Ticket 6ba221e: ACCEPTED AND IGNORED by `POST /resumes`.
+   *
+   * Ticket 7701534 added this so the route could tell "resubmitting my own
+   * unchanged text" apart from "this text already belongs to a DIFFERENT
+   * saved resume", and reject the latter with a 409. 6ba221e deleted that
+   * rejection outright -- two resumes with byte-identical text are legal
+   * now (Nicole: "Let them do that... that's their business") -- so there
+   * is nothing left for the route to distinguish and no caller sends it
+   * any more (`createResume`, apps/web/src/api/client.ts).
+   *
+   * Still DECLARED, and still accepted by the route's body schema, purely
+   * for deploy skew: that schema is `additionalProperties: false`, so a
+   * browser running a cached pre-6ba221e bundle would get a 400 on every
+   * resume creation if the field were removed outright. Safe to delete
+   * once no such bundle can still be in use.
    */
   currentResumeId?: string;
 };
@@ -131,19 +139,23 @@ export type CreateResumeResponse = {
    * A real, distinct default ("Resume 1", "Resume 2", ...) assigned by
    * `getOrCreateResumeId` (apps/api/src/matching/pipeline.ts) at insert
    * time for a genuinely new resume, or the resume's EXISTING nickname
-   * when this submission matched `currentResumeId` itself resubmitting
-   * its own unchanged text (content-addressed find-or-create, ticket
-   * 620ca30) — including one the user already renamed via `PATCH
-   * /resumes/:id`. Ticket 38a7598: this is what `ResumeInput.tsx`
-   * shows/pre-fills right in the submission flow, per Nicole's explicit
-   * "at that moment... choosing the resume nickname" — never a value the
-   * frontend invents itself.
+   * (including one the user already renamed via `PATCH /resumes/:id`) when
+   * this submission's text matched a resume that already existed.
+   * Ticket 38a7598: this is what `ResumeInput.tsx` shows/pre-fills right
+   * in the submission flow, per Nicole's explicit "at that moment...
+   * choosing the resume nickname" — never a value the frontend invents
+   * itself.
    *
-   * Ticket 7701534: text matching a DIFFERENT existing resume (not
-   * `currentResumeId`) no longer reaches this success response at all —
-   * see `CreateResumeDuplicateError`. This field's own "resubmission
-   * resolves to the same real nickname" guarantee now only covers the
-   * one case it still applies to: `currentResumeId` resubmitting itself.
+   * Ticket 6ba221e: re-pasting text that already belongs to one of your
+   * resumes used to be a 409 (ticket 7701534's duplicate guardrail) unless
+   * it was `currentResumeId`'s own text. That rejection is gone, so this
+   * field's "a resubmission resolves to the existing resume's real
+   * nickname" behavior is back to covering EVERY such case, not just one.
+   * Note the hash lookup behind it is a convenience, not an identity rule
+   * any more (apps/api/src/db/schema.ts's `resumeHash`): editing a
+   * resume's text goes through `UpdateResumeTextRequest` below, which is
+   * the only path that changes an existing resume's text, and it never
+   * changes its nickname.
    */
   resumeNickname: string;
   /** See `GetResumeResponse.isLocked`'s doc comment -- same meaning,
@@ -203,24 +215,24 @@ export type ListResumesResponse = {
 };
 
 /**
- * `POST /resumes`'s `409` body (ticket 7701534) when the submitted text
- * exactly matches an EXISTING resume other than `currentResumeId` --
- * Nicole: "This resume has the exact same text as Resume 8... you can't
- * save an identical resume." Mirrors `POST /searches`'s own `{error,
- * searchId}` 409 pattern (ApiError's doc comment, apps/web/src/api/
- * client.ts) -- extra structured fields alongside the plain message, read
- * off `ApiError.body` the same structural way that one already is (see
- * `apiErrorStatus`/`inFlightSearchIdFromError` in SearchFlow.tsx).
+ * REMOVED by ticket 6ba221e: `CreateResumeDuplicateError`, the `409` body
+ * `POST /resumes` used to send (ticket 7701534) when submitted text
+ * exactly matched an existing resume other than `currentResumeId`.
  *
- * Deliberately does NOT fire for a resubmission of `currentResumeId`'s
- * OWN unchanged text -- that keeps succeeding exactly as before (ticket
- * 620ca30's content-addressed find-or-create, unchanged for that case).
+ * Nicole, 2026-10-06, reversing her own earlier requirement verbatim: "I
+ * know that it was a previous requirement of mine that it wouldn't let the
+ * exact same text exist for two resumes before, but now I frankly don't
+ * care about that. So I want to remove that requirement. Let them do that.
+ * If they want to do that, that's their business."
+ *
+ * The error was also the most visible symptom of the design 6ba221e
+ * reverses: because editing a resume minted a NEW content-addressed row,
+ * a user who had only ever worked with "Resume 1" could be told her text
+ * collided with a "Resume 2" she never chose to create. Two resumes with
+ * byte-identical text are now simply legal (apps/api/src/db/schema.ts's
+ * `resumeHash` comment has the full history). Nothing replaced this type:
+ * there is no duplicate-text error to report.
  */
-export type CreateResumeDuplicateError = {
-  error: string;
-  duplicateResumeId: string;
-  duplicateResumeNickname: string;
-};
 
 /**
  * `PATCH /resumes/:id`'s `409` body (ticket 7701534) when `resumeNickname`
@@ -236,11 +248,16 @@ export type UpdateResumeNicknameConflictError = {
 };
 
 /**
- * `PATCH /resumes/:id` (ticket 38a7598) — renames a resume's nickname.
- * Deliberately minimal: this is NOT a general resume-editing endpoint (the
- * ticket's own Scope excludes that) — the only field it can change is
- * `resumeNickname`, never `resumeText` (that would break content-addressing:
- * `resumeHash` is derived from the text and never recomputed after insert).
+ * `PATCH /resumes/:id` (ticket 38a7598) — renames a resume's nickname, and
+ * ONLY that. `resumeText` is not and never was accepted here.
+ *
+ * Ticket 6ba221e: the ORIGINAL reason text was excluded ("that would break
+ * content-addressing: `resumeHash` is derived from the text and never
+ * recomputed after insert") no longer holds — text IS editable now, and
+ * `resumeHash` IS recomputed. The exclusion survives on different grounds,
+ * which are recorded on `UpdateResumeTextRequest` below: text lives on its
+ * own route (`PUT /resumes/:id/text`) because the two updates have
+ * genuinely different consequences, not because one of them is forbidden.
  */
 export type UpdateResumeNicknameRequest = {
   resumeNickname: string;
@@ -249,6 +266,78 @@ export type UpdateResumeNicknameRequest = {
 export type UpdateResumeNicknameResponse = {
   id: string;
   resumeNickname: string;
+};
+
+/**
+ * `PUT /resumes/:id/text` (ticket 6ba221e) — replaces a resume's text IN
+ * PLACE, keeping the same `resumes.id`, the same nickname, and every
+ * `job_matches` row already attached to it.
+ *
+ * WHY ITS OWN ROUTE RATHER THAN A FIELD ON `PATCH /resumes/:id`, which
+ * already exists for the nickname (the ticket asked for this choice to be
+ * argued, not assumed):
+ *
+ *  1. The two updates are not peers. A rename is a pure relabel with one
+ *     failure mode (a 409 nickname collision). A text replacement
+ *     recomputes `resume_hash`, INVALIDATES the cached `suggestedTitles`,
+ *     and spends money re-inferring them — and it is the operation that
+ *     silently makes existing match scores describe text that is no longer
+ *     there (a tradeoff Nicole has explicitly accepted twice). Putting
+ *     both behind one verb invites a caller to treat them as equally
+ *     cheap.
+ *  2. Merging them would weaken the rename's own validation. That body
+ *     schema is `required: ["resumeNickname"]`; making both fields
+ *     optional to fit text in means `{}` becomes a well-formed request,
+ *     and a body carrying BOTH fields raises a partial-apply question
+ *     ("the nickname saved but the text was rejected — now what?") that no
+ *     caller actually needs answered.
+ *  3. PUT is the honest verb. This replaces the whole text, not a patch
+ *     of it; there is no partial text update.
+ *  4. The rename UI is a separate open ticket (e7666de) touching the same
+ *     file, and a new route keeps the two changes from overlapping.
+ *
+ * Response fields mirror `CreateResumeResponse` exactly (plus the text
+ * itself) so the frontend's submit path can use either call
+ * interchangeably — see `handleResumeSubmit` (apps/web/src/App.tsx), which
+ * routes an edit here and a first paste to `POST /resumes` and then does
+ * the same thing with the result.
+ */
+export type UpdateResumeTextRequest = {
+  resumeText: string;
+};
+
+export type UpdateResumeTextResponse = {
+  id: string;
+  /** The text as stored after the update — echoed back so a caller never
+   * has to assume its own optimistic copy won (it also reflects the
+   * server's own trim/validation decisions). */
+  resumeText: string;
+  /** UNCHANGED by this call, by design. Returned so the caller can prove
+   * that: "edit the text, keep the nickname" is the single most visible
+   * thing ticket 6ba221e fixes (Nicole: "if I'm on resume one and I make
+   * an edit and I hit save and it's still called resume one, it actually
+   * becomes resume 2"). */
+  resumeNickname: string;
+  /**
+   * Freshly re-inferred from the NEW text whenever the text actually
+   * changed, and carried straight back rather than left for a later call
+   * to discover. See `CreateResumeResponse.suggestedTitles` for the
+   * array's semantics ("[] means ran and found nothing", never absent).
+   *
+   * COST: a real, paid Claude call per text change. Ticket 39b4a48's cache
+   * was once a one-off per resume forever, because content-addressing meant
+   * a row's text could never change; this ticket makes it per-edit. A save
+   * that does not actually change the text re-infers NOTHING and returns
+   * the cached values (see the route).
+   */
+  suggestedTitles: string[];
+  /** See `GetResumeResponse.isLocked`. Returned for the same reason
+   * `CreateResumeResponse` carries it: the caller has just changed what
+   * this resume is and should not need a second round-trip to re-learn its
+   * state. Ticket 6ba221e deliberately does NOT refuse a text edit on a
+   * locked resume -- see the route's own comment for that decision and
+   * Nicole's quote behind it. */
+  isLocked: boolean;
 };
 
 /**

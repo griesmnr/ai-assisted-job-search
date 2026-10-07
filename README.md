@@ -143,8 +143,14 @@ after the fact.
 - **Idempotency.** Jobs upsert on `(data_source, external_id)`; the
   `search_results` join table has a unique constraint on
   `(search_id, job_id)`; match scores are unique on `(resume_id, job_id)`;
-  resumes are content-addressed by a sha256 hash so identical resume text
-  is stored once. A redelivered `fetch.source` message (RabbitMQ's
+  and creating a resume looks the text up by its sha256 hash first, so
+  re-pasting a resume you already have resolves to the row you already
+  have. (That last one is a convenience, not an enforced invariant: ticket
+  6ba221e dropped the `unique(user_id, resume_hash)` constraint behind it
+  so a resume's text could become editable in place, which means two
+  resumes with identical text are legal now. The queue's own idempotency
+  does not depend on it — a resume id is carried in the message, never
+  re-derived from text.) A redelivered `fetch.source` message (RabbitMQ's
   at-least-once delivery, or a worker dying mid-run) re-links existing rows
   instead of duplicating them, and never re-publishes a `score.job` message
   for a job it already ingested. This matters commercially, not just

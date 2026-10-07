@@ -32,6 +32,8 @@ import type {
   StartSearchResponse,
   UpdateResumeNicknameRequest,
   UpdateResumeNicknameResponse,
+  UpdateResumeTextRequest,
+  UpdateResumeTextResponse,
   UserJobStatus,
   VerifyMagicLinkRequest,
   VerifyMagicLinkResponse,
@@ -120,17 +122,18 @@ export function getSources(): Promise<GetSourcesResponse> {
 }
 
 /**
- * Ticket 7701534: `currentResumeId` -- the resume already active THIS
- * session, if any -- lets the server tell "resubmitting my own unchanged
- * text" apart from "this text already belongs to a DIFFERENT saved
- * resume" (a real duplicate, rejected with a `409`). See
- * `CreateResumeRequest`'s own doc comment (@app/shared).
+ * Creates a NEW resume from pasted text.
+ *
+ * Ticket 6ba221e: no longer takes `currentResumeId`. That argument existed
+ * (ticket 7701534) so the server could tell "resubmitting my own unchanged
+ * text" apart from "this text already belongs to a DIFFERENT saved resume"
+ * and reject the latter with a 409; that rejection is gone, so there is
+ * nothing to distinguish. Changing an EXISTING resume's text is
+ * `updateResumeText` below, not this call -- which is the actual fix for
+ * "I edited Resume 1 and it became Resume 2".
  */
-export function createResume(
-  resumeText: string,
-  currentResumeId?: string,
-): Promise<CreateResumeResponse> {
-  const body: CreateResumeRequest = { resumeText, currentResumeId };
+export function createResume(resumeText: string): Promise<CreateResumeResponse> {
+  const body: CreateResumeRequest = { resumeText };
   return request<CreateResumeResponse>("/resumes", {
     method: "POST",
     body: JSON.stringify(body),
@@ -157,10 +160,10 @@ export function getResume(resumeId: string): Promise<GetResumeResponse> {
 /**
  * Renames a resume's nickname (ticket 38a7598) — the ONE field
  * `PATCH /resumes/:id` can change (see `UpdateResumeNicknameRequest`'s doc
- * comment in @app/shared for why this is deliberately not a general
- * resume-editing endpoint). Used both for an explicit later rename and for
- * confirming an edited default right in `ResumeInput.tsx`'s own submission
- * flow, before the user ever leaves that form.
+ * comment in @app/shared for why text lives on its own route instead).
+ * Used both for an explicit later rename and for confirming an edited
+ * default right in `ResumeInput.tsx`'s own submission flow, before the
+ * user ever leaves that form.
  */
 export function updateResumeNickname(
   resumeId: string,
@@ -169,6 +172,24 @@ export function updateResumeNickname(
   const body: UpdateResumeNicknameRequest = { resumeNickname };
   return request<UpdateResumeNicknameResponse>(`/resumes/${encodeURIComponent(resumeId)}`, {
     method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Replaces an EXISTING resume's text in place (ticket 6ba221e) — same id,
+ * same nickname, same attached scores. Distinct from `createResume` above,
+ * which always means "a new resume"; see `UpdateResumeTextRequest`
+ * (@app/shared) for why this is its own route rather than a field on the
+ * nickname PATCH, and for the per-edit Claude cost it carries.
+ */
+export function updateResumeText(
+  resumeId: string,
+  resumeText: string,
+): Promise<UpdateResumeTextResponse> {
+  const body: UpdateResumeTextRequest = { resumeText };
+  return request<UpdateResumeTextResponse>(`/resumes/${encodeURIComponent(resumeId)}/text`, {
+    method: "PUT",
     body: JSON.stringify(body),
   });
 }

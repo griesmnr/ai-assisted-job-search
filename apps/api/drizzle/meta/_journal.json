@@ -134,6 +134,13 @@
       "when": 1790486739594,
       "tag": "0018_magic_link_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791328688252,
+      "tag": "0019_drop_resume_hash_unique",
+      "breakpoints": true
     }
   ]
 }

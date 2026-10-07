@@ -885,6 +885,37 @@ button[aria-disabled="true"] {
   font-size: 0.9rem;
 }
 
+/* Ticket 6ba221e: the resumes page's per-row text editor. Shares the
+   `.resume-input textarea` shape above rather than inventing a second one,
+   so a resume reads the same whether it's being pasted on the search page
+   or rewritten here. */
+.resume-text-editor {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.resume-text-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+/* Right-aligned, matching `.resume-input-actions`' own trailing-action
+   convention -- Save/Cancel sit at the end of the block they act on. */
+.resume-text-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 /* Ticket 9f06f8f (epic 2b9e9dd child 4): the post-results sign-in prompt
    and the emailed link's landing view.
 

@@ -1,0 +1,67 @@
+-- Ticket 6ba221e: a resume is identified by its `id`. `resume_hash` becomes
+-- an ORDINARY COLUMN, not an identity.
+--
+-- WHAT THIS UNDOES, AND WHY. Migration 0004 (ticket 620ca30) made
+-- `resume_hash` globally UNIQUE; migration 0016 (ticket b2f9dfd) widened that
+-- to the per-user composite `unique(user_id, resume_hash)`. Both were
+-- deliberate: identity WAS content, so posting the same text twice had to
+-- resolve to one row. Three separate pieces of reported user confusion turned
+-- out to be that one mechanism wearing three faces (git-bug 6ba221e):
+--
+--   1. Editing "Resume 1" and saving produced "Resume 2" -- new text means a
+--      new hash means a new row, which is content-addressing working exactly
+--      as specified.
+--   2. There was no way to edit a resume's text at all; the resumes page
+--      could only create.
+--   3. A duplicate-text 409 (ticket 7701534) rejected submitting text
+--      identical to another of your own resumes -- and named a resume the
+--      user had never chosen to create, which was the core of the complaint.
+--
+-- Nicole, 2026-10-06, on (3) verbatim: "I know that it was a previous
+-- requirement of mine that it wouldn't let the exact same text exist for two
+-- resumes before, but now I frankly don't care about that. So I want to
+-- remove that requirement. Let them do that. If they want to do that, that's
+-- their business."
+--
+-- NOTHING REPLACES THIS CONSTRAINT. That is the point, not an omission:
+-- identity is `resumes.id` (the primary key) and always was; this index was
+-- the one thing making text behave like a second, competing identity. Two
+-- rows with byte-identical `resume_text` for the SAME user are now legal and
+-- supported (see db/schema.ts's `resumeHash` comment for what the column is
+-- still FOR, and matching/pipeline.ts's `getOrCreateResumeId` for the
+-- select-then-insert that replaced the `ON CONFLICT (user_id, resume_hash)`
+-- upsert this constraint used to make possible).
+--
+-- SAFE AGAINST EXISTING DATA, unconditionally: dropping a unique constraint
+-- only ever widens what the table accepts, so no pre-existing row can
+-- violate the post-migration schema and no backfill is needed (contrast
+-- migrations 0004/0010/0013/0016/0017, each of which had to add or narrow
+-- something and therefore needed the "nullable, backfill, then NOT NULL"
+-- shape). `resume_hash` itself is left in place, still NOT NULL, still
+-- maintained -- see db/migration-0019.test.ts, which proves both halves
+-- against a database that already contains resumes, job_matches and
+-- user_job_statuses rows rather than against an empty schema.
+--
+-- THE REVERSE IS NOT SAFE, and "dropping is safe" must not be read as
+-- "this is reversible". Re-adding `unique(user_id, resume_hash)` to a
+-- database that has been running without it will FAIL OUTRIGHT on the
+-- first duplicate pair -- and duplicates are expected, not hypothetical:
+-- `PUT /resumes/:id/text` lets a user edit one resume into another's exact
+-- text on purpose, and `getOrCreateResumeId`'s select-then-insert can
+-- produce a pair under concurrency. Any future migration that wants this
+-- constraint back has to dedupe or merge FIRST, in the shape migration
+-- 0004 already used (collapse each duplicate group onto one canonical row
+-- -- MIN(id) per group -- repointing every reference before deleting the
+-- losers). The tables holding a foreign key to `resumes.id` are, as of
+-- 2026-10-07: `job_matches`, `searches`, `user_job_statuses`, `handoffs`
+-- and `job_match_failures` -- enumerated from `schema.ts`'s
+-- `references(() => resumes.id)` declarations, and corrected in re-review
+-- from an earlier draft of this comment that wrongly listed
+-- `search_results` (it keys `(search_id, job_id)` and holds no resume FK)
+-- and omitted `job_match_failures`. Re-derive the list from
+-- `pg_constraint` at the time rather than trusting this one; it is a
+-- pointer, not an inventory.
+-- Such a migration must also answer the product question 0004 did not
+-- have to: which of two resumes the user deliberately made identical is
+-- the one that survives.
+ALTER TABLE "resumes" DROP CONSTRAINT "resumes_user_id_resume_hash_unique";

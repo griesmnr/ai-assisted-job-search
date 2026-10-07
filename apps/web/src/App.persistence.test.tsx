@@ -35,6 +35,11 @@ const estimateSearch = vi.fn();
 const startSearch = vi.fn();
 const getSearchStatus = vi.fn();
 const setJobStatus = vi.fn();
+// Ticket 6ba221e: an unlocked resume's re-submit goes to
+// `PUT /resumes/:id/text` now, not `POST /resumes` -- so the edit-and-
+// resubmit flows below exercise THIS mock, and `createResume` is only
+// reached by a first-ever paste. See App.tsx's `handleResumeSubmit`.
+const updateResumeText = vi.fn();
 
 vi.mock("./api/client", () => ({
   getSources: (...args: unknown[]) => getSources(...args),
@@ -54,6 +59,7 @@ vi.mock("./api/client", () => ({
   // (same pattern as getEstimateProgress above) is enough.
   listResumes: () => Promise.resolve({ resumes: [] }),
   getResume: () => Promise.reject(new Error("no resume text fetched in this test")),
+  updateResumeText: (...args: unknown[]) => updateResumeText(...args),
   startSearch: (...args: unknown[]) => startSearch(...args),
   getSearchStatus: (...args: unknown[]) => getSearchStatus(...args),
 }));
@@ -109,6 +115,16 @@ function mockHappyPath() {
   });
   getResults.mockResolvedValue(RESULTS);
   getAllResults.mockResolvedValue({ results: [] });
+  // Ticket 6ba221e: the same resume, same nickname, back from an in-place
+  // text edit -- which is the whole point of the endpoint, and what these
+  // tests then assert survives a reload.
+  updateResumeText.mockResolvedValue({
+    id: "resume-1",
+    resumeText: RESUME_TEXT,
+    resumeNickname: "Resume 1",
+    suggestedTitles: ["Backend Engineer"],
+    isLocked: false,
+  });
 }
 
 /** Gets the app into the state Nicole was in when she put the laptop
@@ -202,8 +218,9 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.getByLabelText(/Locations you'd commute to/)).not.toBeVisible();
 
     // But nothing underneath was reset: resubmitting (identical text,
-    // same resumeId) re-collapses, and the same selections are right
-    // back, not defaults.
+    // same resumeId -- an in-place `updateResumeText` as of ticket
+    // 6ba221e) re-collapses, and the same selections are right back, not
+    // defaults.
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     expect(screen.getByLabelText("Greenhouse")).not.toBeChecked();
@@ -263,7 +280,11 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     await setUpRealState();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
-    createResume.mockRejectedValueOnce(new Error("Network error"));
+    // Ticket 6ba221e: it is the EDIT call that fails now, not
+    // `createResume` -- an unlocked resume's re-submit is a
+    // `PUT /resumes/:id/text`. The error-clearing behavior under test is
+    // unchanged.
+    updateResumeText.mockRejectedValueOnce(new Error("Network error"));
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not save resume: Network error",

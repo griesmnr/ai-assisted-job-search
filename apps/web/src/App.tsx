@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   MATCH_SCORE_FLOOR,
+  type CreateResumeResponse,
   type ScoredJobResult,
   type SearchCriteria,
+  type UpdateResumeTextResponse,
   type UserJobStatus,
 } from "@app/shared";
 import {
@@ -12,6 +14,7 @@ import {
   getResume,
   setJobStatus,
   updateResumeNickname,
+  updateResumeText,
 } from "./api/client";
 import {
   GroupedResultsList,
@@ -115,12 +118,32 @@ function mergeTitleChips(inferredTitles: string[]): string[] {
  * value itself, just the request).
  */
 function isNicknameConflictError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const status = (err as { status?: unknown }).status;
-  if (status !== 409) return false;
+  if (apiErrorStatus(err) !== 409) return false;
   const body = (err as { body?: unknown }).body;
   if (typeof body !== "object" || body === null) return false;
   return (body as { reason?: unknown }).reason === "nickname_conflict";
+}
+
+/**
+ * Reads the HTTP status off whatever `./api/client` threw, structurally
+ * rather than via `err instanceof ApiError` -- for the reason
+ * `isNicknameConflictError` above already gives: this component's tests
+ * replace `./api/client` wholesale with `vi.mock`, so the `ApiError` class
+ * identity visible here is not necessarily the one a rejected mock built
+ * its error from, and an `instanceof` check would answer "no" in exactly
+ * the tests that exist to prove these branches work.
+ *
+ * A near-twin of `apiErrorStatus` in SearchFlow.tsx, which is module-
+ * private there. Deliberately duplicated rather than shared for now: the
+ * honest shared home is `api/client.ts` (alongside
+ * `magicLinkRejectionReason`, already an error-shape reader), and moving it
+ * there means editing SearchFlow.tsx, which a separate ticket is editing
+ * concurrently. Worth collapsing into one helper when that lands.
+ */
+function apiErrorStatus(err: unknown): number | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
 }
 
 /**
@@ -632,30 +655,115 @@ function JobSearchApp() {
     });
   }
 
+  /**
+   * Ticket 6ba221e: picks between "edit this resume in place" and "create a
+   * new resume" for a submit, and recovers when the first turns out to be
+   * impossible. See `handleResumeSubmit`'s own comment for why
+   * `resumeLocked` is the thing that decides.
+   *
+   * THE 404 FALLBACK IS A REGRESSION FIX, not belt-and-braces (fable review
+   * of 6ba221e, F1). `resumeId` is restored from sessionStorage across a
+   * reload, and nothing in this app ever clears it on a failed lookup: the
+   * mount-only hydration effect above swallows its own `getResume` error by
+   * design, leaving `resumeLocked` at `false`. So if the row named by a
+   * restored `resumeId` no longer exists -- a dev-database reset is the
+   * realistic way there, and this project's own topology (the owner's
+   * container versus a sandbox Postgres) makes it routine -- the collapsed
+   * bar still reads "Using Resume 1" with an "Edit" button, and every
+   * submit from then on would `PUT /resumes/<gone>/text` and 404. Forever,
+   * on every retry, with no path out short of clearing sessionStorage by
+   * hand.
+   *
+   * Before this ticket that submit was a `POST`, which quietly created a
+   * fresh row and healed the session as a side effect. Routing edits to the
+   * PUT closed that accidental escape hatch, so it is reopened explicitly
+   * and narrowly: a 404 from the edit means "the resume I was editing is
+   * gone", and the only sensible reading of the user's click then is "save
+   * this text", which is exactly what `createResume` does. The resulting
+   * new id replaces the stale one in state (`setResumeId` at the call
+   * site), so the session is self-healing from then on.
+   *
+   * Deliberately ONLY 404, and only from the edit path. Any other status
+   * (400 on an over-length paste, 500, a network failure) propagates and
+   * surfaces as `resumeError` exactly as before -- silently converting a
+   * failed edit into a NEW resume for any other reason would be the "I
+   * edited Resume 1 and got Resume 2" surprise this whole ticket exists to
+   * remove.
+   *
+   * Ticket 11ead86 (open) would give the restored-but-missing resume a
+   * general recovery path; this does not wait on it, and should be
+   * revisited rather than assumed redundant when it lands.
+   */
+  async function saveResumeText(
+    resumeText: string,
+  ): Promise<CreateResumeResponse | UpdateResumeTextResponse> {
+    if (resumeId === undefined || resumeLocked) return createResume(resumeText);
+    try {
+      return await updateResumeText(resumeId, resumeText);
+    } catch (err) {
+      if (apiErrorStatus(err) !== 404) throw err;
+      return createResume(resumeText);
+    }
+  }
+
   async function handleResumeSubmit(resumeText: string) {
     setResumeSubmitting(true);
     setResumeError(null);
     try {
-      // Ticket 7701534: `resumeId` (this component's OWN current state, not
-      // a fresh value) is what lets the server tell "resubmitting my own
-      // unchanged text" apart from "this text already belongs to a
-      // DIFFERENT saved resume" -- see createResume's own doc comment. A
-      // duplicate rejects with a 409 whose message already names the
-      // colliding resume; caught below like any other failure, no special
-      // handling needed here (unlike the nickname-collision case, this one
-      // has no in-progress value to preserve -- the paste box already
-      // holds exactly what the user typed, untouched either way).
+      // TICKET 6ba221e: AN EDIT IS AN UPDATE, NOT A NEW RESUME. This one
+      // branch is the fix for Nicole's own report -- "if I'm on resume one
+      // and I make an edit and I hit save and it's still called resume
+      // one, it actually becomes resume 2". Every submit used to be
+      // `createResume`, and because resumes were content-addressed,
+      // different text meant a different row and a fresh "Resume N".
+      //
+      // WHY THE CONDITION IS `!resumeLocked` AND NOT A NEW STATE FLAG.
+      // There are exactly three ways to reach this function with a
+      // `resumeId` already set, and ticket 88f11d7's own design separates
+      // them cleanly:
+      //   - the collapsed bar's "Edit" (UNLOCKED only -- a locked resume's
+      //     button says "Change" and opens the picker instead), which is
+      //     an edit of this resume. -> PUT.
+      //   - the picker's "Paste a new resume" (reachable only when LOCKED,
+      //     since only a locked resume has a "Change" button at all),
+      //     which is explicitly a NEW resume while the old one stays
+      //     active in state. -> POST. Routing this to PUT would overwrite
+      //     the locked resume the user just declined to reuse -- the one
+      //     genuinely destructive mistake available here.
+      //   - a `resumeId` restored from sessionStorage, whose form is only
+      //     reachable via one of the two above.
+      // So `resumeLocked` already encodes "which of the two intents is
+      // this", and adding a parallel flag would be a second source of
+      // truth to drift. `resumeLocked` is kept current on every path that
+      // changes the active resume (see its own declaration).
+      //
+      // The resumes page (MyResumes.tsx) has its own, separate edit
+      // affordance that does NOT go through here and is NOT lock-gated --
+      // see `PUT /resumes/:id/text`'s route comment for why the endpoint
+      // itself permits a locked resume's text to change.
+      //
+      // KNOWN SEAM, recorded rather than fixed (fable review of 6ba221e):
+      // the two affordances now disagree about locked resumes. This page
+      // offers a locked resume "Change" (pick another / paste a new one)
+      // and never "Edit"; My Resumes will happily rewrite the same
+      // resume's text. That follows from the two tickets' own decisions --
+      // 88f11d7 shaped THIS flow, 6ba221e added editing THERE -- and is
+      // consistent in the data layer (the endpoint allows it either way).
+      // It is still a surface a user can notice, so it is named here
+      // instead of waiting to be rediscovered as a bug.
       const {
         id,
         suggestedTitles,
         resumeNickname: defaultNickname,
         isLocked,
-      } = await createResume(resumeText, resumeId);
+      } = await saveResumeText(resumeText);
       setResumeId(id);
-      // Ticket 88f11d7: the server's real, just-computed answer -- a
-      // resubmission of `currentResumeId`'s own text is the one case that
-      // can land here already locked (every other path through this
-      // function is a genuinely new resume, never locked yet).
+      // Ticket 88f11d7: the server's real, just-computed answer, never
+      // assumed. `POST /resumes` can report `true` when the submitted text
+      // resolved to an already-searched resume; the `PUT` branch above can
+      // report it if a real search landed between the last time this state
+      // was refreshed and this save. Either way the server just looked, and
+      // this state follows it rather than guessing from the branch taken.
       setResumeLocked(isLocked);
       // Captured on SUBMIT, not on every keystroke (ticket 3f05144): the
       // text worth restoring is the text that actually produced this
@@ -691,10 +799,15 @@ function JobSearchApp() {
       // `resumeEditing`'s own doc comment above). A no-op on the
       // first-ever submission, where this was already false.
       setResumeEditing(false);
-      // Ticket 303cff0: a genuinely new resume (or a resubmission that
-      // matched an existing one, per `createResume`'s find-or-create) --
-      // either way, "My Resumes" should reflect it without waiting for
-      // some unrelated action to happen to refresh it.
+      // Ticket 303cff0: a genuinely new resume, a resubmission that
+      // matched an existing one (per `createResume`'s find-or-create), or
+      // (ticket 6ba221e) an in-place text edit -- in all three cases "My
+      // Resumes" should reflect the current state without waiting for some
+      // unrelated action to happen to refresh it. An edit changes nothing
+      // the list itself displays (id/nickname/createdAt are all
+      // untouched), but the list is also what the resumes page renders its
+      // per-row text fetches from, and an unconditional refresh here is
+      // cheaper to reason about than a per-branch one.
       refreshResumesList();
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));

@@ -90,8 +90,13 @@
  * resume-title-inference.ts) — deliberately automatic, not gated behind a
  * separate confirm, per Nicole's own explicit design. The distinction that
  * keeps this consistent with the rule above: that call's cost is fixed and
- * small regardless of input, and it is cached per resume via the existing
- * content-addressed find-or-create.
+ * small regardless of input, and it is cached on the resume row.
+ *
+ * Ticket 6ba221e: that cache is now invalidated by a text edit
+ * (`PUT /resumes/:id/text` nulls it and re-infers), so the same fixed,
+ * small cost recurs once per real edit rather than once per resume ever.
+ * Still bounded by how often a human rewrites a resume, and the rule above
+ * is unaffected.
  *
  * `POST /searches/estimate` is STILL SYNCHRONOUS, deliberately (design
  * c54b9e0 §9). It spends no Claude money, it must return a number in one
@@ -936,12 +941,23 @@ export function registerSearchRoutes(
         db,
         sources: resolved.sources,
         resumeText,
+        // Ticket 6ba221e: the resume row this estimate is actually ABOUT,
+        // passed explicitly instead of letting `runDemoMatch` re-derive it
+        // from `resumeText`'s hash. `loadResumeText` above has already
+        // verified this id belongs to `userId`, so handing it over is safe
+        // (see `RunDemoMatchOptions.resumeId`, which spells out that the
+        // caller owns that check). It is also now the only correct option:
+        // with `unique(user_id, resume_hash)` dropped, a user can hold two
+        // resumes with identical text, and a hash lookup could resolve to
+        // the OTHER one -- filing this estimate's `searches` row and its
+        // already-scored accounting under a resume the caller never named.
+        resumeId,
         // Ticket b2f9dfd (review fix F1): the requester's own identity --
         // `loadResumeText` above already verified `resumeId` actually
-        // belongs to this same user, so `getOrCreateResumeId` inside
-        // `runDemoMatch` can never mistake "an estimate that happens to
-        // create/touch a resume row" for "silently copying someone else's
-        // resume text into this user's account."
+        // belongs to this same user, so nothing inside `runDemoMatch` can
+        // mistake "an estimate that happens to create/touch a resume row"
+        // for "silently copying someone else's resume text into this
+        // user's account."
         userId,
         criteria: buildFetchCriteria(criteria),
         scoreJob: NEVER_SCORE,
