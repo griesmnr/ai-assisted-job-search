@@ -409,3 +409,29 @@ export function magicLinkRejectionReason(err: unknown): MagicLinkRejectionReason
   ];
   return known.find((candidate) => candidate === reason);
 }
+
+/**
+ * True only when a `verifyMagicLink` rejection means the POST never got a
+ * response at all -- no server process ever ran, so nothing could have
+ * claimed the token (ticket c719af2, review round 2).
+ *
+ * Keys on `status === 0`, which `request()` above assigns in EXACTLY ONE
+ * place: the `catch` around `fetch` itself, when `fetch` rejects (network
+ * down, DNS failure, CORS refusal) before any `Response` exists. No real
+ * HTTP response ever carries status `0`, and every other throw this module
+ * produces -- a non-2xx `ApiError` (real status, e.g. 400/500), or a thrown
+ * `SyntaxError`/`TypeError` from a 200 whose body didn't parse -- carries
+ * something other than `0` (frequently nothing at all, since those are not
+ * `ApiError`s). So `neverLanded` is also deliberately NOT satisfied by "the
+ * body came back unreadable": a 200 proves the server-side verify
+ * transaction already committed (see routes/auth.ts), so a token behind an
+ * unparseable 200 is just as spent as one behind a readable one -- treating
+ * that as "never landed" would resurrect this exact ticket's bug one layer
+ * down. Structural, not `instanceof ApiError`, for the same reason
+ * `magicLinkRejectionReason` above is: component tests mock this module
+ * wholesale.
+ */
+export function neverLanded(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  return (err as { status?: unknown }).status === 0;
+}

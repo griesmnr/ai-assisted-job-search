@@ -41,6 +41,14 @@ vi.mock("../api/client", () => ({
       "different_browser",
     ].find((candidate) => candidate === reason);
   },
+  // Ticket c719af2, review round 2: real `client.ts` assigns `status: 0`
+  // in exactly one place (the `catch` around `fetch` itself, when no
+  // `Response` was ever received), so "the POST never got a response at
+  // all" is the only thing this returns `true` for.
+  neverLanded: (err: unknown) => {
+    if (typeof err !== "object" || err === null) return false;
+    return (err as { status?: unknown }).status === 0;
+  },
 }));
 
 vi.mock("../navigation", () => ({
@@ -66,6 +74,19 @@ afterEach(() => {
  * refusal: an `ApiError`-like object whose `body` carries the reason code. */
 function rejection(reason: string, message: string): Error & { body: unknown } {
   return Object.assign(new Error(message), { status: 400, body: { error: message, reason } });
+}
+
+/**
+ * A rejection shaped like the one `client.ts`'s `request()` throws when
+ * `fetch` itself rejects -- `new ApiError(0, ...)`, no `body`. `status: 0`
+ * is the field the mocked `neverLanded` above (and the real one in
+ * client.ts) keys on; ticket c719af2 review round 2 flagged that the
+ * PREVIOUS version of this test used a bare `Error` with no `status` at
+ * all, which would pass today's assertions for the wrong reason -- any
+ * `status` other than exactly `0` must NOT read as a transport failure.
+ */
+function transportRejection(message: string): Error & { status: number } {
+  return Object.assign(new Error(message), { status: 0 });
 }
 
 describe("readMagicLinkTokenFromUrl", () => {
@@ -389,16 +410,20 @@ describe("MagicLinkLanding -- refusals", () => {
    * has not been consumed, so the link is still worth retrying -- which means
    * it must stay in the URL, unlike every spent-token case above.
    *
-   * Ticket c719af2: this is the ONLY case `transportFailure` is true for --
-   * `verifyMagicLink`'s promise rejected without ever resolving, so
-   * `responseLanded` never flipped. The negative assertion is the one that
-   * actually distinguishes this from the malformed-userId case just above:
-   * both have `reason === undefined`, and only `transportFailure` tells them
-   * apart.
+   * Ticket c719af2, review round 2: this is the ONLY case `transportFailure`
+   * is true for, and it is a real invariant now, not a guess -- real
+   * `client.ts` assigns `status: 0` in exactly one place (the `catch` around
+   * `fetch` itself, when no `Response` was ever received), so
+   * `transportRejection()` (carrying `status: 0`, no `body`) is what that
+   * case actually looks like. The PREVIOUS version of this test used a bare
+   * `Error` with no `status` field at all, which happened to pass the same
+   * assertions for the wrong reason (the old code treated `reason ===
+   * undefined` alone as proof of a transport failure) -- `status: 0` is the
+   * one thing that still has to be true here once that bug is fixed.
    */
   it("keeps the token in the URL when the API was simply unreachable, and says the link is still good", async () => {
     verifyMagicLink.mockRejectedValue(
-      new Error("Could not reach the API at http://localhost:3000: fetch failed"),
+      transportRejection("Could not reach the API at http://localhost:3000: fetch failed"),
     );
 
     render(<MagicLinkLanding token="tok_abc123" />);
@@ -458,6 +483,53 @@ describe("MagicLinkLanding -- refusals", () => {
     expect(
       screen.getByText(/you can ask for a new link from the bottom of your results/i),
     ).toBeInTheDocument();
+  });
+
+  /**
+   * TICKET c719af2, REVIEW ROUND 2 (F1 -- blocking). Opus's adversarial
+   * review reproduced a second way to land on `reason === undefined`
+   * without a transport failure: `client.ts`'s `request()` does
+   * `await response.text()` then `JSON.parse(text)` OUTSIDE any try/catch
+   * on the ok-response branch. A 200 whose body isn't valid JSON (a
+   * captive portal or proxy answering 200 with an HTML page; a connection
+   * reset after the status line but before the body finishes) makes
+   * `JSON.parse` throw a bare `SyntaxError` -- `verifyMagicLink`'s promise
+   * REJECTS, `.then` never runs, and the rejection has no `status` field at
+   * all (it isn't an `ApiError`), so the fix built only around "did
+   * `verifyMagicLink` resolve" would have missed this: the promise never
+   * resolved here EITHER, yet the 2xx status line alone already proves
+   * `claimAndResolve`'s transaction committed (routes/auth.ts) -- the token
+   * is just as spent as the malformed-userId case above, by a route with no
+   * response schema to stop it from answering 200 with something unparseable
+   * in the first place.
+   *
+   * This is what actually exercises `neverLanded`'s negative case end to
+   * end: a rejection with NO `status` property at all (not `0`, not `400`,
+   * not `500` -- simply absent, exactly like a real `SyntaxError`), which
+   * must NOT read as "never landed" the way `transportRejection()`'s
+   * `status: 0` does.
+   */
+  it("tells the user to request a new link -- not to retry -- when a 200 response's body fails to parse", async () => {
+    verifyMagicLink.mockRejectedValue(new SyntaxError("Unexpected token < in JSON at position 0"));
+
+    render(<MagicLinkLanding token="tok_abc123" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/unexpected token/i);
+
+    // THE BUG (F1): an unparseable 200 body must not be told the link still
+    // works -- the status line alone already proves the token is spent.
+    expect(
+      screen.queryByText(/still worth trying again once you're back online/i),
+    ).not.toBeInTheDocument();
+    // THE FIX: the same honest "request a new one" recovery every other
+    // spent-token refusal gets.
+    expect(
+      screen.getByText(/you can ask for a new link from the bottom of your results/i),
+    ).toBeInTheDocument();
+    // And the dead token must come OUT of the URL -- otherwise a reload
+    // resubmits it and it comes back `already_used`, which is the "reads as
+    // a second, unrelated bug" symptom the ticket describes.
+    expect(window.location.hash).not.toContain("magicLinkToken");
   });
 
   it("shows a spinner-equivalent while the verification is in flight", async () => {
