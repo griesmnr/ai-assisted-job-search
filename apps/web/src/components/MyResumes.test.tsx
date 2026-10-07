@@ -643,6 +643,28 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
     // committed name, since the rejected value never actually landed).
     expect(screen.getByLabelText("New name for Resume 1")).toHaveValue("Resume 2");
     expect(onRenamed).not.toHaveBeenCalled();
+    // Ticket 7701534, Nicole: "it should do the red outline on the field."
+    // `aria-invalid` is what index.css's red-outline rule keys on, so this
+    // attribute IS the outline -- without it the collision shows only the
+    // text alert here while the identical collision reddens the field on the
+    // search page (ResumeInput.tsx). Asserted rather than assumed: the
+    // re-review found that deleting the attribute left the entire web suite
+    // green. Same idiom as `describe("aria-invalid (ticket 7701534)")` in
+    // ResumeInput.test.tsx, which pins both directions.
+    expect(screen.getByLabelText("New name for Resume 1")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  // The other half of the pair. `aria-invalid="false"` is NOT the same as an
+  // absent attribute -- it tells assistive tech "checked, and valid", and it
+  // would also miss index.css's `[aria-invalid="true"]` selector. The
+  // component uses `? true : undefined` so React omits it entirely; this
+  // pins that rather than leaving it to survive a future refactor by luck.
+  it("does not mark the rename field invalid when there is no error", () => {
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+
+    expect(screen.getByLabelText("New name for Resume 1")).not.toHaveAttribute("aria-invalid");
   });
 
   it("does not resurrect the editor when a save FAILS after the user already cancelled", async () => {
