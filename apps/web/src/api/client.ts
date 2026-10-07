@@ -344,8 +344,17 @@ export function handoffFetchUrl(handoffId: string): string {
  * delivery.
  *
  * A `503` means the email provider could not be reached or is not
- * configured; the caller should invite a retry rather than treat it as the
- * user's mistake.
+ * configured -- it is not the user's mistake, so a caller must not treat it
+ * like the 400 for a malformed address. Ticket 43423eb (CAUSE CONFIRMED on
+ * that ticket): the real-world trigger was Resend's 403 for an unverified
+ * sender domain, which stays broken until someone changes configuration --
+ * permanent, not transient -- so a caller must NOT, symmetrically, invite a
+ * retry either. (An earlier version of this comment said the opposite; that
+ * is the exact claim the ticket's copy fix was about, just smuggled in here
+ * where nobody reads server copy for it.) The 503's own message already
+ * says only what is true -- that the failure was logged -- and callers
+ * should render it as-is rather than deciding independently whether trying
+ * again is worth suggesting.
  */
 export function requestMagicLink(email: string): Promise<RequestMagicLinkResponse> {
   const body: RequestMagicLinkRequest = { email };

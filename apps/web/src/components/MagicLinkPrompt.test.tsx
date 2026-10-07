@@ -98,8 +98,15 @@ describe("MagicLinkPrompt", () => {
   });
 
   it("surfaces a send failure and clears it as soon as the user edits the address", async () => {
+    // Ticket 43423eb: the server no longer promises a retry will succeed
+    // (CAUSE CONFIRMED: Jay's deployed failure was a permanent Resend 403,
+    // not a transient one, so "try again in a moment" was false) -- it
+    // says only that the failure was logged, which auth.ts:287's
+    // `request.log.error` makes true unconditionally.
     requestMagicLink.mockRejectedValue(
-      new Error("Could not send the sign-in email just now. Please try again in a moment."),
+      new Error(
+        "Could not send the sign-in email just now. The failure has been logged on our end.",
+      ),
     );
     render(<MagicLinkPrompt />);
 
@@ -109,9 +116,29 @@ describe("MagicLinkPrompt", () => {
     fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/try again in a moment/i);
-    // Still on the form, so a retry is one click away -- a failed send must
-    // not land in the "check your inbox" state.
+    expect(alert).toHaveTextContent(/failure has been logged/i);
+    expect(alert).not.toHaveTextContent(/try again/i);
+    // Fix F1 (review round, ticket 43423eb): `MagicLinkForm` used to
+    // prefix every message with "Could not send the link:", which against
+    // THIS message stuttered into "Could not send the link: Could not
+    // send the sign-in email just now..." -- the exact doubled wording
+    // Nicole read aloud off her own screen when she filed this ticket.
+    // `toHaveTextContent` has NO `exact` option (jest-dom; that option
+    // belongs to `getByText`) -- passing one is silently ignored and the
+    // match stays substring, which would NOT catch a reintroduced prefix.
+    // Found by actually running this mutation rather than trusting the
+    // assertion: an earlier version of this test passed `{ exact: true }`
+    // to `toHaveTextContent` and stayed green with the prefix restored.
+    // Comparing `textContent` directly is real equality and does catch it.
+    expect(alert.textContent).toBe(
+      "Could not send the sign-in email just now. The failure has been logged on our end.",
+    );
+    // Still on the form, editable rather than stuck -- whatever the user
+    // does next (fix a typo, try the same address, give up) is their call
+    // to make, not something this component should nudge by implying a
+    // plain retry will succeed (ticket 43423eb: it may well not). What
+    // matters here is only that a failed send must not land in the
+    // "check your inbox" state as though it had worked.
     expect(screen.queryByRole("heading", { name: /check your inbox/i })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText(/email address/i), {

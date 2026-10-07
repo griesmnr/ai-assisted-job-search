@@ -253,7 +253,20 @@ describe("POST /auth/magic-link", () => {
     const response = await requestLink(app, userId, "provider-down@example.com");
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ error: expect.stringContaining("try again") });
+    // Ticket 43423eb: the response no longer promises a retry will succeed
+    // (CAUSE CONFIRMED on the ticket: a real unverified-domain 403 is
+    // permanent, so "try again in a moment" was false) -- it says only
+    // that the failure was logged, which is unconditionally true because
+    // the `request.log.error` call right above this response always runs.
+    //
+    // Fix F3 (review round, ticket 43423eb): `stringContaining("logged")`
+    // is one common word -- "Our team has been notified and logged an
+    // incident" would satisfy it while being exactly the fabricated
+    // support-process claim this ticket forbids. The whole deliverable is
+    // one sentence, so pin it exactly rather than by substring.
+    expect(response.json()).toMatchObject({
+      error: "Could not send the sign-in email just now. The failure has been logged on our end.",
+    });
     // The provider's own message must not be echoed to the caller -- it can
     // name internal configuration (the unverified sending domain, here).
     expect(JSON.stringify(response.json())).not.toContain("domain not verified");
