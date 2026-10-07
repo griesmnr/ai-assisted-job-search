@@ -119,9 +119,19 @@ export function SignInRecovery({ offered }: { offered: boolean }) {
             {/* "Open it in this browser" moved to `MagicLinkForm`'s shared
                 `sentFactsLine` (ticket a3062b4) once `MagicLinkPrompt` needed
                 to say the same true-for-both-branches thing -- stated once
-                here would have duplicated it instead of centralizing it. */}
-            We sent a sign-in link to <strong>{sentTo}</strong>, which will bring your saved results
-            back here.
+                here would have duplicated it instead of centralizing it.
+                REVIEW ROUND 1 (F5): that centralization cost this sentence its
+                causal link -- main's "open it in this browser to bring your
+                saved results back here" joined the instruction to the reason
+                "this browser" mattered at all. Splitting the instruction out
+                left the payoff dangling with no "because". Naming "this
+                browser" again here, rather than just "back here", restores
+                the reason -- and for THIS flow it is not merely safe advice
+                (as it is for `MagicLinkPrompt`'s brand-new addresses), it is
+                the whole mechanism: the recovery flow exists precisely to get
+                an existing account onto the browser the user is sitting at. */}
+            We sent a sign-in link to <strong>{sentTo}</strong>, which is how your saved results
+            come back to this browser.
           </>
         )}
         secondary={({ sending }) => (

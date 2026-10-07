@@ -59,7 +59,8 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * email buys ONE thing -- tying these results to that address so they
  * survive this browser being lost -- and the copy says exactly that rather
  * than implying an account is required. "Not now" is a first-class option,
- * not a grudging link.
+ * not a grudging link. (That "ONE thing" claim itself has a branch-dependent
+ * exception -- see the paragraph below, review round 1 F4.)
  *
  * WHAT THE EMAIL DOES NOT BUY YET: cross-device reach, for most visitors of
  * THIS prompt specifically. Most addresses typed here are brand new to the
@@ -75,6 +76,23 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * would refuse. See `MagicLinkForm`'s `sentFactsLine` for the corrected,
  * branch-agnostic instruction ("open it in this browser") this component
  * now relies on instead.
+ *
+ * THAT WAS ONLY THE DEVICE DIMENSION OF ATTACH/ADOPT. THERE IS A SEPARATE,
+ * WHOSE-RESULTS DIMENSION THIS COMPONENT IS ALSO BLIND TO (review round 1,
+ * F4): "tying these results to that address" above is only true on the
+ * ATTACH branch. If the address typed here already has an account, the
+ * request takes the ADOPT branch instead -- `resolveIdentity` returns the
+ * EXISTING row, `setUserId` reports `switchedAccount`, and
+ * `MagicLinkLanding` then calls `clearAppState()` and tells whoever lands
+ * there, explicitly, that they are now looking at a DIFFERENT account's
+ * resumes and results. The results that were on screen when this prompt was
+ * typed into stay behind on the abandoned anonymous row -- not tied to that
+ * address at all. The `sentBody` text below ("which will tie these results
+ * to that address") inherits this same half-truth; it is not new to this
+ * diff (main's "save these results to that address" was false the same
+ * way) and is not fixed by it -- a sentence accurate on both branches needs
+ * the whose-results caveat spelled out, which is a bigger rewrite than
+ * fixing the device-dimension claim this ticket was actually scoped to.
  *
  * WHY IT DISAPPEARS ONCE VERIFIED: an already-signed-in user being asked to
  * sign in again is the most common way a prompt like this becomes noise. The
