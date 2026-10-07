@@ -7,7 +7,7 @@ import { resumes, users } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import {
-  findInferredResumes,
+  findCandidateResumes,
   parseArgs,
   runReinfer,
   titlesEqual,
@@ -132,16 +132,22 @@ describe("titlesEqual", () => {
   });
 });
 
-describe("findInferredResumes", () => {
-  it("only returns resumes with a non-null suggestedTitles", async () => {
+describe("findCandidateResumes", () => {
+  it("returns resumes with a null suggestedTitles too (ticket 82ae975) — coerced to [] for comparison", async () => {
     const userId = await seedUser();
     const inferred = await seedResume(userId, { suggestedTitles: ["Backend Engineer"] });
-    const neverInferred = await seedResume(userId, { suggestedTitles: null });
+    const neverInferredOrFailed = await seedResume(userId, { suggestedTitles: null });
 
-    const rows = await findInferredResumes(db);
-    const ids = rows.map((r) => r.id);
-    expect(ids).toContain(inferred);
-    expect(ids).not.toContain(neverInferred);
+    const rows = await findCandidateResumes(db);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.has(inferred)).toBe(true);
+    // A `null` row is now a candidate too -- a failed inference (ticket
+    // 82ae975 fixed both `POST /resumes` and `PUT /resumes/:id/text` to
+    // persist `null`, not `[]`, on failure) is indistinguishable here from
+    // a resume that was never touched, and this script does not need to
+    // tell them apart: either way, a successful re-run improves the row.
+    expect(byId.has(neverInferredOrFailed)).toBe(true);
+    expect(byId.get(neverInferredOrFailed)?.suggestedTitles).toEqual([]);
   });
 });
 

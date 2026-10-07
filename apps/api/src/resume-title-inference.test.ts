@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
-import { inferTitleKeywords } from "./resume-title-inference.js";
+import { fetchRawTitleSuggestions, inferTitleKeywords } from "./resume-title-inference.js";
 import { compileFilter } from "./sources/criteria.js";
 import type { NormalizedJob } from "./sources/types.js";
 
@@ -572,5 +572,81 @@ describe("compileFilter round-trip proof (ticket 976a782 root cause, re-run at t
     expect(matchedIds.length).toBeGreaterThan(1);
     expect(matchedIds).toContain("t1"); // "Software Engineer"
     expect(matchedIds).toContain("t3"); // "Backend Engineer"
+  });
+});
+
+/**
+ * Ticket 82ae975: `fetchRawTitleSuggestions` used to catch EVERY failure
+ * mode and return `[]`, undifferentiated from a genuine empty success and
+ * logged nowhere (this module's own doc comment on the function has the
+ * full history). These tests pin the NEW contract -- throws, with a
+ * message naming which failure mode occurred -- for each distinct way the
+ * call can fail, plus the one case that must still NOT throw: a
+ * structurally valid response containing no usable titles.
+ */
+describe("fetchRawTitleSuggestions throws on failure instead of swallowing it into [] (ticket 82ae975)", () => {
+  function fakeClientReturning(content: unknown): Anthropic {
+    return {
+      messages: { create: async () => ({ content }) },
+    } as unknown as Anthropic;
+  }
+
+  function fakeClientThrowing(err: unknown): Anthropic {
+    return {
+      messages: {
+        create: async () => {
+          throw err;
+        },
+      },
+    } as unknown as Anthropic;
+  }
+
+  it("rethrows a real API error, naming it as an API call failure", async () => {
+    const anthropic = fakeClientThrowing(new Error("rate limited"));
+    await expect(fetchRawTitleSuggestions(anthropic, "some resume text")).rejects.toThrow(
+      /title inference API call failed: rate limited/,
+    );
+  });
+
+  it("throws when the response has no text content block", async () => {
+    const anthropic = fakeClientReturning([{ type: "image" }]);
+    await expect(fetchRawTitleSuggestions(anthropic, "resume")).rejects.toThrow(
+      /no text content block/,
+    );
+  });
+
+  it("throws when the response's text is not valid JSON (ticket 6487ed8's own truncation incident)", async () => {
+    // The exact live incident this ticket's own header documents: a
+    // truncated response at the old 300-token budget produced an
+    // unterminated JSON string, which used to swallow into `[]` with
+    // nothing logged anywhere.
+    const anthropic = fakeClientReturning([{ type: "text", text: '{"titles": ["Backend Eng' }]);
+    await expect(fetchRawTitleSuggestions(anthropic, "resume")).rejects.toThrow(/not valid JSON/);
+  });
+
+  it("throws when the parsed response's titles field is not an array", async () => {
+    const anthropic = fakeClientReturning([
+      { type: "text", text: JSON.stringify({ titles: "Backend Engineer" }) },
+    ]);
+    await expect(fetchRawTitleSuggestions(anthropic, "resume")).rejects.toThrow(
+      /"titles".*not an array/,
+    );
+  });
+
+  it("does NOT throw for a structurally valid response with genuinely no usable titles -- a real empty SUCCESS, not a failure", async () => {
+    const anthropic = fakeClientReturning([{ type: "text", text: JSON.stringify({ titles: [] }) }]);
+    await expect(fetchRawTitleSuggestions(anthropic, "resume")).resolves.toEqual([]);
+  });
+
+  it("filters out blank/non-string entries without throwing -- still a genuine empty success, not a failure", async () => {
+    const anthropic = fakeClientReturning([
+      { type: "text", text: JSON.stringify({ titles: ["", "   ", 42] }) },
+    ]);
+    await expect(fetchRawTitleSuggestions(anthropic, "resume")).resolves.toEqual([]);
+  });
+
+  it("inferTitleKeywords propagates the throw unchanged -- it does not catch anything itself", async () => {
+    const anthropic = fakeClientThrowing(new Error("network drop"));
+    await expect(inferTitleKeywords(anthropic, "resume")).rejects.toThrow(/network drop/);
   });
 });

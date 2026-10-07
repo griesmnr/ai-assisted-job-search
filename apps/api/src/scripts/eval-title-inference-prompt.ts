@@ -250,10 +250,15 @@ async function main(): Promise<void> {
   // Ticket 6487ed8: refuse to run live without a key, loudly. A git worktree
   // has no `.env` of its own (it is gitignored, so `git worktree add` never
   // carries it over -- see CLAUDE.md), so `loadEnvFile()` is a no-op there and
-  // every call fails auth. `fetchRawTitleSuggestions` swallows all failures
-  // into `[]` by design, so the symptom is an eval that reports empty chip
-  // lists for every shape -- indistinguishable from a prompt that produces
-  // nothing. That cost real time during this very ticket. Fail here instead.
+  // every call fails auth. `fetchRawTitleSuggestions` used to swallow all
+  // failures into `[]` by design, so the symptom was an eval that reported
+  // empty chip lists for every shape -- indistinguishable from a prompt that
+  // produces nothing. That cost real time during this very ticket. Ticket
+  // 82ae975 made that function throw instead (see its own doc comment), which
+  // would otherwise turn the SAME missing-key situation into an uncaught
+  // crash on the first shape rather than a misleading empty list -- louder,
+  // but still worth failing here first with a clear message before any shape
+  // even runs.
   if (isLive && (process.env.ANTHROPIC_API_KEY ?? "").trim().length === 0) {
     console.error(
       "ANTHROPIC_API_KEY is not set, so --live would make zero real calls and\n" +
@@ -284,7 +289,19 @@ async function main(): Promise<void> {
     // removed every comma/semicolon by construction -- that was this
     // script's own first-draft bug. The flag below runs against what the
     // model actually returned, before any code touches it.
-    const rawTitles = await fetchRawTitleSuggestions(anthropic, text);
+    // Ticket 82ae975: `fetchRawTitleSuggestions` now THROWS on a failed call
+    // or a malformed response instead of returning `[]`. One shape's failure
+    // (a rate limit, a transient network drop) must not abort every OTHER
+    // shape's eval run -- caught here and reported loudly, then move on.
+    let rawTitles: string[];
+    try {
+      rawTitles = await fetchRawTitleSuggestions(anthropic, text);
+    } catch (err) {
+      console.log(
+        `  FAILED: ${err instanceof Error ? err.message : String(err)} -- skipping this shape`,
+      );
+      continue;
+    }
     console.log(`RAW MODEL TITLES: ${JSON.stringify(rawTitles)}`);
 
     const flaggedRawPunctuation = rawTitles.filter((t) => /[()/,;]/.test(t));

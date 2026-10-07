@@ -280,16 +280,29 @@ export function registerResumeRoutes(
 
       // Ticket 39b4a48: suggested title keywords, cached on the row —
       // `suggestedTitles === null` means inference has never run for this
-      // id, OR that a text edit invalidated it (schema.ts's column doc
-      // comment; `PUT /resumes/:id/text` below is what nulls it). A
-      // resubmission of identical resume text reuses the same row and
-      // never re-pays for this.
-      // `inferTitles` itself is documented to never throw (see
-      // resume-title-inference.ts) — a failure degrades to `[]` — but this
-      // is wrapped in its own try/catch anyway, defense in depth: resume
-      // creation succeeding must never depend on a callee honoring its own
-      // contract (this is an injected dependency; a test double or a
-      // future implementation could throw).
+      // id, OR that it failed, OR that a text edit invalidated it
+      // (schema.ts's column doc comment; `PUT /resumes/:id/text` below is
+      // what nulls it on an edit). A resubmission of identical resume text
+      // reuses the same row and never re-pays for this UNLESS the row is
+      // still `null` — which is exactly the self-healing path a failure
+      // relies on (see below).
+      //
+      // TICKET 82ae975: `inferTitles` now THROWS on failure (see
+      // resume-title-inference.ts's own doc comment for the full history)
+      // instead of swallowing one into `[]`. This try/catch used to be
+      // unreachable "defense in depth" against a hypothetical future
+      // implementation that could throw — it is that implementation now,
+      // and is the PRIMARY mechanism, not a defensive backstop. On failure
+      // this sets `suggestedTitles = null`, NOT `[]`: `[]` is what ticket
+      // 82ae975 fixed, because it is indistinguishable from "ran, found
+      // nothing" and is never `null`, so the lazy re-inference gate above
+      // never fires again for it — a transient failure cached zero chips
+      // forever, logged nowhere (the whole bug this ticket closes). Writing
+      // `null` instead keeps the row honestly "not inferred yet" so the
+      // SAME lazy gate retries it the next time this exact resume text is
+      // POSTed again (e.g. the user re-pastes it via "paste a new resume"),
+      // consistent with `PUT /resumes/:id/text`'s own choice of `null` on
+      // failure (ticket 6ba221e) — one convention for this column, not two.
       const existingRow = await db
         .select({
           suggestedTitles: resumes.suggestedTitles,
@@ -315,8 +328,21 @@ export function registerResumeRoutes(
         try {
           suggestedTitles = await inferTitles(resumeText);
         } catch (err) {
-          request.log.error({ err, id }, "title inference failed, continuing with none");
-          suggestedTitles = [];
+          // Ticket 82ae975: logged with the resume id, the resume text's
+          // length (not the text itself — it can be the user's real resume,
+          // and the length alone is enough to correlate against
+          // resume-title-inference.ts's own token-budget comments) and the
+          // thrown error's own message, which now names which failure mode
+          // occurred (API call failed / no text block / invalid JSON /
+          // non-array titles — see that module's doc comment). This is the
+          // log line the ticket's own title complains does not exist.
+          request.log.error(
+            { err, id, resumeTextLength: resumeText.length },
+            "title inference failed on resume creation, leaving suggestedTitles null for lazy retry",
+          );
+          // NOT `[]` — see the long comment above this block for why `null`
+          // is the one representation that keeps this resume self-healing.
+          suggestedTitles = null;
         }
         try {
           await db.update(resumes).set({ suggestedTitles }).where(eq(resumes.id, id));
@@ -332,7 +358,18 @@ export function registerResumeRoutes(
       const isLocked = await isResumeLocked(db, id);
       const response: CreateResumeResponse = {
         id,
-        suggestedTitles,
+        // Ticket 82ae975: `suggestedTitles` can now be `null` here (a
+        // failed inference this request just attempted and could not
+        // recover from in time to respond) in addition to the pre-existing
+        // "never inferred" case. `CreateResumeResponse.suggestedTitles` is
+        // `string[]`, not nullable — same `null` → `[]` coercion
+        // `GET /resumes/:id` already performs, so the client never has to
+        // special-case a nullable field it cannot act on differently anyway
+        // (see this ticket's own notes on `GetResumeResponse` for why no
+        // reader downstream of the API boundary needs to see `null` at
+        // all — only the `suggestedTitles === null` DATABASE check,
+        // upstream of this response, needs the real tri-state).
+        suggestedTitles: suggestedTitles ?? [],
         resumeNickname,
         isLocked,
         isNew,
@@ -685,26 +722,36 @@ export function registerResumeRoutes(
         })
         .where(and(eq(resumes.id, row.id), eq(resumes.userId, userId)));
 
-      // Same defense-in-depth as `POST /resumes`: `inferTitles` is
-      // documented never to throw, and is wrapped anyway because it is an
-      // injected dependency. A failure must not fail the EDIT -- the text
-      // is already saved by this point, which is the part the user asked
-      // for.
+      // TICKET 82ae975: `inferTitles` now THROWS on failure instead of
+      // swallowing one into `[]` (resume-title-inference.ts's own doc
+      // comment has the full history) -- this try/catch is the PRIMARY
+      // mechanism for catching that, not defense-in-depth against a
+      // hypothetical. A failure must not fail the EDIT -- the text is
+      // already saved by this point, which is the part the user asked for.
       let suggestedTitles: string[] | null = null;
       try {
         suggestedTitles = await inferTitles(resumeText);
       } catch (err) {
-        request.log.error({ err, id: row.id }, "title inference failed after a resume text edit");
+        // Same logging shape as `POST /resumes`'s own catch: the resume id,
+        // the new text's length (never the text itself), and the thrown
+        // error's own message naming which failure mode occurred.
+        request.log.error(
+          { err, id: row.id, resumeTextLength: resumeText.length },
+          "title inference failed after a resume text edit, leaving suggestedTitles null for lazy retry",
+        );
       }
       try {
         // On FAILURE this writes `null`, not `[]`, and that is deliberate:
-        // ticket 82ae975 is an open bug about `[]` being cached forever
-        // behind a `suggestedTitles === null` retry gate, and there is no
-        // reason for a brand-new write path to walk into it. `null` keeps
-        // the row honestly marked "not inferred yet" so a later edit (or
-        // a POST of this text, or scripts/reinfer-resume-titles.ts's own
-        // successor) can still try. The row is ALREADY `null` from the
-        // UPDATE above, so the failure case re-writes the same value
+        // ticket 82ae975 fixed `POST /resumes` above to make EXACTLY this
+        // same choice -- `null` was always right here because `[]` would be
+        // cached forever behind the `suggestedTitles === null` retry gate,
+        // with no reason for a write path to walk into that. `null` keeps
+        // the row honestly marked "not inferred yet" so a later edit, a
+        // POST of this same text, or an operator run of
+        // `scripts/reinfer-resume-titles.ts --live` (widened by ticket
+        // 82ae975 to reach `null` rows too) can still try. The row is
+        // ALREADY `null` from the UPDATE above, so the failure case
+        // re-writes the same value
         // rather than relying on that -- one statement either way, and it
         // cannot be read as "we meant to store []".
         //

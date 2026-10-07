@@ -141,6 +141,13 @@
       "when": 1791328688252,
       "tag": "0019_drop_resume_hash_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791343562516,
+      "tag": "0020_backfill_failed_title_inference_to_null",
+      "breakpoints": true
     }
   ]
 }

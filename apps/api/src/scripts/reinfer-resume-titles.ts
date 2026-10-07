@@ -48,11 +48,9 @@
  *     (see WHY "UNCHANGED" IS SILENT below).
  *   - `--live` is required to actually write. Any other argument is a hard
  *     error.
- *   - Only resumes with a NON-NULL `suggestedTitles` are considered at all --
- *     a resume that has never been inferred (`suggestedTitles === null`)
- *     will get real, current-prompt inference the next time it's actually
- *     used (`routes/resumes.ts`'s own existing lazy-inference path); this
- *     script has nothing to add there and leaves those rows alone.
+ *   - EVERY resume is a candidate, `suggestedTitles === null` included as of
+ *     ticket 82ae975 -- see TICKET 82ae975 below for why the original
+ *     non-null-only scoping was wrong, not just incomplete.
  *   - A resume whose RE-INFERRED output is IDENTICAL (as a set -- see
  *     `titlesEqual` below) to what's already stored is left untouched: not
  *     written, not even counted as a "candidate" in the summary. Claude is
@@ -78,29 +76,72 @@
  * here, which was wrong in the direction that matters (an operator reading
  * this before deciding how freely to re-run it).
  *
- * Opus review, B1 (BLOCKING, fixed): `inferTitleKeywords` swallows EVERY
- * failure -- a bad API key, a rate limit, a network drop, a malformed
- * response -- into a silent `[]` (see that function's own doc comment: this
- * is the right contract for its ORIGINAL caller, resume submission, which
- * must never be blocked by an inference hiccup). This script is a second
- * caller with the OPPOSITE need, and the first version of it inherited that
- * contract without noticing the reversal: a `[]` result compared as
- * genuinely different from any non-empty stored value, so `--live` would
- * WRITE `[]` over a resume's real chips on a transient failure. That is
- * worse than the bug this script exists to fix -- and, critically, not
- * self-healing: `[]` is NOT NULL, and `routes/resumes.ts`'s lazy
- * re-inference is gated on `suggestedTitles === null`, so a wiped row stays
- * wiped forever through ordinary app use. Proven live against real
- * Postgres during review (a throwing fake client's `--live` run left a real
- * row's chips overwritten with `[]`). Fixed below: an empty re-inference
- * result is now treated as a FAILURE to be reported and skipped, never as a
- * value to compare or write -- the schema this script's own prompt asks for
- * is 3-6 titles, so a genuine empty success is not an expected shape this
- * script needs to accommodate.
+ * Opus review, B1 (BLOCKING, fixed): `inferTitleKeywords` used to swallow
+ * EVERY failure -- a bad API key, a rate limit, a network drop, a malformed
+ * response -- into a silent `[]` (the ORIGINAL contract, right for resume
+ * submission, which must never be blocked by an inference hiccup). This
+ * script is a second caller with the OPPOSITE need, and the first version
+ * of it inherited that contract without noticing the reversal: a `[]`
+ * result compared as genuinely different from any non-empty stored value,
+ * so `--live` would WRITE `[]` over a resume's real chips on a transient
+ * failure. Proven live against real Postgres during review (a throwing
+ * fake client's `--live` run left a real row's chips overwritten with
+ * `[]`). Fixed below: a failure is caught and reported, never written.
+ * Ticket 82ae975 (below) changed WHAT counts as the failure signal, not
+ * this guarantee -- a caught exception still lands in `failed`, never in
+ * `changed`, and is never compared or written.
+ *
+ * ---------------------------------------------------------------------------
+ * TICKET 82ae975 -- `inferTitleKeywords` NOW THROWS ON FAILURE INSTEAD OF
+ * RETURNING `[]`, AND THAT CHANGES WHAT THIS SCRIPT CAN REACH
+ * ---------------------------------------------------------------------------
+ *
+ * `resume-title-inference.ts`'s own doc comment has the full history: a
+ * failed inference used to persist as `suggestedTitles: []` on `POST
+ * /resumes`, which this script's `isNotNull` filter DID reach (an `[]` row
+ * is non-null) -- so, by accident, this script was already the operator's
+ * only way to retry a POST-path failure. Ticket 82ae975 fixes `POST
+ * /resumes` to persist `null` on failure instead (matching `PUT
+ * /resumes/:id/text`'s own pre-existing choice, ticket 6ba221e) specifically
+ * so the ROUTE's own lazy re-inference gate (`suggestedTitles === null`)
+ * can retry it without any operator involvement at all. But that
+ * side-effect would have REMOVED this script's only path to a failed row
+ * had its `isNotNull` filter stayed as it was: every failure, from either
+ * route, now lands on exactly the value this script used to skip on
+ * purpose. The fix is the WHERE clause above: every resume is now a
+ * candidate, not just previously-inferred ones.
+ *
+ * WHY THIS IS SAFE AGAINST A NEVER-TOUCHED (genuinely, not failed) ROW, not
+ * just a failed one: `findCandidateResumes` below coerces a `null`
+ * `suggestedTitles` to `[]` before comparison (same coercion
+ * `routes/resumes.ts`'s own readers already perform), so a never-inferred
+ * resume that successfully infers for the first time here is correctly
+ * reported in `changed` (`[]` vs. a real result is never "identical") and
+ * written under `--live` -- which is exactly what would have happened the
+ * next time that resume was actually used, just run proactively by the
+ * operator instead. Nothing about this script can tell "never touched"
+ * apart from "failed, needs rescue" -- both are `null` -- but nothing
+ * downstream needs to: either way, a successful re-run improves the row,
+ * and a resume that keeps failing lands in `failed`, reported and left
+ * alone, regardless of which reason it started `null` for.
+ *
+ * COST, STATED PLAINLY (the ticket's own instruction: say so if this
+ * matters): the candidate pool used to be bounded by "resumes that have
+ * already been inferred once"; it is now bounded by "every resume this
+ * database holds," which calls Claude once per resume per run even in a DRY
+ * RUN (N1 above still holds). At this app's current, effectively
+ * single-user scale ("a person has a handful of resumes, not hundreds," the
+ * same reasoning WHY NO COST-ESTIMATE GATE above already relies on) that is
+ * still cents, not a real budget risk. It stops being true the moment this
+ * app has many users each with a few resumes, or any pile of abandoned/test
+ * rows accumulates -- if that ever happens, add a cost-estimate gate here
+ * first (same shape as `rescore-existing-matches.ts`'s
+ * `MAX_ESTIMATED_SPEND_USD`), rather than assuming this reasoning still
+ * holds unchanged.
  */
 import { pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
-import { eq, isNotNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { resumes } from "../db/schema.js";
@@ -140,7 +181,17 @@ export type CandidateResume = {
   suggestedTitles: string[];
 };
 
-export async function findInferredResumes(
+/**
+ * Every resume in the database, not only previously-inferred ones --
+ * ticket 82ae975 (see this file's header for why). `suggestedTitles` is
+ * coerced from `null` to `[]` here, the same coercion `routes/resumes.ts`'s
+ * own readers (`GET /resumes/:id`, `PUT /resumes/:id/text`'s unchanged-save
+ * branch) already perform: `runReinfer` below treats `[]` as "nothing
+ * stored to lose," whether that `[]` came from a real `null` row or a
+ * genuine past empty success, and either way a non-empty new result is
+ * correctly reported as a change.
+ */
+export async function findCandidateResumes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: NodePgDatabase<any>,
 ): Promise<CandidateResume[]> {
@@ -151,13 +202,7 @@ export async function findInferredResumes(
       resumeText: resumes.resumeText,
       suggestedTitles: resumes.suggestedTitles,
     })
-    .from(resumes)
-    .where(isNotNull(resumes.suggestedTitles));
-  // `isNotNull` is a WHERE-clause guarantee, not a type-narrowing one --
-  // drizzle's inferred row type keeps `suggestedTitles: string[] | null`
-  // regardless. The `?? []` reflects the WHERE clause's own guarantee back
-  // into the type, no different in kind from `existingRow[0]?.suggestedTitles
-  // ?? null`'s own null-handling in routes/resumes.ts.
+    .from(resumes);
   return rows.map((r) => ({ ...r, suggestedTitles: r.suggestedTitles ?? [] }));
 }
 
@@ -182,12 +227,15 @@ export type ReinferOutcome = {
   newTitles: string[];
 };
 
-/** Opus review, B1: a resume whose re-inference came back empty --
- * `inferTitleKeywords` swallows every real failure into `[]` (see this
- * file's header), so an empty result here means "the call failed," not
- * "Claude genuinely suggested zero titles." Reported so a bad run is loud,
+/** Opus review, B1, updated for ticket 82ae975: a resume whose re-inference
+ * either THREW (the API call failed, or the response was malformed --
+ * `inferTitleKeywords` now propagates that instead of swallowing it into
+ * `[]`) or came back structurally empty. `reason` carries the thrown
+ * error's own message for the first case, and a fixed string for the
+ * second -- so an operator reading this script's console output sees WHY
+ * a row was skipped, not just that it was. Reported so a bad run is loud,
  * never written, never compared against the stored value. */
-export type ReinferFailure = { id: string; resumeNickname: string };
+export type ReinferFailure = { id: string; resumeNickname: string; reason: string };
 
 export type ReinferResult = {
   totalConsidered: number;
@@ -206,20 +254,40 @@ export async function runReinfer(
   anthropic: Anthropic,
   opts: { live: boolean },
 ): Promise<ReinferResult> {
-  const candidates = await findInferredResumes(db);
+  const candidates = await findCandidateResumes(db);
   const changed: ReinferOutcome[] = [];
   const failed: ReinferFailure[] = [];
 
   for (const candidate of candidates) {
-    const newTitles = await inferTitleKeywords(anthropic, candidate.resumeText);
-    // Opus review, B1 (BLOCKING): an empty result is a FAILURE signal, not
-    // a real re-inference outcome to compare or write -- see this file's
-    // header for why `inferTitleKeywords` can return `[]` on a transient
-    // error, and why writing that over real chips would be silent,
-    // non-self-healing data loss. Checked BEFORE `titlesEqual`, and the
-    // candidate is skipped entirely: no write, not counted as "changed".
+    let newTitles: string[];
+    try {
+      newTitles = await inferTitleKeywords(anthropic, candidate.resumeText);
+    } catch (err) {
+      // Ticket 82ae975: `inferTitleKeywords` now THROWS on a failed API
+      // call or a malformed response instead of swallowing one into `[]`.
+      // This is the catch that replaces the old `newTitles.length === 0`
+      // check for that case -- never compared, never written, reported
+      // with the real error message so an operator can see WHY.
+      failed.push({
+        id: candidate.id,
+        resumeNickname: candidate.resumeNickname,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+    // A STRUCTURALLY VALID but empty result is still treated as suspect
+    // here, defensively, even though it is no longer the primary failure
+    // signal (opus review, B1, and see resume-title-inference.ts's own
+    // doc comment on why a genuine empty success is possible but
+    // essentially never observed): this script's own prompt asks for 3-6
+    // titles, so an empty, non-throwing result is still not an expected
+    // shape worth comparing or writing over real stored chips.
     if (newTitles.length === 0) {
-      failed.push({ id: candidate.id, resumeNickname: candidate.resumeNickname });
+      failed.push({
+        id: candidate.id,
+        resumeNickname: candidate.resumeNickname,
+        reason: "re-inference returned no titles (not an exception, but still not written)",
+      });
       continue;
     }
     if (titlesEqual(candidate.suggestedTitles, newTitles)) continue;
@@ -284,7 +352,9 @@ async function main(): Promise<void> {
     // submissions -- which, before ticket 6ba221e, minted a brand-new row
     // per edit rather than updating one) is
     // visible immediately rather than only inferable from a long list.
-    console.log(`\n${result.totalConsidered} resume(s) had a previously-inferred title set.`);
+    // Ticket 82ae975: every resume is now a candidate, not just
+    // previously-inferred ones -- see this file's header.
+    console.log(`\n${result.totalConsidered} resume(s) considered.`);
 
     if (result.failed.length > 0) {
       console.log(
@@ -293,7 +363,7 @@ async function main(): Promise<void> {
           `never written) and were left completely untouched:\n`,
       );
       for (const failure of result.failed) {
-        console.log(`  ${failure.id}  "${failure.resumeNickname}"`);
+        console.log(`  ${failure.id}  "${failure.resumeNickname}"  -- ${failure.reason}`);
       }
       console.log("\nRe-run this script to retry the failed resume(s).");
     }
