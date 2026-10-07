@@ -286,8 +286,13 @@ cached, and fails loudly with the exact fix if none is found:
 ```
 No cached Chromium found under ~/.cache/ms-playwright. Run:
   npx playwright-core install chromium-headless-shell
-first (needs network access to Playwright's CDN, not apt).
+first (needs network access to Playwright's CDN, not apt). Note: `playwright-core`, not `playwright` -- that's the package actually installed here (see HEADLESS-BROWSER.md's dependency section); `npx playwright ...` would fetch a different, unpinned package.
 ```
+
+(Verbatim, including the trailing note — an earlier draft trimmed the last
+sentence, which the prose below then paraphrased. Quoting real output and then
+silently shortening it is how a doc stops being checkable against the thing it
+documents.)
 
 That's `playwright-core install`, **not** `playwright install` — only
 `playwright-core` is a dependency here (see "Dependency added" below); the
@@ -412,11 +417,19 @@ sentence here so the next person doesn't have to rediscover them:
   Playwright/Chromium's own startup error wall, with the one actionable
   line ("missing shared library") buried in GPU/sandbox noise rather than a
   one-line diagnosis pointing at `--force`.
-- **Script mode.** `fetch-chromium-sysroot.sh` keeps its `#!/usr/bin/env
-bash` shebang and is executable (`100755`, confirmed via `git ls-files
--s`) — raised in review as worth double-checking since it's exactly the
-  kind of thing that silently regresses to non-executable on some
-  checkout/editor combinations; confirmed fine as committed here.
+- **Script mode mismatch.** `layout-check.mjs` carries a
+  `#!/usr/bin/env node` shebang but is committed at mode `100644`, i.e. not
+  executable (`git ls-files -s` → `100644 … layout-check.mjs`). Harmless
+  today, because every documented invocation runs it as `node
+apps/web/scripts/layout-check.mjs` or through the `layout-check` package
+  script — the shebang is simply never used. It would bite only someone who
+  tried `./apps/web/scripts/layout-check.mjs`. Fix by dropping the shebang or
+  setting the bit; left as-is deliberately rather than churning the mode.
+  (`fetch-chromium-sysroot.sh` IS `100755` and is fine — an earlier draft of
+  this entry described that file instead, which was a "confirmed" stamped on
+  the wrong subject. Corrected in re-review, and recorded because
+  mis-attributed verification is the exact failure mode this whole ticket
+  exists to reduce.)
 
 ## What a future agent should NOT need to repeat
 
