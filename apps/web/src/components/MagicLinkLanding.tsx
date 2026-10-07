@@ -418,9 +418,48 @@ export function MagicLinkLanding({ token }: { token: string }) {
               asked for it — after that first time, signing in works from any browser or device.
             </p>
           ) : (
+            // Ticket 5130866 (opus note N4, ticket 5a7e957 review). This
+            // generic branch is reached by two different kinds of visitor --
+            // someone whose magic-link request came from `MagicLinkPrompt`
+            // (results on screen, which has floated near the topmost result
+            // since ticket 931df8a, never "the bottom") and someone whose
+            // request came from `SignInRecovery` (no results at all, a
+            // header link rather than anything near a list). The old copy
+            // named a location true of neither any more.
+            //
+            // REVIEW ROUND 1 (F1, BLOCKING): naming where to click after
+            // Continue is ALSO wrong for most visitors, not just imprecise.
+            // `App.tsx`'s `showMagicLinkPrompt` is
+            // `(activeTab === "search" && searchArmReady) || (activeTab ===
+            // "scored" && scoredArmReady)`. Only the SEARCH arm requires
+            // `hasFreshSearchResults` -- a `useState(false)` set true in exactly
+            // one place, SearchFlow's completion handler -- which a freshly
+            // reloaded page cannot satisfy. (Re-review precision fix: an
+            // earlier draft of this comment said `showMagicLinkPrompt` requires
+            // it outright, which is broader than the code. The behavioural
+            // conclusion is unchanged, and rests on the next clause: the
+            // scored arm cannot fire either, because the default tab is
+            // "search".) `landOnScoredTab` is written only on the SUCCESS
+            // verification path (this is the FAILED one) and stripped by this
+            // very branch's own `catch`. `showSignInRecovery` requires
+            // `nothingScoredInThisBrowser`, false for anyone who had results to
+            // lose a link over. So the commoner visitor here -- someone with
+            // existing scored jobs whose link expired -- lands on "New Job
+            // Search" with NEITHER the prompt NOR the recovery link on screen,
+            // until they independently find "Already Scored Jobs". A sentence
+            // claiming an entry point renders on arrival would be false for
+            // exactly the visitor this branch exists to reassure.
+            //
+            // THE FIX: name the ACT, not the place. Whichever origin this
+            // visitor came from, they asked for a link from SOMEWHERE on this
+            // app, and that same place -- the results prompt for one kind of
+            // visitor, the header recovery link for the other -- still exists
+            // and still works once they are back on a state where it renders;
+            // this sentence commits to nothing about whether that is true the
+            // instant Continue is clicked.
             <p className="magic-link-note">
-              You can ask for a new link from the bottom of your results at any time. Nothing you've
-              already searched has been lost.
+              Nothing you've already searched has been lost. Continue below, and you can ask for a
+              new link from the same place you asked for this one.
             </p>
           )}
           <button type="button" onClick={() => reloadTo(urlWithoutToken())}>

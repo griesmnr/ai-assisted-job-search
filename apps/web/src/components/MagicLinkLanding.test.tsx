@@ -323,6 +323,12 @@ describe("MagicLinkLanding -- refusals", () => {
       screen.getByRole("button", { name: /continue without signing in/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/nothing you've already searched has been lost/i)).toBeInTheDocument();
+    // Ticket 5130866: must not name a location ("the bottom of your
+    // results") that is true of neither entry point any more -- see
+    // MagicLinkLanding.tsx's comment on this branch.
+    expect(
+      screen.getByText(/ask for a new link from the same place you asked for this one/i),
+    ).toBeInTheDocument();
     // No identity was adopted on a refusal.
     expect(localStorage.getItem("jobsearch.web.userEmail.v1")).toBeNull();
     // A spent link comes out of the URL like a successful one.
@@ -397,7 +403,7 @@ describe("MagicLinkLanding -- refusals", () => {
     // Not the generic spent-link note: this link still works elsewhere.
     expect(screen.getByText(/this link hasn't been used up/i)).toBeInTheDocument();
     expect(
-      screen.queryByText(/you can ask for a new link from the bottom of your results/i),
+      screen.queryByText(/ask for a new link from the same place you asked for this one/i),
     ).not.toBeInTheDocument();
     // NOTHING was adopted -- the whole point of the server-side refusal is
     // that this browser does not become somebody else's account.
@@ -434,7 +440,7 @@ describe("MagicLinkLanding -- refusals", () => {
     ).toBeInTheDocument();
     // Not the spent-token recovery note -- the token here was never touched.
     expect(
-      screen.queryByText(/you can ask for a new link from the bottom of your results/i),
+      screen.queryByText(/ask for a new link from the same place you asked for this one/i),
     ).not.toBeInTheDocument();
     expect(window.location.hash).toBe("#magicLinkToken=tok_abc123");
   });
@@ -481,7 +487,7 @@ describe("MagicLinkLanding -- refusals", () => {
     // THE FIX: the same honest "request a new one" recovery every other
     // spent-token refusal gets.
     expect(
-      screen.getByText(/you can ask for a new link from the bottom of your results/i),
+      screen.getByText(/ask for a new link from the same place you asked for this one/i),
     ).toBeInTheDocument();
   });
 
@@ -524,7 +530,7 @@ describe("MagicLinkLanding -- refusals", () => {
     // THE FIX: the same honest "request a new one" recovery every other
     // spent-token refusal gets.
     expect(
-      screen.getByText(/you can ask for a new link from the bottom of your results/i),
+      screen.getByText(/ask for a new link from the same place you asked for this one/i),
     ).toBeInTheDocument();
     // And the dead token must come OUT of the URL -- otherwise a reload
     // resubmits it and it comes back `already_used`, which is the "reads as

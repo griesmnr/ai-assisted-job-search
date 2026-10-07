@@ -33,16 +33,29 @@ type Phase =
   | { status: "error"; message: string };
 
 /**
- * The one sentence about how the link BEHAVES, owned here rather than by
- * callers. Ticket f199f55 spent a live back-and-forth with Nicole getting
- * the expiry framing right (she read "expires in 15 minutes" as "the link is
- * how you come back", concluded the feature was pointless, and it took an
+ * The facts about how the link BEHAVES, owned here rather than by callers.
+ * Ticket f199f55 spent a live back-and-forth with Nicole getting the expiry
+ * framing right (she read "expires in 15 minutes" as "the link is how you
+ * come back", concluded the feature was pointless, and it took an
  * explanation that the EMAIL is the durable identity to resolve it). A
  * per-caller copy of that sentence is exactly how that hard-won wording gets
  * quietly reworded by someone who doesn't know the history.
+ *
+ * "Open it in this browser" joined this line for the same reason (ticket
+ * a3062b4). It used to be per-caller: `SignInRecovery` already said it
+ * correctly, but `MagicLinkPrompt` said "open it on any device" instead --
+ * the one thing the ATTACH branch's `different_browser` check (security
+ * property 4, `apps/api/src/routes/auth.ts`) refuses. "Open it in this
+ * browser" is conservative rather than a compromise: it is safe advice on
+ * BOTH branches (the adopt branch has no same-browser requirement, so
+ * following it there costs nothing), and the client cannot know at send
+ * time which branch a given address will take, so there is no version of
+ * this instruction that could safely vary per caller. That makes it exactly
+ * the kind of fact this line exists to hold, not a second copy waiting to
+ * drift.
  */
 function sentFactsLine(): ReactNode {
-  return "The link works once and expires in about 15 minutes.";
+  return "Open it in this browser. It works once and expires in about 15 minutes.";
 }
 
 export function MagicLinkForm({

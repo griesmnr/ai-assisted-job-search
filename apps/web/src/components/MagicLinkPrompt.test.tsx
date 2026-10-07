@@ -76,6 +76,42 @@ describe("MagicLinkPrompt", () => {
     expect(screen.queryByText(/nothing is lost if you ignore it/i)).not.toBeInTheDocument();
   });
 
+  /**
+   * Ticket a3062b4. Most addresses typed into THIS prompt are brand new to
+   * the app, which takes `resolveIdentity`'s ATTACH branch
+   * (`apps/api/src/routes/auth.ts`) -- and that branch's `different_browser`
+   * check refuses a verification from any browser but the one that asked.
+   * The confirmation used to say "open it on any device", which told most of
+   * this prompt's users to do the one thing the server would refuse. The
+   * replacement, "open it in this browser", is pinned the same way
+   * `SignInRecovery.test.tsx` already pins its own copy of that sentence.
+   *
+   * MUTATION CHECK (reported, not asserted in code): reverting
+   * `sentFactsLine()` in `MagicLinkForm.tsx` to drop "Open it in this
+   * browser." turns this red (no element contains that text any more) while
+   * leaving every other test in this file green -- confirming this is the
+   * one test actually pinning the fix.
+   */
+  it("tells the user to open the link in this browser, not on any device (ticket a3062b4)", async () => {
+    requestMagicLink.mockResolvedValue({
+      email: "alice@example.com",
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+    render(<MagicLinkPrompt />);
+
+    fireEvent.change(screen.getByLabelText(/email address/i), {
+      target: { value: "alice@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+    await screen.findByRole("heading", { name: /check your inbox/i });
+
+    expect(screen.getByText(/open it in this browser/i)).toBeInTheDocument();
+    expect(screen.queryByText(/any device/i)).not.toBeInTheDocument();
+    // Owned by `MagicLinkForm`, same as `SignInRecovery` -- the expiry
+    // wording must not drift per-caller (ticket f199f55).
+    expect(screen.getByText(/works once and expires in about 15 minutes/i)).toBeInTheDocument();
+  });
+
   it("returns to the form (not a silent re-send) when the mail didn't arrive", async () => {
     requestMagicLink.mockResolvedValue({
       email: "typo@exmaple.com",

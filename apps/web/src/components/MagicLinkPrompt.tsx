@@ -56,9 +56,43 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * (Nicole's framing, on the ticket): nothing here is gated. The results are
  * already on screen, already saved server-side under this browser's anonymous
  * identity, and stay that way whether or not the user types anything. The
- * email buys ONE thing -- reaching the same results from another browser --
- * and the copy says exactly that rather than implying an account is required.
- * "Not now" is a first-class option, not a grudging link.
+ * email buys ONE thing -- tying these results to that address so they
+ * survive this browser being lost -- and the copy says exactly that rather
+ * than implying an account is required. "Not now" is a first-class option,
+ * not a grudging link. (That "ONE thing" claim itself has a branch-dependent
+ * exception -- see the paragraph below, review round 1 F4.)
+ *
+ * WHAT THE EMAIL DOES NOT BUY YET: cross-device reach, for most visitors of
+ * THIS prompt specifically. Most addresses typed here are brand new to the
+ * app, which takes `resolveIdentity`'s ATTACH branch -- and that branch's
+ * `different_browser` check (security property 4, `apps/api/src/routes/
+ * auth.ts`) requires the first link to be opened in the SAME browser that
+ * requested it, precisely to block the account-fixation attack fable found
+ * in review round 1. Only after that first confirmation does the address
+ * have an account, at which point every later link for it takes the
+ * unbound ADOPT branch and "any device" becomes true. Ticket a3062b4: this
+ * component's own copy used to claim the cross-device version was true
+ * immediately, which told most of its users to do the one thing the server
+ * would refuse. See `MagicLinkForm`'s `sentFactsLine` for the corrected,
+ * branch-agnostic instruction ("open it in this browser") this component
+ * now relies on instead.
+ *
+ * THAT WAS ONLY THE DEVICE DIMENSION OF ATTACH/ADOPT. THERE IS A SEPARATE,
+ * WHOSE-RESULTS DIMENSION THIS COMPONENT IS ALSO BLIND TO (review round 1,
+ * F4): "tying these results to that address" above is only true on the
+ * ATTACH branch. If the address typed here already has an account, the
+ * request takes the ADOPT branch instead -- `resolveIdentity` returns the
+ * EXISTING row, `setUserId` reports `switchedAccount`, and
+ * `MagicLinkLanding` then calls `clearAppState()` and tells whoever lands
+ * there, explicitly, that they are now looking at a DIFFERENT account's
+ * resumes and results. The results that were on screen when this prompt was
+ * typed into stay behind on the abandoned anonymous row -- not tied to that
+ * address at all. The `sentBody` text below ("which will tie these results
+ * to that address") inherits this same half-truth; it is not new to this
+ * diff (main's "save these results to that address" was false the same
+ * way) and is not fixed by it -- a sentence accurate on both branches needs
+ * the whose-results caveat spelled out, which is a bigger rewrite than
+ * fixing the device-dimension claim this ticket was actually scoped to.
  *
  * WHY IT DISAPPEARS ONCE VERIFIED: an already-signed-in user being asked to
  * sign in again is the most common way a prompt like this becomes noise. The
@@ -137,8 +171,13 @@ export function MagicLinkPrompt() {
         }
         sentBody={(sentTo) => (
           <>
-            We sent a sign-in link to <strong>{sentTo}</strong>. Open it on any device to save these
-            results to that address.
+            {/* Ticket a3062b4: used to say "open it on any device", which is
+                exactly what the ATTACH branch's `different_browser` check
+                refuses for most visitors of this prompt (a brand-new
+                address). "Open it in this browser" is the shared,
+                branch-agnostic instruction now -- see `sentFactsLine`. */}
+            We sent a sign-in link to <strong>{sentTo}</strong>, which will tie these results to
+            that address.
           </>
         )}
         secondary={({ sending }) => (

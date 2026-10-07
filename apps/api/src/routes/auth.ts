@@ -261,11 +261,27 @@ export function registerAuthRoutes(
       const minutes = Math.round(MAGIC_LINK_TTL_MS / 60_000);
 
       try {
+        // Ticket 5130866 (opus notes N3/N4 on ticket 5a7e957's review). This
+        // request now comes from two origins that get the exact same email:
+        // `MagicLinkPrompt`, saving fresh results under a brand-new address,
+        // and `SignInRecovery`, someone whose browser storage is gone trying
+        // to get an EXISTING account back. The old opening line --
+        // "save your job search results to this email address" -- read as
+        // though clicking would overwrite the recovery user's account with
+        // this (empty) browser's nothing, which is backwards and alarming for
+        // the one person who most needs to click. "Sign in and connect" is
+        // true of both: a brand-new address gets tied to these results
+        // (attach), an existing one gets its results back (adopt), and
+        // neither word implies which. Deliberately NOT branched by an
+        // `intent` the client would have to assert on this request (see the
+        // route's own doc comment on `resolveIdentity`'s two branches) --
+        // this route must not become an account-enumeration oracle, and a
+        // single neutral sentence serves both origins for free.
         await getSendEmail()({
           to: email,
           subject: "Your sign-in link for AI-Assisted Job Search",
           text: [
-            "Click this link to save your job search results to this email address:",
+            "Click this link to sign in and connect your job search results to this email address:",
             "",
             link,
             "",
@@ -273,7 +289,7 @@ export function registerAuthRoutes(
             "If you didn't ask for this, you can ignore this email — nothing has changed.",
           ].join("\n"),
           html: [
-            `<p>Click this link to save your job search results to this email address:</p>`,
+            `<p>Click this link to sign in and connect your job search results to this email address:</p>`,
             `<p><a href="${escapeHtmlAttribute(link)}">Sign in to AI-Assisted Job Search</a></p>`,
             `<p>The link works once and expires in ${minutes} minutes.</p>`,
             `<p>If you didn't ask for this, you can ignore this email — nothing has changed.</p>`,

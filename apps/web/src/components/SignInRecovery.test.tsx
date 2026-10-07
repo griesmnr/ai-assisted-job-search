@@ -99,6 +99,18 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
     await screen.findByRole("heading", { name: /check your inbox/i });
 
     expect(screen.getByText(/open it in this browser/i)).toBeInTheDocument();
+    // REVIEW ROUND 1 (F5): the loose match above would stay green even if
+    // the causal link between "open it in this browser" and "back here" got
+    // severed again (it did, once, when the shared sentFactsLine() took over
+    // the instruction and left this caller's own sentence saying only "bring
+    // your saved results back here" -- true, but no longer explaining WHY
+    // "this browser" is the one that matters). Pin the full sentence by exact
+    // text so a future edit that drops the reason fails loudly rather than
+    // slipping past a substring match.
+    const sentParagraph = screen.getByText(/we sent a sign-in link/i, { selector: "p" });
+    expect(sentParagraph.textContent).toBe(
+      "We sent a sign-in link to returning@example.com, which is how your saved results come back to this browser. Open it in this browser. It works once and expires in about 15 minutes.",
+    );
     // Opus review round 3 (S1): the confirmation heading must be an `h2` like
     // this panel's pitch, not the shared form's `h3` default. Two reasons, both
     // measured: an `h3` here skips a level under the page's `h1` (this panel
