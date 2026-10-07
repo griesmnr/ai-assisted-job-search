@@ -55,6 +55,62 @@ const MAX_KEYWORD_SEARCHES = 10;
 // heavier per-item than Greenhouse's one-request-per-board, so a lower
 // concurrency here is the conservative choice pending real measurement.
 const KEYWORD_SEARCH_CONCURRENCY = 3;
+// Ticket 78f48df: a SEPARATE, much tighter page cap for title-mode
+// (`PositionTitle`) per-phrase searches than `DEFAULT_MAX_PAGES` (200)
+// governs for everything else. Measured live 2026-10-07 against Jay's real
+// 10 inferred chips (git-bug 78f48df/fb61b96): the straightforward fix
+// (just swap Keyword for PositionTitle inside the existing loop, with no
+// cap) made the problem WORSE, not better -- fetched went 497 -> 2970
+// distinct postings for the same ~6-7 matched, because `PositionTitle` ORs
+// every WORD in a multi-word phrase (see #fetchPage's doc comment), so any
+// chip containing one very common role-word ("Specialist" alone = 2051 of
+// the live pool) drags in thousands of unrelated postings that merely
+// share that one word. 8 of Jay's 10 real chips stayed small under
+// PositionTitle (max 491, "Documentation Manager"); the other 2
+// ("Technical Documentation Specialist" -> 2071, "Technical Information
+// Specialist" -> 2149) are the ones with a dominant generic word.
+//
+// Two looser caps were tried first and rejected on measurement, not
+// intuition: 30 pages (750/phrase) still fetched 1929 distinct postings
+// end to end for the SAME 6-7 matched (vs. 497 fetched under the OLD
+// Keyword code) -- better than the uncapped 2970, but still far above
+// Keyword's volume, because EIGHT of the ten real chips (not just the two
+// generic-word ones) return meaningfully more under PositionTitle's OR
+// semantics than they ever did under Keyword's narrow full-text match. 10
+// pages (250/phrase) did better (1087 fetched) but still nowhere close.
+//
+// WHERE THE REAL SIGNAL ACTUALLY LIVES (measured, not assumed): scanning
+// every one of Jay's 10 phrases page by page for anything resembling a
+// writer/editor/document/content title, EVERY genuine hit across ALL TEN
+// landed on PAGE 1, except one duplicate-of-an-already-found-posting on
+// page 9 ("Technical Information Specialist"'s own query surfacing a
+// "Technical Writer-Editor" copy also found via other phrases -- not a
+// unique find) and one false-positive word-overlap ("Senior
+// Videographer/Content Manager" on "Senior Technical Writer" page 4, not a
+// real match at all). "Documentation Manager" and "Technical Documentation
+// Specialist" -- the two worst offenders by volume -- contributed ZERO
+// real hits at ANY depth sampled (pages 1, 5, 10, 15, 20, 30): their
+// entire fetched volume is pure cost, no benefit, in today's live pool.
+//
+// 5 pages (125 postings) -- still comfortable 5x margin above the one page
+// any real hit was ever found on -- is what actually closes the loop:
+// fetched 559 distinct postings end to end for the SAME 7 matched (not
+// fewer: zero signal lost, verified by re-running Jay's real case and
+// diffing the matched list against the 10/30-page runs). 559 fetched vs.
+// 497 under the OLD Keyword code, for 7 matched vs. 6 -- the fetched:
+// matched ratio (~80:1) is now at least as good as before the fix, not
+// worse, while actually finding the title match ("Writer-Editor" @
+// Department of State) that Keyword's full-text search had been missing.
+//
+// This is still a page-count heuristic, not a relevance-aware stop -- it
+// could in principle cost a real match that ranks deeper than page 5 for a
+// DIFFERENT resume's chip set than Jay's, which is the one actually
+// measured here. Binding is reported via `console.warn` (ticket 16c824a's
+// rule: a cap must never bind silently), same pattern as
+// `MAX_KEYWORD_SEARCHES` above. Only applies in title mode
+// (`asTitleSearch`) -- a caller's plain `criteria.keyword` (full-text
+// `Keyword` search) is unaffected and keeps using `DEFAULT_MAX_PAGES`.
+const TITLE_SEARCH_MAX_PAGES = 5;
 
 export type UsajobsConfig = {
   /** From `USAJOBS_API_KEY`. Sent as the `Authorization-Key` header. */
@@ -275,7 +331,13 @@ export class UsajobsSource implements JobSource {
         const phrase = phrases[i]!;
 
         try {
-          resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrase });
+          // asTitleSearch: true -- see the PositionTitle semantics comment
+          // on #fetchPage below for why title chips go through this
+          // parameter now, not Keyword.
+          resultsByIndex[i] = await this.#searchOne(
+            { ...criteria, keyword: phrase },
+            { asTitleSearch: true },
+          );
           successCount++;
         } catch (err) {
           if (
@@ -426,7 +488,20 @@ export class UsajobsSource implements JobSource {
     return { jobs, skipped, skipRate };
   }
 
-  async #searchOne(criteria: SearchCriteria): Promise<SourceSearchResult> {
+  /**
+   * `opts.asTitleSearch` (default `false`) selects which USAJOBS query
+   * parameter `criteria.keyword` is sent on -- see `#fetchPage`'s doc
+   * comment for the measured reasoning -- AND which page cap applies (see
+   * `TITLE_SEARCH_MAX_PAGES`). Only `#searchMultipleKeywords` (title chips)
+   * passes `true`; a caller supplying a plain `criteria.keyword` directly
+   * (no `criteria.keywords` array) gets the default full-text `Keyword`
+   * behavior and the general `#maxPages` ceiling, unchanged.
+   */
+  async #searchOne(
+    criteria: SearchCriteria,
+    opts?: { asTitleSearch?: boolean },
+  ): Promise<SourceSearchResult> {
+    const asTitleSearch = opts?.asTitleSearch ?? false;
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
 
@@ -444,7 +519,7 @@ export class UsajobsSource implements JobSource {
     // to change this ticket's return-type contract underneath the worker
     // ticket (RTK-08) that will actually call this.
     for (;;) {
-      const data = await this.#fetchPage(criteria, page);
+      const data = await this.#fetchPage(criteria, page, asTitleSearch);
       const items = data.SearchResult.SearchResultItems;
       const totalCount = data.SearchResult.SearchResultCountAll;
 
@@ -460,7 +535,23 @@ export class UsajobsSource implements JobSource {
       seen += items.length;
 
       const hasMore = items.length > 0 && seen < totalCount;
-      if (!hasMore || page >= this.#maxPages) {
+      // Ticket 78f48df: title-mode searches get the much tighter
+      // TITLE_SEARCH_MAX_PAGES ceiling instead of the general #maxPages --
+      // see that constant's doc comment for the live measurement behind
+      // it. Reported explicitly when it actually binds (ticket 16c824a's
+      // "never silent" rule), matching MAX_KEYWORD_SEARCHES's own warning
+      // below.
+      const effectiveMaxPages = asTitleSearch ? TITLE_SEARCH_MAX_PAGES : this.#maxPages;
+      if (hasMore && page >= effectiveMaxPages) {
+        console.warn(
+          `USAJOBS: title search for phrase "${criteria.keyword}" has ${totalCount} total ` +
+            `PositionTitle matches -- stopping after ${effectiveMaxPages} pages ` +
+            `(TITLE_SEARCH_MAX_PAGES) / ${seen} postings fetched, rather than fully paginating ` +
+            `(likely dominated by one common word OR'd into the query -- see PositionTitle's ` +
+            `measured semantics in #fetchPage's doc comment).`,
+        );
+      }
+      if (!hasMore || page >= effectiveMaxPages) {
         break;
       }
       page += 1;
@@ -472,9 +563,89 @@ export class UsajobsSource implements JobSource {
     return { jobs, skipped, skipRate };
   }
 
-  async #fetchPage(criteria: SearchCriteria, page: number): Promise<UsajobsSearchResponse> {
+  /**
+   * TICKET 78f48df, measured live against the real API 2026-10-07 (see
+   * `apps/api/src/scripts/probe-positiontitle-semantics.ts`, run then
+   * deleted -- the durable record is this comment, per this repo's
+   * claims-carry-their-measurement standard):
+   *
+   *   Keyword=Technical Writer                 ->    5
+   *   PositionTitle=Technical Writer            ->   40
+   *   PositionTitle=Technical Information Specialist -> 2149
+   *
+   * `PositionTitle` IS NOT a phrase or substring match. It is TOKEN-BASED
+   * and ORs every word in the query against the title field:
+   *
+   *   PositionTitle=Technical             ->   37
+   *   PositionTitle=Writer                ->    7
+   *   PositionTitle=Technical Writer      ->   40   (~37+7, minus overlap)
+   *   PositionTitle=Writer Technical      ->   40   (word order is irrelevant)
+   *   PositionTitle="Technical Writer"    ->    0   (quoting is NOT exact-
+   *                                                   phrase syntax -- it
+   *                                                   breaks the query)
+   *   PositionTitle=Technical Information Specialist -> 2149, of which the
+   *       sampled titles ("VISUAL INFORMATION SPECIALIST", "ADMINISTRATIVE/
+   *       TECHNICAL SPECIALIST", "IT SPECIALIST (INFOSEC)") show the count
+   *       is dominated by the single generic word "Specialist" (2051 alone)
+   *       OR'd in, not by anything resembling the 3-word phrase.
+   *
+   * This means a multi-word chip with one common role-word (e.g.
+   * "Specialist", "Manager", "Developer") fetches thousands of titles that
+   * merely share that one word, most of them irrelevant. This is NOT the
+   * same failure mode `Keyword` had (full-text matching duties/
+   * qualifications instead of the title) -- it is real title-field
+   * matching, just permissive (OR, not AND) on multi-word titles.
+   * Uncapped, this made Jay's real 10-chip case WORSE, not better (497 ->
+   * 2970 distinct postings fetched for the same ~6-7 matched) -- see
+   * `TITLE_SEARCH_MAX_PAGES`'s doc comment above for the full measurement
+   * and why a per-phrase page cap (not the downstream `compileFilter` pass
+   * alone, which is correct but doesn't bound FETCH cost) is what actually
+   * fixes it, bringing the real end-to-end numbers to 559 fetched / 7
+   * matched -- a better ratio than before the fix, not worse.
+   *
+   * Also measured: a HYPHENATED phrase sent as-is returns ZERO regardless
+   * of what it would match unhyphenated --
+   *   PositionTitle=Writer-Editor   -> 0
+   *   PositionTitle=Writer Editor   -> 7   (identical words, space instead)
+   * -- so hyphens in a title-mode phrase are normalized to spaces below.
+   * This is the one normalization this adapter measured and applies; other
+   * punctuation (periods, slashes, plus signs) was NOT measured and is left
+   * alone rather than guessed at.
+   *
+   * DECISION on `Keyword`'s role (ticket scope: "decide whether Keyword
+   * retains any role"): it keeps exactly its current meaning -- a single
+   * free-text term, sent as-is to USAJOBS' full-text search -- for any
+   * caller that sets `criteria.keyword` directly (not via `criteria.
+   * keywords`/title chips). No real caller does that for USAJOBS today
+   * (`routes/searches.ts`'s `buildFetchCriteria` only ever produces
+   * `keywords` or `{}`), but the field is part of the shared, adapter-
+   * generic `SearchCriteria` shape (types.ts) and existing tests exercise
+   * it directly, so changing its meaning here would be an unrelated,
+   * unrequested behavior change for a hypothetical future caller. A
+   * fallback-to-Keyword-when-PositionTitle-returns-nothing was considered
+   * and REJECTED: the ticket flags it as an option, not a requirement, and
+   * adding it would risk silently reintroducing the exact defect this
+   * ticket fixes (an empty title search quietly broadening into the
+   * unfocused full-text fetch that produced 4,255-fetched/1-matched) --
+   * better to show a real empty title result than to guess our way back
+   * into the old failure mode.
+   */
+  async #fetchPage(
+    criteria: SearchCriteria,
+    page: number,
+    asTitleSearch: boolean,
+  ): Promise<UsajobsSearchResponse> {
     const url = new URL(this.#baseUrl);
-    if (criteria.keyword) url.searchParams.set("Keyword", criteria.keyword);
+    if (criteria.keyword) {
+      if (asTitleSearch) {
+        // See measurement above: a literal hyphen makes PositionTitle match
+        // nothing, so it's normalized to a space before being sent. Only
+        // hyphens -- this is the one case actually measured.
+        url.searchParams.set("PositionTitle", criteria.keyword.replace(/-/g, " "));
+      } else {
+        url.searchParams.set("Keyword", criteria.keyword);
+      }
+    }
     if (criteria.location) url.searchParams.set("LocationName", criteria.location);
     url.searchParams.set("ResultsPerPage", String(this.#resultsPerPage));
     url.searchParams.set("Page", String(page));

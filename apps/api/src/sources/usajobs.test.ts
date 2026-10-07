@@ -154,6 +154,18 @@ describe("UsajobsSource — mapping against a real captured response", () => {
     expect(headers["User-Agent"]).toBe("jobsearch@example.com");
     expect(url.toString()).not.toContain("super-secret-key");
   });
+
+  it("ticket 78f48df: a plain criteria.keyword (no criteria.keywords array) still searches via Keyword, not PositionTitle -- this is the generic single-free-text-term path, deliberately unaffected by the title-chip fix (see #fetchPage's doc comment's 'DECISION on Keyword's role')", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keyword: "engineer" });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("Keyword")).toBe("engineer");
+    expect(url.searchParams.has("PositionTitle")).toBe(false);
+  });
 });
 
 describe("UsajobsSource — pagination", () => {
@@ -445,7 +457,8 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
   });
 
   // Real per-item response for a given single-item page — used to build a
-  // fetchImpl that returns different items for different Keyword values,
+  // fetchImpl that returns different items for different PositionTitle
+  // values (ticket 78f48df: title chips search PositionTitle, not Keyword),
   // simulating each phrase genuinely matching a different (or overlapping)
   // slice of USAJOBS.
   function singleItemResponse(item: unknown): Response {
@@ -457,7 +470,7 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
   it("runs one fully-paginated search per phrase and merges the jobs", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       if (keyword === "engineering generalist") return singleItemResponse(engineeringGeneralist);
       return emptyResponse();
@@ -468,11 +481,34 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const keywordsSent = fetchImpl.mock.calls
-      .map((call) => (call[0] as URL).searchParams.get("Keyword"))
+      .map((call) => (call[0] as URL).searchParams.get("PositionTitle"))
       .sort();
     expect(keywordsSent).toEqual(["civil engineer", "engineering generalist"]);
     expect(result.jobs).toHaveLength(2);
     expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["846773600", "879434300"]);
+  });
+
+  it("ticket 78f48df: title-chip phrases (criteria.keywords) go through PositionTitle, never Keyword -- PositionTitle is the parameter that actually searches job titles, measured live 2026-10-07 (PositionTitle=Technical Writer -> 40 vs. Keyword=Technical Writer -> 5, same term, same key; see usajobs.ts's #fetchPage doc comment for the full measurement)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keywords: ["technical writer"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("PositionTitle")).toBe("technical writer");
+    expect(url.searchParams.has("Keyword")).toBe(false);
+  });
+
+  it("ticket 78f48df: a hyphen in a title phrase is normalized to a space before being sent as PositionTitle -- measured live 2026-10-07 that PositionTitle=Writer-Editor returns 0 while PositionTitle=Writer Editor returns the expected count (identical words, space instead of hyphen)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keywords: ["Writer-Editor"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("PositionTitle")).toBe("Writer Editor");
   });
 
   it("dedupes by externalId when the SAME real posting matches more than one phrase", async () => {
@@ -504,7 +540,7 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
     expect(fetchImpl).toHaveBeenCalledTimes(10);
     const keywordsSent = fetchImpl.mock.calls.map((call) =>
-      (call[0] as URL).searchParams.get("Keyword"),
+      (call[0] as URL).searchParams.get("PositionTitle"),
     );
     expect(keywordsSent.sort()).toEqual(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -557,7 +593,7 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     const mappableCopy = cloneItem(civilEngineer);
 
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "unmappable-first") return singleItemResponse(unmappableCopy);
       return singleItemResponse(mappableCopy);
     });
@@ -586,7 +622,7 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
   it("keywords takes priority over a plain keyword when both are somehow present", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       return emptyResponse();
     });
@@ -598,7 +634,9 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect((fetchImpl.mock.calls[0]![0] as URL).searchParams.get("Keyword")).toBe("civil engineer");
+    expect((fetchImpl.mock.calls[0]![0] as URL).searchParams.get("PositionTitle")).toBe(
+      "civil engineer",
+    );
     expect(result.jobs).toHaveLength(1);
   });
 
@@ -620,6 +658,71 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["879434300", "999999999"]);
   });
+
+  it("ticket 78f48df: a title-mode phrase whose real PositionTitle total is huge (a generic-word blowup) stops at TITLE_SEARCH_MAX_PAGES (5) rather than fully paginating thousands of results, and warns that the cap bound", async () => {
+    const HUGE_TOTAL = 10_000;
+    let callCount = 0;
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      const pageStart = callCount * 25;
+      callCount++;
+      return jsonResponse({
+        SearchResult: {
+          SearchResultCountAll: HUGE_TOTAL,
+          // 25 items every page, forever (unique ids per page) -- simulates
+          // a phrase whose PositionTitle OR-of-words match never runs out
+          // before the cap.
+          SearchResultItems: Array.from({ length: 25 }, (_, i) => ({
+            ...cloneItem(civilEngineer),
+            MatchedObjectId: `generic-${pageStart + i}`,
+          })),
+        },
+      });
+    });
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await source.search({ keywords: ["specialist"] });
+
+    // 5 pages, not the 400 pages full pagination of a 10,000-count
+    // result would otherwise take, and nowhere near #maxPages (200).
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(result.jobs).toHaveLength(5 * 25);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('"specialist"');
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("10000 total");
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("TITLE_SEARCH_MAX_PAGES");
+    warnSpy.mockRestore();
+  });
+
+  it("ticket 78f48df: the SAME huge-total scenario does NOT cap early on the non-title (plain criteria.keyword) path -- only title-mode search gets TITLE_SEARCH_MAX_PAGES", async () => {
+    // A small, finite total (not literally full-paginating 10,000 items in
+    // a test) that still exceeds TITLE_SEARCH_MAX_PAGES*25 (125) to prove
+    // the general #maxPages ceiling (200), not the tighter title-mode one,
+    // governs this path.
+    const TOTAL = 150;
+    const fetchImpl = vi.fn().mockImplementation(async () =>
+      jsonResponse({
+        SearchResult: {
+          SearchResultCountAll: TOTAL,
+          SearchResultItems: Array.from({ length: 25 }, (_, i) => ({
+            ...cloneItem(civilEngineer),
+            MatchedObjectId: `generic-${i}`,
+          })),
+        },
+      }),
+    );
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await source.search({ keyword: "specialist" });
+
+    // Fully paginates past where TITLE_SEARCH_MAX_PAGES (5) would have
+    // stopped -- 150 / 25 = 6 pages.
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(result.jobs).toHaveLength(6 * 25);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () => {
@@ -636,7 +739,7 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
 
   it("a transient failure on ONE phrase doesn't discard other phrases' already-completed results", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       if (keyword === "engineering generalist") return singleItemResponse(engineeringGeneralist);
       if (keyword === "flaky phrase") throw new Error("ECONNRESET");
@@ -693,16 +796,21 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
     const neverRequested = vi.fn(() => emptyResponse());
 
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
-      if (keyword === "rate-limited") {
+      // Ticket 78f48df: PositionTitle normalizes hyphens to spaces (see
+      // #fetchPage's doc comment), so the phrase as SENT over the wire is
+      // "rate limited", not "rate-limited" -- the phrase names below (and
+      // the skip-reason assertions later in this test, which read the
+      // original un-normalized `phrase` string, not the URL) are unaffected.
+      const keyword = url.searchParams.get("PositionTitle");
+      if (keyword === "rate limited") {
         return new Response("Too Many Requests", {
           status: 429,
           headers: { "Retry-After": "30" },
         });
       }
-      if (keyword === "healthy-2") return healthy2Deferred.promise;
-      if (keyword === "healthy-3") return healthy3Deferred.promise;
-      if (keyword === "never-requested") return neverRequested();
+      if (keyword === "healthy 2") return healthy2Deferred.promise;
+      if (keyword === "healthy 3") return healthy3Deferred.promise;
+      if (keyword === "never requested") return neverRequested();
       return emptyResponse();
     });
     const source = makeSource(fetchImpl);
@@ -777,7 +885,7 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
   // mirrors the AuthFailedError mixed test below.
   it("a mix where ONE phrase succeeds and ANOTHER fails with MalformedResponseError still rejects -- pins the boundary, not just the all-fail case", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       if (keyword === "bad response") return new Response("not json{{{", { status: 200 });
       return emptyResponse();
@@ -804,7 +912,7 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
   // zero-successes fallback."
   it("a mix where ONE phrase succeeds and ANOTHER fails with an unmapped/unexpected status still rejects -- pins the boundary, not just the all-fail case", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       if (keyword === "bad request") return new Response("Bad Request", { status: 400 });
       return emptyResponse();
@@ -839,7 +947,7 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
   // skip, not thrown away.
   it("returns normally (does not reject) when one phrase succeeds but genuinely matches zero postings, even while another phrase fails transiently", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return emptyResponse();
       if (keyword === "flaky phrase") throw new Error("ECONNRESET");
       return emptyResponse();
@@ -864,7 +972,7 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
 
   it("a mix where SOME phrases succeed and ANOTHER fails with an abort-worthy error still rejects the whole call -- aborting takes priority over partial success, matching Greenhouse's own abortError mechanism", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      const keyword = url.searchParams.get("Keyword");
+      const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "civil engineer") return singleItemResponse(civilEngineer);
       if (keyword === "bad credentials") return new Response("Unauthorized", { status: 401 });
       return emptyResponse();
