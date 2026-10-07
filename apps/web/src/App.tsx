@@ -289,6 +289,51 @@ function JobSearchApp() {
   // "showing the picker" with "a resume exists" (or with "showing the
   // paste form") would reproduce that same class of bug.
   const [resumeChanging, setResumeChanging] = useState(false);
+  // Ticket d7d3d59: true between the picker's "Paste a new resume" click and
+  // whichever of its two exits comes first -- a submit that actually lands (a
+  // NEW resume now exists, and `resumeId` names it), or Cancel. This is the
+  // ONE state that says "the expanded form on screen is composing a resume
+  // that does not exist yet, even though `resumeId` is set and names a
+  // DIFFERENT, still-active resume."
+  //
+  // WHY A FLAG AND NOT `setResumeId(undefined)`, which the ticket itself
+  // guessed would be simpler. Clearing `resumeId` for this flow is the
+  // approach ticket cdc2c39's round-2 review already tried and rejected for
+  // the Edit flow, and every reason still holds here -- checked reader by
+  // reader:
+  //   - the persist effect below (`if (resumeId === undefined)
+  //     clearAppState()`) would WIPE sessionStorage the instant the user
+  //     clicked "Paste a new resume", which is ticket 3f05144's "it was all
+  //     clear again" report exactly.
+  //   - `{resumeId && (<div hidden={...}>...</div>)}` in the render below
+  //     UNMOUNTS sources/criteria/search -- SearchFlow included -- rather
+  //     than hiding them. ac141d0's own review caught that unmounting
+  //     SearchFlow kills an in-flight poll with no way back, which is why
+  //     that gate uses `hidden` for editing in the first place.
+  //   - ResumeInput's expanded form renders its "Cancel" button only when
+  //     `resumeId !== undefined`, so clearing it would delete the only exit
+  //     from this form (ac141d0's dead-end, reintroduced).
+  //   - ResumeInput's "Use a saved resume:" list renders only when
+  //     `resumeId === undefined` (ticket e2b5f9c), so clearing it would
+  //     re-offer the saved-resume list the user declined one click ago --
+  //     and break App.resumeLock.test.tsx's "'Paste a new resume' opens the
+  //     ordinary expanded paste form", which asserts that list is absent.
+  //   - `showSignInRecovery` (`resumeId === undefined && ...`) could offer
+  //     "been here before?" mid-paste to someone plainly not lost.
+  //   - `key={resumeId}` on `<ResumeInput>` would remount the form on the
+  //     click, and `useResults(resumeId, ...)` would drop the active
+  //     resume's results.
+  // So `resumeId` keeps meaning exactly what it has always meant -- "the
+  // resume this session is actively using" -- and this flag carries the new
+  // distinction instead. The three readers that genuinely needed to change
+  // (the nickname suggestion effect, `handleNicknameCommit`, and
+  // `handleResumeSubmit`'s first-save reconciliation) each read it below.
+  //
+  // Not persisted, deliberately: `resumeEditing` isn't either, so a reload
+  // mid-paste lands back on the collapsed bar for the still-active resume,
+  // and a persisted `true` would otherwise strand a session in "composing"
+  // with no form on screen.
+  const [pastingNewResume, setPastingNewResume] = useState(false);
   const [resumeActivating, setResumeActivating] = useState(false);
   const [resumeActivateError, setResumeActivateError] = useState<string | null>(null);
   // Review fix (F2, ticket 88f11d7): a generation counter guarding
@@ -475,7 +520,7 @@ function JobSearchApp() {
   // saved resume's id/nickname/createdAt at once).
   const { state: resumesListState, refresh: refreshResumesList } = useResumesList();
   // Ticket 3db5b35: a BEST-EFFORT pre-save nickname suggestion, seeded
-  // exactly once per session the first time `resumesListState` reaches
+  // once per unsaved resume the first time `resumesListState` reaches
   // "ready" (NOT "error" -- see review finding F2 below), so the field
   // ResumeInput now shows before a first save (reversing 5a79aa4) isn't
   // just sitting empty. `true` once seeded; checked instead of
@@ -483,6 +528,14 @@ function JobSearchApp() {
   // field by hand (to type something else entirely) is never fought by
   // this effect re-filling it on the next render -- seeding is a one-shot
   // default, not a standing invariant.
+  //
+  // Ticket d7d3d59: one-shot PER UNSAVED RESUME, not per session, which is
+  // the correction. It used to be armed exactly once at mount and never
+  // again, so the SECOND resume of a session (the picker's "Paste a new
+  // resume") got no suggestion at all -- and, with `resumeId` still set, the
+  // field showed the PREVIOUS resume's real nickname instead.
+  // `handleStartPasteNew` re-arms it (and clears the field, so the
+  // `prev === ""` guard below lets a fresh suggestion through).
   const nicknameSuggestionSeededRef = useRef(false);
   // Ticket 3db5b35 (adversarial review finding F1, severe): a SEPARATE
   // flag from the suggestion ref above, and the actual fix for "pasting
@@ -497,18 +550,26 @@ function JobSearchApp() {
   // see that function's comment for why `isNew` alone, or this flag
   // alone, each independently fails to close the bug.
   //
-  // Never reset back to `false`, and it does not need to be: `isFirstSave`
-  // (`resumeId === undefined`) gates the only reader, and `resumeId` is set
-  // exactly once per session -- both `setResumeId` call sites pass a real id
-  // and nothing ever sets it back to `undefined`. So a stale `true` here can
-  // never be read after the first save. Recorded because `handleResumeSubmit`
-  // used to send the reader here for this explanation and it was not written
-  // down anywhere (round-2 review finding).
+  // CORRECTED, ticket d7d3d59: this IS reset now, in `handleStartPasteNew`,
+  // and that reset is load-bearing rather than tidiness. The old claim --
+  // that a stale `true` could never be read, because the only reader was
+  // gated on `resumeId === undefined` and `resumeId` is never cleared --
+  // stopped holding the moment that reader learned about a SECOND unsaved
+  // resume (`isNewResumeSave` below). Concretely: rename Resume 1 by hand
+  // (this ref latches `true`), then "Change" -> "Paste a new resume", then
+  // submit without ever opening the nickname field. Without the reset, the
+  // reconciliation would read a `true` left over from the OTHER resume and
+  // PATCH the client-side guess ("Resume 2") over whatever the server
+  // actually assigned -- a rename nobody typed, which is review finding F1's
+  // own failure mode wearing a different hat.
   const nicknameUserEditedRef = useRef(false);
   useEffect(() => {
     // Nothing to suggest once a real resume (and its real nickname) exists
-    // -- this is specifically the BEFORE-the-first-save case.
-    if (resumeId !== undefined) return;
+    // -- this is specifically the BEFORE-A-SAVE case. Ticket d7d3d59:
+    // "before a save" includes the picker's "Paste a new resume", where
+    // `resumeId` is set but names a DIFFERENT resume and the form on screen
+    // is composing one that does not exist yet (see `pastingNewResume`).
+    if (resumeId !== undefined && !pastingNewResume) return;
     if (nicknameSuggestionSeededRef.current) return;
     // Review finding F2: wait for a REAL list, not merely a settled one.
     // `resumesListState` starts "idle"/"loading" on every mount
@@ -542,7 +603,7 @@ function JobSearchApp() {
     setResumeNickname((prev) =>
       prev === "" ? nextResumeNicknameFor(resumesListState.data.resumes.length) : prev,
     );
-  }, [resumeId, resumesListState]);
+  }, [resumeId, pastingNewResume, resumesListState]);
   // Ticket 1e183a4: which resume a result card's "Searched with:" link
   // most recently asked to jump to -- see FocusResume's own doc comment
   // (MyResumes.tsx) for why this carries a `token`, not just an id.
@@ -782,7 +843,17 @@ function JobSearchApp() {
   async function saveResumeText(
     resumeText: string,
   ): Promise<CreateResumeResponse | UpdateResumeTextResponse> {
-    if (resumeId === undefined || resumeLocked) return createResume(resumeText);
+    // Ticket d7d3d59: `pastingNewResume` joins the condition as a SECOND,
+    // independent reason to POST. It changes nothing today -- the picker that
+    // sets it is reachable only from a locked resume's "Change", so
+    // `resumeLocked` is always true alongside it -- which is exactly why it is
+    // safe to add, and the point is that it no longer has to be inferred. The
+    // destructive mistake available on this line is routing a "paste a new
+    // resume" to the PUT and overwriting the resume the user just declined to
+    // reuse (see `handleResumeSubmit`'s own comment); naming the intent
+    // directly means a future change to how `resumeLocked` is maintained
+    // cannot quietly re-enable it.
+    if (resumeId === undefined || pastingNewResume || resumeLocked) return createResume(resumeText);
     try {
       return await updateResumeText(resumeId, resumeText);
     } catch (err) {
@@ -795,17 +866,25 @@ function JobSearchApp() {
     setResumeSubmitting(true);
     setResumeError(null);
     // Ticket 3db5b35: captured BEFORE `saveResumeText` below, which is what
-    // this ticket's acceptance criteria call "before the first save" --
-    // `resumeId === undefined` right now is the only reliable signal for
-    // that; `saveResumeText`'s own branch on `resumeLocked` also reaches
-    // `createResume` for "paste a new resume while locked," which is
-    // deliberately NOT treated the same way (that form's nickname field is
-    // showing the OLD, still-active resume's real nickname, not a fresh
-    // suggestion -- see `nicknameSuggestionSeededRef`'s effect above, which
-    // only ever seeds while `resumeId === undefined`). `resumeNickname` is
-    // read here, not `lastSavedNickname`, because nothing has been "saved"
-    // yet for this to be the server-confirmed baseline of.
-    const isFirstSave = resumeId === undefined;
+    // that ticket's acceptance criteria called "before the first save."
+    // `resumeNickname` is read here, not `lastSavedNickname`, because nothing
+    // has been "saved" yet for this to be the server-confirmed baseline of.
+    //
+    // CORRECTED, ticket d7d3d59. This used to be `resumeId === undefined`
+    // alone, with a comment arguing that "paste a new resume while locked"
+    // was deliberately excluded because that form's nickname field showed the
+    // OLD resume's real nickname rather than a fresh suggestion. That was a
+    // true description of a BUG, not a design: the field showed the previous
+    // resume's name precisely because the suggestion effect refused to seed
+    // while `resumeId` was set, and a name typed there was PATCHed onto the
+    // previous resume (this ticket's data-loss half). Now that the effect
+    // seeds a real "Resume N+1" suggestion for this flow too, the two cases
+    // are genuinely the same thing -- a resume being named as it is created
+    // -- and the reconciliation below has to cover both. Every other guard in
+    // that gate (`isNew`, `nicknameUserEditedRef`) is unchanged and still
+    // required; this only widens WHICH submits are eligible to be checked by
+    // them.
+    const isNewResumeSave = resumeId === undefined || pastingNewResume;
     const nicknameAtSubmit = resumeNickname.trim();
     try {
       // TICKET 6ba221e: AN EDIT IS AN UPDATE, NOT A NEW RESUME. This one
@@ -862,6 +941,14 @@ function JobSearchApp() {
       // impossible rather than merely guarded against.
       const isNew = "isNew" in saveResult && saveResult.isNew;
       setResumeId(id);
+      // Ticket d7d3d59: the "paste a new resume" flow ends HERE, the moment a
+      // save lands -- `resumeId` now names the resume the form was composing,
+      // so from this point the nickname field is editing a real, existing row
+      // and `handleNicknameCommit` must be allowed to PATCH it again. That
+      // matters even on the failure path below: a nickname PATCH that 409s
+      // leaves the form open on purpose so the value stays fixable in place,
+      // and the fix is committed by a blur against THIS id.
+      setPastingNewResume(false);
       // Ticket 88f11d7: the server's real, just-computed answer, never
       // assumed. `POST /resumes` can report `true` when the submitted text
       // resolved to an already-searched resume; the `PUT` branch above can
@@ -979,7 +1066,7 @@ function JobSearchApp() {
       // additional skip (no network call for a no-op match) -- never
       // again as the test of intent by itself.
       if (
-        isFirstSave &&
+        isNewResumeSave &&
         isNew &&
         nicknameUserEditedRef.current &&
         nicknameAtSubmit.length > 0 &&
@@ -1073,6 +1160,18 @@ function JobSearchApp() {
   // stay parked in local state as though it had taken effect.
   async function handleNicknameCommit(nextNickname: string) {
     if (resumeId === undefined) return;
+    // TICKET d7d3d59, THE DATA-LOSS HALF. `resumeId` is set during "paste a
+    // new resume" and names the PREVIOUS, still-active resume -- so without
+    // this line, naming the resume you are about to create renamed the one you
+    // just declined to reuse, on blur, with no error and no sign anything had
+    // happened. Same family as 3db5b35's F1 (a client that could not tell
+    // which resume a nickname belonged to), and the same answer: the field is
+    // purely local state until a save gives it a real row to attach to, which
+    // is already exactly what it does before a FIRST save (the
+    // `resumeId === undefined` return above). `handleResumeSubmit` is what
+    // persists the typed name, via the reconciliation PATCH against the id the
+    // POST actually returns.
+    if (pastingNewResume) return;
     const trimmed = nextNickname.trim();
     if (trimmed === lastSavedNickname) return;
     if (trimmed.length === 0) {
@@ -1155,6 +1254,14 @@ function JobSearchApp() {
     setResumeError(null);
     setResumeNickname(lastSavedNickname);
     setNicknameError(null);
+    // Ticket d7d3d59: the other exit from "paste a new resume" (the first is a
+    // submit that lands). Nothing was created, so the previously-active resume
+    // is active again in every respect -- including its own nickname, which the
+    // `setResumeNickname(lastSavedNickname)` above already restores over the
+    // suggestion this flow seeded. Without clearing the flag here, that
+    // restored real nickname would then be unrenameable: `handleNicknameCommit`
+    // would keep refusing to PATCH for the rest of the session.
+    setPastingNewResume(false);
   }
 
   // Ticket 88f11d7: fires from the collapsed summary bar's "Change" (the
@@ -1187,6 +1294,26 @@ function JobSearchApp() {
   // either way once `editingResume` is true). Review fix (F2): same
   // in-flight-activation invalidation as `handleCancelChange` -- this is
   // also a way to leave the picker without an activation completing.
+  //
+  // Ticket d7d3d59: this is also where the nickname field is handed over from
+  // the OLD resume to the one about to be created. Three writes, each closing
+  // one half of this ticket's bug:
+  //   - `setPastingNewResume(true)` -- the form is now composing a resume that
+  //     does not exist yet (see that state's own doc comment for why this is a
+  //     flag rather than `setResumeId(undefined)`).
+  //   - clearing `resumeNickname` and re-arming
+  //     `nicknameSuggestionSeededRef` -- together these let the suggestion
+  //     effect seed a real "Resume N+1" for THIS resume. Clearing is what makes
+  //     the effect's `prev === ""` guard pass; re-arming the ref is what makes
+  //     it run at all a second time. `lastSavedNickname` is deliberately NOT
+  //     cleared: it is still the old resume's server-confirmed name, which
+  //     `handleCancelEdit` restores from and which the persist effect keeps
+  //     writing to sessionStorage, correctly, for as long as that resume is the
+  //     active one.
+  //   - resetting `nicknameUserEditedRef` -- a `true` latched while renaming
+  //     the PREVIOUS resume must not be read as "the user typed a name for this
+  //     one" (see that ref's own comment for the concrete rename-then-paste
+  //     scenario that produces).
   function handleStartPasteNew() {
     activationTokenRef.current++;
     setResumeChanging(false);
@@ -1194,6 +1321,10 @@ function JobSearchApp() {
     setResumeEditing(true);
     setNicknameError(null);
     setResumeError(null);
+    setPastingNewResume(true);
+    nicknameSuggestionSeededRef.current = false;
+    nicknameUserEditedRef.current = false;
+    setResumeNickname("");
   }
 
   // Ticket 88f11d7 (Nicole: "already exists in full, use resume 8...

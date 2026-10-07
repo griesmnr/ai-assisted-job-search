@@ -550,7 +550,17 @@ export function ResumeInput({
             with nothing yet to attach a PATCH to -- `handleNicknameCommit`
             (App.tsx) still no-ops on blur while `resumeId` is undefined, so
             typing here before the first save is purely local state until
-            `handleResumeSubmit` captures it at submit time. */}
+            `handleResumeSubmit` captures it at submit time.
+
+            Ticket d7d3d59: that "purely local until submit" behavior now also
+            covers the SECOND and later resumes of a session. This same branch
+            is reached with a `resumeId` already set when the locked picker's
+            "Paste a new resume" opens it, and the resume being named there
+            does not exist yet either -- so App.tsx's `pastingNewResume` makes
+            `handleNicknameCommit` no-op for that case too. Before that, a blur
+            here PATCHed the PREVIOUS resume's id and silently renamed it. This
+            component is unchanged by the fix and still knows nothing about
+            which case it is in; it collects a nickname and hands it up. */}
         <div className="resume-nickname-field">
           <label htmlFor="resume-nickname">Resume Nickname</label>
           <input
