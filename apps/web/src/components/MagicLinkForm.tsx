@@ -192,8 +192,25 @@ export function MagicLinkForm({
             {secondary?.({ sending: phase.status === "sending" })}
           </form>
           {phase.status === "error" && (
+            // Ticket 43423eb, fix F1: this used to prefix every message
+            // with "Could not send the link:", which stuttered against the
+            // 503 copy's own "Could not send the sign-in email just now" --
+            // the exact doubled wording Nicole read aloud off her screen
+            // when she filed the ticket. `phase.message` is already a
+            // complete, caller-facing sentence for every realistic path
+            // into this state: the API's 503 ("Could not send the sign-in
+            // email just now. The failure has been logged on our end."),
+            // its 400 (`"x" is not a usable email address.`), and the
+            // client's own network-unreachable message (`Could not reach
+            // the API at ${API_BASE_URL}: ${reason}`, client.ts). The one
+            // degenerate case -- a non-JSON error body falling back to the
+            // bare `${status} ${statusText}` at client.ts's `request()` --
+            // is not meaningfully improved by the prefix either ("Could not
+            // send the link: 503 Service Unavailable" is no clearer than
+            // "503 Service Unavailable" alone), so it is not a reason to
+            // keep stuttering the common case to patch an uncommon one.
             <p role="alert" className="magic-link-error">
-              Could not send the link: {phase.message}
+              {phase.message}
             </p>
           )}
         </>
