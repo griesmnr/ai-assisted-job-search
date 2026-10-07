@@ -42,6 +42,7 @@ import { useAllResults } from "./hooks/useAllResults";
 import { useResults } from "./hooks/useResults";
 import { useResumesList } from "./hooks/useResumesList";
 import { useSources } from "./hooks/useSources";
+import { getVerifiedEmail } from "./identity";
 import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
 import { splitPhrases } from "./criteriaText";
 
@@ -1745,22 +1746,71 @@ function JobSearchApp() {
   // again -- not because of a flag that remembers them, but because the gate
   // re-reads the same evidence every render.
   //
-  // Deliberately reuses `scoredArmReady` (defined above for the magic-link
-  // prompt's own gate) rather than the pessimistic `nothingScoredInThisBrowser`
-  // pair above: that pair treats `loading` and fetch `error` as "hide the
-  // offer", which is the right call for a recovery LINK (an offer flashing in
-  // and out reads as broken) but the wrong call here. The ticket requires
-  // this paragraph to be "the first thing a first-time visitor reads," so the
-  // default while either fetch is unsettled is VISIBLE: a brief extra flash
-  // for an already-returning visitor on a fast connection is a far smaller
-  // cost than a blank header above the fold on a slow one. `scoredArmReady`
-  // also already excludes `hiddenBelowFloor`-only results ("the user cannot
-  // see those," per its own comment) -- which is correct here too: a visitor
-  // whose only results are filtered below the floor has not yet SEEN a match
-  // score, so the paragraph explaining what one is still earns its place.
+  // `hasOwnResumes`/`scoredArmReady` (the latter defined above for the
+  // magic-link prompt's own gate) diverge from the pessimistic
+  // `nothingScoredInThisBrowser`/`noResumesOnThisAccount` pair above on
+  // exactly ONE axis: `loading`/`idle`, not `error` too -- on `error` both
+  // pairs agree and show their respective offer (see that pair's own
+  // comment: "guessing 'empty' costs a returning user one redundant offer").
+  // `loading` is where this gate chose to diverge FIRST, reasoning only
+  // "the first-time visitor must see this paragraph in the first paint" --
+  // but that reasoning was incomplete on its own, see `verifiedEmail` below,
+  // which is the actual fix.
+  //
+  // Opus review round 1 (F2), measured in real Chromium against this app's
+  // own built CSS: showing the paragraph by default while `useResumesList`/
+  // `useAllResults` are still `loading` produces a real, measured content
+  // jump on EVERY load for a returning user with data -- 146.3px at 1280px
+  // wide, 235.9px at 390px -- because both hooks start `idle` and resolve in
+  // a post-mount effect, so the paragraph commits on the first paint and
+  // then the layout snaps up ~200ms later once the fetches land. For Nicole
+  // specifically, that is not a one-time cost; it is every single page load.
+  // The reviewer also checked and rejected defaulting to HIDDEN instead:
+  // that turns the same gap into a DOWNWARD jump that shoves the resume
+  // textarea and Submit button under a cursor already moving toward them --
+  // done to a first-time visitor, which is the one audience this paragraph
+  // exists for. Neither default is free; this gate needed a signal that is
+  // actually available SYNCHRONOUSLY on the first render, not a default to
+  // pick between two bad ones.
+  //
+  // `verifiedEmail` is that signal, read with `useState(getVerifiedEmail)` --
+  // the exact pattern `SignedInCue` already uses for the same reason (a
+  // plain, synchronous `localStorage` read via `identity.ts`, nothing to
+  // await). A verified email is unambiguous evidence of prior use, so
+  // checking it costs nothing in time: it is correct from the very first
+  // render, with no fetch to wait on, which is what makes it able to
+  // eliminate the jump rather than just move it. This strictly dominates
+  // both alternatives above: the owner, who is always verified, never sees
+  // the paragraph for even one frame (zero flash, zero jump), while a
+  // genuine first-timer -- unverified by definition -- still gets it on the
+  // first paint, and so does a returning visitor with cleared storage, which
+  // is exactly the case the data-over-flag reasoning above argues for. It
+  // also closes a second bug the loading-only gate had: with BOTH fetches
+  // erroring, `hasOwnResumes`/`scoredArmReady` can never become true from
+  // data alone, so the paragraph used to stay on screen permanently right
+  // next to `SignedInCue`'s "these results are saved to <email>" -- an
+  // unverified-newcomer greeting and a you're-already-signed-in notice on
+  // the same screen at once. Checking `verifiedEmail` first closes that for
+  // anyone it actually applies to.
+  //
+  // THE HONEST LIMIT, named rather than overclaimed: this does nothing for
+  // an anonymous visitor who has genuinely used the app before but never
+  // verified an email. `identity.ts`'s `getUserId()` creates an id on first
+  // read when none exists, so the mere presence of a stored id proves
+  // nothing about whether this browser has been here before -- it cannot
+  // stand in for `verifiedEmail` the way it does for `showSignInRecovery`'s
+  // `resumeId` check above. That visitor still sees the same loading-then-
+  // settle flash this comment just finished describing. Fixing that would
+  // need a real "has this browser rendered real data before" flag, which is
+  // more than this ticket's paragraph needs to solve today.
   const hasOwnResumes =
     resumesListState.status === "ready" && resumesListState.data.resumes.length > 0;
-  const showWelcomeParagraph = !hasOwnResumes && !scoredArmReady;
+  // Same pattern as `SignedInCue`/`SignInRecovery`: read once at mount, a
+  // plain `localStorage` lookup with nothing to await, so it is correct on
+  // the very first render -- see the long comment above for why that is the
+  // whole point.
+  const [verifiedEmail] = useState(getVerifiedEmail);
+  const showWelcomeParagraph = verifiedEmail === undefined && !hasOwnResumes && !scoredArmReady;
 
   // Latches true the first time the recovery offer is due, so the component is
   // not mounted before then. A ref rather than state: it only ever goes true,
@@ -1811,7 +1861,8 @@ function JobSearchApp() {
           the row instead gets that behavior for free, in normal flow, with
           zero risk of disturbing where the cue or the recovery link land --
           and the ticket's own placement rule ("in `.app-header` or
-          immediately after it") allows exactly this. See `showWelcomeParagraph` above for whether it renders at all. */}
+          immediately after it") allows exactly this. See
+          `showWelcomeParagraph` above for whether it renders at all. */}
       {showWelcomeParagraph && (
         <p className="app-welcome">
           Welcome to FitScore! Find jobs that fit your experience—not just your search terms. We

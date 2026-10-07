@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GetAllResultsResponse, GetSourcesResponse, ListResumesResponse } from "@app/shared";
 import App from "./App";
+import { setVerifiedEmail } from "./identity";
 
 /**
  * Ticket 9e00bc9: the welcome paragraph below the `<h1>`, and the decision
@@ -48,6 +49,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 const SOURCES: GetSourcesResponse = {
@@ -71,6 +73,26 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
 
     const paragraph = await screen.findByText(/Welcome to FitScore/);
     expect(paragraph.textContent).toBe(EXACT_WELCOME_TEXT);
+  });
+
+  it("sits directly above the tab nav -- h1, then paragraph, then nav", async () => {
+    // Opus review round 1: none of the three tests above pin WHERE the
+    // paragraph lands. Moving it below `.tab-nav` (which would satisfy none
+    // of the "first thing a first-time visitor reads" reasoning this
+    // component's own comment argues for) would leave every one of them
+    // green, because they only check whether the text exists on the page at
+    // all. This asserts position directly: the paragraph is `.tab-nav`'s
+    // immediately preceding sibling.
+    getSources.mockResolvedValue(SOURCES);
+    listResumes.mockResolvedValue({ resumes: [] } satisfies ListResumesResponse);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+
+    const paragraph = await screen.findByText(/Welcome to FitScore/);
+    const nav = document.querySelector(".tab-nav");
+    expect(nav).not.toBeNull();
+    expect(nav!.previousElementSibling).toBe(paragraph);
   });
 
   it("does not render once the account has a saved resume, even with nothing scored yet", async () => {
@@ -128,6 +150,28 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "FitScore" })).toBeInTheDocument(),
     );
+
+    expect(screen.queryByText(/Welcome to FitScore/)).toBeNull();
+  });
+
+  it("never flashes for a verified user, even in the loading window before the resume/results fetches settle", async () => {
+    // Opus review round 1 (F2): measured in real Chromium, a default of
+    // "visible while loading" produces a real layout jump on every load for
+    // a returning, already-verified user -- 146.3px at 1280px wide, 235.9px
+    // at 390px -- because `useResumesList`/`useAllResults` both start
+    // `loading` and only resolve in a post-mount effect. This proves the fix
+    // directly: `listResumes`/`getAllResults` are left PENDING forever below
+    // (never resolved), holding the component in exactly that loading
+    // window, and the assertion runs with no `await` at all -- on the very
+    // first render/commit. `verifiedEmail` is read synchronously
+    // (`useState(getVerifiedEmail)`, the same pattern `SignedInCue` uses),
+    // so it has to win this race regardless of what the fetches are doing.
+    setVerifiedEmail("owner@example.com");
+    getSources.mockResolvedValue(SOURCES);
+    listResumes.mockReturnValue(new Promise<ListResumesResponse>(() => {}));
+    getAllResults.mockReturnValue(new Promise<GetAllResultsResponse>(() => {}));
+
+    render(<App />);
 
     expect(screen.queryByText(/Welcome to FitScore/)).toBeNull();
   });
