@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Job, LevelFit } from "@app/shared";
-import { MATCH_SCORE_FLOOR } from "@app/shared";
+import { MATCH_SCORE_FLOOR, nextResumeNicknameFor } from "@app/shared";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { seedSourceDescriptors } from "../db/seed.js";
@@ -955,7 +955,14 @@ export async function getOrCreateResumeId(
     .select({ count: sql<number>`count(*)::int` })
     .from(resumes)
     .where(eq(resumes.userId, userId));
-  const nextResumeNumber = (countRows[0]?.count ?? 0) + 1;
+  // Ticket 3db5b35 (review finding F6): this numbering scheme used to be
+  // inlined here, duplicated (coincidentally, not by reference) by the
+  // client's own pre-save suggestion in App.tsx. Extracted to
+  // `nextResumeNicknameFor` (@app/shared) so the two expressions can't
+  // silently drift the next time either side changes without the other
+  // noticing -- same reasoning `USER_JOB_STATUSES` already lives in
+  // @app/shared for.
+  const resumeNickname = nextResumeNicknameFor(countRows[0]?.count ?? 0);
 
   const inserted = await db
     .insert(resumes)
@@ -964,7 +971,7 @@ export async function getOrCreateResumeId(
       userId,
       resumeText,
       resumeHash,
-      resumeNickname: `Resume ${nextResumeNumber}`,
+      resumeNickname,
     })
     .returning({ id: resumes.id });
 

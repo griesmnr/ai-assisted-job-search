@@ -145,6 +145,25 @@ describe("POST /resumes", () => {
       const secondNickname = (second.json() as CreateResumeResponse).resumeNickname;
       expect(secondNickname).toBe(firstNickname);
     });
+
+    // Ticket 3db5b35 (adversarial review finding F1, severe): the
+    // frontend needs to tell "this request created a fresh row" apart
+    // from "this request resolved to an existing one" to avoid treating
+    // the latter's real nickname as something a pre-save client guess is
+    // free to overwrite. `isNew` is `getOrCreateResumeId`'s own internal
+    // answer (apps/api/src/matching/pipeline.ts), carried onto the wire
+    // for the first time by this ticket -- see `CreateResumeResponse
+    // .isNew`'s doc comment (@app/shared) for the full scenario.
+    it("reports isNew: true for a genuinely new resume, and isNew: false for a resubmission that resolves to an existing one", async () => {
+      const app = buildTestApp();
+      const resumeText = `isNew-tracking resume ${randomUUID()}`;
+
+      const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+      const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+      expect((first.json() as CreateResumeResponse).isNew).toBe(true);
+      expect((second.json() as CreateResumeResponse).isNew).toBe(false);
+    });
   });
 
   it("posting identical text twice resolves to the same id rather than a second row", async () => {

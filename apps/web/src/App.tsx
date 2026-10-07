@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   MATCH_SCORE_FLOOR,
+  nextResumeNicknameFor,
   type CreateResumeResponse,
   type ScoredJobResult,
   type SearchCriteria,
@@ -316,10 +317,25 @@ function JobSearchApp() {
   const [searchRunning, setSearchRunning] = useState(false);
   // Ticket 38a7598: "Resume 1"/"Resume 2"/... assigned by the server at
   // creation time (CreateResumeResponse.resumeNickname), or restored from a
-  // prior reload. Empty string (not undefined) before any resume has been
-  // submitted this session/reload -- ResumeInput's field isn't rendered at
-  // all in that state (ticket 5a79aa4; gated on `resumeId`, not on this
-  // being non-empty).
+  // prior reload.
+  //
+  // CORRECTED, ticket 3db5b35 (review finding F3) -- this used to claim
+  // "ResumeInput's field isn't rendered at all" before a first submission
+  // (ticket 5a79aa4's gating), which that ticket's own reversal makes
+  // false: the field DOES render pre-save now, and this is no longer
+  // simply empty in that state either. It starts `""` here (unchanged --
+  // nothing's restored yet on a fresh session), but the pre-save
+  // suggestion effect a little further down (`nicknameSuggestionSeededRef`)
+  // fills it with a client-side guess once the saved-resumes list LOADS
+  // SUCCESSFULLY -- not merely once it settles, which is a distinction that
+  // review finding F2 turned into a real bug: a FAILED load is settled too,
+  // and treating it as "zero resumes" manufactured a confident "Resume 1"
+  // out of a response that said nothing at all. So the field stays blank on
+  // an error rather than carrying an invented name. See that effect, and
+  // `handleResumeSubmit`'s own
+  // comment, for the full story of why a SUGGESTION has to stand in here
+  // rather than the real server default, which doesn't exist until a save
+  // actually happens.
   const [resumeNickname, setResumeNickname] = useState(restored?.resumeNickname ?? "");
   // Ticket 38a7598 review fix: the last value the SERVER actually
   // confirmed (either a fresh `CreateResumeResponse.resumeNickname` or a
@@ -458,6 +474,75 @@ function JobSearchApp() {
   // else on this page (there is no other place that already holds every
   // saved resume's id/nickname/createdAt at once).
   const { state: resumesListState, refresh: refreshResumesList } = useResumesList();
+  // Ticket 3db5b35: a BEST-EFFORT pre-save nickname suggestion, seeded
+  // exactly once per session the first time `resumesListState` reaches
+  // "ready" (NOT "error" -- see review finding F2 below), so the field
+  // ResumeInput now shows before a first save (reversing 5a79aa4) isn't
+  // just sitting empty. `true` once seeded; checked instead of
+  // re-deriving from `resumeNickname` itself so that a user clearing the
+  // field by hand (to type something else entirely) is never fought by
+  // this effect re-filling it on the next render -- seeding is a one-shot
+  // default, not a standing invariant.
+  const nicknameSuggestionSeededRef = useRef(false);
+  // Ticket 3db5b35 (adversarial review finding F1, severe): a SEPARATE
+  // flag from the suggestion ref above, and the actual fix for "pasting
+  // text you already have saved silently renames it." The suggestion
+  // effect below calls `setResumeNickname` directly -- NOT through
+  // `handleNicknameChange` -- specifically so this ref stays `false` for
+  // a value this app guessed on the user's behalf, and only flips `true`
+  // when the user's own fingers touched the field. `handleResumeSubmit`
+  // requires this (ALONGSIDE the server's own `isNew`, not instead of it)
+  // before ever treating a mismatch between the suggestion and the
+  // server's real default as "the user asked for something different" --
+  // see that function's comment for why `isNew` alone, or this flag
+  // alone, each independently fails to close the bug.
+  //
+  // Never reset back to `false`, and it does not need to be: `isFirstSave`
+  // (`resumeId === undefined`) gates the only reader, and `resumeId` is set
+  // exactly once per session -- both `setResumeId` call sites pass a real id
+  // and nothing ever sets it back to `undefined`. So a stale `true` here can
+  // never be read after the first save. Recorded because `handleResumeSubmit`
+  // used to send the reader here for this explanation and it was not written
+  // down anywhere (round-2 review finding).
+  const nicknameUserEditedRef = useRef(false);
+  useEffect(() => {
+    // Nothing to suggest once a real resume (and its real nickname) exists
+    // -- this is specifically the BEFORE-the-first-save case.
+    if (resumeId !== undefined) return;
+    if (nicknameSuggestionSeededRef.current) return;
+    // Review finding F2: wait for a REAL list, not merely a settled one.
+    // `resumesListState` starts "idle"/"loading" on every mount
+    // (useResumesList.ts) -- those still just wait, same as before. But
+    // "error" used to fall through to `existingCount = 0` and confidently
+    // suggest "Resume 1" anyway -- manufacturing a specific, countable
+    // claim out of a request that told this app LITERALLY NOTHING about
+    // how many resumes exist. For someone who already has a real "Resume
+    // 1," pasting brand-new text without ever touching the nickname field
+    // then produced a server-side 409 collision and a red-outlined field
+    // for a name they never typed. "Error" now leaves the field empty
+    // AND leaves `nicknameSuggestionSeededRef` unset, so a later
+    // successful refresh of the list (if one ever happens before the
+    // first save) still gets a chance to seed a real suggestion rather
+    // than being permanently locked out by one failed request.
+    if (resumesListState.status !== "ready") return;
+    nicknameSuggestionSeededRef.current = true;
+    // Same numbering scheme the server itself uses at insert time
+    // (`getOrCreateResumeId`, apps/api/src/matching/pipeline.ts) --
+    // `nextResumeNicknameFor` (@app/shared, review finding F6) is the ONE
+    // place that formula lives now, used by both sides specifically so
+    // they cannot silently drift apart the way two independent copies of
+    // "count + 1" otherwise could. Still just a best-effort GUESS, not
+    // fetched, because there is no endpoint that returns "what would you
+    // suggest" without actually creating a resume (see
+    // `handleResumeSubmit`'s own comment for the full argument against
+    // adding one) -- it can still disagree with the real server default
+    // (another tab/session creating a resume in between), which is
+    // exactly why `handleResumeSubmit` never trusts a mismatch here as
+    // proof of anything by itself.
+    setResumeNickname((prev) =>
+      prev === "" ? nextResumeNicknameFor(resumesListState.data.resumes.length) : prev,
+    );
+  }, [resumeId, resumesListState]);
   // Ticket 1e183a4: which resume a result card's "Searched with:" link
   // most recently asked to jump to -- see FocusResume's own doc comment
   // (MyResumes.tsx) for why this carries a `token`, not just an id.
@@ -709,6 +794,19 @@ function JobSearchApp() {
   async function handleResumeSubmit(resumeText: string) {
     setResumeSubmitting(true);
     setResumeError(null);
+    // Ticket 3db5b35: captured BEFORE `saveResumeText` below, which is what
+    // this ticket's acceptance criteria call "before the first save" --
+    // `resumeId === undefined` right now is the only reliable signal for
+    // that; `saveResumeText`'s own branch on `resumeLocked` also reaches
+    // `createResume` for "paste a new resume while locked," which is
+    // deliberately NOT treated the same way (that form's nickname field is
+    // showing the OLD, still-active resume's real nickname, not a fresh
+    // suggestion -- see `nicknameSuggestionSeededRef`'s effect above, which
+    // only ever seeds while `resumeId === undefined`). `resumeNickname` is
+    // read here, not `lastSavedNickname`, because nothing has been "saved"
+    // yet for this to be the server-confirmed baseline of.
+    const isFirstSave = resumeId === undefined;
+    const nicknameAtSubmit = resumeNickname.trim();
     try {
       // TICKET 6ba221e: AN EDIT IS AN UPDATE, NOT A NEW RESUME. This one
       // branch is the fix for Nicole's own report -- "if I'm on resume one
@@ -751,12 +849,18 @@ function JobSearchApp() {
       // consistent in the data layer (the endpoint allows it either way).
       // It is still a surface a user can notice, so it is named here
       // instead of waiting to be rediscovered as a bug.
-      const {
-        id,
-        suggestedTitles,
-        resumeNickname: defaultNickname,
-        isLocked,
-      } = await saveResumeText(resumeText);
+      const saveResult = await saveResumeText(resumeText);
+      const { id, suggestedTitles, resumeNickname: defaultNickname, isLocked } = saveResult;
+      // Ticket 3db5b35 (review finding F1, severe): `isNew` only exists on
+      // `CreateResumeResponse` -- `UpdateResumeTextResponse` (the PUT
+      // branch's return type) has no such concept, an edit never
+      // "creates" anything. Narrowed with `in` rather than widening
+      // `UpdateResumeTextResponse` to carry a field that would always be
+      // meaningless there. See `CreateResumeResponse.isNew`'s doc comment
+      // (@app/shared) and the reconciliation block below for why this
+      // specific boolean is what makes the defect structurally
+      // impossible rather than merely guarded against.
+      const isNew = "isNew" in saveResult && saveResult.isNew;
       setResumeId(id);
       // Ticket 88f11d7: the server's real, just-computed answer, never
       // assumed. `POST /resumes` can report `true` when the submitted text
@@ -797,7 +901,11 @@ function JobSearchApp() {
       // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
       // a submission actually lands -- not on the Edit click itself (see
       // `resumeEditing`'s own doc comment above). A no-op on the
-      // first-ever submission, where this was already false.
+      // first-ever submission, where this was already false. Ticket
+      // 3db5b35: the nickname reconciliation block below can override
+      // this back to `true` for a first-save nickname-commit failure --
+      // see its own comment for why staying expanded is what keeps the
+      // error visible at all.
       setResumeEditing(false);
       // Ticket 303cff0: a genuinely new resume, a resubmission that
       // matched an existing one (per `createResume`'s find-or-create), or
@@ -809,6 +917,118 @@ function JobSearchApp() {
       // per-row text fetches from, and an unconditional refresh here is
       // cheaper to reason about than a per-branch one.
       refreshResumesList();
+
+      // Ticket 3db5b35 -- THE PRE-SAVE SUGGESTION PROBLEM, AND WHY THIS IS
+      // THE ANSWER RATHER THAN A NEW ENDPOINT.
+      //
+      // Jay's feedback (relayed by Nicole) asked for the nickname field to
+      // be visible, pre-filled, and editable BEFORE the first save. The
+      // real server default (`CreateResumeResponse.resumeNickname`) only
+      // exists AFTER `POST /resumes` resolves -- there has never been an
+      // endpoint that returns "what would you suggest" without actually
+      // creating a resume, and this ticket's own scope (see its git-bug)
+      // says not to build one speculatively. So the field above shows a
+      // CLIENT-SIDE best-effort guess instead (`nicknameSuggestionSeededRef`'s
+      // effect: "Resume " + one more than the already-loaded list's count,
+      // the same formula the server itself uses) -- close enough to be a
+      // reasonable starting point, not guaranteed to match.
+      //
+      // That means by the time THIS line runs, two nicknames can both be
+      // real: `defaultNickname` (what the server actually resolved --
+      // see `isNew` below for why that is NOT necessarily "the new row's
+      // default") and `nicknameAtSubmit` (whatever was sitting in the
+      // field at the moment of submit -- the unedited guess, or the
+      // user's own edit).
+      //
+      // THE DEFECT THIS GATE EXISTS TO CLOSE (adversarial review finding
+      // F1, severe, caught with a passing test that proved it): the
+      // ORIGINAL version of this gate was `nicknameAtSubmit !==
+      // defaultNickname`, on the theory that a mismatch means "the user
+      // edited it." IT DOES NOT. `POST /resumes` is find-or-create (see
+      // `saveResumeText`/`createResume`'s own comments) -- a mismatch is
+      // EQUALLY produced, and in the single most ordinary returning-user
+      // action (paste text you already have saved, touch nothing) MORE
+      // LIKELY produced, by the suggestion simply being wrong about a row
+      // that already exists under its own real, possibly already-renamed
+      // name. That old gate would PATCH the suggestion over it --
+      // silently destroying a name the user chose, on a resume they
+      // never even opened the nickname field for.
+      //
+      // So intent now requires BOTH independent signals, neither
+      // sufficient alone:
+      //   - `isNew` (the server's own `getOrCreateResumeId` answer,
+      //     carried onto the wire for the first time by this ticket --
+      //     see `CreateResumeResponse.isNew`, @app/shared): PROVES this
+      //     request is the one that inserted the row `defaultNickname`
+      //     describes, not a find-or-create hit against someone else's
+      //     history. Required because `nicknameUserEditedRef` alone is
+      //     insufficient too: a user who BOTH types a name AND happens to
+      //     paste text that resolves to an existing resume would still
+      //     rename that existing row on `nicknameUserEditedRef` alone.
+      //   - `nicknameUserEditedRef.current` (set only inside
+      //     `handleNicknameChange`, never by the suggestion effect's own
+      //     `setResumeNickname` call -- see that ref's own comment):
+      //     PROVES a human actually touched the field, which `isNew`
+      //     alone cannot: a genuinely new resume whose unedited
+      //     client-side guess happens to equal the server's real default
+      //     needs no PATCH, but one where it DOESN'T happen to match
+      //     (the client/server race the suggestion's own comment already
+      //     names) must not trigger a rename the user never asked for
+      //     just because the row is new.
+      // `nicknameAtSubmit !== defaultNickname` stays as a cheap
+      // additional skip (no network call for a no-op match) -- never
+      // again as the test of intent by itself.
+      if (
+        isFirstSave &&
+        isNew &&
+        nicknameUserEditedRef.current &&
+        nicknameAtSubmit.length > 0 &&
+        nicknameAtSubmit !== defaultNickname
+      ) {
+        setNicknameSaving(true);
+        try {
+          const { resumeNickname: saved } = await updateResumeNickname(id, nicknameAtSubmit);
+          setResumeNickname(saved);
+          setLastSavedNickname(saved);
+          refreshResumesList();
+        } catch (err) {
+          // Same non-reverting treatment `handleNicknameCommit` already
+          // gives a collision (ticket 7701534): the user's intended name
+          // stays visible, red-outlined, and fixable in place, rather than
+          // silently swapped back to the server's generic "Resume N" right
+          // after they just typed over it. Any OTHER failure (network,
+          // etc.) reverts, same as `handleNicknameCommit`'s existing
+          // behavior for that case -- there's nothing wrong with the
+          // VALUE, only the request, and the resume itself is already
+          // saved under the server's real default either way.
+          //
+          // UNLIKE `handleNicknameCommit`, both branches here must
+          // explicitly ASSIGN `resumeNickname` rather than just choosing
+          // whether to revert it: the `setResumeNickname(defaultNickname)`
+          // a few lines above (part of the ordinary save-success path,
+          // which always runs first) already overwrote it, so "don't
+          // revert" has nothing left to fall back to -- the collision
+          // branch has to explicitly put the user's attempted value BACK.
+          setNicknameError(err instanceof Error ? err.message : String(err));
+          if (isNicknameConflictError(err)) {
+            setResumeNickname(nicknameAtSubmit);
+          } else {
+            setResumeNickname(defaultNickname);
+            setLastSavedNickname(defaultNickname);
+          }
+          // `setResumeEditing(false)` above already ran (the resume save
+          // itself succeeded) -- with `resumeId` now set and `editingResume`
+          // false, the collapsed summary bar is what would render next, and
+          // that branch does NOT render `nicknameError` at all (only the
+          // expanded form does -- see ResumeInput.tsx). Overriding back to
+          // `true` here keeps the form open specifically so the error (and
+          // the offending/reverted value) stays visible, same as every
+          // OTHER nickname-commit failure already is.
+          setResumeEditing(true);
+        } finally {
+          setNicknameSaving(false);
+        }
+      }
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -821,7 +1041,18 @@ function JobSearchApp() {
   // `session.ts`'s own "don't write per keystroke" reasoning, applied here
   // to "don't PATCH per keystroke" instead). `handleNicknameCommit` below
   // is what actually persists it.
+  //
+  // Ticket 3db5b35 (review finding F1, severe): also the ONLY place
+  // `nicknameUserEditedRef` is ever set `true`. The pre-save suggestion
+  // effect above deliberately calls `setResumeNickname` directly, never
+  // this function, so a value this app guessed on the user's behalf can
+  // never be mistaken for one the user actually typed -- `handleResumeSubmit`
+  // reads this ref (never reset back to `false`; see that ref's own
+  // comment for why it doesn't need to be) before ever treating a
+  // first-save nickname as something to apply over the server's own
+  // default.
   function handleNicknameChange(nextNickname: string) {
+    nicknameUserEditedRef.current = true;
     setResumeNickname(nextNickname);
   }
 

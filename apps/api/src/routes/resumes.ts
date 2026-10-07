@@ -264,11 +264,19 @@ export function registerResumeRoutes(
       // the UI -- say "that's the text of Resume 1, which you're already
       // using" -- not by reinstating a rejection.
       //
-      // `isNew` is no longer destructured: ticket 7701534's duplicate
-      // rejection was its only consumer here, so reading it would be dead
-      // code. It is still returned by `getOrCreateResumeId` for callers
-      // that have a use for it.
-      const { id } = await getOrCreateResumeId(db, resumeText, userId);
+      // `isNew` USED TO be left undestructured here ("ticket 7701534's
+      // duplicate rejection was its only consumer... reading it would be
+      // dead code"). Ticket 3db5b35 (adversarial review finding F1,
+      // severe) gives it a second, genuine consumer: `resumeNickname`
+      // below is NOT proof this request created a fresh row -- on a
+      // find-or-create HIT it is that existing row's real, possibly
+      // already-renamed nickname -- so the frontend's pre-save nickname
+      // reconciliation (ResumeInput.tsx / App.tsx's `handleResumeSubmit`)
+      // needs the server's own "created vs. found" answer to avoid
+      // silently renaming a resume the user never touched. See
+      // `CreateResumeResponse.isNew`'s doc comment (@app/shared) for the
+      // concrete scenario this closes.
+      const { id, isNew } = await getOrCreateResumeId(db, resumeText, userId);
 
       // Ticket 39b4a48: suggested title keywords, cached on the row —
       // `suggestedTitles === null` means inference has never run for this
@@ -322,7 +330,13 @@ export function registerResumeRoutes(
       }
 
       const isLocked = await isResumeLocked(db, id);
-      const response: CreateResumeResponse = { id, suggestedTitles, resumeNickname, isLocked };
+      const response: CreateResumeResponse = {
+        id,
+        suggestedTitles,
+        resumeNickname,
+        isLocked,
+        isNew,
+      };
       return reply.code(200).send(response);
     },
   );
