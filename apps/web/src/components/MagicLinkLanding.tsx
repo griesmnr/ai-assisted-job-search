@@ -418,9 +418,23 @@ export function MagicLinkLanding({ token }: { token: string }) {
               asked for it — after that first time, signing in works from any browser or device.
             </p>
           ) : (
+            // Ticket 5130866 (opus note N4, ticket 5a7e957 review). This
+            // generic branch is reached by two different kinds of visitor --
+            // someone whose magic-link request came from `MagicLinkPrompt`
+            // (results on screen, which has floated near the topmost result
+            // since ticket 931df8a, never "the bottom") and someone whose
+            // request came from `SignInRecovery` (no results at all, and a
+            // header link rather than anything near a list). The old copy
+            // named a location true of neither any more. Rather than naming
+            // EITHER entry point's location -- which would misdirect
+            // whichever kind of visitor is not that one -- this names the
+            // one thing true for both: continuing below returns to the
+            // normal app, where the entry point that actually applies to
+            // this browser's state (the results prompt or the header
+            // recovery link) is what renders.
             <p className="magic-link-note">
-              You can ask for a new link from the bottom of your results at any time. Nothing you've
-              already searched has been lost.
+              You can ask for a new link once you continue below. Nothing you've already searched
+              has been lost.
             </p>
           )}
           <button type="button" onClick={() => reloadTo(urlWithoutToken())}>

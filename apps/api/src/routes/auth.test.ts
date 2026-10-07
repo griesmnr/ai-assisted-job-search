@@ -211,6 +211,46 @@ describe("POST /auth/magic-link", () => {
     expect(token).toHaveLength(43);
   });
 
+  /**
+   * Ticket 5130866 (opus note N3, ticket 5a7e957 review). This route serves
+   * two origins now: `MagicLinkPrompt` (a brand-new address saving fresh
+   * results) and `SignInRecovery` (an existing address whose browser
+   * storage is gone, trying to get back in) -- both POST the identical
+   * request, and the email must read correctly for either. The old body
+   * said "save your job search results to this email address", which to a
+   * recovery user read as though clicking would overwrite their real
+   * account with this browser's empty state. Pinned here so a future reword
+   * cannot silently regress to that single-origin framing.
+   *
+   * MUTATION CHECK (reported, not asserted in code): reverting the opening
+   * line in `auth.ts` back to "save your job search results to this email
+   * address" turns this test red in both the text and html assertions,
+   * while every other test in this file (including the one above, which
+   * only checks the token/link mechanics) stays green -- confirming this is
+   * the one test actually pinning the wording.
+   */
+  it("sends an email body that reads correctly for a brand-new address and for an existing account (ticket 5130866)", async () => {
+    const sender = fakeSender();
+    const app = buildSubject(sender.fn);
+    const userId = "a0000000-0000-4000-8000-000000000099";
+
+    await requestLink(app, userId, "either-origin@example.com");
+
+    const message = sender.sent[0]!;
+    // Neutral: "sign in and connect" is true whether this address is brand
+    // new (attach) or already has an account (adopt) -- it never claims
+    // this browser's state will be saved OVER an existing account.
+    expect(message.text).toContain(
+      "Click this link to sign in and connect your job search results to this email address:",
+    );
+    expect(message.html).toContain(
+      "Click this link to sign in and connect your job search results to this email address:",
+    );
+    // The old, origin-specific claim must be gone from both parts.
+    expect(message.text).not.toMatch(/save your job search results/i);
+    expect(message.html).not.toMatch(/save your job search results/i);
+  });
+
   it("normalizes the email it stores and echoes (trimmed, lowercased)", async () => {
     const sender = fakeSender();
     const app = buildSubject(sender.fn);
