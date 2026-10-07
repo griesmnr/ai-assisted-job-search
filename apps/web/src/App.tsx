@@ -458,6 +458,41 @@ function JobSearchApp() {
   // else on this page (there is no other place that already holds every
   // saved resume's id/nickname/createdAt at once).
   const { state: resumesListState, refresh: refreshResumesList } = useResumesList();
+  // Ticket 3db5b35: a BEST-EFFORT pre-save nickname suggestion, seeded
+  // exactly once per session the first time `resumesListState` settles
+  // (ready OR error -- see below), so the field ResumeInput now shows
+  // before a first save (reversing 5a79aa4) isn't just sitting empty.
+  // `true` once seeded; checked instead of re-deriving from `resumeNickname`
+  // itself so that a user clearing the field by hand (to type something
+  // else entirely) is never fought by this effect re-filling it on the next
+  // render -- seeding is a one-shot default, not a standing invariant.
+  const nicknameSuggestionSeededRef = useRef(false);
+  useEffect(() => {
+    // Nothing to suggest once a real resume (and its real nickname) exists
+    // -- this is specifically the BEFORE-the-first-save case.
+    if (resumeId !== undefined) return;
+    if (nicknameSuggestionSeededRef.current) return;
+    // `resumesListState` starts "idle"/"loading" on every mount
+    // (useResumesList.ts) -- wait for it to settle one way or the other
+    // rather than guessing "Resume 1" and then possibly overwriting a
+    // keystroke the user already made while it was still in flight.
+    if (resumesListState.status === "idle" || resumesListState.status === "loading") return;
+    nicknameSuggestionSeededRef.current = true;
+    // Same numbering scheme the server itself uses at insert time
+    // (`getOrCreateResumeId`, apps/api/src/matching/pipeline.ts: "N is one
+    // more than the current row count") -- replicated here, not fetched,
+    // because there is no endpoint that returns "what would you suggest"
+    // without actually creating a resume (see handleResumeSubmit's own
+    // comment on this ticket for the full argument against adding one).
+    // Same best-effort caveat the server's own comment makes: this can
+    // disagree with the real server default (another tab/session creating
+    // a resume in between, or the list failing to load -- the `"error"`
+    // branch below falls back to "Resume 1" rather than showing nothing).
+    // `handleResumeSubmit` is what reconciles the two if they differ.
+    const existingCount =
+      resumesListState.status === "ready" ? resumesListState.data.resumes.length : 0;
+    setResumeNickname((prev) => (prev === "" ? `Resume ${existingCount + 1}` : prev));
+  }, [resumeId, resumesListState]);
   // Ticket 1e183a4: which resume a result card's "Searched with:" link
   // most recently asked to jump to -- see FocusResume's own doc comment
   // (MyResumes.tsx) for why this carries a `token`, not just an id.
@@ -709,6 +744,19 @@ function JobSearchApp() {
   async function handleResumeSubmit(resumeText: string) {
     setResumeSubmitting(true);
     setResumeError(null);
+    // Ticket 3db5b35: captured BEFORE `saveResumeText` below, which is what
+    // this ticket's acceptance criteria call "before the first save" --
+    // `resumeId === undefined` right now is the only reliable signal for
+    // that; `saveResumeText`'s own branch on `resumeLocked` also reaches
+    // `createResume` for "paste a new resume while locked," which is
+    // deliberately NOT treated the same way (that form's nickname field is
+    // showing the OLD, still-active resume's real nickname, not a fresh
+    // suggestion -- see `nicknameSuggestionSeededRef`'s effect above, which
+    // only ever seeds while `resumeId === undefined`). `resumeNickname` is
+    // read here, not `lastSavedNickname`, because nothing has been "saved"
+    // yet for this to be the server-confirmed baseline of.
+    const isFirstSave = resumeId === undefined;
+    const nicknameAtSubmit = resumeNickname.trim();
     try {
       // TICKET 6ba221e: AN EDIT IS AN UPDATE, NOT A NEW RESUME. This one
       // branch is the fix for Nicole's own report -- "if I'm on resume one
@@ -797,7 +845,11 @@ function JobSearchApp() {
       // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
       // a submission actually lands -- not on the Edit click itself (see
       // `resumeEditing`'s own doc comment above). A no-op on the
-      // first-ever submission, where this was already false.
+      // first-ever submission, where this was already false. Ticket
+      // 3db5b35: the nickname reconciliation block below can override
+      // this back to `true` for a first-save nickname-commit failure --
+      // see its own comment for why staying expanded is what keeps the
+      // error visible at all.
       setResumeEditing(false);
       // Ticket 303cff0: a genuinely new resume, a resubmission that
       // matched an existing one (per `createResume`'s find-or-create), or
@@ -809,6 +861,87 @@ function JobSearchApp() {
       // per-row text fetches from, and an unconditional refresh here is
       // cheaper to reason about than a per-branch one.
       refreshResumesList();
+
+      // Ticket 3db5b35 -- THE PRE-SAVE SUGGESTION PROBLEM, AND WHY THIS IS
+      // THE ANSWER RATHER THAN A NEW ENDPOINT.
+      //
+      // Jay's feedback (relayed by Nicole) asked for the nickname field to
+      // be visible, pre-filled, and editable BEFORE the first save. The
+      // real server default (`CreateResumeResponse.resumeNickname`) only
+      // exists AFTER `POST /resumes` resolves -- there has never been an
+      // endpoint that returns "what would you suggest" without actually
+      // creating a resume, and this ticket's own scope (see its git-bug)
+      // says not to build one speculatively. So the field above shows a
+      // CLIENT-SIDE best-effort guess instead (`nicknameSuggestionSeededRef`'s
+      // effect: "Resume " + one more than the already-loaded list's count,
+      // the same formula the server itself uses) -- close enough to be a
+      // reasonable starting point, not guaranteed to match.
+      //
+      // That means by the time THIS line runs, two nicknames can both be
+      // real: `defaultNickname` (what the server actually assigned the new
+      // row, just now, for real) and `nicknameAtSubmit` (whatever was
+      // sitting in the field at the moment of submit -- the unedited guess,
+      // or the user's own edit). `setResumeNickname(defaultNickname)` above
+      // already overwrote the field with the server's answer; if the user
+      // never touched the suggestion, `nicknameAtSubmit === defaultNickname`
+      // and there is nothing left to do (the common case: no extra request).
+      // If they DID edit it, what they typed is what they asked to call it,
+      // and it is applied here via the SAME `PATCH /resumes/:id` a later,
+      // ordinary rename already uses -- there is no separate "set nickname
+      // at creation" endpoint, and none is needed: a create followed
+      // immediately by a rename is indistinguishable, from the server's
+      // point of view, from any other rename. This is the TRADEOFF stated
+      // plainly: the field's pre-save suggestion can be WRONG (a race with
+      // another tab/session creating a resume in between, same best-effort
+      // caveat the server's own numbering already carries) -- what cannot
+      // be wrong is which nickname survives once a real edit is involved,
+      // and `isFirstSave` keeps this scoped to exactly "before the first
+      // save," never a resubmit or a locked resume's "paste a new resume."
+      if (isFirstSave && nicknameAtSubmit.length > 0 && nicknameAtSubmit !== defaultNickname) {
+        setNicknameSaving(true);
+        try {
+          const { resumeNickname: saved } = await updateResumeNickname(id, nicknameAtSubmit);
+          setResumeNickname(saved);
+          setLastSavedNickname(saved);
+          refreshResumesList();
+        } catch (err) {
+          // Same non-reverting treatment `handleNicknameCommit` already
+          // gives a collision (ticket 7701534): the user's intended name
+          // stays visible, red-outlined, and fixable in place, rather than
+          // silently swapped back to the server's generic "Resume N" right
+          // after they just typed over it. Any OTHER failure (network,
+          // etc.) reverts, same as `handleNicknameCommit`'s existing
+          // behavior for that case -- there's nothing wrong with the
+          // VALUE, only the request, and the resume itself is already
+          // saved under the server's real default either way.
+          //
+          // UNLIKE `handleNicknameCommit`, both branches here must
+          // explicitly ASSIGN `resumeNickname` rather than just choosing
+          // whether to revert it: the `setResumeNickname(defaultNickname)`
+          // a few lines above (part of the ordinary save-success path,
+          // which always runs first) already overwrote it, so "don't
+          // revert" has nothing left to fall back to -- the collision
+          // branch has to explicitly put the user's attempted value BACK.
+          setNicknameError(err instanceof Error ? err.message : String(err));
+          if (isNicknameConflictError(err)) {
+            setResumeNickname(nicknameAtSubmit);
+          } else {
+            setResumeNickname(defaultNickname);
+            setLastSavedNickname(defaultNickname);
+          }
+          // `setResumeEditing(false)` above already ran (the resume save
+          // itself succeeded) -- with `resumeId` now set and `editingResume`
+          // false, the collapsed summary bar is what would render next, and
+          // that branch does NOT render `nicknameError` at all (only the
+          // expanded form does -- see ResumeInput.tsx). Overriding back to
+          // `true` here keeps the form open specifically so the error (and
+          // the offending/reverted value) stays visible, same as every
+          // OTHER nickname-commit failure already is.
+          setResumeEditing(true);
+        } finally {
+          setNicknameSaving(false);
+        }
+      }
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : String(err));
     } finally {

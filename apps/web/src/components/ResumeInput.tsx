@@ -33,26 +33,45 @@ import { sortResumesByNickname } from "../resumeSort";
  * Ticket 5a79aa4 (Nicole, live dogfooding right after 38a7598 shipped:
  * "let's hide the resume nickname and the attempted helper text until
  * they use the resume... let's hide even the submit [button]
- * also"): both controls are ABSENT, not disabled-with-explanation, until
- * they're actually actionable -- "Submit" only once there's real
+ * also"): both controls were ABSENT, not disabled-with-explanation, until
+ * they were actually actionable -- "Submit" only once there was real
  * text to submit, the nickname field only once a real resumeId (and with
- * it, the server's real default nickname) exists to attach a rename to.
- * No placeholder text explaining an ordering the user can't act on yet;
- * the controls simply aren't there before their moment arrives.
+ * it, the server's real default nickname) existed to attach a rename to.
+ * No placeholder text explaining an ordering the user couldn't act on yet;
+ * the controls simply weren't there before their moment arrived.
  *
  * Ticket cdc2c39 (Nicole, live dogfooding again, after actually using
  * 5a79aa4's shipped ordering -- "I don't need anything below anything...
  * they can all show up together, but they're just showing up in a
  * different order, and use this resume should be last, horizontally"):
  * pure horizontal reorder, same gating as 5a79aa4 above, unchanged --
- * the nickname field renders BEFORE the button (once both are showing,
- * which only ever happens after a first successful submission, since
- * that's what makes `resumeId` exist). That ticket ALSO made the textarea
+ * the nickname field rendered BEFORE the button (once both were showing,
+ * which only ever happened after a first successful submission, since
+ * that's what made `resumeId` exist). That ticket ALSO made the textarea
  * read-only once `resumeId` existed, so the submitted text stayed visible
  * as a reference but couldn't be edited into a silent identity change:
  * resumes were content-addressed by their text, so editing the box
  * post-submission would, on the next submit, look like an entirely
  * different resume rather than an update to this one.
+ *
+ * TICKET 3db5b35 (2026-10-07) REVERSES THE NICKNAME-VISIBILITY HALF OF
+ * 5a79aa4/cdc2c39 ABOVE -- recorded here, not silently, because leaving
+ * the paragraphs above as the only explanation would read as still-current
+ * design. Jay's user feedback, relayed by Nicole: "I'm confident now that
+ * at all stages, I want users to be able to see the field where the
+ * nickname is pasted, put in whatever your suggestion is, but then let
+ * them edit it even before saving it." Nicole, on being reminded she'd
+ * said the opposite in 5a79aa4: "I heard you say before that I said it the
+ * other way before, but I can't really fathom why now. So I'm happy
+ * moving forward with it." The nickname field in the form branch below is
+ * now UNCONDITIONAL -- it renders before `resumeId` exists too, pre-filled
+ * with a client-side best-effort suggestion (App.tsx's `handleResumeSubmit`
+ * comment has the full argument for why that's a suggestion, not the real
+ * server default, and why that's an accepted tradeoff rather than a new
+ * endpoint). 5a79aa4's OTHER half -- hiding "Submit" itself until there's
+ * real text -- is UNCHANGED; Jay's feedback was about the nickname
+ * specifically. cdc2c39's ordering and read-only-textarea decisions are
+ * also unaffected (the read-only half is itself long superseded, below).
  *
  * BOTH HALVES OF THAT ARE NOW HISTORY, and this comment is kept only so
  * the removals read as decisions. Ticket ac141d0 replaced the read-only
@@ -181,18 +200,38 @@ export function ResumeInput({
    */
   initialText?: string;
   /** Ticket 38a7598: undefined until a resume has actually been created
-   * (POST /resumes resolved) this session/reload. Ticket 5a79aa4: gates
-   * whether the nickname field RENDERS AT ALL, not just whether it's
-   * editable — there's nothing to attach a rename to before a real
-   * resumeId exists, so the field simply isn't shown yet. */
+   * (POST /resumes resolved) this session/reload.
+   *
+   * Ticket 5a79aa4 USED TO gate whether the nickname field rendered at all
+   * on this being defined — "there's nothing to attach a rename to before a
+   * real resumeId exists." Ticket 3db5b35 (2026-10-07) REVERSES that: Jay's
+   * feedback, relayed by Nicole, was that people want to name the thing as
+   * they create it, not only after -- "I'm confident now that at all
+   * stages, I want users to be able to see the field... put in whatever
+   * your suggestion is, but then let them edit it even before saving it."
+   * The nickname field in the form below no longer reads this prop at all
+   * (see that render branch) -- it is unconditional now. `resumeId` still
+   * decides which of the THREE top-level branches renders (picker,
+   * collapsed bar, or this form), which is unrelated to the nickname
+   * field's own visibility within the form branch. */
   resumeId?: string;
   /**
-   * The resume's current nickname — genuinely CONTROLLED, unlike `text`
-   * above: its real value doesn't exist until the server assigns a default
-   * (`CreateResumeResponse.resumeNickname`), which lands well after this
+   * The resume's current (or, before a first save, SUGGESTED) nickname —
+   * genuinely CONTROLLED, unlike `text` above.
+   *
+   * Ticket 38a7598's original reasoning doesn't hold any more: this used to
+   * say the real value "doesn't exist until the server assigns a default
+   * (`CreateResumeResponse.resumeNickname`)," which landed well after this
    * component's first render, so a "seed once" `initialText`-style pattern
-   * can't work here — the caller (App.tsx) has to be able to push the real
-   * default in once it arrives.
+   * couldn't work. Ticket 3db5b35 (2026-10-07) needs a value to show BEFORE
+   * that response ever exists, and the chosen answer is NOT a new endpoint
+   * (see App.tsx's `handleResumeSubmit` and its own comment for the full
+   * argument): App.tsx derives a client-side best-effort guess ("Resume
+   * N", from the already-loaded saved-resumes list) and pushes it in here
+   * the same way it pushes in the real post-save default -- this component
+   * still doesn't know or care which kind of value it's holding, typed-
+   * over suggestion or server-confirmed fact; it stays "controlled," full
+   * stop.
    */
   nickname?: string;
   /** Fires on every keystroke — updates the caller's local/persisted state
@@ -502,47 +541,55 @@ export function ResumeInput({
         placeholder="Paste resume text here..."
       />
       <div className="resume-input-actions">
-        {resumeId !== undefined && (
-          <div className="resume-nickname-field">
-            <label htmlFor="resume-nickname">Resume Nickname</label>
-            <input
-              id="resume-nickname"
-              type="text"
-              value={nickname ?? ""}
-              disabled={nicknameSaving}
-              // Ticket 7701534, Nicole: "it should highlight... red
-              // outline on the field." `aria-invalid` is both the
-              // standard accessible way to flag an invalid field (a
-              // screen reader announces it) and, per index.css, what
-              // actually drives the red outline -- one prop does both.
-              aria-invalid={nicknameError ? true : undefined}
-              onChange={(e) => onNicknameChange?.(e.target.value)}
-              onBlur={(e) => onNicknameCommit?.(e.target.value)}
-              // Ticket 38a7598 review fix: this input sits INSIDE the resume
-              // <form> (which has its own submit button), so without this,
-              // pressing Enter here triggered the form's implicit submit --
-              // RESUBMITTING the resume text -- instead of committing the
-              // nickname edit. That resubmission resolved to the SAME resume
-              // id carrying its OLD nickname, silently overwriting whatever
-              // was just typed with zero error or explanation. (Still true
-              // after ticket 6ba221e, by a different route: the resubmit now
-              // goes to `PUT /resumes/:id/text`, whose response carries the
-              // row's stored `resumeNickname` -- which App.tsx pushes back
-              // into state exactly as before.) `preventDefault` stops the
-              // keypress from reaching the form's submit; committing
-              // explicitly here (rather than just letting blur handle it)
-              // means Enter behaves the same way a real "save" action would,
-              // whether or not the field happens to lose focus afterward.
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  onNicknameCommit?.(e.currentTarget.value);
-                }
-              }}
-            />
-            {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
-          </div>
-        )}
+        {/* Ticket 3db5b35 (reversing 5a79aa4): no longer gated on
+            `resumeId !== undefined` -- Jay's feedback, relayed by Nicole,
+            was that people want to name the thing as they create it, not
+            only after. The field now renders in this branch unconditionally,
+            pre-filled with App.tsx's best-effort pre-save suggestion (see
+            `nickname`'s own doc comment below) and editable immediately,
+            with nothing yet to attach a PATCH to -- `handleNicknameCommit`
+            (App.tsx) still no-ops on blur while `resumeId` is undefined, so
+            typing here before the first save is purely local state until
+            `handleResumeSubmit` captures it at submit time. */}
+        <div className="resume-nickname-field">
+          <label htmlFor="resume-nickname">Resume Nickname</label>
+          <input
+            id="resume-nickname"
+            type="text"
+            value={nickname ?? ""}
+            disabled={nicknameSaving}
+            // Ticket 7701534, Nicole: "it should highlight... red
+            // outline on the field." `aria-invalid` is both the
+            // standard accessible way to flag an invalid field (a
+            // screen reader announces it) and, per index.css, what
+            // actually drives the red outline -- one prop does both.
+            aria-invalid={nicknameError ? true : undefined}
+            onChange={(e) => onNicknameChange?.(e.target.value)}
+            onBlur={(e) => onNicknameCommit?.(e.target.value)}
+            // Ticket 38a7598 review fix: this input sits INSIDE the resume
+            // <form> (which has its own submit button), so without this,
+            // pressing Enter here triggered the form's implicit submit --
+            // RESUBMITTING the resume text -- instead of committing the
+            // nickname edit. That resubmission resolved to the SAME resume
+            // id carrying its OLD nickname, silently overwriting whatever
+            // was just typed with zero error or explanation. (Still true
+            // after ticket 6ba221e, by a different route: the resubmit now
+            // goes to `PUT /resumes/:id/text`, whose response carries the
+            // row's stored `resumeNickname` -- which App.tsx pushes back
+            // into state exactly as before.) `preventDefault` stops the
+            // keypress from reaching the form's submit; committing
+            // explicitly here (rather than just letting blur handle it)
+            // means Enter behaves the same way a real "save" action would,
+            // whether or not the field happens to lose focus afterward.
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onNicknameCommit?.(e.currentTarget.value);
+              }
+            }}
+          />
+          {nicknameSaving && <span className="resume-nickname-status">Saving...</span>}
+        </div>
         {/* Review fix (ticket ac141d0): only during a RE-edit -- before a
             first submission there's no collapsed state to cancel back
             to, and the plain "clear the box" behavior that already

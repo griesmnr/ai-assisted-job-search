@@ -61,15 +61,64 @@ afterEach(cleanup);
 // nickname field (like the rest of the form) only exists in the expanded
 // state. See the "collapsed summary bar" describe block further down for
 // the collapsed state's own (deliberately non-editable) nickname display.
+// Ticket 3db5b35 (2026-10-07): the field's own visibility is no longer
+// gated on `resumeId` at all -- see the first test below and this
+// component's top-of-file doc comment for the reversal of 5a79aa4.
 describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
-  // Ticket 5a79aa4 (review of 38a7598's shipped UI, live dogfooding): the
-  // field used to render disabled-with-a-placeholder before a resumeId
-  // existed; Nicole asked for it to be ABSENT instead, matching "Use this
-  // resume"'s own not-yet-actionable treatment.
-  it("does not render the nickname field at all with no resumeId yet -- nothing to attach a rename to before a resume exists", () => {
-    render(<ResumeInput onSubmit={() => {}} submitting={false} />);
+  // Ticket 5a79aa4 used to hide this field entirely until a resumeId
+  // existed. Ticket 3db5b35 (2026-10-07) REVERSES that, per Jay's feedback
+  // relayed by Nicole: "I want users to be able to see the field where the
+  // nickname is pasted, put in whatever your suggestion is, but then let
+  // them edit it even before saving it." See this file's top-of-file doc
+  // comment for the full reversal.
+  it("renders the nickname field even with no resumeId yet, pre-filled with whatever `nickname` the caller passed", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} nickname="Resume 3" />);
 
-    expect(screen.queryByLabelText("Resume Nickname")).not.toBeInTheDocument();
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    expect(nicknameField).toHaveValue("Resume 3");
+    expect(nicknameField).not.toBeDisabled();
+  });
+
+  // The field is still a CONTROLLED input before a resumeId exists, same
+  // as after -- editing it pre-save is purely local state until App.tsx's
+  // `handleResumeSubmit` captures it at submit time (see that function's
+  // own comment, ticket 3db5b35).
+  it("is editable (fires onNicknameChange) before a resumeId exists", () => {
+    const onNicknameChange = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        nickname="Resume 3"
+        onNicknameChange={onNicknameChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Resume Nickname"), {
+      target: { value: "My federal resume" },
+    });
+
+    expect(onNicknameChange).toHaveBeenCalledWith("My federal resume");
+  });
+
+  // Ticket 3db5b35 acceptance criterion: "keyboard-reachable with a
+  // visible focus state and a real <label>." `getByLabelText` above
+  // already proves the real-`<label>` half (it only matches a genuine
+  // `<label for>`/`id` pair or an `aria-label`, never placeholder text).
+  // This test proves the keyboard-reachable half directly: a plain
+  // `<input>` with no `tabIndex` override is in the default tab order and
+  // can receive focus programmatically (the same mechanism a Tab key
+  // press uses in a real browser) -- index.css deliberately keeps the
+  // browser's own native focus ring un-overridden (see its own comment,
+  // "Opus review F3/F7") rather than adding a visible-focus rule of its
+  // own, so there is no separate CSS assertion to make here.
+  it("is keyboard-reachable -- no tabIndex override, and it can receive focus", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} nickname="Resume 3" />);
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    expect(nicknameField).not.toHaveAttribute("tabindex", "-1");
+    nicknameField.focus();
+    expect(nicknameField).toHaveFocus();
   });
 
   it("is enabled and pre-filled with the real default once a resumeId + nickname are supplied", () => {
