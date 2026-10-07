@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GetSourcesResponse, ListResumesResponse } from "@app/shared";
 import App from "./App";
@@ -101,12 +101,35 @@ describe("App — pre-save nickname suggestion (ticket 3db5b35)", () => {
 
     render(<App />);
     const nicknameField = await screen.findByLabelText("Resume Nickname");
-    // The error has had time to resolve by now -- asserting the exact
-    // value, not merely presence, is the whole point of this test (ticket
-    // 3db5b35 review finding F4: the ORIGINAL version of this test only
-    // asserted `toBeInTheDocument()`, which passes regardless of what the
-    // value actually is, and its title/comment claimed the opposite of
-    // what the code did).
+
+    // Round-2 review finding: an earlier version of this test asserted
+    // `toHaveValue("")` immediately after `findByLabelText`, with a comment
+    // claiming "the error has had time to resolve by now." It had not.
+    // `findBy*` resolves on the FIRST render that satisfies it, which is
+    // before the rejected `listResumes` promise has flushed -- so the
+    // assertion ran before the seeding effect could possibly have seeded
+    // anything, and passed no matter what the effect would have done next.
+    //
+    // Proven, not supposed: with the F2 defect reintroduced (letting the
+    // `error` branch fall through to `existingCount = 0`), the entire web
+    // suite stayed GREEN -- 31 files, 397 tests, zero failures. The code was
+    // right and nothing was holding it.
+    //
+    // So wait for the failure to have actually been OBSERVED before
+    // asserting the field is still empty. `listResumes` having been called
+    // is not enough on its own (the call happens before the rejection
+    // settles), so flush the microtask queue the rejection resolves through
+    // as well.
+    await waitFor(() => expect(listResumes).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // NOW the assertion means something: the list request has failed, the
+    // seeding effect has had its chance, and it correctly declined to invent
+    // a number out of a response that told this app nothing about how many
+    // resumes exist.
     expect(nicknameField).toHaveValue("");
 
     // And submitting without ever touching the field must not trigger a

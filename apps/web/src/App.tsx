@@ -326,9 +326,13 @@ function JobSearchApp() {
   // simply empty in that state either. It starts `""` here (unchanged --
   // nothing's restored yet on a fresh session), but the pre-save
   // suggestion effect a little further down (`nicknameSuggestionSeededRef`)
-  // fills it with a client-side guess the moment the saved-resumes list
-  // settles, specifically so the field this ticket un-hid isn't just
-  // sitting blank. See that effect, and `handleResumeSubmit`'s own
+  // fills it with a client-side guess once the saved-resumes list LOADS
+  // SUCCESSFULLY -- not merely once it settles, which is a distinction that
+  // review finding F2 turned into a real bug: a FAILED load is settled too,
+  // and treating it as "zero resumes" manufactured a confident "Resume 1"
+  // out of a response that said nothing at all. So the field stays blank on
+  // an error rather than carrying an invented name. See that effect, and
+  // `handleResumeSubmit`'s own
   // comment, for the full story of why a SUGGESTION has to stand in here
   // rather than the real server default, which doesn't exist until a save
   // actually happens.
@@ -492,6 +496,14 @@ function JobSearchApp() {
   // server's real default as "the user asked for something different" --
   // see that function's comment for why `isNew` alone, or this flag
   // alone, each independently fails to close the bug.
+  //
+  // Never reset back to `false`, and it does not need to be: `isFirstSave`
+  // (`resumeId === undefined`) gates the only reader, and `resumeId` is set
+  // exactly once per session -- both `setResumeId` call sites pass a real id
+  // and nothing ever sets it back to `undefined`. So a stale `true` here can
+  // never be read after the first save. Recorded because `handleResumeSubmit`
+  // used to send the reader here for this explanation and it was not written
+  // down anywhere (round-2 review finding).
   const nicknameUserEditedRef = useRef(false);
   useEffect(() => {
     // Nothing to suggest once a real resume (and its real nickname) exists
