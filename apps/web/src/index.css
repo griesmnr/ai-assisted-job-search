@@ -311,6 +311,145 @@ section {
   gap: 0.5rem;
 }
 
+/* Ticket 6b14962 (opus review follow-up to e2b5f9c): bounds the height of
+   ONLY the no-active-resume saved-list block -- `.resume-pick-saved` wraps
+   `.resume-picker-options` in that branch specifically (ResumeInput.tsx's
+   `resumeId === undefined && savedResumes.length > 0` block). Scoped to this
+   descendant selector, not the bare `.resume-picker-options` rule above,
+   because of a SCOPING decision, not because the "Change" picker branch
+   (ticket 88f11d7, that bare rule's own reuse) has nothing to protect.
+
+   Review correction (F1): an earlier version of this comment claimed that
+   branch "has nothing below it... does not need a cap." Not true --
+   ResumeInput.tsx's picker branch (`resumeId !== undefined && changingResume`)
+   renders "Or", then `.resume-input-actions` with "Paste a new resume" and
+   "Cancel" below its own list, and that branch ALSO goes below the fold at
+   15 saved resumes: measured directly (same technique, a standalone fixture
+   for that branch's markup), "Paste a new resume".top = 925.4px and
+   Cancel.bottom = 946.4px on the 1366x768 laptop viewport -- 178.4px below
+   the 768px fold -- and 997.2px / 1018.2px on the 390x844 phone viewport
+   (an earlier draft said 970.2 / 991.2: measured with the short `<span>`
+   cue placeholder this same commit replaced, so it was 27px optimistic),
+   147.2px below that fold. The escape hatch out of a locked resume is
+   buried, arguably worse than burying the paste form this ticket fixes. Left
+   uncapped anyway, because the ticket's own scope puts changing
+   `.resume-picker-options` globally OUT explicitly ("the picker branch is a
+   full-screen chooser... and does not need a cap" -- Notes section) and this
+   is reachable only by a deliberate "Change" click from an already-working
+   state, where the no-active-resume branch above is the ONLY way forward on
+   first load. Half a fix is the correct half for THIS ticket; the picker
+   branch's own fold problem is real and is not this rule's job.
+
+   Unbounded, each pill is ~37.2px (0.4rem padding top+bottom + 1px border
+   top+bottom + a 22.4px line box at the inherited 1.4 line-height) plus a
+   0.5rem (8px) gap between pills -- measured directly in a real headless
+   Chromium (apps/web/scripts/resume-list-fold-check.mjs, 2026-10-07), not
+   estimated: divider.top advanced by 225.8px for 5 added buttons (N=3->N=8)
+   and by 316.2px for 7 added buttons (N=8->N=15). Review correction (F3): an
+   earlier version of this comment divided those wrong and called the
+   quotient "8px/button" -- 225.8/5 is 45.16, not 8; 8px is only the GAP
+   component of each added row, not the whole row. The actual per-row cost is
+   the full quotient: 225.8/5 = 45.16px/row and 316.2/7 = 45.17px/row, both
+   measurements agreeing with each other (and with the 37.2px pill + 8px gap
+   breakdown above, 37.2 + 8 = 45.2) on ~45.2px per added row. At 15 saved
+   resumes (a real count -- see this ticket's own body) that block measured
+   ~895px from the top of the page on a 1366x768 laptop viewport, pushing the
+   "Or paste a new one" divider AND the "Paste your resume" label/textarea
+   below the fold (label at 938px, textarea at 969px -- both beyond the 768px
+   viewport) on BOTH a 1366x768 laptop and a 390x844 phone viewport. Confirmed
+   by that same script before this rule existed.
+
+   max-height: 12rem (192px) was chosen, not assumed, from that same
+   measurement: it shows exactly 4 full pills (4 x 37.2px + 3 x 8px gaps =
+   172.8px) plus roughly the top third of a 5th (192 - 172.8 - 8px gap =
+   11.2px, about 30% of a pill) -- enough to read as "there's more below,
+   scroll for it" rather than a clean, truncated-looking cutoff, while
+   leaving over 300px of headroom before the 768px laptop fold even at 15
+   saved resumes (box height capped at 192px instead of growing past 600px
+   unbounded): re-measured with this rule in place, the divider now lands at
+   417.5px on the 1366x768 laptop viewport and 489.3px on the 390x844 phone
+   viewport, identical at N=8 and N=15 (the cap, not the resume count, now
+   decides the block's height) and comfortably above both viewports' fold --
+   the "Or paste a new one" divider, the "Paste your resume" label, AND the
+   textarea's full bottom edge (689.2px laptop / 761.0px phone) are all
+   on-screen without scrolling the page, at 15 saved resumes, at both
+   viewports, TODAY -- see the durability note below for how that changes.
+   This "~30% of a pill visible" partial-row cue, and the 4-full-pills-plus-
+   partial geometry above it, assume a SINGLE-LINE pill label ("Use Resume
+   N"); a realistic long nickname wrapping to two lines at the phone width
+   changes where the 192px cut lands and can make the cut look like a
+   complete pill instead of a partial one, silently losing the "scroll for
+   more" affordance in exactly the case (the longest list) where it matters
+   most. Not fixed here -- filed separately, since the fix under discussion
+   (a resume count in the heading) is a UI-copy change the owner should
+   weigh, not a geometry adjustment this rule can make unilaterally.
+
+   A short list (e.g. 3 saved resumes, ~127.6px unbounded) renders under this
+   cap and gets no scrollbar at all -- `overflow-y: auto` only engages when
+   content actually exceeds `max-height`, so the common case is visually
+   unchanged; confirmed by the same script (N=3 case: "saved-list internal
+   scroll=no" at both viewports, before and after this rule).
+
+   No change to keyboard behavior: nothing here touches `outline` or
+   `:focus`, and every `.resume-picker-option` is an ordinary, natively
+   focusable `<button>` inside this now-scrollable box -- tabbing to one
+   that is scrolled out of view relies on the browser's own native
+   scroll-into-view-on-focus behavior, not anything added by this rule; the
+   existing, unmodified focus ring (index.css has no `:focus`/`outline: none`
+   reset for buttons anywhere in this file) stays visible exactly as before.
+   Confirmed directly: focusing the 15th pill scrolls the container to
+   478px and leaves `window.scrollY` at 0 (the PAGE never scrolls, only the
+   capped box does); no `tabindex` was added or is needed, since the region
+   already contains natively focusable content; overflow-clipped pills stay
+   in the accessibility tree the whole time.
+
+   DURABILITY -- re-run resume-list-fold-check.mjs against a changed
+   `index.css` before trusting ANY figure above if this rule, or anything
+   that changes `.resume-pick-saved`'s own markup, is ever touched. But the
+   figures above are sensitive to more than that: they are sensitive to
+   ANYTHING that changes the height of what sits ABOVE this block on the
+   page, not just to this rule itself.
+
+   Ticket 9e00bc9 looked like exactly such a case and provably is not, which
+   is a more useful warning than a number. It adds a welcome paragraph as a
+   sibling of `.app-header`, above `.resume-section` entirely -- but that
+   paragraph and THIS BLOCK cannot be on screen together.
+   `showWelcomeParagraph` (App.tsx) requires `!hasOwnResumes`, and
+   `hasOwnResumes` is the SAME expression that feeds `ResumeInput`'s
+   `resumes` prop, which is what gates this saved-resume list at all. So the
+   paragraph renders only when there are no saved resumes, and this block
+   renders only when there are. (It is mutually exclusive with
+   `.signed-in-cue` too, by `verifiedEmail`.) Every figure above is therefore
+   unchanged by that merge -- re-measured against the merged tree and
+   bit-identical.
+
+   Caught in re-review AFTER an earlier draft of this comment had confidently
+   measured the combined screen at 588.8px capped / 1084.8px uncapped and
+   declared the textarea's bottom edge clipped. Those numbers described a
+   screen the app cannot render. Recorded because a confident measurement of
+   an unreachable state is worse than no measurement: the arithmetic was
+   right and the premise was never checked against the gate.
+
+   A second, smaller fidelity note, also durability-relevant: `SignedInCue.tsx`
+   renders a real sentence ("These results are saved to <email>"), not a bare
+   email address, and the fixture used to use a short `<span>` placeholder.
+   Swapping in the real `<p>` markup costs +27.1px at the 390px phone
+   viewport -- but only given the current short "FitScore" heading, which fits
+   beside a short cue on one line where the previous longer heading forced
+   `.app-header` to wrap regardless. That +27.1px is the cost of CORRECTING
+   THE FIXTURE, not a change to the shipped figures, which are identical
+   either way.
+
+   An earlier review cited +19.1px here. That is resolved rather than left
+   open: that measurement swapped the element AND the email address in one
+   step, and the longer address wraps the cue to a THIRD line at 390px
+   (header 79.7px vs 60.6px) under `.signed-in-cue { overflow-wrap: anywhere }`.
+   It measured email wrapping, not markup. Reproduced both ways. */
+.resume-pick-saved .resume-picker-options {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
 .resume-picker-option {
   padding: 0.4rem 0.8rem;
   border: 1px solid var(--border);

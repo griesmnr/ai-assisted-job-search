@@ -7,7 +7,8 @@
     "build": "tsc -b tsconfig.json && vite build",
     "dev": "vite --strictPort",
     "preview": "vite preview",
-    "layout-check": "node scripts/layout-check.mjs"
+    "layout-check": "node scripts/layout-check.mjs",
+    "resume-list-fold-check": "node scripts/resume-list-fold-check.mjs"
   },
   "dependencies": {
     "@app/shared": "workspace:*",
