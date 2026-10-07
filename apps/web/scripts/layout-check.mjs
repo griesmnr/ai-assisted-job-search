@@ -54,12 +54,21 @@ function findBuiltCss() {
     );
     process.exit(1);
   }
-  const cssFile = readdirSync(distAssets).find((f) => f.endsWith(".css"));
-  if (!cssFile) {
+  // ALL .css files, concatenated -- not just the first one found. Vite
+  // emits a single CSS file for this app's build today (confirmed:
+  // `dist/assets/index-*.css`, nothing else), but if that ever changes
+  // (e.g. a future route-level code-split emits a second chunk), taking
+  // only the first would measure a partial stylesheet and the verdict --
+  // PASS or FAIL -- would be meaningless in both directions, silently.
+  // Concatenation order across files doesn't matter for this script's
+  // purposes: it only reads computed layout, never relies on cascade order
+  // between files that don't already share a layer/specificity conflict.
+  const cssFiles = readdirSync(distAssets).filter((f) => f.endsWith(".css"));
+  if (cssFiles.length === 0) {
     console.error(`${distAssets} has no .css file -- did the build actually run vite build?`);
     process.exit(1);
   }
-  return readFileSync(join(distAssets, cssFile), "utf8");
+  return cssFiles.map((f) => readFileSync(join(distAssets, f), "utf8")).join("\n");
 }
 
 // Finds Playwright's cached Chromium build ourselves rather than asking
@@ -70,19 +79,33 @@ function findBuiltCss() {
 // Passing `executablePath` explicitly to `launch()` skips that revision
 // check entirely; CDP is stable enough across adjacent versions for this
 // script's needs (navigate, read computed layout).
+// Highest numeric revision suffix wins within a group ("chromium-1234" ->
+// 1234). Used below so that if a NEWER revision is ever installed
+// alongside an old one (e.g. after following the empty-cache remedy in
+// HEADLESS-BROWSER.md), this picks it up instead of silently keeping
+// whichever directory `readdirSync` happens to list first -- which, before
+// this fix, had better than even odds of being the stale one, defeating
+// the whole point of installing a newer revision.
+function revisionOf(dirName) {
+  const m = dirName.match(/-(\d+)$/);
+  return m ? parseInt(m[1], 10) : -1;
+}
+
 function findCachedChromium() {
   const cacheDir = join(homedir(), ".cache", "ms-playwright");
   if (!existsSync(cacheDir)) return null;
   const candidates = readdirSync(cacheDir).filter(
     (d) => d.startsWith("chromium_headless_shell-") || d.startsWith("chromium-"),
   );
-  // Prefer the headless-shell build: smaller, and all this script needs is
-  // computed layout/style, not screenshots or a visible head.
-  candidates.sort(
-    (a, b) =>
-      Number(b.startsWith("chromium_headless_shell")) -
-      Number(a.startsWith("chromium_headless_shell")),
-  );
+  // Prefer the headless-shell build (smaller, and all this script needs is
+  // computed layout/style, not screenshots or a visible head); within each
+  // kind, prefer the highest revision number.
+  candidates.sort((a, b) => {
+    const aShell = Number(a.startsWith("chromium_headless_shell"));
+    const bShell = Number(b.startsWith("chromium_headless_shell"));
+    if (aShell !== bShell) return bShell - aShell;
+    return revisionOf(b) - revisionOf(a);
+  });
   for (const dir of candidates) {
     const binName = dir.startsWith("chromium_headless_shell") ? "headless_shell" : "chrome";
     const exe = join(cacheDir, dir, "chrome-linux", binName);
@@ -91,6 +114,17 @@ function findCachedChromium() {
   return null;
 }
 
+// Runs UNCONDITIONALLY -- this script assumes it's running in the
+// container agents actually use (no root, no apt, a dev-user sandbox --
+// see HEADLESS-BROWSER.md's "This container is not root" section), which is
+// the only environment this ticket investigated. If Nicole ever runs this
+// from her OWN docker-compose dev container (root, real apt, possibly a
+// real system Chromium already), this would still pay the ~60MB download
+// and then run against noble `.deb`s instead of her container's own system
+// libraries -- harmless but pointless. That container was never checked
+// against this script; the claim that it even NEEDS this workaround there
+// is an unverified guess, not a finding, and is written down as exactly
+// that rather than assumed.
 function sysrootLibDir() {
   const arch =
     process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch;
@@ -114,8 +148,11 @@ async function main() {
   if (!chromiumPath) {
     console.error(
       "No cached Chromium found under ~/.cache/ms-playwright. Run:\n" +
-        "  npx playwright install chromium-headless-shell\n" +
-        "first (needs network access to Playwright's CDN, not apt).",
+        "  npx playwright-core install chromium-headless-shell\n" +
+        "first (needs network access to Playwright's CDN, not apt). Note:" +
+        " `playwright-core`, not `playwright` -- that's the package actually" +
+        " installed here (see HEADLESS-BROWSER.md's dependency section); " +
+        "`npx playwright ...` would fetch a different, unpinned package.",
     );
     process.exit(1);
   }
@@ -155,11 +192,21 @@ async function main() {
 </div>
 </body></html>`;
 
+  // Prepend, don't replace -- `{ ...process.env, LD_LIBRARY_PATH: libDir }`
+  // would silently discard any LD_LIBRARY_PATH already set in the calling
+  // shell/environment, which could break an unrelated reason it was set.
+  // Putting the sysroot first means our resolved libs still win over
+  // anything else on the path (matching dynamic linker search-order
+  // semantics: first match wins).
+  const inheritedLdPath = process.env.LD_LIBRARY_PATH;
   const browser = await chromium.launch({
     executablePath: chromiumPath,
     headless: true,
     args: ["--no-sandbox", "--disable-gpu"],
-    env: { ...process.env, LD_LIBRARY_PATH: libDir },
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: inheritedLdPath ? `${libDir}:${inheritedLdPath}` : libDir,
+    },
   });
   try {
     const page = await browser.newPage();

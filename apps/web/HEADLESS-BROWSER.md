@@ -204,6 +204,19 @@ this exact mismatch in place.
 verified against the actual component source, not reconstructed from
 memory:
 
+**Scope this actually covers, stated plainly because the next agent reading
+only this file (not the script) needs it too:** the script hand-writes this
+HTML; it does not render `ResultsList.tsx`, `App.tsx`, or `MagicLinkPrompt.tsx`
+themselves. It guards `index.css`'s layout rules against regression, given
+the markup shape below holds — it would NOT catch `ResultsList.tsx` moving
+the anchor off the first result, `App.tsx` renaming
+`magic-link-prompt-host`, `MagicLinkPrompt.tsx` changing its root element,
+or the anchor gaining real children: in every one of those the fixture
+still reads 16px and stays green while the real app regresses, because the
+fixture's markup would simply no longer match what the components actually
+produce. Re-check this comparison by hand against source whenever those
+three files change, the same way it was built.
+
 ```html
 <ul class="result-cards">
   <li class="result-card">...</li>
@@ -264,6 +277,34 @@ the real markup, load the real built CSS, measure
 `getBoundingClientRect()`), and whoever next touches that CSS region should
 use it rather than inspection alone.
 
+## What if `~/.cache/ms-playwright` is empty (a fresh container rebuild)?
+
+Nothing in this ticket installs a Playwright browser itself.
+`layout-check.mjs`'s `findCachedChromium()` only ever looks for one already
+cached, and fails loudly with the exact fix if none is found:
+
+```
+No cached Chromium found under ~/.cache/ms-playwright. Run:
+  npx playwright-core install chromium-headless-shell
+first (needs network access to Playwright's CDN, not apt).
+```
+
+That's `playwright-core install`, **not** `playwright install` — only
+`playwright-core` is a dependency here (see "Dependency added" below); the
+plain `playwright` package isn't installed at all, so `npx playwright ...`
+would silently fetch a second, different, unpinned package from the
+registry just to run one subcommand, rather than using the one this ticket
+already pinned.
+
+This is a deliberate split, not an oversight: downloading a BROWSER needs
+network access to Playwright's own CDN, which is a completely different
+concern from this ticket's actual subject (getting the SYSTEM LIBRARIES an
+already-cached browser needs onto disk without root). The container this
+was built in already had a cached browser (left over from an earlier
+session); a container rebuilt from scratch with no `ms-playwright` cache at
+all needs the one-time `npx playwright-core install` command above before
+`layout-check.mjs` has anything to find.
+
 ## Does this belong in `pnpm test` / the normal `vitest` suite?
 
 **No — kept as an on-demand script, not wired into `vitest` or `pnpm
@@ -283,7 +324,8 @@ test`.** Decided explicitly, not by default:
 - **Environment dependency.** It needs outbound access to Ubuntu's package
   mirrors (for the one-time sysroot fetch) and a pre-existing Playwright
   Chromium cache (`~/.cache/ms-playwright`, not something this ticket
-  installs — see "Notes" below). Neither is guaranteed in every environment
+  installs — see "What if `~/.cache/ms-playwright` is empty" above). Neither
+  is guaranteed in every environment
   this repo's tests might run in (a network-restricted CI runner, for
   instance). `vitest`'s own suite must keep working with neither present —
   see CLAUDE.md's existing `.env`-less-worktree skip-count warning for why a
@@ -330,9 +372,17 @@ $ pnpm lint
 (clean)
 
 $ POSTGRES_HOST=127.0.0.1 RABBITMQ_HOST=127.0.0.1 npx vitest run
-(see commit message / PM report for the exact pass/fail/skip counts this
-run produced on this worktree)
+ Test Files  90 passed (90)
+      Tests  1717 passed (1717)
+   Duration  145.36s
+(0 skipped -- confirmed by grep -ic skip on the full run output; see
+CLAUDE.md's own warning about a worktree with no .env silently skipping
+every DB-backed suite while still printing a green-looking summary line --
+this run had a real .env copied into the worktree, and the skip count was
+checked directly rather than inferred from PASS/FAIL alone)
 ```
+
+Run 2026-10-07, on this worktree (`ticket/9c78da1-headless-browser`).
 
 `eslint.config.js` gained one new block scoped to `**/scripts/**/*.mjs`,
 declaring the Node (`process`, `console`) and browser (`document`,
@@ -342,6 +392,31 @@ them inside the browser page) globals `layout-check.mjs` needs. No existing
 file's lint behavior changes — the glob only matches the new `scripts/`
 directory, and this repo had no other bare `.mjs`/`.cjs` file before this
 ticket.
+
+## Known rough edges — recorded, not fixed
+
+Flagged in review (2026-10-07) as real but not blocking. Each gets one
+sentence here so the next person doesn't have to rediscover them:
+
+- **Ubuntu-release-specific package names.** `fetch-chromium-sysroot.sh`'s
+  `PACKAGES` list uses Ubuntu 24.04 ("noble") time64-transition names like
+  `libglib2.0-0t64`; on a differently-versioned base image, `apt-get` would
+  say `Unable to locate package` and the script fails safely (no `.deb`s
+  extracted, `.complete` marker never written) but without saying _why_ —
+  whoever hits this on a non-noble container should expect to update the
+  package list for that release's naming, not debug the apt plumbing above.
+- **A corrupted-but-marked cache fails unhelpfully.** If `.complete` exists
+  but the extracted lib directory is missing or incomplete (manually
+  deleted, partial copy, etc.), `layout-check.mjs` skips re-fetching (the
+  marker says "done") and the actual failure surfaces ~60 lines deep in
+  Playwright/Chromium's own startup error wall, with the one actionable
+  line ("missing shared library") buried in GPU/sandbox noise rather than a
+  one-line diagnosis pointing at `--force`.
+- **Script mode.** `fetch-chromium-sysroot.sh` keeps its `#!/usr/bin/env
+bash` shebang and is executable (`100755`, confirmed via `git ls-files
+-s`) — raised in review as worth double-checking since it's exactly the
+  kind of thing that silently regresses to non-executable on some
+  checkout/editor combinations; confirmed fine as committed here.
 
 ## What a future agent should NOT need to repeat
 
