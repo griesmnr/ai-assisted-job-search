@@ -51,9 +51,17 @@
 -- produce a pair under concurrency. Any future migration that wants this
 -- constraint back has to dedupe or merge FIRST, in the shape migration
 -- 0004 already used (collapse each duplicate group onto one canonical row
--- -- MIN(id) per group -- repointing every `job_matches`, `searches`,
--- `search_results`, `user_job_statuses` and `handoffs` reference before
--- deleting the losers), and must answer the product question 0004 did not
+-- -- MIN(id) per group -- repointing every reference before deleting the
+-- losers). The tables holding a foreign key to `resumes.id` are, as of
+-- 2026-10-07: `job_matches`, `searches`, `user_job_statuses`, `handoffs`
+-- and `job_match_failures` -- enumerated from `schema.ts`'s
+-- `references(() => resumes.id)` declarations, and corrected in re-review
+-- from an earlier draft of this comment that wrongly listed
+-- `search_results` (it keys `(search_id, job_id)` and holds no resume FK)
+-- and omitted `job_match_failures`. Re-derive the list from
+-- `pg_constraint` at the time rather than trusting this one; it is a
+-- pointer, not an inventory.
+-- Such a migration must also answer the product question 0004 did not
 -- have to: which of two resumes the user deliberately made identical is
 -- the one that survives.
 ALTER TABLE "resumes" DROP CONSTRAINT "resumes_user_id_resume_hash_unique";

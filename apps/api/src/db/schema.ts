@@ -193,9 +193,12 @@ export const resumes = pgTable(
     // into another's exact text on purpose, and the race above can mint a
     // pair. A future migration wanting this constraint back must dedupe or
     // merge FIRST, in the shape migration 0004 used (collapse each group
-    // onto one canonical row, repointing every `job_matches`, `searches`,
-    // `search_results`, `user_job_statuses` and `handoffs` reference before
-    // deleting the losers) -- and must answer a product question 0004 did
+    // onto one canonical row, repointing every reference before deleting
+    // the losers -- the tables with a foreign key to `resumes.id` are
+    // `job_matches`, `searches`, `user_job_statuses`, `handoffs` and
+    // `job_match_failures`, though re-derive that from `pg_constraint`
+    // rather than trusting this list, which was already wrong once) -- and
+    // must answer a product question 0004 did
     // not face: which of two resumes a user DELIBERATELY made identical
     // survives. See migration 0019's own SQL comment.
     resumeHash: text("resume_hash").notNull(),
