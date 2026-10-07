@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MagicLinkRejectionReason } from "@app/shared";
-import { magicLinkRejectionReason, verifyMagicLink } from "../api/client";
+import { magicLinkRejectionReason, neverLanded, verifyMagicLink } from "../api/client";
 import { setUserId, setVerifiedEmail } from "../identity";
 import { reloadCurrent, reloadTo } from "../navigation";
 import { clearAppState } from "../session";
@@ -163,10 +163,41 @@ function urlWithoutTokenLandingOnScoredTab(): string {
 type Phase =
   | { status: "verifying" }
   | { status: "verified"; email: string; switchedAccount: boolean }
-  /** `reason` is absent for a transport-level failure (API unreachable),
-   * which is the one failure worth distinguishing: the token has NOT been
-   * consumed, so retrying the same link is a real option. */
-  | { status: "failed"; message: string; reason?: MagicLinkRejectionReason };
+  /**
+   * `reason` is the server's adjudicated refusal code, present only when
+   * `verifyMagicLink` itself rejected with an adjudicated 400 -- absent for
+   * every other throw.
+   *
+   * `reason` being absent does NOT by itself mean the token survives
+   * (ticket c719af2, found by opus reviewing ticket a90095b, and tightened
+   * one round further by opus reviewing THIS ticket). `reason` is ALSO
+   * absent for:
+   *  - a throw after `verifyMagicLink` RESOLVED (the server committed the
+   *    verification, 2xx, and the token is gone) -- concretely `setUserId`
+   *    refusing a malformed `userId` the API sent back in a 200.
+   *  - a throw from a 200 whose body never finished parsing (a raw
+   *    `SyntaxError`/`TypeError` out of `response.text()`/`JSON.parse` in
+   *    client.ts's `request()`) -- the 2xx status line alone proves the
+   *    same transaction committed; the client just couldn't read the
+   *    result. Equally gone.
+   * Neither case may be told the link still works.
+   *
+   * `transportFailure` is the one flag that actually answers "can the
+   * token still be used," and it is a real invariant, not a heuristic:
+   * `client.ts`'s `neverLanded` keys on `status === 0`, which `request()`
+   * assigns in exactly one place -- the `catch` around `fetch` itself,
+   * when no `Response` was ever received. Every case above (adjudicated,
+   * post-resolution, or unparseable-body) carries some other status or no
+   * status at all, so `transportFailure` is true if and only if the POST
+   * never got a response, which is the one case retrying the same link is
+   * honest. See `neverLanded`'s own doc comment (client.ts) for why an
+   * unreadable 200 is deliberately NOT folded into "never landed". */
+  | {
+      status: "failed";
+      message: string;
+      reason?: MagicLinkRejectionReason;
+      transportFailure: boolean;
+    };
 
 export function MagicLinkLanding({ token }: { token: string }) {
   const [phase, setPhase] = useState<Phase>({ status: "verifying" });
@@ -213,8 +244,12 @@ export function MagicLinkLanding({ token }: { token: string }) {
 
     verifyMagicLink(token)
       .then((result) => {
-        // The token is spent either way now -- take it out of the URL before
-        // anything else, so a reload cannot re-submit it and it stops being
+        // Reaching this callback AT ALL already means the POST resolved
+        // 2xx -- `request()` (client.ts) throws before returning for
+        // anything else, including a 200 whose body didn't parse (that
+        // throw lands in `.catch` below, never here). So the token is
+        // spent either way now -- take it out of the URL before anything
+        // else, so a reload cannot re-submit it and it stops being
         // visible. Ticket bb2f275: also bakes in the "land on Already
         // Scored Jobs" marker `JobSearchApp` reads on its next mount (the
         // "Continue" button below reloads to `window.location.href`, which
@@ -237,9 +272,21 @@ export function MagicLinkLanding({ token }: { token: string }) {
       })
       .catch((err: unknown) => {
         const reason = magicLinkRejectionReason(err);
-        if (reason !== undefined) {
-          // A real, adjudicated refusal: the link is spent or was never
-          // valid, so remove it from the URL like a success.
+        // See `neverLanded`'s own doc comment (client.ts) and the `Phase`
+        // type's above: true only when the POST never got a response at
+        // all. Everything else -- an adjudicated refusal, the
+        // malformed-userId throw, or an unparseable 200 body -- means we
+        // cannot say this token survived, so it is treated the same as a
+        // confirmed spend below (ticket c719af2, review round 2).
+        const transportFailure = reason === undefined && neverLanded(err);
+        if (!transportFailure) {
+          // Not confirmed safe to retry: remove the (possibly already-dead)
+          // token from the URL so a reload cannot resubmit it. This used to
+          // be gated on `reason !== undefined` alone, which left a token
+          // that was ACTUALLY spent (malformed userId, unparseable 200)
+          // sitting in the address bar -- a reload would then resubmit it
+          // and come back `already_used`, reading as a second, unrelated
+          // bug.
           window.history.replaceState(null, "", urlWithoutToken());
         }
         if (!aliveRef.current) return;
@@ -247,6 +294,7 @@ export function MagicLinkLanding({ token }: { token: string }) {
           status: "failed",
           message: err instanceof Error ? err.message : String(err),
           reason,
+          transportFailure,
         });
       });
 
@@ -310,9 +358,11 @@ export function MagicLinkLanding({ token }: { token: string }) {
               a navigation is what this needs.
 
               The FAILURE path below deliberately still uses `reloadTo`,
-              because on a transport failure the token IS still in the URL
-              (that path's `replaceState` is conditional on an adjudicated
-              refusal) and stripping it is part of that button's job.
+              because on a genuine transport failure (client.ts's
+              `neverLanded`) the token IS still in the URL -- that path's
+              `replaceState` is conditional on `!phase.transportFailure`,
+              ticket c719af2 review round 2 -- and stripping it is part of
+              that button's job.
 
               But note what an earlier version of this comment claimed and
               got wrong, since opus review measured it: "the token is still
@@ -340,7 +390,20 @@ export function MagicLinkLanding({ token }: { token: string }) {
               valid (see MagicLinkRejectionReason in @app/shared) -- there
               is no reason to re-word it less accurately here. */}
           <p role="alert">{phase.message}</p>
-          {phase.reason === undefined ? (
+          {phase.transportFailure ? (
+            // The ONE case where retrying the SAME link is honest: the POST
+            // never got a response at all (client.ts's `neverLanded`), so
+            // nothing server-side ever ran and the token was never touched.
+            // Gated on `transportFailure`, NOT on `phase.reason === undefined`
+            // -- ticket c719af2, tightened in review round 2: `reason` is
+            // ALSO undefined for a throw after `verifyMagicLink` resolved
+            // (e.g. `setUserId` refusing a malformed id the API returned in
+            // a 200) AND for a 200 whose body never finished parsing. Both
+            // mean the server already committed the verification (or might
+            // have -- an unparseable 200 still proves the status line was
+            // 2xx), so both must fall through to the "ask for a new link"
+            // copy below instead, same as every other case where this link
+            // cannot be trusted to still work.
             <p className="magic-link-note">
               The link hasn't been used up — it's still worth trying again once you're back online.
             </p>
