@@ -208,6 +208,17 @@ export const resumes = pgTable(
     // [] means "ran, found nothing to suggest" -- the route distinguishes
     // these to decide whether to retry. See routes/resumes.ts.
     //
+    // THIS INVARIANT WAS NOT ACTUALLY TRUE until ticket 82ae975: `POST
+    // /resumes` persisted `[]` on a FAILED inference (not just a genuinely
+    // empty one), which is indistinguishable from the real "ran, found
+    // nothing" case and is never `null`, so the retry this comment promises
+    // never fired. Fixed to actually persist `null` on failure, matching
+    // `PUT /resumes/:id/text`'s own choice (ticket 6ba221e) and this
+    // comment's original, always-correct claim about what the two values
+    // mean. Migration 0020 backfills every pre-existing `[]` row written by
+    // the old, buggy behavior back to `null` (`resume-title-inference.ts`'s
+    // own doc comment has the full failure-mode history).
+    //
     // 39b4a48's ORIGINAL justification for caching was that find-or-create
     // deduped identical resume text to one row, so a resume's text could
     // never change under its cached titles. TICKET 6ba221e ENDED THAT: the

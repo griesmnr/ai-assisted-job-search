@@ -785,11 +785,57 @@ describe("POST /resumes — suggested title inference (ticket 39b4a48)", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as CreateResumeResponse;
     expect(typeof body.id).toBe("string");
+    // The 39b4a48 guarantee: resume creation must never depend on
+    // inference succeeding. The RESPONSE still degrades to `[]` (the
+    // client-facing shape is never nullable), but see the next assertion
+    // for what actually gets persisted.
     expect(body.suggestedTitles).toEqual([]);
 
     const rows = await db.select().from(resumes).where(eq(resumes.id, body.id));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.resumeText).toBe(resumeText);
+    // TICKET 82ae975, THE ACTUAL BUG: the row must be persisted as `null`
+    // (not inferred yet), never `[]` (ran, found nothing) -- `[]` is
+    // indistinguishable from a genuine empty success and is never `null`,
+    // so the `suggestedTitles === null` lazy re-inference gate above never
+    // fires again for it. A failure cached as `[]` wipes that resume's
+    // chips forever with no self-healing; `null` keeps it retryable.
+    expect(rows[0]?.suggestedTitles).toBeNull();
+  });
+
+  it("ticket 82ae975: a failed inference self-heals on a later resubmission of the SAME resume text, against real Postgres", async () => {
+    // The lazy gate this test proves still works end to end: a resume
+    // whose first inference attempt failed (persisted `null`, per the test
+    // above) is NOT stuck that way forever -- resubmitting the identical
+    // text (the find-or-create path, `POST /resumes`) hits the same row,
+    // sees `suggestedTitles === null`, and tries again. This is the exact
+    // self-healing path the ticket's acceptance criteria require to be
+    // "verified against real Postgres, not a mock" -- `db` here is the
+    // real, migrated test database this file already uses throughout.
+    let shouldThrow = true;
+    const inferTitles = async (): Promise<string[]> => {
+      if (shouldThrow) throw new Error("simulated inference failure");
+      return ["Recovered Title"];
+    };
+    const app = buildTestApp(inferTitles);
+    const resumeText = `Self-healing resume ${randomUUID()}`;
+
+    const first = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+    expect((first.json() as CreateResumeResponse).suggestedTitles).toEqual([]);
+    const { id } = first.json() as CreateResumeResponse;
+    const rowAfterFailure = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(rowAfterFailure[0]?.suggestedTitles).toBeNull();
+
+    // The underlying API call recovers (e.g. a transient rate limit
+    // clears) -- the resume itself was never touched, it's the SAME text.
+    shouldThrow = false;
+    const second = await app.inject({ method: "POST", url: "/resumes", payload: { resumeText } });
+
+    expect(second.statusCode).toBe(200);
+    expect((second.json() as CreateResumeResponse).id).toBe(id); // same row, find-or-create
+    expect((second.json() as CreateResumeResponse).suggestedTitles).toEqual(["Recovered Title"]);
+    const rowAfterRecovery = await db.select().from(resumes).where(eq(resumes.id, id));
+    expect(rowAfterRecovery[0]?.suggestedTitles).toEqual(["Recovered Title"]);
   });
 
   it("an empty inference result ([]) is itself cached, not retried on a legitimate resubmission", async () => {
@@ -1664,9 +1710,10 @@ describe("PUT /resumes/:id/text (ticket 6ba221e)", () => {
       expect(response.statusCode).toBe(200);
       expect((response.json() as UpdateResumeTextResponse).suggestedTitles).toEqual([]);
       // But the row records "not inferred yet", NOT an authoritative
-      // empty list: ticket 82ae975 is an open bug about `[]` being cached
-      // forever behind a `suggestedTitles === null` retry gate, and this
-      // new write path deliberately does not walk into it.
+      // empty list: ticket 82ae975 fixed `[]` being cached forever behind
+      // a `suggestedTitles === null` retry gate on the OTHER write path
+      // (`POST /resumes`) specifically by matching the choice this write
+      // path already made.
       const row = await db.select().from(resumes).where(eq(resumes.id, id));
       expect(row[0]?.suggestedTitles).toBeNull();
     });

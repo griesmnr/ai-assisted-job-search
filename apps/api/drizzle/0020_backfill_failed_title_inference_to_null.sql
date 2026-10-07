@@ -1,0 +1,88 @@
+-- Ticket 82ae975: backfills historical `suggested_titles = '[]'` rows to
+-- `NULL`.
+--
+-- WHY THIS IS A DATA MIGRATION, NOT A SCHEMA CHANGE. `db/schema.ts`'s own
+-- comment on this column has ALWAYS said `null` means "inference hasn't run
+-- yet or failed" and `[]` means "ran, found nothing to suggest" -- but
+-- `routes/resumes.ts`'s `POST /resumes` handler never actually implemented
+-- that: on failure it persisted `suggestedTitles: []`, not `null` (the
+-- defect this ticket fixes in code). Every `[]` row already sitting in a
+-- real database from BEFORE this ticket's code fix could therefore mean
+-- either thing, and this migration exists to put those rows back into the
+-- state the schema comment always claimed they'd be in.
+--
+-- WHY IT IS SAFE TO TREAT EVERY EXISTING `[]` AS A FAILURE, not a genuine
+-- empty result, even though that is technically a guess.
+--
+-- CORRECTED IN REVIEW, 2026-10-07 -- the first draft of this paragraph said a
+-- real empty success "requires the model to return `{"titles": []}` (or an
+-- array of nothing but blank strings)". That is FALSE, and the correction
+-- matters more for historical rows than for new ones, so it is recorded here
+-- rather than quietly reworded.
+--
+-- A genuine `[]` also arises when `splitConjoinedTitles` drops every title it
+-- was given. Measured against the real function: `["Nurse,"]`,
+-- `[", Nurse"]`, `["Nurse, Veterinarian"]` and `["Nurse; Vet"]` all return
+-- `[]` from perfectly valid, non-empty model output -- see that function's own
+-- "KNOWN RESIDUAL" paragraph in resume-title-inference.ts, and ticket
+-- 2f2227d, which tracks it.
+--
+-- And it was MORE reachable for exactly the rows this migration rewrites.
+-- Every pre-existing `[]` row was written under the PRE-16738f4 code, whose
+-- line was an unconditional `if (!/\s/.test(trimmed)) continue;` -- every
+-- single-word title dropped, with no `wasJoined` guard. So a resume whose
+-- model output was entirely single-word titles persisted a genuine,
+-- non-failure `[]`. That shape is not hypothetical: live eval runs measured
+-- exactly two single-word titles across 22 shape-runs, "Nurse" and
+-- "Veterinarian" (16738f4's own note).
+--
+-- The backfill is still right, for a reason the first draft got to by the
+-- wrong route: such a row becomes eligible for ONE lazy re-inference, and
+-- under today's post-16738f4 code that re-inference KEEPS "Nurse" and
+-- "Veterinarian" rather than dropping them. So the row comes back strictly
+-- better than the `[]` it held. The cost is one sonnet call on a user action,
+-- and the alternative -- leaving it `[]` -- preserves a value that was itself
+-- produced by a bug this project has since fixed.
+--
+-- Supporting, and still true: every DOCUMENTED live incident that produced `[]` so far
+-- (ticket 6487ed8: two of three live runs truncated the JSON response
+-- mid-string) was a parse failure the old code swallowed, not a genuine
+-- empty answer. Getting this wrong in the rare case has a cheap, safe
+-- failure mode: a row that was genuinely, validly empty just becomes
+-- eligible for one harmless extra re-inference attempt (the `null` lazy-gate
+-- in `POST /resumes`, or an operator run of
+-- `scripts/reinfer-resume-titles.ts --live`, now widened to reach `null`
+-- rows too -- see that script's own header) the next time something
+-- touches it, which in the overwhelmingly likely case recovers real chips
+-- that have been silently missing since whatever request first failed.
+--
+-- NOT SELF-HEALING ON ITS OWN: this migration only clears the data.
+-- Recovery still needs one of the trigger paths this ticket documents (a
+-- matching `POST /resumes` resubmission, a `PUT /resumes/:id/text` edit, or
+-- an operator run of the widened reinfer script) to actually fill the row
+-- back in -- seeing `suggested_titles` go from `[]` to `NULL` in this
+-- migration is not itself evidence that titles came back.
+--
+-- IRREVERSIBLE. There is deliberately no down-migration, and there could not
+-- be a correct one: once this has run, nothing distinguishes a row it nulled
+-- from a row that was ALREADY null before it ran. Reverting would have to
+-- rewrite some arbitrary subset back to `[]` and would get it wrong either
+-- way. (This project writes no down-migrations at all, so no artifact is
+-- missing -- this note exists so nobody tries to author one later and assumes
+-- the information is recoverable.)
+--
+-- SAFE AGAINST A DATABASE THAT ALREADY CONTAINS DATA (the acceptance
+-- criterion this migration has to satisfy): a plain `UPDATE ... WHERE`
+-- touches only rows matching the condition, adds no column, drops no
+-- constraint, and cannot fail on any existing row shape -- `suggested_titles`
+-- is a nullable `jsonb` column (schema.ts) and `'[]'::jsonb` is always a
+-- legal value to compare against or null out. See
+-- db/migration-0020.test.ts for the proof against a database seeded with
+-- all three real row shapes (`[]`, `null`, and a genuine populated array)
+-- plus the dependent-row fixture this project's other migration tests use.
+--
+-- `suggested_titles = '[]'::jsonb` (not `jsonb_array_length(...) = 0`):
+-- the bug this migration cleans up always wrote the LITERAL empty array,
+-- never any other empty-but-technically-non-`[]` jsonb shape, so there is
+-- no broader case to catch here.
+UPDATE "resumes" SET "suggested_titles" = NULL WHERE "suggested_titles" = '[]'::jsonb;

@@ -602,23 +602,67 @@ export function splitConjoinedTitles(titles: string[]): string[] {
 }
 
 /**
- * Returns `[]` (never throws) if the call fails for any reason -- network
- * error, malformed response, anything. This is a nice-to-have layer on top
- * of resume submission (ticket 39b4a48's explicit, non-optional
- * requirement): a failure here must never block creating the resume, and
- * an empty suggestion list degrades gracefully to "no title restriction",
- * not a broken page. The caller (routes/resumes.ts) is responsible for
- * logging the failure; this function stays silent on purpose so it has
- * exactly one return shape (a string array) for every outcome.
+ * ---------------------------------------------------------------------------
+ * TICKET 82ae975 -- THIS FUNCTION USED TO SWALLOW EVERY FAILURE INTO `[]`,
+ * AND THAT WAS THE BUG
+ * ---------------------------------------------------------------------------
  *
- * CAVEAT, measured by ticket 6487ed8's review: the claim above that the caller
- * logs the failure is NOT satisfied in practice. `routes/resumes.ts` logs only
- * inside a `catch` around `await inferTitles(...)`, which this function can
- * never trigger -- it does not throw. So a failure here is currently logged
- * NOWHERE, and the route then persists `suggestedTitles: []`, which is not
- * `null` and therefore never re-inferred. One transient truncation caches zero
- * chips for that resume permanently. Tracked separately; do not read the
- * paragraph above as a description of current behavior.
+ * THE OLD CONTRACT, AND WHY IT WAS WRONG. This function used to catch
+ * literally everything -- a network error, a malformed response, a JSON
+ * parse failure, a non-array `titles` field -- and return `[]` for all of
+ * it, "never throws," on the theory that resume submission (ticket
+ * 39b4a48's explicit, non-optional requirement) must never be blocked by an
+ * inference hiccup. The doc comment even claimed "the caller
+ * (routes/resumes.ts) is responsible for logging the failure." Ticket
+ * 6487ed8's review found that claim FALSE: `routes/resumes.ts` only logs
+ * inside a `catch` around a call to this module, which a function that
+ * never throws can never trigger. So a failure here was logged NOWHERE, and
+ * the route then persisted `suggestedTitles: []` -- not `null`, so the
+ * `suggestedTitles === null` lazy re-inference gate (routes/resumes.ts)
+ * never fired again. One transient truncation (confirmed live, 6487ed8: two
+ * of three real runs truncated the JSON mid-string at the old 300-token
+ * budget) cached zero chips for that resume FOREVER, with nothing anywhere
+ * to say why.
+ *
+ * THE NEW CONTRACT: this function now THROWS on every failure instead of
+ * swallowing one. Nothing about the never-block-resume-creation requirement
+ * changes -- both callers (`POST /resumes` and `PUT /resumes/:id/text` in
+ * routes/resumes.ts) already wrap their call to `inferTitles` in a
+ * try/catch, and that catch already existed BEFORE this ticket, already
+ * logs, and was simply dead code because this function never threw into it
+ * (POST /resumes's own comment called that try/catch "defense in depth...
+ * this is an injected dependency; a test double or a future implementation
+ * could throw" -- this ticket is that future implementation). Reusing an
+ * already-written, already-correct catch is less new surface than inventing
+ * a result-type return value, and it is what makes `fetchRawTitleSuggestions`
+ * and `inferTitleKeywords` throw UNIFORMLY: a caller that wants "never
+ * throws, degrade to no chips" gets that by wrapping the call itself, which
+ * both production call sites already do; a caller that wants to see the
+ * failure (this module's own tests, `scripts/eval-title-inference-prompt.ts`,
+ * and `scripts/reinfer-resume-titles.ts`'s own failure accounting) now can,
+ * because the error is a real, inspectable `Error` with a message that
+ * names WHICH failure mode occurred (API call failed, no text block, invalid
+ * JSON, non-array `titles`) rather than an undifferentiated swallow.
+ *
+ * WHAT A GENUINE EMPTY RESULT STILL MEANS, UNCHANGED: a STRUCTURALLY VALID
+ * response (a real API call that returned parseable JSON with an array
+ * `titles` field) whose entries are all blank/non-string and get filtered
+ * out below still returns `[]` as a genuine, if essentially never-observed,
+ * SUCCESS -- the API call did not fail, it is just an empty answer. This is
+ * the `[]` the schema.ts doc comment on `suggestedTitles` has always meant
+ * ("ran, found nothing to suggest"); only FAILURES moved to throwing. The
+ * two were never actually distinguishable before this ticket -- callers
+ * could not tell "the model validly returned nothing" from "the call blew
+ * up" because both collapsed to the identical `[]` -- and keeping the
+ * vanishingly-rare genuine-empty case as a non-throwing `[]` is what the
+ * acceptance criterion ("a genuinely empty-but-successful inference is
+ * still distinguishable from a failure") actually asks for: `null` now
+ * means "never inferred, or inference failed"; `[]` now means "inference
+ * ran and found nothing"; a populated array means a genuine result. See
+ * routes/resumes.ts's two call sites for where a caught failure is written
+ * as `null`, matching ticket 6ba221e's own choice for its edit path and the
+ * schema.ts column comment that was already written before either fix
+ * existed.
  *
  * Exported separately from `inferTitleKeywords` (ticket 976a782, opus
  * review round 1, F1) so a caller that needs to inspect what the MODEL
@@ -636,28 +680,53 @@ export function splitConjoinedTitles(titles: string[]): string[] {
  * through `inferTitleKeywords` below, which applies `splitConjoinedTitles`
  * before returning -- skipping straight to this function anywhere outside
  * an eval/diagnostic context reintroduces the unsplit comma/semicolon chips
- * this whole ticket exists to close.
+ * this whole ticket exists to close. `inferTitleKeywords` itself does not
+ * catch anything: a throw from this function propagates straight through
+ * it to the caller, unchanged, which is the point.
  */
 export async function fetchRawTitleSuggestions(
   anthropic: Anthropic,
   resumeText: string,
 ): Promise<string[]> {
+  let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
-    const response = await anthropic.messages.create({
+    response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
       output_config: { format: { type: "json_schema", schema: SCHEMA } },
       messages: [{ role: "user", content: PROMPT_PREFIX + resumeText }],
     });
-
-    const text = response.content.find((b) => b.type === "text");
-    if (!text || text.type !== "text") return [];
-    const parsed = JSON.parse(text.text) as { titles?: unknown };
-    if (!Array.isArray(parsed.titles)) return [];
-    return parsed.titles.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
-  } catch {
-    return [];
+  } catch (err) {
+    throw new Error(
+      `title inference API call failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
+
+  const text = response.content.find((b) => b.type === "text");
+  if (!text || text.type !== "text") {
+    throw new Error("title inference response had no text content block");
+  }
+
+  let parsed: { titles?: unknown };
+  try {
+    parsed = JSON.parse(text.text) as { titles?: unknown };
+  } catch (err) {
+    throw new Error(
+      `title inference response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (!Array.isArray(parsed.titles)) {
+    throw new Error('title inference response\'s "titles" field was not an array');
+  }
+  // A structurally valid response can still legitimately contain nothing
+  // worth keeping (every entry blank/non-string) -- that is a genuine
+  // EMPTY SUCCESS, not a failure, so it returns `[]` rather than throwing.
+  // See this function's own doc comment above for why that distinction
+  // matters and is safe even though it is, in practice, essentially never
+  // observed.
+  return parsed.titles.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
 }
 
 export async function inferTitleKeywords(

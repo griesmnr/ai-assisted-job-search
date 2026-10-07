@@ -7,7 +7,7 @@ import { resumes, users } from "../db/schema.js";
 import { createTestDatabase, type TestDatabase } from "../db/test-db.js";
 import { loadEnvFile } from "../load-env.js";
 import {
-  findInferredResumes,
+  findCandidateResumes,
   parseArgs,
   runReinfer,
   titlesEqual,
@@ -28,8 +28,10 @@ afterAll(async () => testDb?.teardown());
 /**
  * Same no-network fake-client pattern resume-title-inference.test.ts and
  * demo-match.test.ts already establish for this codebase -- adapted here to
- * be KEYED BY RESUME TEXT, because `runReinfer` processes every non-null-
- * `suggestedTitles` resume in the WHOLE test database, including ones a
+ * be KEYED BY RESUME TEXT, because `runReinfer` processes EVERY resume in
+ * the WHOLE test database -- widened by ticket 82ae975, which made failures
+ * persist `null` and so put them out of reach of the old non-null filter --
+ * including ones a
  * PRIOR test in this same file left behind (nothing deletes rows between
  * tests, same shared-database shape `reassign-legacy-resumes.test.ts`
  * already lives with).
@@ -132,16 +134,22 @@ describe("titlesEqual", () => {
   });
 });
 
-describe("findInferredResumes", () => {
-  it("only returns resumes with a non-null suggestedTitles", async () => {
+describe("findCandidateResumes", () => {
+  it("returns resumes with a null suggestedTitles too (ticket 82ae975) — coerced to [] for comparison", async () => {
     const userId = await seedUser();
     const inferred = await seedResume(userId, { suggestedTitles: ["Backend Engineer"] });
-    const neverInferred = await seedResume(userId, { suggestedTitles: null });
+    const neverInferredOrFailed = await seedResume(userId, { suggestedTitles: null });
 
-    const rows = await findInferredResumes(db);
-    const ids = rows.map((r) => r.id);
-    expect(ids).toContain(inferred);
-    expect(ids).not.toContain(neverInferred);
+    const rows = await findCandidateResumes(db);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.has(inferred)).toBe(true);
+    // A `null` row is now a candidate too -- a failed inference (ticket
+    // 82ae975 fixed both `POST /resumes` and `PUT /resumes/:id/text` to
+    // persist `null`, not `[]`, on failure) is indistinguishable here from
+    // a resume that was never touched, and this script does not need to
+    // tell them apart: either way, a successful re-run improves the row.
+    expect(byId.has(neverInferredOrFailed)).toBe(true);
+    expect(byId.get(neverInferredOrFailed)?.suggestedTitles).toEqual([]);
   });
 });
 
