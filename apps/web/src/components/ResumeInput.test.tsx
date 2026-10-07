@@ -217,6 +217,18 @@ describe("ResumeInput — Resume Nickname field (ticket 38a7598)", () => {
     expect(screen.getByText("Saving...")).toBeInTheDocument();
   });
 
+  // Ticket 3db5b35 review finding (minor): a keystroke typed into this
+  // field WHILE the resume text POST itself is in flight used to be
+  // silently dropped -- App.tsx's `handleResumeSubmit` reads the field's
+  // value once, at the moment it starts, and never again. Disabling the
+  // field for that same window turns "silently dropped" into "visibly
+  // can't type yet."
+  it("also disables the nickname field while the resume submission itself is in flight (submitting), not just nicknameSaving", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={true} nickname="Resume 1" />);
+
+    expect(screen.getByLabelText("Resume Nickname")).toBeDisabled();
+  });
+
   it("shows a nickname-specific error message distinct from the resume-submission error", () => {
     render(
       <ResumeInput

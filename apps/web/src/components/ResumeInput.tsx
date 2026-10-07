@@ -557,7 +557,18 @@ export function ResumeInput({
             id="resume-nickname"
             type="text"
             value={nickname ?? ""}
-            disabled={nicknameSaving}
+            // Ticket 3db5b35 review finding (minor): also disabled while
+            // `submitting` -- not just `nicknameSaving`. Before this, a
+            // keystroke typed into this field WHILE the resume text POST
+            // was still in flight was silently dropped: App.tsx's
+            // `handleResumeSubmit` captures the field's value once, at
+            // the moment it starts, and never re-reads it after the
+            // await -- so anything typed in that window simply vanished
+            // with no error and no visual sign anything was wrong.
+            // Disabling the field for that same window turns "silently
+            // dropped" into "visibly can't type yet," which is honest
+            // rather than merely less bad.
+            disabled={nicknameSaving || submitting}
             // Ticket 7701534, Nicole: "it should highlight... red
             // outline on the field." `aria-invalid` is both the
             // standard accessible way to flag an invalid field (a

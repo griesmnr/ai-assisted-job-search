@@ -60,6 +60,29 @@ export type Resume = {
   resumeNickname: string;
 };
 
+/**
+ * The "Resume N" default-nickname numbering scheme (ticket 38a7598),
+ * extracted to ONE place (ticket 3db5b35, review finding F6) rather than
+ * living as two unlinked expressions that happen to agree today:
+ * `getOrCreateResumeId` (apps/api/src/matching/pipeline.ts) calls this at
+ * INSERT time, with the real count of that user's existing rows, to assign
+ * the server's actual default. `App.tsx` calls it with the already-loaded
+ * resumes list's length to render a PRE-SAVE suggestion, before any
+ * `POST /resumes` has happened to produce a real one — see that file's
+ * `handleResumeSubmit` comment for why a suggestion is necessary at all
+ * and why it is explicitly not guaranteed to match (another session
+ * inserting a row in between is a real, accepted race either side of this
+ * function already lived with alone).
+ *
+ * Same consolidation reasoning as `USER_JOB_STATUSES` living here instead
+ * of being redeclared per-side: two expressions that happen to compute the
+ * same thing today drift silently the next time either side changes
+ * without the other noticing.
+ */
+export function nextResumeNicknameFor(existingResumeCount: number): string {
+  return `Resume ${existingResumeCount + 1}`;
+}
+
 export type JobMatch = {
   id: string;
   resumeId: string;
@@ -163,6 +186,31 @@ export type CreateResumeResponse = {
    * text (the one case that still reaches this response) needs to know
    * immediately whether IT is now locked, without a second round-trip. */
   isLocked: boolean;
+  /**
+   * Ticket 3db5b35 (adversarial review finding F1, severe): `true` only
+   * when THIS request is the one that INSERTed a new row --
+   * `getOrCreateResumeId`'s own `isNew` (apps/api/src/matching/
+   * pipeline.ts), carried onto the wire for the first time. It already
+   * existed server-side; it had simply never had a consumer that NEEDED
+   * to tell "created" apart from "found" until now.
+   *
+   * THE DEFECT THIS FIELD FIXES: `resumeNickname` above is NOT proof the
+   * server assigned a fresh default -- on a find-or-create hit (pasting
+   * text that matches an ALREADY-SAVED resume, including one the owner
+   * renamed herself) it is that row's real, possibly-already-chosen
+   * nickname. `ResumeInput.tsx`'s pre-save suggestion field (ticket
+   * 3db5b35) has no way to know in advance which case it's in -- a
+   * pre-save client guess that happens to differ from `resumeNickname`
+   * is NOT evidence the user typed something: it is equally, and in the
+   * ordinary "paste a resume I already have" case MORE likely, evidence
+   * that the guess was wrong and the server found an existing row with
+   * its own real name. `App.tsx`'s `handleResumeSubmit` gates its
+   * post-create nickname PATCH on `isNew === true` for exactly this
+   * reason -- a PATCH is only even considered when this request is
+   * PROVABLY the one that created the row, never on a found-existing
+   * resolution, no matter what the pre-save field happened to show.
+   */
+  isNew: boolean;
 };
 
 export type GetResumeResponse = {
