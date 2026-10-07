@@ -46,7 +46,24 @@ h1 {
    `max(1.005rem, 1rem)` = 16px. A flex item's margins cannot collapse
    through their container, so the two started stacking instead:
    1.005rem + 1rem = 32px. Zeroing it here (with the top half moved onto
-   `.app-header` above) restores the original 16px exactly, cue or no cue. */
+   `.app-header` above) restores the original 16px exactly, cue or no cue.
+
+   2026-10-07 (ticket 9c78da1): a working headless-browser setup now exists
+   (apps/web/HEADLESS-BROWSER.md, apps/web/scripts/layout-check.mjs), but it
+   has only been pointed at the OTHER magic-link-prompt spacing claim near
+   `.magic-link-prompt-anchor` below, not at this one. To be precise about
+   what that does and doesn't mean: this comment's own opening line already
+   says these 16px/32px figures were "measured in real Chromium" by ticket
+   a5c8fa9's reviewer, in whatever environment that reviewer had -- not
+   verified here, and not claimed to be inspection-only. What's true today
+   is narrower: `layout-check.mjs` has NOT re-run this specific
+   measurement, so it is NOT re-verified in THIS container, by THIS tool.
+   Don't read that as "these figures were never measured" -- that would be
+   a different, wrong claim about someone else's work this agent cannot see
+   from here. To re-verify: build an `.app-header h1` + `.tab-nav` fixture
+   (cue present, cue absent, recovery-link-open) the same way
+   `layout-check.mjs` builds its magic-link fixture -- real built CSS,
+   `getBoundingClientRect()` on `h1` and `.tab-nav`, not a new tool. */
 .app-header h1 {
   margin: 0;
 }
@@ -1096,10 +1113,20 @@ button[aria-disabled="true"] {
    once `verifiedEmail` is defined, since ticket a5c8fa9 moved that
    reassurance to `SignedInCue`, and two tests pin `.magic-link-prompt` at
    count 0 in the verified state. The scoping decision was right; the
-   consumer named for it was not.) Caught by inspection, not a
-   screenshot -- there is no working headless browser in this container
-   (ticket 9c78da1) -- which is exactly why this is recorded instead of
-   assumed fine. */
+   consumer named for it was not.) Re-verified 2026-10-07 in a real headless
+   browser, not by inspection (ticket 9c78da1 built the tool; see
+   apps/web/HEADLESS-BROWSER.md). Command:
+   `pnpm build && node apps/web/scripts/layout-check.mjs`. Measured gap,
+   first result card -> magic-link-prompt: 16px (1.000rem) -- confirming
+   this rule produces exactly `.result-cards`' own `gap: 1rem`, not the
+   pre-fix 2.5rem (1rem gap + this rule's old 1.5rem margin, stacked
+   because a flex item's margin never collapses with the container's
+   `gap`). Re-run that command if this rule or the markup around it changes
+   and you need to re-check it; `layout-check.mjs`'s fixture is hand-built
+   to match `ResultsList.tsx`'s DOM shape, so it can drift silently if that
+   component changes without this rule changing too (see
+   HEADLESS-BROWSER.md's "The demonstration" section for exactly what it
+   does and does not cover). */
 .magic-link-prompt-anchor .magic-link-prompt {
   margin-top: 0;
 }
