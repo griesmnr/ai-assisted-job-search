@@ -263,7 +263,7 @@ export function registerAuthRoutes(
       try {
         await getSendEmail()({
           to: email,
-          subject: "Your sign-in link for AI-Assisted Job Search",
+          subject: "Your sign-in link for FitScore",
           text: [
             "Click this link to save your job search results to this email address:",
             "",
@@ -274,7 +274,7 @@ export function registerAuthRoutes(
           ].join("\n"),
           html: [
             `<p>Click this link to save your job search results to this email address:</p>`,
-            `<p><a href="${escapeHtmlAttribute(link)}">Sign in to AI-Assisted Job Search</a></p>`,
+            `<p><a href="${escapeHtmlAttribute(link)}">Sign in to FitScore</a></p>`,
             `<p>The link works once and expires in ${minutes} minutes.</p>`,
             `<p>If you didn't ask for this, you can ignore this email — nothing has changed.</p>`,
           ].join("\n"),

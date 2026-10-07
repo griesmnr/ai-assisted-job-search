@@ -148,7 +148,7 @@ behind adversarial review, and performs the merges itself.
 
 ## The Project
 
-An AI-assisted job search web app. The user picks which job sources to search
+FitScore, an AI-assisted job search web app. The user picks which job sources to search
 (airline-style toggles), supplies a resume, and gets back a ranked list of
 postings with AI-generated match scores, best match first.
 

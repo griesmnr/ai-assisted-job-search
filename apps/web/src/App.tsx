@@ -1726,6 +1726,42 @@ function JobSearchApp() {
   const showSignInRecovery =
     resumeId === undefined && noResumesOnThisAccount && nothingScoredInThisBrowser;
 
+  // Ticket 9e00bc9: whether the welcome paragraph explaining what FitScore
+  // does is still worth showing. Nicole's own constraint: an explainer that
+  // never goes away is clutter for her (she sees this screen constantly as
+  // its own user), but one that disappears outright leaves a
+  // returning-but-confused visitor with nothing. `SignInRecovery` above
+  // already resolved the identical tension for a different feature by tying
+  // visibility to DATA rather than to a one-time "have they been here
+  // before" flag this app has no way to answer -- see its own doc comment: a
+  // first-timer and a returning visitor with cleared storage are
+  // INDISTINGUISHABLE here. The same resolution applies: show the paragraph
+  // until this browser/account can prove the visitor has actually used the
+  // app -- a saved resume, or a result they can see on screen -- then stop.
+  // Concretely, that means it disappears for Nicole after her very first
+  // resume (exactly the clutter she wants gone), while a returning visitor
+  // who lost their storage and is legitimately confused is, by this same
+  // check, indistinguishable from a first-timer and sees the explanation
+  // again -- not because of a flag that remembers them, but because the gate
+  // re-reads the same evidence every render.
+  //
+  // Deliberately reuses `scoredArmReady` (defined above for the magic-link
+  // prompt's own gate) rather than the pessimistic `nothingScoredInThisBrowser`
+  // pair above: that pair treats `loading` and fetch `error` as "hide the
+  // offer", which is the right call for a recovery LINK (an offer flashing in
+  // and out reads as broken) but the wrong call here. The ticket requires
+  // this paragraph to be "the first thing a first-time visitor reads," so the
+  // default while either fetch is unsettled is VISIBLE: a brief extra flash
+  // for an already-returning visitor on a fast connection is a far smaller
+  // cost than a blank header above the fold on a slow one. `scoredArmReady`
+  // also already excludes `hiddenBelowFloor`-only results ("the user cannot
+  // see those," per its own comment) -- which is correct here too: a visitor
+  // whose only results are filtered below the floor has not yet SEEN a match
+  // score, so the paragraph explaining what one is still earns its place.
+  const hasOwnResumes =
+    resumesListState.status === "ready" && resumesListState.data.resumes.length > 0;
+  const showWelcomeParagraph = !hasOwnResumes && !scoredArmReady;
+
   // Latches true the first time the recovery offer is due, so the component is
   // not mounted before then. A ref rather than state: it only ever goes true,
   // and nothing needs a re-render on its account -- the render that sets it is
@@ -1744,7 +1780,7 @@ function JobSearchApp() {
           has no verified email, in which case this collapses to just the
           heading. */}
       <div className="app-header">
-        <h1>AI-Assisted Job Search</h1>
+        <h1>FitScore</h1>
         <SignedInCue />
         {/* Opus review F1: the gate is passed DOWN as `offered` rather than
             used to mount or unmount, for the same reason the prompt host
@@ -1764,6 +1800,27 @@ function JobSearchApp() {
             than mounting a component that immediately returns null. */}
         {signInRecoveryEverShown && <SignInRecovery offered={showSignInRecovery} />}
       </div>
+
+      {/* Ticket 9e00bc9: a sibling of `.app-header`, not a child of it,
+          deliberately. `.app-header` is `display: flex; flex-wrap: wrap`
+          with a top-right slot already shared by `SignedInCue` and
+          `SignInRecovery` (tickets a5cf8a9, 5a7e957) -- dropping a
+          full-width paragraph INTO that row would need its own
+          `flex-basis: 100%` (the precedent `.sign-in-recovery-open` already
+          sets) just to behave like a normal block element. Placing it after
+          the row instead gets that behavior for free, in normal flow, with
+          zero risk of disturbing where the cue or the recovery link land --
+          and the ticket's own placement rule ("in `.app-header` or
+          immediately after it") allows exactly this. See `showWelcomeParagraph` above for whether it renders at all. */}
+      {showWelcomeParagraph && (
+        <p className="app-welcome">
+          Welcome to FitScore! Find jobs that fit your experience—not just your search terms. We
+          take the pain out of job hunting by searching open roles for you and comparing them
+          directly with your resume. Each job gets a match score from 1–100, so you can quickly spot
+          the opportunities that best align with your skills and experience. Spend less time
+          searching and more time applying!
+        </p>
+      )}
 
       <nav className="tab-nav" aria-label="Sections">
         <button

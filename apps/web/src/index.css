@@ -51,6 +51,19 @@ h1 {
   margin: 0;
 }
 
+/* Ticket 9e00bc9: the welcome paragraph. A plain block sibling of
+   `.app-header`, not a child of it -- see App.tsx's own comment at the JSX
+   site for why living inside that flex row would need a `flex-basis: 100%`
+   escape hatch (the `.sign-in-recovery-open` precedent below) that a sibling
+   does not. `.tab-nav` already carries its own `margin-top: 1rem`, so this
+   only needs separation from the header above it; the two margins collapse
+   with that one, same as the plain-heading case `.app-header h1` above
+   restores. */
+.app-welcome {
+  margin: 0.75rem 0 0;
+  max-width: 34rem;
+}
+
 /* Ticket 5a7e957: the collapsed "been here before?" entry point. Shares the
    header's top-right slot with `.signed-in-cue` below and is mutually
    exclusive with it (one renders only with a verified email, the other only

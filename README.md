@@ -1,4 +1,4 @@
-# AI-Assisted Job Search
+# FitScore
 
 [![CI](https://github.com/griesmnr/ai-assisted-job-search/actions/workflows/ci.yml/badge.svg)](https://github.com/griesmnr/ai-assisted-job-search/actions/workflows/ci.yml)
 

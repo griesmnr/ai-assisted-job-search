@@ -309,7 +309,7 @@ export function MagicLinkLanding({ token }: { token: string }) {
 
   return (
     <main className="app magic-link-landing">
-      <h1>AI-Assisted Job Search</h1>
+      <h1>FitScore</h1>
 
       {phase.status === "verifying" && (
         <section className="magic-link-panel" aria-live="polite">

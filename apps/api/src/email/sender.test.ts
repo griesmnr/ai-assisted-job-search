@@ -33,7 +33,7 @@ describe("makeResendSender", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await makeResendSender("re_test_key", "AI Job Search <login@example.com>")(message);
+    await makeResendSender("re_test_key", "FitScore <login@example.com>")(message);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -45,7 +45,7 @@ describe("makeResendSender", () => {
     // Resend's field names, not ours -- `to` is an ARRAY even for one
     // recipient, which is the single easiest thing to get wrong here.
     expect(JSON.parse(init.body as string)).toEqual({
-      from: "AI Job Search <login@example.com>",
+      from: "FitScore <login@example.com>",
       to: ["recipient@example.com"],
       subject: "Your sign-in link",
       text: "plain text body",
