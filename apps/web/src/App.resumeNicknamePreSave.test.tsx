@@ -133,7 +133,7 @@ describe("App — pre-save nickname suggestion (ticket 3db5b35)", () => {
     expect(nicknameField).toHaveValue("");
 
     // And submitting without ever touching the field must not trigger a
-    // collision PATCH for a name the user never typed -- `isFirstSave &&
+    // collision PATCH for a name the user never typed -- `isNewResumeSave &&
     // isNew` is true here, but `nicknameUserEditedRef` never fires, and
     // `nicknameAtSubmit` is empty, so the reconciliation's length guard
     // alone already skips it.
