@@ -20,6 +20,9 @@ const getResume = vi.fn();
 // Ticket 6ba221e: the resumes page can edit a resume's TEXT now, through
 // `PUT /resumes/:id/text` -- see MyResumes.tsx's `saveText`.
 const updateResumeText = vi.fn();
+// Ticket e7666de: the NAME half, through `PATCH /resumes/:id` -- see
+// MyResumes.tsx's `saveNickname`.
+const updateResumeNickname = vi.fn();
 
 // Ticket 303cff0 ("My Resumes" tab): mocked the same way ResultCard.test.tsx
 // mocks ../api/client, so this component-level test never makes a real
@@ -28,6 +31,7 @@ const updateResumeText = vi.fn();
 vi.mock("../api/client", () => ({
   getResume: (...args: unknown[]) => getResume(...args),
   updateResumeText: (...args: unknown[]) => updateResumeText(...args),
+  updateResumeNickname: (...args: unknown[]) => updateResumeNickname(...args),
 }));
 
 afterEach(() => {
@@ -535,5 +539,236 @@ describe("MyResumes — editing resume text (ticket 6ba221e)", () => {
     // Resume 1 was never opened for editing and never saved.
     expect(updateResumeText).toHaveBeenCalledTimes(1);
     expect(screen.getByText("text of resume-1")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Ticket e7666de: the NAME half of Nicole's "edit both the names of the
+ * resumes and the resumes themselves" -- ticket 6ba221e (tested above) did
+ * the TEXT half. `PATCH /resumes/:id` has accepted a rename since ticket
+ * 38a7598; nothing in the web app called it until now.
+ *
+ * Deliberately a SIBLING of `<details>`, not nested inside it like "Edit
+ * text" -- the nickname needs no per-row fetch to gate on, so the control
+ * is visible without expanding the row at all (first test below pins
+ * that), and it is also not inside `<summary>`, which would need every
+ * nested interactive element to suppress the native open/close toggle on
+ * click.
+ */
+describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
+  it("shows a Rename control for a COLLAPSED row, with an accessible name identifying which resume", () => {
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    // Not expanded -- no text fetch, no open <details> -- and the control
+    // is still there and keyboard-reachable.
+    expect(getResume).not.toHaveBeenCalled();
+    const renameButton = screen.getByRole("button", { name: "Rename Resume 1" });
+    expect(renameButton).toBeInTheDocument();
+    // The control sits OUTSIDE <details> as a sibling, deliberately (see
+    // this describe block's own comment) -- confirm the row is genuinely
+    // still collapsed, not merely that the button exists somewhere.
+    expect(renameButton.closest("li")?.querySelector("details")).not.toHaveAttribute("open");
+  });
+
+  it("opens an editable field pre-filled with the current name, and Cancel discards it without saving", () => {
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    const input = screen.getByLabelText("New name for Resume 1");
+    expect(input).toHaveValue("Resume 1");
+
+    fireEvent.change(input, { target: { value: "a name the user abandons" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(updateResumeNickname).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("New name for Resume 1")).not.toBeInTheDocument();
+    // Back to showing the ORIGINAL name, not the abandoned draft.
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+  });
+
+  it("offers no Save button for an empty/whitespace-only draft", () => {
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
+      target: { value: "   " },
+    });
+
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("saves through updateResumeNickname and shows the server's own returned name, and refreshes the parent list", async () => {
+    updateResumeNickname.mockResolvedValue({ id: "resume-1", resumeNickname: "Backend Resume" });
+    const onRenamed = vi.fn();
+    render(
+      <MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} onRenamed={onRenamed} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
+      target: { value: "Backend Resume" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(updateResumeNickname).toHaveBeenCalledWith("resume-1", "Backend Resume"),
+    );
+    await waitFor(() => expect(screen.getByText("Backend Resume")).toBeInTheDocument());
+    expect(screen.queryByLabelText("New name for Resume 1")).not.toBeInTheDocument();
+    // The list-level refresh this row cannot do by itself (sort order lives
+    // one level up, in App.tsx's `resumesListState`) -- see `onRenamed`'s
+    // own doc comment in MyResumes.tsx.
+    expect(onRenamed).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the user's typed name and shows the error on a failed save (e.g. a collision), and does not refresh the parent list", async () => {
+    updateResumeNickname.mockRejectedValue(new Error("This resume nickname is already in use."));
+    const onRenamed = vi.fn();
+    render(
+      <MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} onRenamed={onRenamed} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
+      target: { value: "Resume 2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save resume name: This resume nickname is already in use.",
+    );
+    // THE PART THAT MATTERS: the offending value is still in the box,
+    // visible and fixable (the label itself still reads the OLD
+    // committed name, since the rejected value never actually landed).
+    expect(screen.getByLabelText("New name for Resume 1")).toHaveValue("Resume 2");
+    expect(onRenamed).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect the editor when a save FAILS after the user already cancelled", async () => {
+    let rejectSave: (err: Error) => void = () => {};
+    updateResumeNickname.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectSave = reject;
+      }),
+    );
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
+      target: { value: "an abandoned rename" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await act(async () => {
+      rejectSave(new Error("Network error"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New name for Resume 1")).not.toBeInTheDocument();
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+  });
+
+  it("still records a rename that SUCCEEDS after a cancel, rather than showing the stale name", async () => {
+    let resolveSave: (value: unknown) => void = () => {};
+    updateResumeNickname.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
+      target: { value: "a rename that lands late" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await act(async () => {
+      resolveSave({ id: "resume-1", resumeNickname: "a rename that lands late" });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("a rename that lands late")).toBeInTheDocument();
+    expect(screen.queryByLabelText("New name for Resume 1")).not.toBeInTheDocument();
+  });
+
+  it("renames the row it was clicked on, not another row with the same button label", async () => {
+    updateResumeNickname.mockResolvedValue({ id: "resume-2", resumeNickname: "Renamed Two" });
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Resume 2" }));
+    fireEvent.change(screen.getByLabelText("New name for Resume 2"), {
+      target: { value: "Renamed Two" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(updateResumeNickname).toHaveBeenCalledWith("resume-2", "Renamed Two"),
+    );
+    expect(updateResumeNickname).toHaveBeenCalledTimes(1);
+    // Resume 1 was never touched.
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+    expect(screen.queryByText("Resume 2")).not.toBeInTheDocument();
+  });
+
+  // Ticket 7da6904's natural/numeric sort has to keep working after a
+  // rename moves a resume's position -- the row itself cannot do this (the
+  // array `sortResumesByNickname` sorts lives one level up), so this pins
+  // that the sort re-runs correctly once the PARENT passes down the
+  // refreshed array (simulated here with `rerender`, standing in for
+  // App.tsx's `onRenamed -> refreshResumesList -> GET /resumes` round trip).
+  it("sorts the list correctly after a rename moves a resume's alphabetical position", async () => {
+    updateResumeNickname.mockResolvedValue({ id: "resume-2", resumeNickname: "Zebra resume" });
+    const onRenamed = vi.fn();
+    const { rerender } = render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Banana resume" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Apple resume" }),
+        ]}
+        onRenamed={onRenamed}
+      />,
+    );
+    // Pre-rename order: Apple, Banana.
+    expect(
+      Array.from(document.querySelectorAll(".resume-nickname"), (el) => el.textContent),
+    ).toEqual(["Apple resume", "Banana resume"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Apple resume" }));
+    fireEvent.change(screen.getByLabelText("New name for Apple resume"), {
+      target: { value: "Zebra resume" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onRenamed).toHaveBeenCalledTimes(1));
+
+    // The parent refetches (App.tsx's `refreshResumesList`) and passes down
+    // the updated array -- "resume-2" now sorts LAST. Deliberately handed
+    // down in the OLD (now-wrong) order, "resume-2" first, so this only
+    // passes if `MyResumes` actually re-sorts on this render rather than
+    // happening to already be in the right order.
+    rerender(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-2", resumeNickname: "Zebra resume" }),
+          makeSummary({ id: "resume-1", resumeNickname: "Banana resume" }),
+        ]}
+        onRenamed={onRenamed}
+      />,
+    );
+
+    expect(
+      Array.from(document.querySelectorAll(".resume-nickname"), (el) => el.textContent),
+    ).toEqual(["Banana resume", "Zebra resume"]);
   });
 });

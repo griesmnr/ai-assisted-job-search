@@ -1679,7 +1679,15 @@ function JobSearchApp() {
             <p role="alert">Could not load resumes: {resumesListState.message}</p>
           )}
           {resumesListState.status === "ready" && (
-            <MyResumes resumes={resumesListState.data.resumes} focusResume={focusResume} />
+            <MyResumes
+              resumes={resumesListState.data.resumes}
+              focusResume={focusResume}
+              // Ticket e7666de: a rename changes which row sorts where
+              // (`sortResumesByNickname`, in MyResumes.tsx), and that sort
+              // runs over THIS array -- refetching it is what actually
+              // moves the row, not anything MyResumes can do locally.
+              onRenamed={refreshResumesList}
+            />
           )}
         </section>
       </div>
