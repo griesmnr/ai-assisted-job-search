@@ -293,6 +293,66 @@ section {
   gap: 0.5rem;
 }
 
+/* Ticket 6b14962 (opus review follow-up to e2b5f9c): bounds the height of
+   ONLY the no-active-resume saved-list block -- `.resume-pick-saved` wraps
+   `.resume-picker-options` in that branch specifically (ResumeInput.tsx's
+   `resumeId === undefined && savedResumes.length > 0` block). Scoped to this
+   descendant selector, not the bare `.resume-picker-options` rule above,
+   because the "Change" picker branch (ticket 88f11d7) reuses that same class
+   as a full-screen chooser with nothing below it -- it has no paste form to
+   protect and does not need a cap (ticket 6b14962's own OUT-of-scope line).
+
+   Unbounded, each pill is ~37.2px (0.4rem padding top+bottom + 1px border
+   top+bottom + a 22.4px line box at the inherited 1.4 line-height) plus a
+   0.5rem (8px) gap between pills -- measured directly in a real headless
+   Chromium (apps/web/scripts/resume-list-fold-check.mjs, 2026-10-07), not
+   estimated: divider.top advanced by 225.8px/5 buttons = 8px/button for N=8
+   and by 316.2px/7 buttons = 8px/button for N=15, both measurements agreeing
+   on ~45.2px per added row (pill + gap). At 15 saved resumes (a real count --
+   see this ticket's own body) that block measured ~895px from the top of the
+   page on a 1366x768 laptop viewport, pushing the "Or paste a new one"
+   divider AND the "Paste your resume" label/textarea below the fold (label
+   at 938px, textarea at 969px -- both beyond the 768px viewport) on BOTH a
+   1366x768 laptop and a 390x844 phone viewport. Confirmed by that same
+   script before this rule existed.
+
+   max-height: 12rem (192px) was chosen, not assumed, from that same
+   measurement: it shows exactly 4 full pills (4 x 37.2px + 3 x 8px gaps =
+   172.8px) plus roughly the top third of a 5th (192 - 172.8 - 8px gap =
+   11.2px, about 30% of a pill) -- enough to read as "there's more below,
+   scroll for it" rather than a clean, truncated-looking cutoff, while
+   leaving over 300px of headroom before the 768px laptop fold even at 15
+   saved resumes (box height capped at 192px instead of growing past 600px
+   unbounded): re-measured with this rule in place, the divider now lands at
+   417.5px on the 1366x768 laptop viewport and 489.3px on the 390x844 phone
+   viewport, identical at N=8 and N=15 (the cap, not the resume count, now
+   decides the block's height) and comfortably above both viewports' fold --
+   the "Or paste a new one" divider, the "Paste your resume" label, AND the
+   textarea's full bottom edge (689.2px laptop / 761.0px phone) are all
+   on-screen without scrolling the page, at 15 saved resumes, at both
+   viewports. Re-run resume-list-fold-check.mjs against a changed
+   `index.css` before trusting these figures if this rule is ever touched --
+   they are a measurement, not a geometry proof, and the script exists
+   specifically so nobody has to redo that arithmetic by hand.
+
+   A short list (e.g. 3 saved resumes, ~127.6px unbounded) renders under this
+   cap and gets no scrollbar at all -- `overflow-y: auto` only engages when
+   content actually exceeds `max-height`, so the common case is visually
+   unchanged; confirmed by the same script (N=3 case: "saved-list internal
+   scroll=no" at both viewports, before and after this rule).
+
+   No change to keyboard behavior: nothing here touches `outline` or
+   `:focus`, and every `.resume-picker-option` is an ordinary, natively
+   focusable `<button>` inside this now-scrollable box -- tabbing to one
+   that is scrolled out of view relies on the browser's own native
+   scroll-into-view-on-focus behavior, not anything added by this rule; the
+   existing, unmodified focus ring (index.css has no `:focus`/`outline: none`
+   reset for buttons anywhere in this file) stays visible exactly as before. */
+.resume-pick-saved .resume-picker-options {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
 .resume-picker-option {
   padding: 0.4rem 0.8rem;
   border: 1px solid var(--border);
