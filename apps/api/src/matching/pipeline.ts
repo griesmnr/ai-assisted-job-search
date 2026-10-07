@@ -160,19 +160,28 @@ export type RunDemoMatchOptions = {
    * duplicate the hash lookup happened to order first -- NOT necessarily
    * the resume the caller was asked about.
    *
-   * Both REST callers pass it (`POST /searches/estimate` and `POST
-   * /searches`, routes/searches.ts) because both already hold a resumeId
-   * they have VERIFIED belongs to the requesting user (`loadResumeText`)
-   * -- so this is strictly more precise than the text, not a new trust
-   * assumption. Optional, because `demo-match.ts`'s CLI genuinely has only
-   * text (it reads a file) and wants the find-or-create behavior.
+   * THE ONE REST CALLER passes it: `POST /searches/estimate`
+   * (routes/searches.ts), which already holds a resumeId it has VERIFIED
+   * belongs to the requesting user (`loadResumeText`) -- so this is
+   * strictly more precise than the text, not a new trust assumption.
+   * Optional, because `demo-match.ts`'s CLI genuinely has only text (it
+   * reads a file) and wants the find-or-create behavior.
+   *
+   * `POST /searches` does NOT call this function at all (fable review of
+   * 6ba221e, F3, correcting an earlier version of this comment that
+   * claimed both routes did). It records a search and publishes
+   * `fetch.source` messages, which CARRY the `resumeId` to the workers --
+   * so the queue path never re-derives an id from text either, and needs
+   * nothing from this option. That is the whole reason the hash is now
+   * read in exactly two places, `getOrCreateResumeId` and
+   * `PUT /resumes/:id/text`, neither of which is on the search path.
    *
    * NOT ownership-checked here: this is an internal primitive, and its
    * callers are the ones holding a `userId`. Passing a `resumeId` the
    * `userId` does not own would write this run's rows against someone
    * else's resume -- exactly the class of bug ticket 3fc1e5e audited -- so
-   * a caller must scope the id before handing it over, as both current
-   * callers do.
+   * a caller must scope the id before handing it over, as the estimate
+   * route does.
    */
   resumeId?: string;
   /**

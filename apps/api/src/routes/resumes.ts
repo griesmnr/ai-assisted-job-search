@@ -248,6 +248,22 @@ export function registerResumeRoutes(
       // `PUT /resumes/:id/text` below -- which is how a real user gets
       // there anyway, and which this ticket's own tests cover.
       //
+      // KNOWN SEAM that falls out of keeping it, recorded rather than fixed
+      // (fable review of 6ba221e). Reached like this: a LOCKED Resume 1 ->
+      // "Change" -> "Paste a new resume" -> paste text byte-identical to
+      // Resume 1 -> Submit. The user explicitly declined to reuse Resume 1
+      // one click ago, and this find-or-create hands them Resume 1 anyway,
+      // still locked, with no message saying so -- the collapsed bar just
+      // reads "Using Resume 1" again. Nothing is lost or corrupted and no
+      // error is wrong, which is why it is not being fixed here: the
+      // alternatives are ticket 7701534's 409 (deleted by this ticket, by
+      // the owner's explicit instruction) or always-INSERT (rejected just
+      // above, for a worse failure). But it IS a silent no-op where the
+      // user asked for something, so it is named here instead of waiting to
+      // be rediscovered. If it ever needs addressing, the honest fix is in
+      // the UI -- say "that's the text of Resume 1, which you're already
+      // using" -- not by reinstating a rejection.
+      //
       // `isNew` is no longer destructured: ticket 7701534's duplicate
       // rejection was its only consumer here, so reading it would be dead
       // code. It is still returned by `getOrCreateResumeId` for callers
@@ -525,11 +541,19 @@ export function registerResumeRoutes(
    * the work. This is the specific shape ticket 3fc1e5e's audit found
    * broken in the rename path above (a collision check scoped one way and
    * an UPDATE scoped another, so a request could rewrite a stranger's
-   * row). There is no second query here to disagree with: one statement,
-   * both conjuncts, and `RETURNING` tells us whether it matched. A
-   * resume belonging to someone else 404s exactly as a nonexistent one
-   * does -- the convention every by-id route in this app uses, so a
-   * caller cannot use the status code to probe for valid ids.
+   * row). This handler does use two statements -- the ownership SELECT
+   * below and the UPDATE after it (fable review of 6ba221e, F5, correcting
+   * an earlier version of this comment that claimed one). What actually
+   * defeats 3fc1e5e's failure shape is that BOTH carry the same
+   * `and(eq(resumes.id, ...), eq(resumes.userId, userId))`, so they cannot
+   * disagree about whose row is in play: the SELECT 404s a foreign id
+   * before anything is written, and the UPDATE would match zero rows even
+   * if it were somehow reached. Keep both conjuncts on both statements --
+   * dropping either from the UPDATE is not currently reachable, which is
+   * exactly the kind of "safe today" argument that ticket stopped
+   * accepting. A resume belonging to someone else 404s exactly as a
+   * nonexistent one does -- the convention every by-id route in this app
+   * uses, so a caller cannot use the status code to probe for valid ids.
    *
    * NOT GATED ON `isLocked`, which is a real decision and not an
    * oversight. Ticket 88f11d7 established that a resume locks on its first
@@ -635,11 +659,14 @@ export function registerResumeRoutes(
       // before this ticket it was at most one per resume, ever. Bounded by
       // how often a human edits a resume, and skipped entirely by the
       // unchanged-save branch above.
+      // Hoisted rather than inlined: the follow-up write below needs the
+      // SAME value to prove the row still holds this request's text.
+      const resumeHash = hashResumeText(resumeText);
       await db
         .update(resumes)
         .set({
           resumeText,
-          resumeHash: hashResumeText(resumeText),
+          resumeHash,
           suggestedTitles: null,
         })
         .where(and(eq(resumes.id, row.id), eq(resumes.userId, userId)));
@@ -666,7 +693,31 @@ export function registerResumeRoutes(
         // UPDATE above, so the failure case re-writes the same value
         // rather than relying on that -- one statement either way, and it
         // cannot be read as "we meant to store []".
-        await db.update(resumes).set({ suggestedTitles }).where(eq(resumes.id, row.id));
+        //
+        // GUARDED ON `resumeHash` (fable review of 6ba221e, F5b): this
+        // write lands AFTER a slow network call to Claude, so a second
+        // `PUT /resumes/:id/text` for the same resume can have replaced the
+        // text in between. Without the guard, the loser's chips would be
+        // written over the winner's text -- the exact
+        // titles-describing-absent-text failure this whole re-inference
+        // path exists to prevent, just reached by a different route. Naming
+        // the hash this request wrote makes the statement a no-op (zero
+        // rows matched) when someone else has moved on, so the last text to
+        // land keeps its own titles and the loser's are simply dropped. The
+        // row is then left `null` by the winner's own first UPDATE until
+        // its inference returns, which is the honest state. `userId` is
+        // here for the same reason it is on the UPDATE above: both
+        // conjuncts on every statement, uniformly.
+        await db
+          .update(resumes)
+          .set({ suggestedTitles })
+          .where(
+            and(
+              eq(resumes.id, row.id),
+              eq(resumes.userId, userId),
+              eq(resumes.resumeHash, resumeHash),
+            ),
+          );
       } catch (err) {
         // A failed WRITE of already-computed suggestions must not fail the
         // edit either; the response below still carries what this request

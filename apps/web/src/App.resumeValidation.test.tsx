@@ -149,6 +149,117 @@ describe("App — editing a resume's text saves onto the SAME resume (ticket 6ba
     expect(updateResumeText).not.toHaveBeenCalled();
   });
 
+  /**
+   * Fable review of 6ba221e, F1: a REGRESSION this ticket introduced, now
+   * fixed and pinned here.
+   *
+   * `resumeId` survives a reload via sessionStorage, and nothing clears it
+   * when the row it names is gone -- the mount-only hydration effect's
+   * `getResume` failure is swallowed by design (App.tsx), so `resumeLocked`
+   * stays `false` and the collapsed bar still reads "Using Resume 1" with an
+   * "Edit" button. A dev-database reset is the realistic way there, and this
+   * project's own container-versus-sandbox-Postgres topology makes it
+   * routine.
+   *
+   * Before this ticket the submit from that state was a POST, which created a
+   * fresh row and healed the session by accident. Routing edits to
+   * `PUT /resumes/:id/text` closed that escape hatch: every submit 404'd, on
+   * every retry, with no way out short of clearing sessionStorage by hand.
+   *
+   * The reload is modelled the way this repo's persistence tests already
+   * model it (cleanup, then render again with sessionStorage untouched -- see
+   * App.persistence.test.tsx's header). `getResume` is mocked to reject for
+   * the whole file, which IS the "that resume is gone" condition.
+   */
+  it("recovers when a restored resumeId names a row that no longer exists, instead of 404ing forever", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+      isLocked: false,
+    });
+
+    render(<App />);
+    await submitResume("the text that was saved before the database was reset");
+    await waitFor(() => expect(screen.getByText("Using Resume 1")).toBeInTheDocument());
+
+    // THE RELOAD. sessionStorage still holds resumeId "resume-1"; the row
+    // behind it does not exist any more.
+    cleanup();
+    createResume.mockClear();
+    createResume.mockResolvedValue({
+      id: "resume-7",
+      resumeNickname: "Resume 7",
+      suggestedTitles: [],
+      isLocked: false,
+    });
+    const notFound = Object.assign(new Error('No resume with id "resume-1".'), { status: 404 });
+    updateResumeText.mockRejectedValue(notFound);
+    render(<App />);
+
+    // Restored into the collapsed, unlocked state -- which is precisely what
+    // makes the next submit take the edit path.
+    expect(await screen.findByText("Using Resume 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "text typed after the reset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    // The edit was tried first (correct -- as far as this tab knew, it had a
+    // resume), 404'd, and fell back to creating one.
+    await waitFor(() =>
+      expect(updateResumeText).toHaveBeenCalledWith("resume-1", "text typed after the reset"),
+    );
+    await waitFor(() => expect(createResume).toHaveBeenCalledWith("text typed after the reset"));
+
+    // SELF-HEALING, which is the whole point: the session now holds the NEW
+    // id, the user sees a real resume, and no error is left on screen.
+    await waitFor(() => expect(screen.getByText("Using Resume 7")).toBeInTheDocument());
+    expect(screen.queryByText(/Could not save resume/)).not.toBeInTheDocument();
+  });
+
+  // The narrowness guard. Converting ANY failed edit into a new resume would
+  // reintroduce the surprise this whole ticket removes ("I edited Resume 1
+  // and got Resume 2"), so only a 404 -- "the resume I was editing is gone"
+  // -- may fall back.
+  it("does NOT turn a non-404 edit failure into a new resume", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    getAllResults.mockResolvedValue(EMPTY_RESULTS);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+      isLocked: false,
+    });
+
+    render(<App />);
+    await submitResume("first version of the text");
+    await waitFor(() => expect(screen.getByText("Using Resume 1")).toBeInTheDocument());
+    createResume.mockClear();
+
+    updateResumeText.mockRejectedValue(
+      Object.assign(new Error("resumeText exceeds the 200000-character limit (got 200001)."), {
+        status: 400,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit resume" }));
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "a rewrite the server rejects for its own reasons" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    // Surfaces as a real, visible error -- and creates nothing.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save resume: resumeText exceeds the 200000-character limit",
+    );
+    expect(createResume).not.toHaveBeenCalled();
+  });
+
   it("a genuinely new resume's first submission is unaffected", async () => {
     getSources.mockResolvedValue(SOURCES);
     getAllResults.mockResolvedValue(EMPTY_RESULTS);

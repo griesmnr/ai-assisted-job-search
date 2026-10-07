@@ -133,12 +133,26 @@ export const resumes = pgTable(
     // the lookup is deliberately deterministic (`ORDER BY created_at, id`)
     // precisely because more than one row can now match it.
     //
-    // Why hashed at all, rather than querying `resume_text` directly
-    // (ticket 620ca30, and still the reason): a real resume's text can
-    // exceed Postgres's ~2704-byte btree index row limit, so the column
-    // that gets an index has to be small and fixed-size. The hash is still
-    // the indexable stand-in for the text even with no unique constraint
-    // on it.
+    // Why hashed at all, rather than querying `resume_text` directly: a
+    // real resume's text can exceed Postgres's ~2704-byte btree index row
+    // limit, so a UNIQUE on the text itself would have failed at insert
+    // time for a long resume (ticket 620ca30). That was a reason about
+    // INDEXING, and it no longer applies to this column, because:
+    //
+    // THERE IS NO INDEX ON `resume_hash` ANY MORE. Dropping the unique
+    // constraint dropped the index that backed it, so after migration 0019
+    // `resumes` carries only its primary-key index (verified against
+    // `pg_indexes`), and `getOrCreateResumeId`'s
+    // `WHERE resume_hash = $1 AND user_id = $2` lookup is a SEQUENTIAL
+    // SCAN. ACCEPTED, deliberately, at current scale: this table holds a
+    // handful of rows per user (a person has a few resumes, not hundreds),
+    // and the query runs on resume creation and on a CLI run -- never in a
+    // loop, never per job. Adding an index would be optimizing a scan over
+    // single-digit row counts. Said out loud so the next reader does not
+    // assume an index exists, and so that whoever eventually needs one
+    // knows it would be a plain non-unique index and NOT a reinstatement of
+    // the constraint below. The hash is still the right SHAPE to index if
+    // that day comes, for the row-size reason above.
     //
     // HISTORY OF THE CONSTRAINT THAT USED TO LIVE HERE, kept because its
     // reasoning was sound for what it was solving and a future change may
@@ -170,6 +184,20 @@ export const resumes = pgTable(
     // legal), not a bug -- what matters is that it is not an ERROR, which
     // `getOrCreateResumeId`'s select-then-insert guarantees and
     // routes/resumes.test.ts's concurrency test proves.
+    //
+    // PUTTING IT BACK IS NOT A ONE-LINER, and dropping it being safe does
+    // NOT make it reversible. `ADD CONSTRAINT unique(user_id, resume_hash)`
+    // against any database that has run without it will FAIL on the first
+    // duplicate pair, and duplicates are expected rather than
+    // hypothetical: `PUT /resumes/:id/text` lets a user edit one resume
+    // into another's exact text on purpose, and the race above can mint a
+    // pair. A future migration wanting this constraint back must dedupe or
+    // merge FIRST, in the shape migration 0004 used (collapse each group
+    // onto one canonical row, repointing every `job_matches`, `searches`,
+    // `search_results`, `user_job_statuses` and `handoffs` reference before
+    // deleting the losers) -- and must answer a product question 0004 did
+    // not face: which of two resumes a user DELIBERATELY made identical
+    // survives. See migration 0019's own SQL comment.
     resumeHash: text("resume_hash").notNull(),
     // Ticket 39b4a48: job title keywords Claude infers from this resume,
     // computed lazily and then cached on the row. Nullable, not an empty

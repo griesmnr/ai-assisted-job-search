@@ -41,12 +41,26 @@
  * old target if a mistake is made; nothing here is destructive the way
  * cleanup-unsearched-resumes.ts's deletes are). The one real failure
  * mode -- the target user somehow already owns a resume with the same
- * `resume_hash` or `resume_nickname` as one being reassigned -- surfaces
- * as a loud Postgres constraint violation (this ticket's own composite
- * `unique(user_id, resume_hash)`, or the app-level nickname check on a
- * later request), never silent corruption. In practice this cannot
- * happen the first time this script is ever run: the target id is a
- * brand-new anonymous identity that owns nothing yet.
+ * `resume_hash` or `resume_nickname` as one being reassigned -- is not
+ * silent corruption either way. In practice neither can happen the first
+ * time this script is ever run: the target id is a brand-new anonymous
+ * identity that owns nothing yet.
+ *
+ * WHAT TICKET 6ba221e CHANGED ABOUT THAT, because an operator reading the
+ * old wording would expect a failure that no longer comes. This comment
+ * used to say a duplicate `resume_hash` "surfaces as a loud Postgres
+ * constraint violation (this ticket's own composite
+ * `unique(user_id, resume_hash)`)". That constraint is GONE (migration
+ * 0019): a resume is identified by its `id`, and two resumes with
+ * byte-identical text under one user are a legal state now. So a
+ * reassignment that lands identical text in the target's account SUCCEEDS,
+ * silently, leaving them holding two resumes with the same text. That is
+ * untidy rather than broken -- both rows are independently readable,
+ * renameable and searchable (routes/resumes.ts) -- but it is no longer
+ * something Postgres will stop, so nobody should be waiting for it to.
+ * The `resume_nickname` half is unaffected: it was never a database
+ * constraint, only the app-level check on a later `PATCH /resumes/:id`,
+ * and that still fires.
  *
  * SAFETY GATE, same shape as this directory's other scripts:
  *

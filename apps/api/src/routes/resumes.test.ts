@@ -1651,6 +1651,92 @@ describe("PUT /resumes/:id/text (ticket 6ba221e)", () => {
       const row = await db.select().from(resumes).where(eq(resumes.id, id));
       expect(row[0]?.suggestedTitles).toBeNull();
     });
+
+    /**
+     * Fable review of 6ba221e, F5b: two overlapping edits of the SAME
+     * resume must not leave it wearing the LOSER's chips.
+     *
+     * The window is real because inference is a network call to Claude: the
+     * handler writes text+hash, awaits `inferTitles`, then writes the
+     * titles. A second PUT landing inside that await replaces the text, and
+     * an unguarded follow-up write would then attach the first request's
+     * titles to the second request's text -- titles describing text that is
+     * not there, which is precisely what re-inferring on edit exists to
+     * prevent.
+     *
+     * The interleaving is FORCED, not hoped for: `inferTitles` blocks on a
+     * promise this test resolves by hand, so the ordering is deterministic
+     * and this cannot be a flaky race. Pool-backed for the same reason the
+     * concurrency test below is (see `createPooledTestDatabase`).
+     */
+    it("a slow edit's titles do not overwrite a later edit's -- the follow-up write is hash-guarded", async () => {
+      const pooled = createPooledTestDatabase(testDb.testDbName);
+      try {
+        // Two hand-held promises: one the test awaits to know the first
+        // edit has reached `inferTitles`, one the first edit awaits so the
+        // test decides when it may finish.
+        let announceEntered: () => void = () => {};
+        const firstEntered = new Promise<void>((resolve) => {
+          announceEntered = resolve;
+        });
+        let releaseFirst: () => void = () => {};
+        const firstMayFinish = new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        const inferTitles = async (resumeText: string): Promise<string[]> => {
+          if (resumeText.endsWith("FIRST EDIT")) {
+            announceEntered();
+            await firstMayFinish;
+            return ["Titles From The First Edit"];
+          }
+          if (resumeText.endsWith("SECOND EDIT")) return ["Titles From The Second Edit"];
+          return [];
+        };
+        const app = buildApp({
+          db: pooled.db,
+          getScoreJob: () => {
+            throw new Error("not used by these tests");
+          },
+          inferTitles,
+        });
+        const base = `Overlapping edits resume ${randomUUID()}`;
+        const created = await app.inject({
+          method: "POST",
+          url: "/resumes",
+          payload: { resumeText: base },
+        });
+        const { id } = created.json() as CreateResumeResponse;
+
+        // First edit starts and parks inside `inferTitles`.
+        const first = app.inject({
+          method: "PUT",
+          url: `/resumes/${id}/text`,
+          payload: { resumeText: `${base} FIRST EDIT` },
+        });
+        await firstEntered;
+
+        // Second edit runs to completion WHILE the first is parked.
+        const second = await app.inject({
+          method: "PUT",
+          url: `/resumes/${id}/text`,
+          payload: { resumeText: `${base} SECOND EDIT` },
+        });
+        expect(second.statusCode).toBe(200);
+
+        releaseFirst();
+        expect((await first).statusCode).toBe(200);
+
+        // The row keeps the LAST text to land and ITS titles. Without the
+        // `eq(resumes.resumeHash, ...)` guard on the follow-up write, the
+        // first edit's titles land here instead -- describing text the row
+        // no longer holds.
+        const row = await db.select().from(resumes).where(eq(resumes.id, id));
+        expect(row[0]?.resumeText).toBe(`${base} SECOND EDIT`);
+        expect(row[0]?.suggestedTitles).toEqual(["Titles From The Second Edit"]);
+      } finally {
+        await pooled.close();
+      }
+    });
   });
 
   // Ticket 88f11d7 locks a resume on its first REAL search, and the SEARCH

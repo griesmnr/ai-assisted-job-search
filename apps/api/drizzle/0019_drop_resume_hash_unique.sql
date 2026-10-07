@@ -41,4 +41,19 @@
 -- maintained -- see db/migration-0019.test.ts, which proves both halves
 -- against a database that already contains resumes, job_matches and
 -- user_job_statuses rows rather than against an empty schema.
+--
+-- THE REVERSE IS NOT SAFE, and "dropping is safe" must not be read as
+-- "this is reversible". Re-adding `unique(user_id, resume_hash)` to a
+-- database that has been running without it will FAIL OUTRIGHT on the
+-- first duplicate pair -- and duplicates are expected, not hypothetical:
+-- `PUT /resumes/:id/text` lets a user edit one resume into another's exact
+-- text on purpose, and `getOrCreateResumeId`'s select-then-insert can
+-- produce a pair under concurrency. Any future migration that wants this
+-- constraint back has to dedupe or merge FIRST, in the shape migration
+-- 0004 already used (collapse each duplicate group onto one canonical row
+-- -- MIN(id) per group -- repointing every `job_matches`, `searches`,
+-- `search_results`, `user_job_statuses` and `handoffs` reference before
+-- deleting the losers), and must answer the product question 0004 did not
+-- have to: which of two resumes the user deliberately made identical is
+-- the one that survives.
 ALTER TABLE "resumes" DROP CONSTRAINT "resumes_user_id_resume_hash_unique";
