@@ -257,6 +257,25 @@ function ResumeRow({
    * the token: a response landing after Cancel must not resurrect the
    * editor with a stale "viewing" transition the user never asked for, or
    * -- on a late failure -- an error banner for an edit already abandoned.
+   *
+   * KNOWN GAP (opus review, ticket e7666de, F2 -- recorded, not fixed):
+   * `setDisplayNickname` above is deliberately UNGATED by the token (that
+   * is the point of F1's fix), but that same lack of gating means two
+   * in-flight PATCHes on this row can still land out of order: Save
+   * "Aardvark", Cancel, Rename again, Save "Zebra" -- if the FIRST
+   * response (Aardvark) resolves after the second (Zebra), this row shows
+   * "Aardvark" while the server actually holds "Zebra". `onRenamed`'s
+   * refetch usually corrects this on the next render, but there is one
+   * interleaving where the prop never actually changes (e.g. the refetch
+   * that already ran for "Zebra" raced ahead of "Aardvark" landing) so the
+   * sync effect above never re-fires, and the row stays wrong until an
+   * unrelated reload. Low probability, display-only, and `saveText`
+   * above has the identical shape already -- a carried-forward idiom, not
+   * something new here. A real fix would need `saveNickname` to ignore a
+   * response order-independent of `nicknameSaveTokenRef` entirely (e.g. a
+   * monotonically increasing "last applied" counter kept separately from
+   * the cancel token), which is a second idiom this ticket was told not
+   * to invent on its own.
    */
   function saveNickname(draft: string) {
     const token = ++nicknameSaveTokenRef.current;
@@ -430,9 +449,27 @@ function ResumeRow({
           click to suppress that is exactly the kind of fragile second
           idiom this ticket was told to avoid), so the rename control lives
           here instead, where the existing toggle logic above is
-          untouched. */}
+          untouched.
+
+          KNOWN LAYOUT COST (opus review, ticket e7666de, F6 -- recorded,
+          not fixed): placing the control AFTER `<details>` means that with
+          a row EXPANDED, it renders below the entire resume text (and,
+          mid-edit, below that text's own editor too) -- far from the name
+          it renames, which is still up in `<summary>`. Putting it BEFORE
+          `<details>` instead would fix that distance but reopen the worse
+          problem this placement avoids (the `<summary>`-click-toggle
+          conflict and the per-row-fetch coupling "Edit text" has and this
+          control does not need), so the reviewer judged this placement
+          correct on balance; the cost is real on an expanded row with a
+          long resume and is just being named rather than solved. */}
       {nicknameState.mode === "viewing" ? (
-        <div className="resume-nickname-actions">
+        // Ticket e7666de review fix (F5): `.resume-text-actions` (not a
+        // new, unstyled `.resume-nickname-actions`) -- that class is what
+        // right-aligns "Edit text" just above (`index.css:912`,
+        // `justify-content: flex-end`), and the editor's own Save/Cancel
+        // row below already reuses it. Without this the trigger alone sat
+        // flush-left while every other action on this row sits flush-right.
+        <div className="resume-text-actions">
           {/* aria-label carries the CURRENT nickname so a screen-reader
               user hears WHICH resume this button renames -- every row
               renders a button with the same visible text. Same shape as
@@ -458,6 +495,21 @@ function ResumeRow({
               // Disabled, not unmounted, while the PATCH is in flight --
               // same reasoning as the text editor's textarea above.
               disabled={nicknameState.mode === "saving"}
+              // Ticket e7666de review fix (F4): the same red-outline
+              // treatment ResumeInput.tsx's own nickname field gets
+              // (ticket 7701534, Nicole: "it should highlight... red
+              // outline on the field") -- `index.css:224` keys that rule
+              // off `aria-invalid="true"` on an element already inside
+              // `.resume-nickname-field`, which this input reuses, so
+              // setting the attribute is the only piece this row was
+              // missing. True for the SAME condition the error message
+              // below renders on, so the two always appear and disappear
+              // together.
+              aria-invalid={
+                nicknameState.mode === "editing" && nicknameState.error !== undefined
+                  ? true
+                  : undefined
+              }
               onChange={(e) => setNicknameState({ mode: "editing", draft: e.target.value })}
             />
           </div>

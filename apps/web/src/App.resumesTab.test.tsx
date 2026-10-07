@@ -42,7 +42,23 @@ vi.mock("./api/client", () => ({
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  // Opus review (ticket e7666de, F8): `vi.clearAllMocks()` only clears call
+  // history (`mock.calls`/`mock.results`) -- it does NOT drain a
+  // `mockResolvedValueOnce`/`mockReturnValueOnce` queue, which is part of a
+  // mock's IMPLEMENTATION state, not its history. The rename-persistence
+  // test above queues three `listResumes` resolutions in one test; any left
+  // undrained (e.g. if that test fails before consuming all three) would
+  // leak into whichever test runs next and could fail or pass it for the
+  // wrong reason -- exactly what happened when the reviewer broke an
+  // unrelated test here and this file's OWN collision test failed
+  // alongside it, even though it passes cleanly in isolation.
+  // `vi.resetAllMocks()` does everything `clearAllMocks()` does, plus
+  // drains that queue and resets each mock to a bare `vi.fn()` -- safe
+  // here because every test in this file sets up its own
+  // `mockResolvedValue`/`mockResolvedValueOnce`/`mockRejectedValue` from
+  // scratch before using a mock, never relying on a default left over from
+  // a previous test.
+  vi.resetAllMocks();
   sessionStorage.clear();
 });
 

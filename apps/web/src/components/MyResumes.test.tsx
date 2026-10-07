@@ -671,14 +671,30 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
     expect(screen.getByText("Resume 1")).toBeInTheDocument();
   });
 
-  it("still records a rename that SUCCEEDS after a cancel, rather than showing the stale name", async () => {
+  it("still records a rename that SUCCEEDS after a cancel, rather than showing the stale name -- AND still tells the parent to refetch so sort order follows", async () => {
     let resolveSave: (value: unknown) => void = () => {};
     updateResumeNickname.mockReturnValue(
       new Promise((resolve) => {
         resolveSave = resolve;
       }),
     );
-    render(<MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} />);
+    // Opus review (ticket e7666de, F1): `onRenamed` must fire on this path
+    // too, UNGATED by the cancel token, same as `displayNickname` just
+    // below -- the token only gates the EDITOR's own open/closed state,
+    // never the record of a write that actually landed. Without this, the
+    // single most plausible "tidy-up" (moving `onRenamed?.()` below the
+    // token check, to "match" the other two calls in `saveNickname`) slips
+    // past every other test in this file: resume-2 ("Apple resume") renamed
+    // to "Zebra resume" then Cancelled on a slow network would still show
+    // "Zebra resume" in ITS OWN row (that part doesn't need `onRenamed`),
+    // but `App.tsx`'s `resumesListState` -- the array `sortResumesByNickname`
+    // actually sorts -- would never refetch, so the list would render
+    // "Zebra resume" above "Banana resume" and stay wrong until something
+    // UNRELATED happened to refetch it.
+    const onRenamed = vi.fn();
+    render(
+      <MyResumes resumes={[makeSummary({ resumeNickname: "Resume 1" })]} onRenamed={onRenamed} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Rename Resume 1" }));
     fireEvent.change(screen.getByLabelText("New name for Resume 1"), {
@@ -694,6 +710,7 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
 
     expect(screen.getByText("a rename that lands late")).toBeInTheDocument();
     expect(screen.queryByLabelText("New name for Resume 1")).not.toBeInTheDocument();
+    expect(onRenamed).toHaveBeenCalledTimes(1);
   });
 
   it("renames the row it was clicked on, not another row with the same button label", async () => {
@@ -716,6 +733,15 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
     await waitFor(() =>
       expect(updateResumeNickname).toHaveBeenCalledWith("resume-2", "Renamed Two"),
     );
+    // Found during this round's own verification (not a mutation --
+    // flaked under load with no code change): `updateResumeNickname` is
+    // called SYNCHRONOUSLY inside `saveNickname`, so the `waitFor` above
+    // can resolve before the mocked promise's `.then()` has flushed
+    // `setDisplayNickname` into the DOM. Waiting for the RENDERED result
+    // (not just the mock call) before asserting against the DOM removes
+    // that race, the same way the "saves through updateResumeNickname"
+    // test above already does.
+    await waitFor(() => expect(screen.getByText("Renamed Two")).toBeInTheDocument());
     expect(updateResumeNickname).toHaveBeenCalledTimes(1);
     // Resume 1 was never touched.
     expect(screen.getByText("Resume 1")).toBeInTheDocument();
@@ -770,5 +796,35 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
     expect(
       Array.from(document.querySelectorAll(".resume-nickname"), (el) => el.textContent),
     ).toEqual(["Banana resume", "Zebra resume"]);
+  });
+
+  // Opus review (ticket e7666de, F3): App.tsx's tabs are `hidden`, not
+  // unmounted (ticket 303cff0) -- so a row here can stay mounted while the
+  // user renames the SAME resume through a different surface (e.g.
+  // ResumeInput.tsx's own nickname field, on the Search tab) and switches
+  // back. Without the prop-sync effect this pins, this row would keep
+  // showing whatever `displayNickname` was seeded with on mount, forever,
+  // since nothing in THIS row's own code would ever run again for a rename
+  // that happened somewhere else.
+  it("updates the displayed name when the resumeNickname prop changes externally, without this row doing the renaming itself", () => {
+    const { rerender } = render(
+      <MyResumes resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]} />,
+    );
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+
+    // The SAME resume id, a new nickname -- as if App.tsx's `resumesListState`
+    // had just refetched after a rename made elsewhere, with this row never
+    // touching its own Rename control at all.
+    rerender(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Renamed Elsewhere" })]}
+      />,
+    );
+
+    expect(screen.getByText("Renamed Elsewhere")).toBeInTheDocument();
+    expect(screen.queryByText("Resume 1")).not.toBeInTheDocument();
+    // The Rename button's own accessible name tracks it too -- it is
+    // sourced from the same `displayNickname`, not the stale prop value.
+    expect(screen.getByRole("button", { name: "Rename Renamed Elsewhere" })).toBeInTheDocument();
   });
 });
