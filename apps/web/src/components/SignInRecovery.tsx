@@ -116,8 +116,12 @@ export function SignInRecovery({ offered }: { offered: boolean }) {
         }
         sentBody={(sentTo) => (
           <>
-            We sent a sign-in link to <strong>{sentTo}</strong>. Open it in this browser to bring
-            your saved results back here.
+            {/* "Open it in this browser" moved to `MagicLinkForm`'s shared
+                `sentFactsLine` (ticket a3062b4) once `MagicLinkPrompt` needed
+                to say the same true-for-both-branches thing -- stated once
+                here would have duplicated it instead of centralizing it. */}
+            We sent a sign-in link to <strong>{sentTo}</strong>, which will bring your saved results
+            back here.
           </>
         )}
         secondary={({ sending }) => (
