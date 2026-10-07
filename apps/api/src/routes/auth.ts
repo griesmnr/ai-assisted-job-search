@@ -281,12 +281,28 @@ export function registerAuthRoutes(
         });
       } catch (err) {
         // 503, not 500: this is a dependency we could not reach or are not
-        // configured for, and the user's correct next action is to try again
-        // -- which the frontend says. Logged with the real provider message
-        // (never the token or the link, both of which are credentials).
+        // configured for. Logged with the real provider message (never the
+        // token or the link, both of which are credentials) -- that log
+        // line is the ONLY place the provider's real error goes; the
+        // response below stays generic on purpose (see the comment there).
         request.log.error({ err }, "magic-link email send failed");
+        // Ticket 43423eb: "Please try again in a moment" was a transience
+        // claim the system could not back up. CAUSE CONFIRMED (ticket
+        // comment, 2026-10-06): the deployed failure was Resend's 403 for
+        // an unverified sender domain, which is permanent until someone
+        // changes configuration -- every retry a real user made was
+        // guaranteed to fail, and the UI told him to keep making them.
+        // This route cannot tell a transient dependency hiccup apart from a
+        // permanent one (that classification is a separate, larger ticket:
+        // it needs Resend's error taxonomy, and guessing wrong is worse
+        // than one honest generic message), so the replacement copy makes
+        // no claim about whether trying again will help either way. It
+        // states only what is true unconditionally: the attempt failed,
+        // and it is in the log line just above -- not a status page, an
+        // email, or a human already on it, none of which exist.
         return reply.code(503).send({
-          error: "Could not send the sign-in email just now. Please try again in a moment.",
+          error:
+            "Could not send the sign-in email just now. The failure has been logged on our end.",
         });
       }
 

@@ -98,8 +98,15 @@ describe("MagicLinkPrompt", () => {
   });
 
   it("surfaces a send failure and clears it as soon as the user edits the address", async () => {
+    // Ticket 43423eb: the server no longer promises a retry will succeed
+    // (CAUSE CONFIRMED: Jay's deployed failure was a permanent Resend 403,
+    // not a transient one, so "try again in a moment" was false) -- it
+    // says only that the failure was logged, which auth.ts:287's
+    // `request.log.error` makes true unconditionally.
     requestMagicLink.mockRejectedValue(
-      new Error("Could not send the sign-in email just now. Please try again in a moment."),
+      new Error(
+        "Could not send the sign-in email just now. The failure has been logged on our end.",
+      ),
     );
     render(<MagicLinkPrompt />);
 
@@ -109,7 +116,8 @@ describe("MagicLinkPrompt", () => {
     fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/try again in a moment/i);
+    expect(alert).toHaveTextContent(/failure has been logged/i);
+    expect(alert).not.toHaveTextContent(/try again/i);
     // Still on the form, so a retry is one click away -- a failed send must
     // not land in the "check your inbox" state.
     expect(screen.queryByRole("heading", { name: /check your inbox/i })).not.toBeInTheDocument();

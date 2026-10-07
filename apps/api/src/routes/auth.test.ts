@@ -253,7 +253,13 @@ describe("POST /auth/magic-link", () => {
     const response = await requestLink(app, userId, "provider-down@example.com");
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ error: expect.stringContaining("try again") });
+    // Ticket 43423eb: the response no longer promises a retry will succeed
+    // (CAUSE CONFIRMED on the ticket: a real unverified-domain 403 is
+    // permanent, so "try again in a moment" was false) -- it says only
+    // that the failure was logged, which is unconditionally true because
+    // the `request.log.error` call right above this response always runs.
+    expect(response.json()).toMatchObject({ error: expect.stringContaining("logged") });
+    expect(JSON.stringify(response.json())).not.toContain("try again");
     // The provider's own message must not be echoed to the caller -- it can
     // name internal configuration (the unverified sending domain, here).
     expect(JSON.stringify(response.json())).not.toContain("domain not verified");
