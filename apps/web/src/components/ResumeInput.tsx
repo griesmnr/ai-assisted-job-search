@@ -12,7 +12,10 @@ import { sortResumesByNickname } from "../resumeSort";
  * unlocked resume to `PUT /resumes/:id/text` (an in-place text edit,
  * keeping the id and the nickname) and only a first-ever paste — or the
  * locked picker's explicit "Paste a new resume" — to `POST /resumes`. See
- * that function for the branch and why `resumeLocked` is what decides it.
+ * that function for the branch. As of d7d3d59 `resumeLocked` is no longer
+ * the whole story: a `pastingNewResume` flag names the picker's intent
+ * directly, and `resumeLocked` decides edit-vs-create on the ordinary
+ * paths.
  * This component is unchanged by that and deliberately knows nothing about
  * it: it collects text and hands it up.
  *
@@ -148,6 +151,8 @@ import { sortResumesByNickname } from "../resumeSort";
  * 6ba221e its Submit saves ONTO that resume instead of creating a new
  * one (App.tsx's `handleResumeSubmit`), which is also why the LOCKED
  * path's "Paste a new resume" has to stay a POST: see that function.
+ * (d7d3d59: that POST is now driven by `pastingNewResume` as well as
+ * `resumeLocked`, which are redundant there and deliberately so.)
  *
  * `searching` (Nicole: "I don't think that we should allow a change of
  * resume while a search is in progress"): disables the collapsed bar's
@@ -295,8 +300,11 @@ export function ResumeInput({
    * picker and opens the ordinary expanded form (`editingResume = true`),
    * same form an unlocked "Edit" already opens. The two look identical
    * here but save DIFFERENTLY as of ticket 6ba221e (new resume vs. edit
-   * in place); `handleResumeSubmit` tells them apart by `resumeLocked`,
-   * since only a locked resume has a picker to reach this from. */
+   * in place); `handleResumeSubmit` tells them apart by `resumeLocked`
+   * AND, since d7d3d59, by `pastingNewResume` -- which this callback is
+   * what sets. Only a locked resume has a picker to reach this from, so
+   * the two agree today; the flag exists because three other readers in
+   * App.tsx need the intent stated rather than inferred. */
   onStartPasteNew?: () => void;
   /** Fires with an existing resume's id when its picker button is
    * clicked -- App.tsx's `handleActivateResume` fetches it via `GET

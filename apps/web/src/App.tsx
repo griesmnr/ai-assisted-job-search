@@ -910,9 +910,37 @@ function JobSearchApp() {
       //   - a `resumeId` restored from sessionStorage, whose form is only
       //     reachable via one of the two above.
       // So `resumeLocked` already encodes "which of the two intents is
-      // this", and adding a parallel flag would be a second source of
-      // truth to drift. `resumeLocked` is kept current on every path that
-      // changes the active resume (see its own declaration).
+      // this". `resumeLocked` is kept current on every path that changes the
+      // active resume (see its own declaration).
+      //
+      // CORRECTED, d7d3d59: this comment used to end "and adding a parallel
+      // flag would be a second source of truth to drift." A parallel flag now
+      // exists -- `pastingNewResume`, read by `saveResumeText` above -- so
+      // that warning needs reconciling rather than deleting, because it is
+      // still the right instinct.
+      //
+      // The two coexist deliberately and do different jobs. `resumeLocked`
+      // answers "is this resume already committed to a search", which is what
+      // separates edit from create on the ORDINARY paths above.
+      // `pastingNewResume` names the picker's intent DIRECTLY -- "the form on
+      // screen is composing a resume that does not exist yet" -- which is a
+      // fact about the form, not about the resume, and is the thing three
+      // other readers actually need (the suggestion effect, the nickname
+      // commit refusal, and `isNewResumeSave`). Inferring it from
+      // `resumeLocked` is what produced d7d3d59's bug: the nickname commit
+      // PATCHed the PREVIOUS resume because nothing told it the form was
+      // composing a new one.
+      //
+      // On the drift risk, measured rather than hand-waved: in
+      // `saveResumeText` the two signals are redundant today, and a mutation
+      // removing `pastingNewResume ||` from that one condition fails NO test,
+      // because the picker is only reachable from a locked resume so
+      // `resumeLocked` already forces the POST. It is kept there as
+      // belt-and-braces precisely because it states the intent rather than a
+      // proxy for it -- and because `resumeLocked`'s own maintenance is the
+      // thing most likely to change. If that redundancy ever becomes a
+      // liability, delete it from `saveResumeText` and not from the three
+      // readers where it is the only signal.
       //
       // The resumes page (MyResumes.tsx) has its own, separate edit
       // affordance that does NOT go through here and is NOT lock-gated --
@@ -1134,10 +1162,16 @@ function JobSearchApp() {
   // effect above deliberately calls `setResumeNickname` directly, never
   // this function, so a value this app guessed on the user's behalf can
   // never be mistaken for one the user actually typed -- `handleResumeSubmit`
-  // reads this ref (never reset back to `false`; see that ref's own
-  // comment for why it doesn't need to be) before ever treating a
-  // first-save nickname as something to apply over the server's own
-  // default.
+  // reads this ref before ever treating a first-save nickname as something
+  // to apply over the server's own default.
+  //
+  // CORRECTED, d7d3d59: this comment used to say the ref is "never reset
+  // back to `false`", which was true only while its single reader could not
+  // be reached twice per session. `handleStartPasteNew` now DOES reset it,
+  // and that reset is load-bearing rather than tidiness -- without it, a
+  // stale `true` from the first resume would let the second resume's
+  // untouched suggestion be applied as though the user had typed it.
+  // See the ref's own declaration, and the dedicated test.
   function handleNicknameChange(nextNickname: string) {
     nicknameUserEditedRef.current = true;
     setResumeNickname(nextNickname);
