@@ -12,9 +12,15 @@
  * forever on that row (db/schema.ts). Nicole's resume was almost certainly
  * inferred before ticket 976a782 landed, so it's serving output the fix was
  * never applied to. Nothing about ordinary usage re-triggers it: resubmitting
- * the IDENTICAL resume text finds the SAME content-addressed row
- * (getOrCreateResumeId, per-user since ticket b2f9dfd) and `suggestedTitles`
- * is already non-null, so inference is skipped every time. The current
+ * the IDENTICAL resume text resolves to the SAME row (getOrCreateResumeId's
+ * hash lookup, per-user since ticket b2f9dfd) and `suggestedTitles` is
+ * already non-null, so inference is skipped every time.
+ *
+ * Ticket 6ba221e adds ONE re-trigger that did not exist when this script was
+ * written: editing a resume's text (`PUT /resumes/:id/text`) nulls
+ * `suggested_titles` and re-infers on the spot. That does not make this
+ * script redundant -- it only catches rows whose text the user happens to
+ * edit, and a stale-prompt row nobody edits stays stale forever. The current
  * prompt/`splitConjoinedTitles` logic (resume-title-inference.ts) already
  * forbids exactly this shape -- verified against that file's own test suite
  * and `eval-title-inference-prompt.ts` -- so this script exists to catch
@@ -275,7 +281,8 @@ async function main(): Promise<void> {
     // per-resume detail (and before the "nothing to do" early return), so
     // an operator always sees the real blast radius up front -- a database
     // with far more candidates than expected (e.g. from repeated dogfooding
-    // submissions, each edit creating a new content-addressed row) is
+    // submissions -- which, before ticket 6ba221e, minted a brand-new row
+    // per edit rather than updating one) is
     // visible immediately rather than only inferable from a long list.
     console.log(`\n${result.totalConsidered} resume(s) had a previously-inferred title set.`);
 

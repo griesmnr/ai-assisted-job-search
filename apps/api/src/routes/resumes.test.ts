@@ -2479,8 +2479,8 @@ describe("GET /results (ticket 3f0883f)", () => {
     });
     const { id: secondResumeId, resumeNickname: secondNickname } =
       secondCreated.json() as CreateResumeResponse;
-    // Same content-addressed resume never collides with itself here --
-    // these are two genuinely different resumeTexts, so two real rows.
+    // Two genuinely different resumeTexts, so `getOrCreateResumeId`'s hash
+    // lookup misses and each POST creates its own row.
     expect(firstResumeId).not.toBe(secondResumeId);
 
     const jobUnderFirst = await seedJobRow("Job only the first resume ever saw");

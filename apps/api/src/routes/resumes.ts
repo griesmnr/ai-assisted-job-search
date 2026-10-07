@@ -407,9 +407,12 @@ export function registerResumeRoutes(
   });
 
   // Ticket 38a7598: renames a resume's nickname. Deliberately minimal --
-  // the only writable field is `resumeNickname` (never `resumeText`, which
-  // would break content-addressing -- see UpdateResumeNicknameRequest's
-  // doc comment in @app/shared). This is the one endpoint a rename made
+  // the only writable field is `resumeNickname`, never `resumeText`. That
+  // exclusion's ORIGINAL reason (it "would break content-addressing") died
+  // with ticket 6ba221e; see `UpdateResumeTextRequest`'s doc comment
+  // (@app/shared) for the grounds it stands on now, and
+  // `PUT /resumes/:id/text` below for where text actually goes. This is
+  // the one endpoint a rename made
   // AFTER the initial submission (per the ticket's own acceptance
   // criteria: "editable, not just at creation") goes through -- the
   // submission-time default/edit in ResumeInput.tsx also lands here, via

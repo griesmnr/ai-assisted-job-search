@@ -12,10 +12,16 @@
  * chips (SearchCriteriaForm), never applied silently.
  *
  * Deliberately a SEPARATE, small call from `makeClaudeScorer` in
- * demo-match.ts, not folded into it: this runs ONCE per resume (cached via
- * the existing content-addressed find-or-create -- see
- * routes/resumes.ts), not once per job, and has nothing to do with scoring
- * a specific posting. Reuses the same structured-JSON-output pattern
+ * demo-match.ts, not folded into it: this runs once per resume VERSION
+ * (cached on the row, see routes/resumes.ts), not once per job, and has
+ * nothing to do with scoring a specific posting.
+ *
+ * Ticket 6ba221e: "once per resume, forever" became "once per resume
+ * version". The cache used to be safe because resumes were
+ * content-addressed, so a row's text could never change; now
+ * `PUT /resumes/:id/text` can rewrite it, which nulls the cache and
+ * re-infers. Still at most one call per distinct resume text, just no
+ * longer at most one per resume id. Reuses the same structured-JSON-output pattern
  * `makeClaudeScorer` already established (see demo-match.ts's SCHEMA) so
  * there is exactly one convention for "ask Claude for a JSON shape" in
  * this codebase, not two.
@@ -141,7 +147,8 @@ const MODEL = "claude-sonnet-5";
 // "enough for today's prompt" is sizing to a moving target. `max_tokens` is a
 // ceiling billed on ACTUALS, so the extra headroom costs nothing and matches
 // the per-job scorer's budget. Measured per-resume cost either way:
-// ~$0.006-0.011, once per content-addressed resume.
+// ~$0.006-0.011 per inference -- once per resume until ticket 6ba221e,
+// and once per resume TEXT EDIT since (see this file's header).
 const MAX_OUTPUT_TOKENS = 2000;
 
 /**

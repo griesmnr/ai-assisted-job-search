@@ -860,13 +860,16 @@ export function hashResumeText(resumeText: string): string {
  */
 /**
  * Exported (ticket 59fdc52) so the REST API's `POST /resumes` can find-or-
- * create a resume row directly — resumes are content-addressed by
- * `resumeHash` (ticket 620ca30), and this is the one place that hashing +
- * upsert logic lives. Reusing it here, rather than reimplementing the same
- * hash-then-upsert dance in a route handler, is exactly the "reuse
- * runDemoMatch's persistence, don't reimplement it" instruction: a resume
- * paste alone doesn't need a full `runDemoMatch` run (which also fetches
- * and would ingest jobs) — it only needs this one step.
+ * create a resume row directly: this is the one place the hash-lookup-then-
+ * insert logic lives. Reusing it there, rather than reimplementing the same
+ * dance in a route handler, is exactly the "reuse runDemoMatch's
+ * persistence, don't reimplement it" instruction: a resume paste alone
+ * doesn't need a full `runDemoMatch` run (which also fetches and would
+ * ingest jobs) — it only needs this one step.
+ *
+ * Ticket 6ba221e: that call is the CREATE path only. Resumes are no longer
+ * content-addressed (ticket 620ca30's constraint is dropped), and an EDIT
+ * goes to `PUT /resumes/:id/text`, which never comes through here.
  *
  * Ticket 38a7598: a genuinely NEW resume also gets a real, distinct default
  * nickname ("Resume N") assigned right here, at insert time — never left
