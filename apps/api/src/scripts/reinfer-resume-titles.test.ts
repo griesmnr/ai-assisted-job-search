@@ -28,8 +28,10 @@ afterAll(async () => testDb?.teardown());
 /**
  * Same no-network fake-client pattern resume-title-inference.test.ts and
  * demo-match.test.ts already establish for this codebase -- adapted here to
- * be KEYED BY RESUME TEXT, because `runReinfer` processes every non-null-
- * `suggestedTitles` resume in the WHOLE test database, including ones a
+ * be KEYED BY RESUME TEXT, because `runReinfer` processes EVERY resume in
+ * the WHOLE test database -- widened by ticket 82ae975, which made failures
+ * persist `null` and so put them out of reach of the old non-null filter --
+ * including ones a
  * PRIOR test in this same file left behind (nothing deletes rows between
  * tests, same shared-database shape `reassign-legacy-resumes.test.ts`
  * already lives with).

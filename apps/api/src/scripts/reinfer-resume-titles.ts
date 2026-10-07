@@ -158,7 +158,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(
       `Unrecognized argument(s): ${unknownFlags.join(", ")}. Known flags are --live (actually ` +
         "writes; omit for a dry run). This script takes no positional arguments -- it considers " +
-        "every resume with a non-null suggestedTitles.",
+        "every resume, regardless of its current suggestedTitles value.",
     );
   }
   return { live: argv.includes("--live") };
