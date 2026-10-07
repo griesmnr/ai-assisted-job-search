@@ -429,10 +429,17 @@ export function MagicLinkLanding({ token }: { token: string }) {
             //
             // REVIEW ROUND 1 (F1, BLOCKING): naming where to click after
             // Continue is ALSO wrong for most visitors, not just imprecise.
-            // `App.tsx`'s `showMagicLinkPrompt` requires `hasFreshSearchResults`
-            // -- a `useState(false)` set true in exactly one place, SearchFlow's
-            // completion handler -- which a freshly reloaded page cannot
-            // satisfy, and `landOnScoredTab` is written only on the SUCCESS
+            // `App.tsx`'s `showMagicLinkPrompt` is
+            // `(activeTab === "search" && searchArmReady) || (activeTab ===
+            // "scored" && scoredArmReady)`. Only the SEARCH arm requires
+            // `hasFreshSearchResults` -- a `useState(false)` set true in exactly
+            // one place, SearchFlow's completion handler -- which a freshly
+            // reloaded page cannot satisfy. (Re-review precision fix: an
+            // earlier draft of this comment said `showMagicLinkPrompt` requires
+            // it outright, which is broader than the code. The behavioural
+            // conclusion is unchanged, and rests on the next clause: the
+            // scored arm cannot fire either, because the default tab is
+            // "search".) `landOnScoredTab` is written only on the SUCCESS
             // verification path (this is the FAILED one) and stripped by this
             // very branch's own `catch`. `showSignInRecovery` requires
             // `nothingScoredInThisBrowser`, false for anyone who had results to
