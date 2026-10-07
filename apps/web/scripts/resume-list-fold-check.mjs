@@ -6,23 +6,31 @@
 // and why it exists; this is a SECOND, standalone script rather than an
 // extension of apps/web/scripts/layout-check.mjs.
 //
-// Why a second script instead of extending layout-check.mjs: that script
-// already states its own scope boundary explicitly (see its header comment
-// and HEADLESS-BROWSER.md's "The OTHER 'measured in real Chromium' claim"
-// section) -- it checks ONE specific claim (the magic-link-prompt gap) with
-// ONE fixture, and a second claim needing a different fixture ("a second
-// worked example") is called out there as a SEPARATE file, not a branch
-// bolted onto the first. This ticket's fixture is a different DOM shape
-// (the resume picker/paste form, not the results list + magic-link anchor),
-// a different pass/fail criterion (fold visibility at a viewport size, not
-// a fixed gap in px), and sweeps multiple N values and two viewports rather
-// than asserting one number -- conflating the two into one file would make
-// both harder to read. Per the ticket's own instruction ("do not refactor
-// the existing script beyond what you need"), layout-check.mjs is untouched;
-// this file duplicates its small Chromium-discovery/sysroot-bootstrap
-// helpers (findBuiltCss/findCachedChromium/revisionOf/sysrootLibDir) rather
-// than importing from it, to avoid turning an unrelated ticket into a
-// refactor of a file that was reviewed and merged hours earlier.
+// Why a second script instead of extending layout-check.mjs: NOT because
+// HEADLESS-BROWSER.md prescribes a separate file for a second claim --
+// corrected on review: its "The OTHER 'measured in real Chromium' claim"
+// section says a second fixture would be "a second worked example" built
+// "the same way" (same technique, reused), and that whoever next touches
+// that CSS region "should use it" -- it never says build a NEW FILE. The
+// real reason rests on the ticket's own instruction instead: "do not
+// refactor the existing script beyond what you need." layout-check.mjs
+// checks ONE fixed claim (a 1rem gap) as a pass/fail GUARD; this script
+// sweeps a matrix (3 resume counts x 2 viewports) as a before/after
+// DEMONSTRATION with no hard exit code (see the bottom of `main` for why)
+// -- different fixture (the resume picker/paste form, not the results list
+// + magic-link anchor), different shape of result, different purpose.
+// Bolting that onto layout-check.mjs would mean either changing its exit
+// behavior and single-claim structure (a real refactor of a file reviewed
+// and merged hours earlier, which the ticket said not to do beyond need)
+// or cramming two unrelated purposes into one file's control flow. A
+// second file was the smaller change, not something the docs required.
+// This file duplicates layout-check.mjs's small Chromium-discovery/
+// sysroot-bootstrap helpers (findBuiltCss/findCachedChromium/revisionOf/
+// sysrootLibDir) rather than importing them, for the same reason: importing
+// would mean exporting them from layout-check.mjs first, which is itself an
+// edit to that file. Each duplicated site below carries a one-line pointer
+// to layout-check.mjs's own comment for the non-obvious ones, so the
+// reasoning isn't silently lost in the copy (review finding F2).
 //
 // Run from the repo root (same pattern as layout-check.mjs):
 //
@@ -84,6 +92,11 @@ function findBuiltCss() {
     console.error(`${distAssets} has no .css file -- did the build actually run vite build?`);
     process.exit(1);
   }
+  // Deliberate -- concatenate ALL .css files, not just the first. See
+  // layout-check.mjs's own `findBuiltCss` comment for the full reasoning
+  // (Vite emits one file today, but a future route-level code-split could
+  // emit a second chunk; taking only the first would silently measure a
+  // partial stylesheet).
   return cssFiles.map((f) => readFileSync(join(distAssets, f), "utf8")).join("\n");
 }
 
@@ -98,6 +111,10 @@ function findCachedChromium() {
   const candidates = readdirSync(cacheDir).filter(
     (d) => d.startsWith("chromium_headless_shell-") || d.startsWith("chromium-"),
   );
+  // Deliberate -- shell-build preferred, then highest revision wins within
+  // each kind. See layout-check.mjs's own `findCachedChromium` comment for
+  // the full reasoning (a newer revision installed alongside an old one
+  // must win, not whichever `readdirSync` happens to list first).
   candidates.sort((a, b) => {
     const aShell = Number(a.startsWith("chromium_headless_shell"));
     const bShell = Number(b.startsWith("chromium_headless_shell"));
@@ -133,7 +150,8 @@ function sysrootLibDir() {
 // ResumeInput.tsx on 2026-10-07):
 //
 //   <div class="app">
-//     <div class="app-header"><h1>...</h1><span class="signed-in-cue">...</span></div>
+//     <div class="app-header"><h1>...</h1><p class="signed-in-cue">These results
+//       are saved to <strong>...</strong></p></div>                 (SignedInCue.tsx)
 //     <nav class="tab-nav">...3 buttons...</nav>
 //     <section class="resume-section">
 //       <form class="resume-input">
@@ -175,7 +193,45 @@ function buildFixtureHtml(css, n) {
 <div class="app">
   <div class="app-header">
     <h1>AI-Assisted Job Search</h1>
-    <span class="signed-in-cue">verified@example.com</span>
+    <!-- Real markup/text from SignedInCue.tsx (verified against that file
+         2026-10-07, corrected in review -- F4): a p element, not a span,
+         and the component's actual sentence ("These results are saved to
+         [strong]{email}[/strong]"), not a bare email address. An earlier
+         draft of this fixture used span.signed-in-cue with just
+         verified@example.com -- same class, much less text -- which was a
+         fixture-fidelity bug regardless of whether it changed any number.
+
+         Re-measured directly (byte-identical copies of this file with only
+         the h1 text and this cue element swapped, N=15, both viewports):
+         on THIS BRANCH's current h1 text ("AI-Assisted Job Search", 22
+         chars), the old short span and the real sentence produce IDENTICAL
+         numbers at both viewports -- confirmed bit-for-bit, not just
+         "close": the long h1 text alone already forces .app-header to
+         wrap at the 390px phone viewport regardless of the cue's own
+         length, so the cue's text length is moot there today. (Isolated
+         two-element check, header row alone: 60.6px wrapped either way at
+         390px; 33.6px unwrapped either way at 1366px.)
+
+         It stops being moot once ticket 9e00bc9's rename ("FitScore", 8
+         chars -- merged to the main branch while this ticket was in
+         review, not yet on this branch) is in the mix: with the SHORTER
+         heading, the old short span fits on the header's one line (header
+         height 33.6px) while the real sentence does not and wraps to a
+         second line (60.6px) -- a genuine +27.1px at the phone viewport,
+         confirmed the same way. A review comment attributed a +19.1px
+         phone delta to this same interaction; this script's own
+         re-measurement (same method, N=15, byte-identical fixture copies)
+         gets +27.1px, not 19.1px -- recorded as a discrepancy rather than
+         silently adopting either number, since the two measurements
+         disagree and the exact source of that disagreement (a different N,
+         a different exact fixture, or something else) was not tracked
+         down. Either way the fixture fix here is correct independent of
+         the number: it matches what SignedInCue.tsx actually renders,
+         which is what this script claims to measure. See the long comment
+         above the .resume-pick-saved .resume-picker-options rule in
+         index.css for how this interacts with that rule's own durability
+         once the rename lands on this branch. -->
+    <p class="signed-in-cue">These results are saved to <strong>verified@example.com</strong></p>
   </div>
   <nav class="tab-nav" aria-label="Sections">
     <button type="button" class="tab-button" aria-pressed="true">New Job Search</button>
@@ -240,6 +296,9 @@ async function main() {
     process.exit(1);
   }
   const libDir = sysrootLibDir();
+  // Deliberate -- prepend, don't replace. See layout-check.mjs's own launch
+  // comment for the full reasoning (an `LD_LIBRARY_PATH` already set in the
+  // calling environment must not be silently discarded).
   const inheritedLdPath = process.env.LD_LIBRARY_PATH;
   const browser = await chromium.launch({
     executablePath: chromiumPath,
@@ -310,12 +369,17 @@ async function main() {
       ? "\nFAIL (informational, not a hard exit): at least one case has the label or textarea top below the fold."
       : "\nPASS: label and textarea top are above the fold (< viewport height) in every case measured above.",
   );
-  // No process.exit(1) on "FAIL" -- this script is run both BEFORE and
-  // AFTER the fix to produce a before/after comparison; a nonzero exit on
-  // the expected-bad "before" run would just be noise the caller has to
-  // route around. Exit code stays 0 whenever the measurement itself
-  // succeeded; the before/after prose in the ticket report is what carries
-  // the pass/fail verdict.
+  // No process.exit(1) on "FAIL", UNLIKE layout-check.mjs's own exitCode=1
+  // -- that script guards ONE fixed claim (a 1rem gap) as a pass/fail gate;
+  // this one sweeps a matrix (3 resume counts x 2 viewports) and is run
+  // deliberately both BEFORE and AFTER a fix to produce a before/after
+  // comparison, so a nonzero exit on the expected-bad "before" run would
+  // just be noise the caller has to route around. This script is a one-shot
+  // demonstration tool, not a regression guard -- said explicitly, not left
+  // to be inferred from the missing exit code. Exit code stays 0 whenever
+  // the measurement itself succeeded; the before/after numbers in the
+  // ticket's own report, and the comment above the CSS rule they justify,
+  // carry the pass/fail verdict instead.
 }
 
 main().catch((err) => {

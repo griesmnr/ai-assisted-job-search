@@ -277,6 +277,25 @@ the real markup, load the real built CSS, measure
 `getBoundingClientRect()`), and whoever next touches that CSS region should
 use it rather than inspection alone.
 
+**Update (ticket 6b14962, 2026-10-07):** a different CSS region — the
+saved-resume list's fold behavior, `.resume-pick-saved .resume-picker-options`
+— did exactly that: `apps/web/scripts/resume-list-fold-check.mjs` (also
+runnable as `pnpm --filter @app/web run resume-list-fold-check`) reuses this
+same technique with its own fixture (the resume-picker/paste-form DOM, not
+the magic-link one) and its own matrix (3 saved-resume counts x 2 viewports,
+run before and after a CSS fix, with no hard exit code since it's a
+before/after demonstration rather than a pass/fail guard like
+`layout-check.mjs`). It is a second FILE, not because this document
+requires one — it doesn't; the paragraph above only prescribes the
+technique — but because that ticket's own instructions said not to refactor
+this already-merged script beyond what was needed, and folding a second,
+differently-shaped fixture/matrix into `layout-check.mjs` would have been
+exactly that kind of refactor. The two scripts duplicate
+`layout-check.mjs`'s four small Chromium-discovery/sysroot-bootstrap helpers
+for the same reason (importing them would mean exporting them from this
+file first); each duplicated site in the second script carries a one-line
+pointer back to this file's reasoning rather than losing it in the copy.
+
 ## What if `~/.cache/ms-playwright` is empty (a fresh container rebuild)?
 
 Nothing in this ticket installs a Playwright browser itself.
