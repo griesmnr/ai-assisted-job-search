@@ -109,7 +109,7 @@ describe("App — toggling a source never re-fetches results (F6, review round)"
     render(<App />);
 
     // Ticket e493085: page title and sources heading wording.
-    expect(screen.getByRole("heading", { name: "AI-Assisted Job Search" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "FitScore" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Paste your resume"), {
       target: { value: "some resume text" },

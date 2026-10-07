@@ -176,6 +176,15 @@ describe("POST /auth/magic-link", () => {
     const message = sender.sent[0]!;
     expect(message.to).toBe("sends@example.com");
     expect(message.subject).toContain("sign-in link");
+    // Review round (F1, ticket 9e00bc9): the `toContain("sign-in link")`
+    // check above is true of "AI-Assisted Job Search" and "FitScore" alike,
+    // so it cannot catch a regression of the app's name in this email --
+    // and nothing else in the suite pinned either email string, which is
+    // exactly how the rename ticket's own email half shipped unprotected
+    // the first time. These two assert the exact copy `routes/auth.ts`
+    // sends today.
+    expect(message.subject).toBe("Your sign-in link for FitScore");
+    expect(message.html).toContain("Sign in to FitScore");
     // Both parts carry the link: a text/plain alternative is required, not
     // optional (see EmailMessage's doc comment).
     const token = tokenFromEmail(message);
