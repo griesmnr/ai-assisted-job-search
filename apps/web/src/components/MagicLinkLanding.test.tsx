@@ -388,6 +388,13 @@ describe("MagicLinkLanding -- refusals", () => {
    * A transport failure is the one refusal that is NOT adjudicated: the token
    * has not been consumed, so the link is still worth retrying -- which means
    * it must stay in the URL, unlike every spent-token case above.
+   *
+   * Ticket c719af2: this is the ONLY case `transportFailure` is true for --
+   * `verifyMagicLink`'s promise rejected without ever resolving, so
+   * `responseLanded` never flipped. The negative assertion is the one that
+   * actually distinguishes this from the malformed-userId case just above:
+   * both have `reason === undefined`, and only `transportFailure` tells them
+   * apart.
    */
   it("keeps the token in the URL when the API was simply unreachable, and says the link is still good", async () => {
     verifyMagicLink.mockRejectedValue(
@@ -400,10 +407,30 @@ describe("MagicLinkLanding -- refusals", () => {
     expect(
       screen.getByText(/still worth trying again once you're back online/i),
     ).toBeInTheDocument();
+    // Not the spent-token recovery note -- the token here was never touched.
+    expect(
+      screen.queryByText(/you can ask for a new link from the bottom of your results/i),
+    ).not.toBeInTheDocument();
     expect(window.location.hash).toBe("#magicLinkToken=tok_abc123");
   });
 
-  it("refuses a malformed user id rather than storing one the API would reject on every request", async () => {
+  /**
+   * TICKET c719af2. The server returns 200 -- `claimAndResolve`'s conditional
+   * UPDATE committed, so the token IS spent -- and `setUserId` then throws on
+   * the malformed `userId` inside that 200 body. Before this ticket, this
+   * case was indistinguishable from a transport failure (both leave
+   * `magicLinkRejectionReason` undefined) and rendered "it's still worth
+   * trying again once you're back online" -- which invited a retry that was
+   * guaranteed to end in `already_used`, since the token was already gone by
+   * the time the panel rendered.
+   *
+   * This pins BOTH halves: the alert text proves this is the malformed-id
+   * path (not a mislabelled transport failure), and the explicit absence of
+   * the transport-failure copy -- replaced by the same "ask for a new link"
+   * note every other spent-token refusal uses -- proves the panel no longer
+   * claims this link can be used again.
+   */
+  it("tells the user to request a new link -- not to retry -- when a 200 response carries a malformed userId", async () => {
     verifyMagicLink.mockResolvedValue({
       userId: "not-a-uuid",
       email: "alice@example.com",
@@ -415,9 +442,22 @@ describe("MagicLinkLanding -- refusals", () => {
     // Presents as one failed verification, not as "the whole app broke after
     // signing in" -- which is what storing an id the API rejects would look
     // like on every subsequent request.
-    expect(await screen.findByRole("alert")).toHaveTextContent(/malformed user id/i);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe('Refusing to adopt a malformed user id: "not-a-uuid"');
     expect(localStorage.getItem("jobsearch.web.userId.v1")).toBeNull();
     expect(localStorage.getItem("jobsearch.web.userEmail.v1")).toBeNull();
+
+    // THE BUG: this must NOT say the link is still usable. The token was
+    // already spent server-side (the 200 is proof) before this client-side
+    // throw ever happened.
+    expect(
+      screen.queryByText(/still worth trying again once you're back online/i),
+    ).not.toBeInTheDocument();
+    // THE FIX: the same honest "request a new one" recovery every other
+    // spent-token refusal gets.
+    expect(
+      screen.getByText(/you can ask for a new link from the bottom of your results/i),
+    ).toBeInTheDocument();
   });
 
   it("shows a spinner-equivalent while the verification is in flight", async () => {
