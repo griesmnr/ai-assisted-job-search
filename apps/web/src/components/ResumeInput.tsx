@@ -16,8 +16,16 @@ import { sortResumesByNickname } from "../resumeSort";
  * the whole story: a `pastingNewResume` flag names the picker's intent
  * directly, and `resumeLocked` decides edit-vs-create on the ordinary
  * paths.
- * This component is unchanged by that and deliberately knows nothing about
- * it: it collects text and hands it up.
+ * This component used to be unchanged by that and know nothing about it: it
+ * just collected text and handed it up. TICKET 582ee40 ENDS THAT -- caught by
+ * adversarial review (fix 3), which is why this paragraph is corrected rather
+ * than quietly left to describe a design that no longer holds. This
+ * component now takes `pastingNewResume` as a prop and branches on it twice:
+ * once to decide whether the "Use a saved resume" list below should
+ * reappear once a resume is already active, and once to decide whether its
+ * own "Or paste a new one" divider is telling the truth about what a submit
+ * from here will actually do. See that prop's own doc comment, and the form
+ * branch below, for why.
  *
  * Re-submitting unchanged text stays cheap and idempotent either way (the
  * PUT short-circuits a no-change save; the POST finds the existing row by
@@ -506,10 +514,10 @@ export function ResumeInput({
   // actually made was still a dead end. This ticket is the fix for that click.
   //
   // The gate is now `!pastingNewResume`, not `resumeId !== undefined`,
-  // because `resumeId !== undefined` is reachable by TWO routes that need
-  // OPPOSITE answers to "should the saved list show here" -- `pastingNewResume`
-  // (App.tsx) is the one signal that already tells them apart (see that prop's
-  // own doc comment above):
+  // because `resumeId !== undefined` is reachable by THREE routes, not two
+  // (adversarial review of 582ee40, fix 2 -- an earlier version of this
+  // comment undercounted), and they do not all want the same answer to
+  // "should the saved list show here":
   //   - an unlocked "Edit" (`pastingNewResume` false) -- the fix this ticket
   //     exists for. The list must show.
   //   - the locked picker's "Paste a new resume" (`pastingNewResume` true) --
@@ -518,6 +526,30 @@ export function ResumeInput({
   //     re-offering it here would contradict that choice. Still covered by
   //     the same App.resumeLock.test.tsx case cited above, which this ticket
   //     does not touch.
+  //   - THE THIRD ROUTE (found by review, not by this ticket's own first
+  //     pass): `handleResumeSubmit`'s nickname-conflict reopen (App.tsx)
+  //     resets `pastingNewResume` to `false` at line ~1031 -- same as the
+  //     ordinary save-success path, before it even knows whether the
+  //     nickname PATCH that follows will fail -- and then, deep in that same
+  //     function's catch block (~line 1194), sets `resumeEditing` back to
+  //     `true` to keep the error visible. Concretely: locked Resume 1 ->
+  //     "Change" -> "Paste a new resume" (list correctly hidden -- the user
+  //     just declined it) -> type a nickname that collides with another
+  //     saved resume's -> Submit -> the `POST /resumes` succeeds but the
+  //     nickname `PATCH` 409s -> the form reopens with `pastingNewResume`
+  //     already `false`, so THIS list shows again.
+  //
+  //     `pastingNewResume`'s own "the user just explicitly declined it one
+  //     click ago" reasoning does NOT cover this state -- by the time it
+  //     reopens, the decline is two saves and an error ago, not one click.
+  //     Accepted anyway (PM call, not a fix): the resume is already saved by
+  //     then, so nothing destructive is on the table, and the list is a
+  //     reasonable escape hatch from a collision error -- switching to a
+  //     different saved resume entirely is a sensible way out of a stuck
+  //     rename, same as Cancel would be. Recorded here so a future reader
+  //     doesn't mistake the old two-route claim for the real shape of this
+  //     gate, and doesn't assume `pastingNewResume`'s own rationale extends
+  //     somewhere it provably doesn't.
   // `resumeId === undefined` (the original, no-active-resume case) is folded
   // into the same condition for free: `pastingNewResume` can only ever be
   // `true` once a resume already exists to decline reusing (it is set from
@@ -611,8 +643,42 @@ export function ResumeInput({
           {/* Same "Or" divider the picker branch uses, for the same reason
               (ticket 336f1e6, Nicole: "the or and Paste a new resume button
               really clear that up") -- here it separates the saved list from
-              the paste form below rather than from a button. */}
-          <p className="resume-picker-or">Or paste a new one</p>
+              the paste form below rather than from a button.
+
+              ADVERSARIAL REVIEW OF 582ee40 (required fix): this used to be
+              unconditional once the list above rendered. That was HARMLESS
+              before this ticket's widening, because the only state that
+              could reach it was `resumeId === undefined`, where a submit is
+              always a real `POST /resumes` -- "paste a new one" was simply
+              true. The widened gate breaks that: an unlocked "Edit"
+              (`pastingNewResume` false, `isLocked` false) now reaches this
+              same list, and a submit from THERE is `saveResumeText`'s
+              `updateResumeText` branch (App.tsx) -- an in-place PUT onto the
+              ACTIVE resume, not a new one. The reviewer proved this with a
+              probe: active unlocked Resume 1 -> "Edit" -> paste different
+              text -> Submit -> `updateResumeText("resume-1", ...)`, text
+              silently overwritten, `createResume` never called again. A user
+              who reads "Or paste a new one" and acts on it there loses
+              Resume 1's text with no warning.
+
+              So this divider is gated on the EXACT SAME condition
+              `saveResumeText` (App.tsx) uses to decide `createResume` vs.
+              `updateResumeText` -- `resumeId === undefined || pastingNewResume
+              || isLocked` (this component's own `isLocked` prop is that
+              function's `resumeLocked`) -- so the copy can never promise
+              "new" on a submit that is actually an overwrite. `isLocked`
+              covers the one case `pastingNewResume` alone misses: the
+              nickname-conflict reopen (`App.tsx`, `handleResumeSubmit`'s
+              `setResumeEditing(true)` deep in its catch block) can land here
+              with `pastingNewResume` already reset to `false` but
+              `resumeLocked` true, when a "Paste a new resume" submission's
+              own find-or-create hit an existing, already-searched resume --
+              `saveResumeText` would still route a further submit there
+              through `createResume` (locked resumes never PUT), so the
+              divider is still telling the truth in that state too. */}
+          {(resumeId === undefined || pastingNewResume || isLocked) && (
+            <p className="resume-picker-or">Or paste a new one</p>
+          )}
         </div>
       )}
       <label htmlFor="resume-text">Paste your resume</label>
@@ -641,9 +707,19 @@ export function ResumeInput({
             "Paste a new resume" opens it, and the resume being named there
             does not exist yet either -- so App.tsx's `pastingNewResume` makes
             `handleNicknameCommit` no-op for that case too. Before that, a blur
-            here PATCHed the PREVIOUS resume's id and silently renamed it. This
-            component is unchanged by the fix and still knows nothing about
-            which case it is in; it collects a nickname and hands it up. */}
+            here PATCHed the PREVIOUS resume's id and silently renamed it.
+
+            NARROWED, ticket 582ee40 (adversarial review, fix 3): this used to
+            say "this component is unchanged by the fix and still knows
+            nothing about which case it is in" -- true of the nickname
+            `<input>` specifically (it still just calls `onNicknameChange`/
+            `onNicknameCommit` with no read of `pastingNewResume` at all, so
+            THIS claim stands), but no longer true of the component as a
+            whole: 582ee40 gave it `pastingNewResume` as a real prop that two
+            OTHER pieces of this same render branch read directly (see this
+            file's top-of-file doc comment, and the "Use a saved resume"
+            block above). Scoped explicitly to this input now, so it cannot
+            be mistaken for that broader claim again. */}
         <div className="resume-nickname-field">
           <label htmlFor="resume-nickname">Resume Nickname</label>
           <input

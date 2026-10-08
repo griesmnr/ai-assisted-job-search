@@ -106,7 +106,11 @@ async function getToEditFormWithOtherSavedResume() {
   render(<App />);
   await submitResume();
   fireEvent.click(await screen.findByRole("button", { name: "Edit resume" }));
-  expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+  // Adversarial review of 582ee40 (fix 6): `toBeVisible()`, not
+  // `toBeInTheDocument()` -- tabs stay mounted with only `hidden` toggling
+  // (ticket f4a7f07), so "in the document" doesn't prove the user can
+  // actually see this.
+  expect(screen.getByLabelText("Paste your resume")).toBeVisible();
 }
 
 describe("App — the saved-resume picker reappears on 'Edit' (ticket 582ee40)", () => {
@@ -126,6 +130,12 @@ describe("App — the saved-resume picker reappears on 'Edit' (ticket 582ee40)",
   it("excludes the active resume itself from the reappeared picker", async () => {
     await getToEditFormWithOtherSavedResume();
 
+    // Adversarial review of 582ee40 (fix 4): a POSITIVE assertion first --
+    // without it, the mutation that reverts the widened gate entirely (so
+    // the whole list, "Use Resume 8" included, never renders) left this
+    // test green. Proving the OTHER button is really there is what makes
+    // "excluded" a claim distinct from "nothing rendered at all".
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Use Resume 1" })).not.toBeInTheDocument();
   });
 
@@ -270,8 +280,99 @@ describe("App — the saved-resume picker reappears on 'Edit' (ticket 582ee40)",
     fireEvent.click(await screen.findByRole("button", { name: "Change resume" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
 
-    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+    // Adversarial review of 582ee40 (fix 6): `toBeVisible()`, not
+    // `toBeInTheDocument()`, for the positive "the user can see this" claim.
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
     expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use Resume 8" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Adversarial review of 582ee40 (fix 2) -- a THIRD route into the ordinary
+ * form branch with `resumeId` already set, found by the reviewer, not by
+ * this ticket's own first pass: `handleResumeSubmit`'s nickname-conflict
+ * reopen (App.tsx). It resets `pastingNewResume` to `false` unconditionally
+ * on save-success, before it even knows the follow-up nickname PATCH is
+ * about to 409, and then its own catch block sets `resumeEditing` back to
+ * `true` to keep the error visible. The PM's call (recorded in
+ * ResumeInput.tsx's own gate comment): accepted, not fixed -- the resume is
+ * already saved by then, so nothing destructive is on the table, and the
+ * reappeared list is a reasonable escape hatch from a collision error. This
+ * test pins that accepted state so a future change can't silently alter it
+ * without a test noticing.
+ */
+describe("App — the picker also reappears after a nickname-conflict reopen (ticket 582ee40, review fix 2)", () => {
+  it("shows the saved-resume list again after 'Paste a new resume' succeeds but its nickname PATCH collides", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    listResumes.mockResolvedValue({
+      resumes: [
+        { id: "resume-1", resumeNickname: "Resume 1", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "resume-8", resumeNickname: "Resume 8", createdAt: "2026-01-02T00:00:00.000Z" },
+      ],
+    } satisfies ListResumesResponse);
+    getAllResults.mockResolvedValue({ results: [] });
+    getResults.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "resume-2"
+          ? emptyResultsFor("resume-2", "Resume 2")
+          : emptyResultsFor("resume-1", "Resume 1"),
+      ),
+    );
+    // First submission: locks Resume 1 (so "Change", not "Edit", is the
+    // route into the picker).
+    createResume.mockResolvedValueOnce({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+      isLocked: true,
+    });
+
+    render(<App />);
+    await submitResume();
+    fireEvent.click(await screen.findByRole("button", { name: "Change resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
+    // Declined one click ago -- the list is correctly absent here.
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+
+    // Second submission: a genuinely NEW resume (isNew: true), unlocked, so
+    // a later submit from the reopened form would PUT rather than POST.
+    createResume.mockResolvedValueOnce({
+      id: "resume-2",
+      resumeNickname: "Resume 2",
+      suggestedTitles: [],
+      isLocked: false,
+      isNew: true,
+    });
+    updateResumeNickname.mockRejectedValue(
+      Object.assign(new Error("This resume nickname is already in use."), {
+        status: 409,
+        body: { error: "This resume nickname is already in use.", reason: "nickname_conflict" },
+      }),
+    );
+
+    const nicknameField = screen.getByLabelText("Resume Nickname");
+    fireEvent.change(nicknameField, { target: { value: "Taken Nickname" } });
+    fireEvent.change(screen.getByLabelText("Paste your resume"), {
+      target: { value: "a brand new resume's text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    // The collision surfaces and the form reopens -- `App.tsx`'s own
+    // `setResumeEditing(true)` deep in the catch block.
+    await waitFor(() =>
+      expect(updateResumeNickname).toHaveBeenCalledWith("resume-2", "Taken Nickname"),
+    );
+    await screen.findByRole("alert");
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
+
+    // THE PINNED BEHAVIOR: `pastingNewResume` is already `false` by the time
+    // this reopens (set at save-success, before the PATCH even ran), so the
+    // widened gate shows the list again -- even though the user "declined"
+    // it only two saves and a collision ago, not one click ago.
+    expect(screen.getByText("Use a saved resume:")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeVisible();
   });
 });
