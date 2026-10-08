@@ -327,6 +327,87 @@ describe("MagicLinkPrompt", () => {
   // measure; the class name is the one thing that's testable, the same
   // limitation d3a95d1's own version of these tests had in the opposite
   // direction.
+  /**
+   * Ticket 05ff2a5. `sentFactsLine` is NOT where this lives (see
+   * `sentSpamNote`'s doc comment in `MagicLinkForm.tsx` for why it is a
+   * sibling paragraph rather than a third sentence tacked onto the existing
+   * one) -- but it is still owned by the shared form, not by this caller's
+   * `sentBody`, so this prompt should get it for free.
+   */
+  describe("spam-folder note (ticket 05ff2a5)", () => {
+    it("tells the user to check spam, naming FitScore as the sender, once the link is sent", async () => {
+      requestMagicLink.mockResolvedValue({
+        email: "alice@example.com",
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      });
+      render(<MagicLinkPrompt />);
+
+      // Not present before a send -- pre-emptively mentioning spam to someone
+      // who has not even tried yet plants doubt for no reason (ticket's own
+      // OUT scope).
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "alice@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+      await screen.findByRole("heading", { name: /check your inbox/i });
+
+      // Pin the full approved sentence by exact text, same pattern as the
+      // existing `sentFactsLine` pin below -- a future reword must fail
+      // loudly, not slip past a substring match.
+      const note = screen.getByText(/didn't get it\?/i);
+      expect(note).toBeVisible();
+      expect(note.textContent).toBe(
+        "Didn't get it? Give it a minute, then check your spam folder — it'll be from FitScore.",
+      );
+
+      // The existing facts sentence must be completely untouched by this
+      // addition -- still its own thing, still exactly what it said before.
+      expect(screen.getByText(/open it in this browser/i)).toBeVisible();
+      expect(screen.getByText(/works once and expires in about 15 minutes/i)).toBeVisible();
+    });
+
+    it("does not appear in the idle or sending states", async () => {
+      let resolveSend!: (value: { email: string; expiresAt: string }) => void;
+      requestMagicLink.mockReturnValue(
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+      );
+      render(<MagicLinkPrompt />);
+
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "alice@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /sending/i })).toBeDisabled();
+      });
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      resolveSend({ email: "alice@example.com", expiresAt: new Date().toISOString() });
+      await screen.findByRole("heading", { name: /check your inbox/i });
+      expect(screen.getByText(/check your spam folder/i)).toBeVisible();
+    });
+
+    it("does not appear on a send failure", async () => {
+      requestMagicLink.mockRejectedValue(new Error("boom"));
+      render(<MagicLinkPrompt />);
+
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "bob@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /email me a link/i }));
+
+      await screen.findByRole("alert");
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+    });
+  });
+
   describe("sits in the document flow, not floating (ticket 931df8a)", () => {
     it("in the idle/form state", () => {
       const { container } = render(<MagicLinkPrompt />);
