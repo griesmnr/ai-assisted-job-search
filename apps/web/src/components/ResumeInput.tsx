@@ -663,19 +663,47 @@ export function ResumeInput({
 
               So this divider is gated on the EXACT SAME condition
               `saveResumeText` (App.tsx) uses to decide `createResume` vs.
-              `updateResumeText` -- `resumeId === undefined || pastingNewResume
-              || isLocked` (this component's own `isLocked` prop is that
-              function's `resumeLocked`) -- so the copy can never promise
-              "new" on a submit that is actually an overwrite. `isLocked`
-              covers the one case `pastingNewResume` alone misses: the
-              nickname-conflict reopen (`App.tsx`, `handleResumeSubmit`'s
-              `setResumeEditing(true)` deep in its catch block) can land here
-              with `pastingNewResume` already reset to `false` but
-              `resumeLocked` true, when a "Paste a new resume" submission's
-              own find-or-create hit an existing, already-searched resume --
-              `saveResumeText` would still route a further submit there
-              through `createResume` (locked resumes never PUT), so the
-              divider is still telling the truth in that state too. */}
+              `updateResumeText` -- `resumeId === undefined ||
+              pastingNewResume || isLocked` (this component's own `isLocked`
+              prop is that function's `resumeLocked`). Note that is
+              `saveResumeText`'s own POST-vs-PUT condition, NOT the
+              similar-looking `isNewResumeSave` nearby, which omits
+              `resumeLocked` and only gates nickname reconciliation.
+
+              TWO OF THOSE THREE TERMS ARE INERT TODAY, and re-review caught
+              an earlier version of this comment inventing a scenario to
+              justify one of them. Stated accurately instead:
+
+              - `pastingNewResume` is tautologically false here. This divider
+                is nested INSIDE `{!pastingNewResume && savedResumes.length >
+                0 && ...}`, so the enclosing block already requires it false
+                before this gate is ever evaluated.
+              - `isLocked` is provably unreachable as the deciding term. The
+                only route into this branch with `pastingNewResume` false is
+                the nickname-conflict reopen, which is gated on `isNew`, and
+                `isNew` is true only when the request INSERTED the row
+                (`getOrCreateResumeId`, apps/api/src/routes/resumes.ts) while
+                `isLocked` is true only after a real non-estimate search
+                (`isResumeLocked`, same file). A just-inserted row has never
+                been searched, so `isNew` true implies `isLocked` false. The
+                earlier comment claimed this term covered "a find-or-create
+                that hit an existing, already-searched resume" -- that case
+                returns `isNew === false`, so the reopen block never runs at
+                all and the state it described cannot occur.
+
+              Both terms are kept anyway, deliberately: writing this gate
+              textually identical to `saveResumeText`'s condition encodes the
+              invariant that actually matters ("show this copy iff a submit
+              creates") instead of a re-derivation that could silently drift
+              apart from it. Same stance, and the same belt-and-braces
+              reasoning, that `saveResumeText`'s own comment already takes
+              about its own redundant `pastingNewResume ||` term -- which says
+              plainly that it changes nothing today rather than inventing a
+              reason it might. Mutation-confirmed inert: dropping
+              `|| isLocked`, and reducing the whole gate to `resumeId ===
+              undefined`, each leave all 456 web tests green. That is
+              recorded so the next reader does not mistake "inert" for
+              "untested". */}
           {(resumeId === undefined || pastingNewResume || isLocked) && (
             <p className="resume-picker-or">Or paste a new one</p>
           )}
