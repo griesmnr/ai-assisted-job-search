@@ -127,9 +127,19 @@ const KEYWORD_SEARCH_CONCURRENCY = 3;
 //    drop (this file documents hitting `UND_ERR_SOCKET` on 2 of 3 runs) now
 //    costs a 250-posting page rather than a 500-posting one, and
 //    `KEYWORD_SEARCH_CONCURRENCY = 3` means up to three bodies parse at once.
-//    Safety margin is unchanged in the way that matters: the stop still
-//    cannot fire before rank 500, and the deepest genuine match measured
-//    across seven chips over three rounds is rank 307.
+//    Safety margin DOES shrink, and re-review D3 was right to flag the
+//    earlier wording ("unchanged in the way that matters") as overstating it:
+//    the earliest possible stop moves from rank 1,000 to rank 500, so margin
+//    over the deepest genuine match ever measured (rank 307, across seven
+//    chips over three rounds) halves from ~3.3x to ~1.6x. Accepted, with the
+//    reason stated rather than implied: no chip measured has ever shown a
+//    genuine match REAPPEARING after an empty page, which is the only
+//    distribution that a smaller page punishes. 250 was re-derived as lossless
+//    from the round-2 full-scan rank data rather than assumed -- Contract
+//    Specialist (deepest match rank 79), Human Resources Specialist (169) and
+//    Supervisory Program Analyst (117) all stop at page 3 = 750 fetched,
+//    keeping 47 / 96 / 15 matches with none lost, and Registered Nurse (724
+//    total, deepest 307) still terminates naturally.
 //
 // End-to-end re-measurement (live, 2026-10-07/2026-10-08 -- see
 // `#searchOne`'s doc comment for Jay's corrected before/after): lossless
@@ -376,6 +386,34 @@ export class UsajobsSource implements JobSource {
         // workers can ever claim the same index, regardless of concurrency.
         nextIndex = i + 1;
         const phrase = phrases[i]!;
+
+        // Re-review D1: a phrase with no searchable title tokens AND no
+        // tokenizer-dropped punctuation (a chip that is literally `C` or `R`)
+        // is unsearchable by title -- sending it would download the entire
+        // ~3,674-posting pool for zero genuine matches with no early stop
+        // available. Record why and claim the next phrase without issuing a
+        // request. Deliberately does NOT touch `successCount`: nothing
+        // succeeded, but nothing failed either, and the total-outage rethrow
+        // below additionally requires `firstIsolatedError`, so an all-
+        // unsearchable search returns a normal, fully-explained empty result
+        // rather than throwing.
+        if (normalizeForTitleSearch(phrase) === undefined) {
+          resultsByIndex[i] = {
+            jobs: [],
+            skipped: [
+              {
+                externalId: undefined,
+                reason:
+                  `USAJOBS cannot search title phrase "${phrase}": it has no word of 2 or ` +
+                  `more characters, and USAJOBS matches PositionTitle words with OR, so a ` +
+                  `single-character title query returns thousands of unrelated postings ` +
+                  `(measured 2026-10-08: "C" -> 3,674, "R" -> 2,137, "A" -> 5,037). Not attempted.`,
+              },
+            ],
+            skipRate: 1,
+          };
+          continue;
+        }
 
         try {
           // asTitleSearch: true -- see the PositionTitle semantics comment
@@ -812,7 +850,13 @@ export class UsajobsSource implements JobSource {
         // carries the full mechanism): a token containing -, /, +, or _ is
         // dropped entirely by PositionTitle's tokenizer, so each is
         // normalized to a space to keep its words alive as separate tokens.
-        url.searchParams.set("PositionTitle", normalizeForTitleSearch(criteria.keyword));
+        // `?? criteria.keyword` is defensive only -- the title fan-out skips an
+        // unsearchable phrase before it ever reaches a request (see
+        // `normalizeForTitleSearch` case (b)).
+        url.searchParams.set(
+          "PositionTitle",
+          normalizeForTitleSearch(criteria.keyword) ?? criteria.keyword,
+        );
       } else {
         url.searchParams.set("Keyword", criteria.keyword);
       }
@@ -988,20 +1032,28 @@ function parseRetryAfter(header: string | null): number | undefined {
  * silently going from 3 fetched under the OLD `Keyword` code to 0 under
  * this ticket's `PositionTitle` fix -- a real regression this now closes.
  *
- * KNOWN IMPERFECTION, disclosed rather than hidden: "C++" normalizes to a
- * single-character token "C" (measured `PositionTitle=C` -> 3671, a heavy
- * overmatch -- `+` is a common separator, "c" alone is not). That is worse
- * PRECISION than before, but still strictly better RECALL than before:
- * `PositionTitle=C++` itself measures 0 (the whole token dropped, same
- * mechanism as above), so the prior behavior for a chip that is LITERALLY
- * "C++" was to find nothing at all. "C" is bounded by the same
- * relevance-aware stop every other broad chip is (see
- * `TITLE_SEARCH_EMPTY_PAGE_GRACE`), so the cost is the same "a few extra
- * 500-item pages, no lost DB writes or scoring calls" tradeoff the rest of
- * this file now accepts. "C++" and ".NET" are shapes `criteria.ts`
- * explicitly supports downstream (ticket 59fdc52 N5's word-boundary
- * handling for a phrase that starts or ends on a non-word character) --
- * this only changes what reaches that filter, not what it keeps.
+ * HISTORY, kept because the wrong version of this note shipped twice and
+ * the correction is the useful part. An earlier revision said "C++"
+ * normalizes to a single-character token "C", and that "C" is bounded by
+ * the same relevance-aware stop every other broad chip is. Both halves were
+ * wrong, and the second was dangerously wrong:
+ *
+ *   - "C++" no longer normalizes to "C" at all. Sub-2-character tokens are
+ *     dropped (re-review R2), so it normalizes to the empty string and is
+ *     then handled by `normalizeForTitleSearch`'s case (a) -- sent verbatim,
+ *     answered with 0, one cheap request.
+ *   - The stop can NEVER fire for a single-letter word, so "C" was never
+ *     bounded. Re-review D2 proved this through the real class: for phrase
+ *     "C++" against pages titled "Civil Engineer", the stop never fired and
+ *     the search ran to `maxPages` (50 requests). `titleSearchWords` splits
+ *     on `/[^a-z0-9]+/`, so the word list is ["c"] -- a substring nearly
+ *     every title contains. A purely alphanumeric degenerate chip is now
+ *     skipped outright for exactly this reason (case (b)).
+ *
+ * "C++" and ".NET" remain shapes `criteria.ts` explicitly supports
+ * downstream (ticket 59fdc52 N5's word-boundary handling for a phrase that
+ * starts or ends on a non-word character) -- this only changes what reaches
+ * that filter, not what it keeps.
  *
  * Periods are deliberately NOT in this set: not measured, and a period is
  * exactly the character `.NET`'s own leading edge depends on for
@@ -1009,7 +1061,7 @@ function parseRetryAfter(header: string | null): number | undefined {
  * what USAJOBS actually does with it risks trading one unverified
  * regression for another.
  */
-function normalizeForTitleSearch(phrase: string): string {
+function normalizeForTitleSearch(phrase: string): string | undefined {
   // Re-review R2, measured 2026-10-08: separator normalization alone turns
   // `C++` into the single letter `C`, and `PositionTitle=C` returns 3,674 --
   // of which EVERY sampled 25-item slice (ranks 1-25, ~500, ~1500, ~2500,
@@ -1020,9 +1072,23 @@ function normalizeForTitleSearch(phrase: string): string {
   //
   // Dropping tokens shorter than 2 characters restores that cheapness without
   // giving up F4's fix -- `Writer/Editor` still becomes `Writer Editor`, while
-  // `C++` becomes empty and `C++ Engineer` searches `Engineer` (470) rather
-  // than {c, engineer} (~4,000). An empty phrase is handled by the caller the
-  // same way any other no-op phrase is.
+  // `C++ Engineer` searches `Engineer` (470) rather than {c, engineer}
+  // (~4,000).
+  //
+  // Dropping a short token can never COST a match, and this is provable, not
+  // merely plausible (re-review D-Q3, measured 2026-10-08: `Engineer 3` -> 873
+  // vs `Engineer` -> 471; `Tier 1 Analyst` -> 712 vs `Tier Analyst` -> 562;
+  // `Writer 1` -> 159 vs `Writer` -> 7, so the digit really is its own OR
+  // branch). With OR semantics, dropping a token while at least one survives
+  // NARROWS the server's result set to titles matching the remaining tokens --
+  // and any posting `compileFilter` keeps contains EVERY word of the chip,
+  // hence every surviving word, so it is still inside the narrower set. The
+  // client-side stop moves the safe way too: the predicate then needs only
+  // "writer" instead of "writer" AND "1", so it fires LATER, never earlier.
+  // One disclosed edge: a posting reachable only through a `titleSynonyms`
+  // variant of the DROPPED token (chip "Writer 1" matching a real title
+  // "Author 1" via the "1" branch rather than via {writer}) can be lost. Not
+  // measured in the wild; narrow enough to accept, too narrow to leave unsaid.
   //
   // Note this is a deliberate asymmetry with `criteria.ts`, whose own
   // word-boundary matching DOES support `C++`/`.NET` shapes (ticket 59fdc52
@@ -1034,17 +1100,31 @@ function normalizeForTitleSearch(phrase: string): string {
     .filter((word) => word.length > 1)
     .join(" ")
     .trim();
-  // If dropping sub-2-character tokens leaves NOTHING, send the phrase
-  // unchanged rather than an empty `PositionTitle`. Caught by this file's own
-  // cap and 429 tests, which use single-character phrase names ("a".."j") --
-  // an empty string would have silently changed what those requests ask for.
+  if (normalized.length > 0) return normalized;
+
+  // Every token was sub-2-character, so there is no normalized phrase to
+  // send. The two ways that happens are NOT interchangeable, and re-review D1
+  // caught an earlier version of this fix treating them as if they were --
+  // it sent the raw phrase in both cases, on a rationale that is true for the
+  // first and false for the second.
   //
-  // This is also the better outcome for the case that motivated the filter:
-  // `C++` normalizes to empty, so it falls back to `PositionTitle=C++`, which
-  // USAJOBS answers with 0 — exactly the free, pre-ticket behaviour, instead
-  // of the ~3,674-posting walk a bare `C` would cause. `C++ Engineer` still
-  // normalizes to `Engineer` (470) because that one has a surviving token.
-  return normalized.length > 0 ? normalized : phrase;
+  // (a) The phrase carries a character USAJOBS' own tokenizer drops, so the
+  //     raw phrase is answered with 0 for ONE cheap request -- measured
+  //     2026-10-08: `PositionTitle=C++` -> 0, `PositionTitle=.NET` -> 0, and
+  //     a live adapter run on chip ["C++"] completed in 1 request / 0.4s /
+  //     0 jobs. That is exactly the free, pre-ticket behaviour, so send it.
+  //
+  // (b) The phrase is purely alphanumeric -- a chip that is literally `C` or
+  //     `R`. Here the raw phrase is the WORST case, not a cheap one:
+  //     `PositionTitle=C` -> 3,674, `R` -> 2,137, `A` -> 5,037, each ~15
+  //     requests at 250/page and ~85 MB downloaded for zero genuine matches,
+  //     with no possibility of an early stop (see `titleSearchWords` -- the
+  //     stop's word list for such a phrase is a single letter that nearly
+  //     every title contains). So this phrase is unsearchable-by-title:
+  //     return `undefined` and let the caller skip it with a reason, which
+  //     also tells the user something, where the old silent fallback reported
+  //     jobs: 0, skipped: 0, warnings: 0 and explained nothing.
+  return /[^a-z0-9\s]/i.test(phrase) ? phrase : undefined;
 }
 
 /**
@@ -1058,7 +1138,10 @@ function normalizeForTitleSearch(phrase: string): string {
  * USAJOBS already returned, not a second query.
  */
 function titleSearchWords(phrase: string): string[] {
-  return normalizeForTitleSearch(phrase)
+  // `?? phrase` is defensive only: an unsearchable phrase (see
+  // `normalizeForTitleSearch` case (b)) is skipped by `#searchMultipleKeywords`
+  // before any request is issued, so the stop predicate is never built for one.
+  return (normalizeForTitleSearch(phrase) ?? phrase)
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length > 0);

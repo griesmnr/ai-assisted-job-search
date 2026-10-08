@@ -547,17 +547,58 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(url.searchParams.get("PositionTitle")).toBe("Engineer");
   });
 
-  it("re-review R6: a phrase whose every token is sub-2-character falls back to the phrase UNCHANGED rather than sending an empty PositionTitle -- an empty value would ask USAJOBS a completely different question (no title constraint at all), whereas the verbatim phrase is answered with 0 and costs one cheap request, which is the pre-ticket behaviour for a degenerate chip", async () => {
+  it("re-review D1 case (a): a phrase whose every token is sub-2-character but which CARRIES a tokenizer-dropped character is sent UNCHANGED, not as an empty PositionTitle -- an empty value asks USAJOBS a different question entirely (no title constraint at all), whereas the verbatim phrase is answered with 0 for one cheap request, measured live 2026-10-08 (PositionTitle=C++ -> 0), which is the pre-ticket behaviour for a degenerate chip", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
     const source = makeSource(fetchImpl);
 
-    for (const phrase of ["C++", "C", "R"]) {
+    for (const phrase of ["C++", "c/c", "a-b"]) {
       fetchImpl.mockClear();
-      await source.search({ keywords: [phrase] });
+      const result = await source.search({ keywords: [phrase] });
 
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
       const url = fetchImpl.mock.calls[0]![0] as URL;
       expect(url.searchParams.get("PositionTitle")).toBe(phrase);
+      expect(result.skipped).toEqual([]);
     }
+  });
+
+  it("re-review D1 case (b): a phrase that is purely alphanumeric AND has no word of 2+ characters is unsearchable by title -- it is skipped with a reason and NO request is issued, because sending it verbatim is the worst case rather than a cheap one (measured live 2026-10-08: PositionTitle=C -> 3,674, R -> 2,137, A -> 5,037, each ~15 requests and ~85MB for zero genuine matches, with no early stop possible since the stop's word list is a single letter nearly every title contains)", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    for (const phrase of ["C", "R", "7"]) {
+      fetchImpl.mockClear();
+      const result = await source.search({ keywords: [phrase] });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(result.jobs).toEqual([]);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0]!.reason).toMatch(
+        new RegExp(`cannot search title phrase "${phrase}".*no word of 2 or more characters`),
+      );
+    }
+  });
+
+  it('re-review D1: an all-unsearchable title search returns a normal explained empty result rather than throwing -- the total-outage rethrow requires a real isolated error, and "not attempted" is not one', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["C", "R"] });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.jobs).toEqual([]);
+    expect(result.skipped).toHaveLength(2);
+    expect(result.skipRate).toBe(1);
+  });
+
+  it("re-review R6: a sub-2-character token is dropped from PositionTitle when OTHER tokens survive, because USAJOBS ORs the tokens together and a bare single character is a huge OR branch -- measured live 2026-10-07 that PositionTitle=C matches ~3,674 postings while PositionTitle=Engineer matches 470", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keywords: ["C++ Engineer"] });
+
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("PositionTitle")).toBe("Engineer");
   });
 
   it("ticket 78f48df (F5): the plain, non-title criteria.keyword path sends Keyword VERBATIM, unnormalized -- Keyword=Writer-Editor and Keyword=Writer Editor measure as genuinely different live counts (3 vs. 6), so leaking PositionTitle's normalization into this path would silently change Keyword's own behavior", async () => {
@@ -596,19 +637,30 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await source.search({
-      keywords: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"],
+      keywords: ["aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj", "kk", "ll"],
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(10);
     const keywordsSent = fetchImpl.mock.calls.map((call) =>
       (call[0] as URL).searchParams.get("PositionTitle"),
     );
-    expect(keywordsSent.sort()).toEqual(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+    expect(keywordsSent.sort()).toEqual([
+      "aa",
+      "bb",
+      "cc",
+      "dd",
+      "ee",
+      "ff",
+      "gg",
+      "hh",
+      "ii",
+      "jj",
+    ]);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     // Re-review N4: `toContain("k, l")` alone also passes if the message
     // names every phrase, not just the dropped ones -- assert the full
     // dropped-list text exactly, and that a KEPT phrase is absent.
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("dropped: k, l");
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("dropped: kk, ll");
     expect(warnSpy.mock.calls[0]?.[0]).not.toContain("a, b");
   });
 
@@ -617,7 +669,7 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     const source = makeSource(fetchImpl);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await source.search({ keywords: ["a", "b", "c"] });
+    await source.search({ keywords: ["aa", "bb", "cc"] });
 
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
