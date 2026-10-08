@@ -1124,6 +1124,18 @@ function normalizeForTitleSearch(phrase: string): string | undefined {
   //                              unmeasured, and the leading period is what
   //                              `criteria.ts`'s word-boundary logic depends
   //                              on downstream, ticket 59fdc52 N5)
+  //   R&D Manager    -> "R&D Manager"  (R&D is 2 alphanumerics so the client
+  //                                     keeps it; USAJOBS drops the whole
+  //                                     `&`-bearing token exactly as it does
+  //                                     for - / + _, so `R&D Manager` -> 494,
+  //                                     identical to `Manager` -> 494. The
+  //                                     stop predicate merely gains "r" and
+  //                                     "d" as required substrings, which
+  //                                     makes it stop SOONER and cannot cost
+  //                                     a match, since a real "R&D Manager"
+  //                                     title contains all three. Re-review
+  //                                     expected this to break the threshold
+  //                                     and measured that it does not.)
   //   C++ | C# | F# | C | R | a-b | c/c | C++ 3  -> undefined (unsearchable)
   //
   // `undefined` means UNSEARCHABLE BY TITLE: no token gives USAJOBS anything
@@ -1136,12 +1148,49 @@ function normalizeForTitleSearch(phrase: string): string | undefined {
   // real OR branch. Skipping is correct for all of them and cheaper than all
   // of them.
   //
-  // HONEST LIMIT, stated because it is a prediction and not a measurement:
-  // skipping asserts that such a phrase WOULD match nothing useful, rather
-  // than asking USAJOBS. That is sound reasoning -- a phrase with no token
-  // holding two alphanumerics gives the server nothing with substance to
-  // match -- and it is measured true for every shape above as of 2026-10-08.
-  // It is not a guarantee about future USAJOBS behaviour.
+  // WHY 2 AND NOT SOME OTHER NUMBER -- measured, because `PositionTitle`
+  // matches title words by PREFIX, not as whole tokens, which is the actual
+  // mechanism behind the single-character blowup (re-review F3, 2026-10-08):
+  //
+  //   Wri -> 8      Writ -> 7 (the same 7 as Writer)
+  //   Engin -> 505  Engineer -> 471
+  //   Nurs -> 759   Nurse -> 699
+  //
+  // A one-letter prefix therefore matches every title with a word STARTING
+  // with it -- A 5,037, C 3,674, D 1,343. Two characters are already
+  // genuinely selective: IT 382, HR 195, QA 53, so even a bare "IT" chip
+  // terminates naturally in two pages. The threshold is empirical, not
+  // arbitrary.
+  //
+  // WHAT SKIPPING FORFEITS -- measured with the real `compileFilter`, because
+  // an earlier version of this comment said skipping was "measured true" to
+  // match nothing useful, and re-review F1 caught that as a prediction
+  // wearing a measurement's clothes. It is not true:
+  //
+  //   C++ | a-b | c/c | R&D   ->      0 postings  ->  0 matches (nothing lost)
+  //   C                       ->  3,674 postings  ->  6 matches
+  //   A                       ->  5,037 postings  ->  3 matches
+  //   7                       ->     12 postings  ->  5 matches
+  //
+  // Every one of those matches is incidental -- "Power Plant Electrician A",
+  // "Nursing Assistant (Bonham CLC C)", "Housekeeping Aid-WED-SUN-7-330pm" --
+  // but they ARE matches by the only definition this app has, and under the
+  // previous revision they were fetched, scored and shown. So skipping is a
+  // deliberate judgement about value, not a measurement that nothing matches:
+  // 3-6 incidental matches are not worth 3,674-5,037 postings and ~85-116MB
+  // per chip. Stated as the trade it is.
+  //
+  // The DIGIT case is forfeited for free, and that is a deliberate choice for
+  // uniformity rather than a cost saving (re-review F2). Single letters
+  // explode because of the prefix matching above; single digits do not --
+  // `7` is 12 postings in one request. So `7`, and the trailing digits of
+  // `C++ 3` and `a-b 7`, cost nothing to send and are skipped anyway. One
+  // rule that is easy to reason about beats two rules that are 12 postings
+  // cheaper on nonsense input; if a real digit-bearing chip ever turns up,
+  // gate the skip on "no single-LETTER token" instead and this comment is
+  // the reason why.
+  //
+  // None of the above is a guarantee about future USAJOBS behaviour.
   //
   // Dropping a short token can never COST a match, and this is provable, not
   // merely plausible (re-review Q3, measured 2026-10-08: `Engineer 3` -> 873
