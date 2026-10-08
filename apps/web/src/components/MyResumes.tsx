@@ -410,16 +410,39 @@ function ResumeRow({
       <div className="resume-text-actions">
         {isActive ? (
           // Review fix (Required 5, ticket 11ead86): `aria-label` carries
-          // the nickname, same convention "Edit {nickname} text" and
-          // "Rename {nickname}" already follow two elements below -- every
-          // row renders the same bare visible word ("Active"), so without
-          // this a screen-reader user gets no way to tell WHICH resume is
-          // active from this element alone (unlike those two buttons, a
-          // bare `<span>` has no accessible name of its own to even fall
-          // back to). The visible text stays the short "Active" -- the
-          // row's own `<summary>` already names the resume right next to
-          // it for a sighted user.
-          <span className="resume-active-marker" aria-label={`Active — ${displayNickname}`}>
+          // the nickname, because every row renders the same bare visible
+          // word ("Active") and without it a screen-reader user gets no way
+          // to tell WHICH resume is active from this element alone. The
+          // visible text stays the short "Active" -- the row's own
+          // `<summary>` already names the resume beside it for a sighted
+          // user.
+          //
+          // `role="note"` is load-bearing, not decoration, and this repo
+          // already settled it: a bare `<span>` has the ARIA `generic`
+          // role, on which `aria-label` is prohibited in ARIA 1.2 and is
+          // not reliably exposed to assistive tech. See
+          // `ResultCard.tsx`'s level-fit marker and ticket b182bde's F3
+          // review finding -- same element shape, same intent (a short
+          // status word whose full meaning must reach AT), already
+          // reviewed and resolved there with `role="note"` rather than a
+          // visually-hidden utility class, because this stylesheet has
+          // none.
+          //
+          // A first version of this fix cited the "Edit {nickname} text" /
+          // "Rename {nickname}" buttons two elements below as its
+          // precedent. That was the wrong precedent: those are `<button>`s,
+          // which have a real role and for which `aria-label` is valid.
+          // Transplanting the convention onto a `<span>` is exactly the
+          // step b182bde's review rejected. Recorded because the test
+          // cannot catch it -- `getByLabelText` resolves `aria-label`
+          // through `dom-accessibility-api`, which does not enforce role
+          // prohibition, so all 40 tests in this file pass with or without
+          // this attribute.
+          <span
+            className="resume-active-marker"
+            role="note"
+            aria-label={`Active — ${displayNickname}`}
+          >
             Active
           </span>
         ) : (

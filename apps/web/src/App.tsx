@@ -222,11 +222,20 @@ function JobSearchApp() {
   // `handleActivateResume` below needs to read `activeTab` AFTER an
   // `await`, where its own closed-over `activeTab` (captured at the start
   // of that call, when the click fired) is frozen at whatever it was
-  // THEN, not whatever it is NOW. A plain `useState` snapshot can't tell
-  // "unchanged since the click" apart from "changed and changed back";
-  // this ref is kept current every render specifically so that call can
-  // ask "is the tab still what it was when I started," not just "what is
-  // it." Mutated directly during render (no effect) -- safe and ordinary
+  // THEN, not whatever it is NOW. This ref is kept current every render
+  // specifically so that call can ask "is the tab still what it was when
+  // I started," not just "what is it."
+  //
+  // An earlier version of this comment also claimed a `useState` snapshot
+  // "can't tell 'unchanged since the click' apart from 'changed and
+  // changed back'." Re-review deleted that: the ref cannot tell them
+  // apart either -- `activeTabRef.current === tabAtClick` is equally blind
+  // to a round trip, proven by navigating My Resumes -> Already Scored ->
+  // My Resumes mid-fetch and watching the switch still fire. The
+  // behaviour is right (a user who returned to the originating tab did
+  // still ask to activate); the justification was false.
+  //
+  // Mutated directly during render (no effect) -- safe and ordinary
   // for this exact pattern, and this repo has no react-hooks lint plugin
   // to object (SearchFlow.tsx's own mount-only effects make the same
   // note for a different idiom).
