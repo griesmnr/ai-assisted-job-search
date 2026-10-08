@@ -257,13 +257,97 @@ describe("api entrypoint", () => {
       expect(response.headers["access-control-allow-methods"]).toContain("DELETE");
     });
 
-    // Guards the other direction: the explicit list must not have been
+    // TICKET fb00e02 — THE TEST THAT SHOULD HAVE EXISTED ALL ALONG.
+    //
+    // Every other CORS test in this file names a verb by hand. That is why
+    // this file was fully green while the deployed app could not save a
+    // resume edit: ticket 6ba221e added `PUT /resumes/:id/text` and nothing
+    // tied the `methods` allowlist to the routes, so the missing verb was
+    // invisible to the suite. The browser was told PUT was not allowed,
+    // never sent the request, and the server logs were empty because
+    // nothing arrived.
+    //
+    // This asserts the RELATIONSHIP instead of a list: enumerate what the
+    // app actually registers, and require each of those verbs to appear in
+    // `Access-Control-Allow-Methods`. It fails the moment a route is added
+    // with a verb nobody allowed — including the next one.
+    //
+    // OPTIONS is excluded deliberately: `@fastify/cors` registers its own
+    // preflight handler and answers OPTIONS itself, so it shows up in the
+    // route table but must not appear in the allowlist (browsers never ask
+    // permission for the preflight verb).
+    it("allows every HTTP method the app actually registers (ticket fb00e02)", async () => {
+      process.env.CORS_ALLOWED_ORIGIN = "https://jobsearch.example.com";
+      const app = buildAppUnderTest();
+      await app.ready();
+
+      const registered = new Set<string>();
+      for (const match of app.printRoutes({ commonPrefix: false }).matchAll(/\(([A-Z, ]+)\)/g)) {
+        for (const verb of match[1]!.split(",")) {
+          const trimmed = verb.trim();
+          if (trimmed !== "OPTIONS") registered.add(trimmed);
+        }
+      }
+      // Sanity-check the enumeration itself, so a parsing change that
+      // silently yields an empty set cannot make this test vacuous.
+      expect(registered.size).toBeGreaterThanOrEqual(5);
+      expect(registered.has("PUT")).toBe(true);
+
+      const preflight = await app.inject({
+        method: "OPTIONS",
+        url: "/resumes/abc/text",
+        headers: {
+          origin: "https://jobsearch.example.com",
+          "access-control-request-method": "PUT",
+          "access-control-request-headers": "content-type,x-user-id",
+        },
+      });
+      const allowed = (preflight.headers["access-control-allow-methods"] ?? "")
+        .toString()
+        .split(",")
+        .map((verb) => verb.trim());
+
+      for (const verb of [...registered].sort()) {
+        expect(allowed, `${verb} is registered as a route but missing from CORS methods`).toContain(
+          verb,
+        );
+      }
+    });
+
+    // Guards the other direction: the explicit list must not have been    // Guards the other direction: the explicit list must not have been
     // written so broadly that it stops meaning anything. PUT is not served by
     // this API, so it should not be advertised.
-    it("does not advertise methods the API does not serve", async () => {
+    // The symmetric half of the fb00e02 test above: the allowlist must not
+    // advertise a verb the app does not serve either. Originally (ticket
+    // 6e7008e) this asserted `not.toContain("PUT")` — correct then, and
+    // WRONG the moment 6ba221e added `PUT /resumes/:id/text`, which is how
+    // this test came to fail on a legitimate fix. Hardcoding a verb in
+    // either direction is the mistake; both halves now derive from the
+    // routes, so neither goes stale when the route table changes.
+    it("does not advertise methods the API does not serve (ticket 6e7008e, generalised by fb00e02)", async () => {
       process.env.CORS_ALLOWED_ORIGIN = ORIGIN;
-      const response = await preflight(buildAppUnderTest(), "GET", "/sources");
-      expect(response.headers["access-control-allow-methods"]).not.toContain("PUT");
+      const app = buildAppUnderTest();
+      await app.ready();
+
+      const registered = new Set<string>();
+      for (const match of app.printRoutes({ commonPrefix: false }).matchAll(/\(([A-Z, ]+)\)/g)) {
+        for (const verb of match[1]!.split(",")) registered.add(verb.trim());
+      }
+      expect(registered.size).toBeGreaterThanOrEqual(5);
+
+      const response = await preflight(app, "GET", "/sources");
+      const allowed = (response.headers["access-control-allow-methods"] ?? "")
+        .toString()
+        .split(",")
+        .map((verb) => verb.trim())
+        .filter((verb) => verb.length > 0);
+      expect(allowed.length).toBeGreaterThan(0);
+
+      for (const verb of allowed) {
+        expect(registered.has(verb), `CORS advertises ${verb} but no route registers it`).toBe(
+          true,
+        );
+      }
     });
   });
 });
