@@ -105,6 +105,10 @@ function ResumeRow({
   resume,
   focusResume,
   onRenamed,
+  isActive,
+  onActivate,
+  activating,
+  searching,
 }: {
   resume: ResumeSummary;
   focusResume?: FocusResume;
@@ -121,6 +125,38 @@ function ResumeRow({
    * sort order keeps compiling unchanged.
    */
   onRenamed?: () => void;
+  /**
+   * Ticket 11ead86: true for the one row naming the session's CURRENTLY
+   * active resume (`App.tsx`'s `resumeId`). See `MyResumes`'s own doc
+   * comment for the full argument; this prop just carries the answer down
+   * to the one row it affects.
+   */
+  isActive?: boolean;
+  /**
+   * Ticket 11ead86: fires with this row's id when its "Use {nickname}"
+   * action is clicked -- wired by `MyResumes` straight through to
+   * `App.tsx`'s existing `onActivateResume` (`handleActivateResume`), the
+   * SAME pure `GET /resumes/:id` "pick, not paste" the search tab's own
+   * locked picker already uses (ticket 88f11d7). This row does not fetch,
+   * submit, or hold any activation state of its own -- `activating`/
+   * `searching` below are the caller's state, read-only here.
+   */
+  onActivate?: (resumeId: string) => void;
+  /** Ticket 11ead86: true while ANY row's activation is in flight (App.tsx's
+   * `resumeActivating`) -- global, not per-row, the same as the picker's own
+   * `disabled={activating}` on every one of its buttons: a second click on a
+   * DIFFERENT row while one activation is already in flight would race it,
+   * and there is nothing useful about letting two activations compete. */
+  activating?: boolean;
+  /** Ticket 11ead86 (acceptance criterion): the same `searching` guard the
+   * collapsed bar's "Change"/"Edit" already respects (ticket 88f11d7,
+   * Nicole: "I don't think that we should allow a change of resume while a
+   * search is in progress") -- this is a SECOND way to reach the same
+   * `onActivateResume`, reachable even while a resume IS defined (unlike
+   * the no-active-resume picker in ResumeInput.tsx, which the PM's own
+   * review there proved unreachable mid-search), so it needs the same gate
+   * explicitly, not inherited for free. */
+  searching?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [textState, setTextState] = useState<ResumeTextState>({ status: "idle" });
@@ -338,6 +374,54 @@ function ResumeRow({
       ref={rowRef}
       className={`resume-list-item${highlightToken !== undefined ? " resume-list-item-focused" : ""}`}
     >
+      {/* Ticket 11ead86: the activate action that closes this page's two
+          remaining dead ends -- an active-but-UNLOCKED resume's "Edit"
+          (ResumeInput.tsx) reopens the paste form, not the picker, so
+          there was no path to a DIFFERENT saved resume without submitting
+          something; and a stale restored `resumeId` (a failed hydrate
+          `GET /resumes/:id`, swallowed by design) left the collapsed bar
+          naming a row the server no longer has, with the same dead end.
+          `MyResumes` already lists every saved resume regardless of which
+          one is active, so wiring THIS list to the existing
+          `onActivateResume`/`handleActivateResume` (ticket 88f11d7) fixes
+          both at once without depending on what `resumeId` currently is.
+
+          DECISION, ARGUED RATHER THAN COPIED (ticket 11ead86 explicitly
+          asks for this): the search tab's own picker excludes the active
+          resume from its list (`r.id !== resumeId`, ResumeInput.tsx) --
+          that list is a CHOOSER, so an entry with nothing to do is simply
+          removed. This list is a browsable INVENTORY of every saved
+          resume (ticket 303cff0's own framing, never revised), not a
+          chooser: every other row-level feature here (view text, edit
+          text, rename) stays available on the active row too, and hiding
+          this ONE row the moment it becomes active would make a resume
+          look like it vanished from its own inventory, which is a worse
+          surprise than a redundant control would be.
+
+          So the active row still renders here -- as a plain, non-
+          interactive "Active" marker, not a disabled button and not
+          nothing. Disabled-button was considered and rejected: a disabled
+          control invites "why won't this work" (there is nothing broken,
+          there is just nothing left to do), where a status label just
+          says the true thing. This is also already the app's own idiom
+          for exactly this fact -- the collapsed summary bar on the search
+          tab shows "Using {nickname}" as plain text, never as a dead
+          button, for the same resume/session relationship. */}
+      <div className="resume-text-actions resume-activate-actions">
+        {isActive ? (
+          <span className="resume-active-marker">Active</span>
+        ) : (
+          <button
+            type="button"
+            className="resume-activate-button"
+            aria-describedby={searching ? "my-resumes-searching-note" : undefined}
+            disabled={activating || searching}
+            onClick={() => onActivate?.(resume.id)}
+          >
+            Use {displayNickname}
+          </button>
+        )}
+      </div>
       <details
         open={open}
         onToggle={(e) => {
@@ -595,30 +679,98 @@ function ResumeRow({
  * rename is exactly the case this sort has to keep working across: see
  * this file's test suite for a rename that crosses another resume's
  * position in the sorted list.
+ *
+ * ALSO NO LONGER "VIEW, EDIT, RENAME"-ONLY (ticket 11ead86): a per-row
+ * "Use {nickname}" activate action, wired by `App.tsx` straight to the
+ * EXISTING `handleActivateResume` (ticket 88f11d7) that the search tab's
+ * "Change" picker already uses -- no new data path, no new endpoint, no
+ * new vocabulary (the button's own label matches the picker's exactly).
+ * Raised by opus reviewing ticket e2b5f9c: that ticket let a user pick a
+ * saved resume by name only when NO resume was active; the dead end that
+ * survived was an active-but-UNLOCKED resume, whose collapsed bar offers
+ * "Edit" (not "Change"), which reopens the paste form -- never the picker
+ * -- so there was no way to switch to a DIFFERENT saved resume without
+ * submitting something first. This list doesn't depend on `resumeId`'s
+ * current value at all, which is also what makes it the one place that
+ * self-heals a STALE restored `resumeId` naming a row the server no
+ * longer has (a separate, pre-existing, swallowed hydrate failure this
+ * ticket does not fix -- it only makes that state escapable).
+ *
+ * `activeResumeId` (optional): `App.tsx`'s own `resumeId`, so exactly one
+ * row can tell it's the one currently in use. See `ResumeRow`'s own
+ * comment on `isActive` for why that row still renders a visible marker
+ * rather than being hidden or merely disabled.
+ *
+ * `onActivateResume`/`activating`/`activateError` (optional): threaded
+ * straight through to every row, read-only here -- `App.tsx` already owns
+ * this state for the search tab's picker (ticket 88f11d7) and this is a
+ * second caller of the exact same handler, not a second copy of the
+ * state. `activateError` renders ONCE, above the list (mirroring the
+ * picker's own single error line), rather than per-row, since only one
+ * activation can be in flight across this whole list at a time.
+ *
+ * `searching` (optional, acceptance criterion of ticket 11ead86): the same
+ * guard the collapsed bar's "Change"/"Edit" already respects (Nicole: "I
+ * don't think that we should allow a change of resume while a search is
+ * in progress") -- unlike the no-active-resume picker in ResumeInput.tsx
+ * (provably unreachable mid-search, per that file's own comment), THIS
+ * list stays reachable throughout a running search (it's a whole separate
+ * tab, always mounted), so the gate has to be real here, not inherited.
  */
 export function MyResumes({
   resumes,
   focusResume,
   onRenamed,
+  activeResumeId,
+  onActivateResume,
+  activating,
+  activateError,
+  searching,
 }: {
   resumes: ResumeSummary[];
   focusResume?: FocusResume;
   onRenamed?: () => void;
+  activeResumeId?: string;
+  onActivateResume?: (resumeId: string) => void;
+  activating?: boolean;
+  activateError?: string | null;
+  searching?: boolean;
 }) {
   if (resumes.length === 0) {
     return <p>No resumes saved yet.</p>;
   }
 
   return (
-    <ul className="resume-list">
-      {sortResumesByNickname(resumes).map((resume) => (
-        <ResumeRow
-          key={resume.id}
-          resume={resume}
-          focusResume={focusResume}
-          onRenamed={onRenamed}
-        />
-      ))}
-    </ul>
+    <>
+      {/* Ticket 11ead86: one shared note/error for the whole list, not
+          per-row -- only one activation can ever be in flight at once
+          (App.tsx's `resumeActivating` is a single boolean, same as the
+          search tab's own picker), so a per-row copy would just be the
+          same fact repeated once per saved resume. */}
+      {searching && (
+        <p id="my-resumes-searching-note" className="resume-change-note">
+          Can&apos;t change resumes while a search is running.
+        </p>
+      )}
+      {activateError && (
+        <p role="alert" className="resume-error">
+          Could not load that resume: {activateError}
+        </p>
+      )}
+      <ul className="resume-list">
+        {sortResumesByNickname(resumes).map((resume) => (
+          <ResumeRow
+            key={resume.id}
+            resume={resume}
+            focusResume={focusResume}
+            onRenamed={onRenamed}
+            isActive={resume.id === activeResumeId}
+            onActivate={onActivateResume}
+            activating={activating}
+            searching={searching}
+          />
+        ))}
+      </ul>
+    </>
   );
 }

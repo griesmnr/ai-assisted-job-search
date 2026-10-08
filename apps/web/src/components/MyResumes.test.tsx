@@ -850,3 +850,156 @@ describe("MyResumes — renaming a resume's name (ticket e7666de)", () => {
     expect(screen.getByRole("button", { name: "Rename Renamed Elsewhere" })).toBeInTheDocument();
   });
 });
+
+/**
+ * Ticket 11ead86: the "Use {nickname}" activate action -- closes the two
+ * dead ends recorded in that ticket's body (an active-but-unlocked
+ * resume's "Edit" never reopens the picker; a stale restored `resumeId`
+ * has no recovery path) by giving `MyResumes` its own activate affordance,
+ * wired by `App.tsx` to the EXISTING `handleActivateResume` (ticket
+ * 88f11d7) -- this component never calls any API itself for activation,
+ * it only calls the `onActivateResume` prop, so these tests exercise the
+ * prop contract directly rather than mocking `../api/client` a second way.
+ *
+ * `activeResumeId`/`isActive` decision, argued rather than copied from the
+ * search-tab picker's `r.id !== resumeId` exclusion (see MyResumes.tsx's
+ * own comment): the active row stays in the list as a plain "Active"
+ * marker, not a button and not hidden.
+ */
+describe("MyResumes — activate action (ticket 11ead86)", () => {
+  it("shows a 'Use {nickname}' button for every resume when none is active", () => {
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 2" })).toBeInTheDocument();
+    expect(screen.queryByText("Active")).not.toBeInTheDocument();
+  });
+
+  it("shows a non-interactive 'Active' marker for the active resume's row, not a button", () => {
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+        activeResumeId="resume-1"
+      />,
+    );
+
+    // The non-active row still offers the ordinary action.
+    expect(screen.getByRole("button", { name: "Use Resume 2" })).toBeInTheDocument();
+    // The active row does not -- it is NOT simply absent from the page
+    // (this ticket's own argument against hiding it, unlike the search
+    // tab's chooser), it renders a marker instead of a button.
+    expect(screen.queryByRole("button", { name: "Use Resume 1" })).not.toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
+    // The row itself -- nickname, created date -- is still fully present.
+    expect(screen.getByText("Resume 1")).toBeInTheDocument();
+  });
+
+  it("fires onActivateResume with the clicked row's id, and that row's id alone", () => {
+    const onActivateResume = vi.fn();
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 2" }));
+
+    expect(onActivateResume).toHaveBeenCalledTimes(1);
+    expect(onActivateResume).toHaveBeenCalledWith("resume-2");
+  });
+
+  it("disables every 'Use' button while an activation is already in flight", () => {
+    const onActivateResume = vi.fn();
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Resume 2" }),
+        ]}
+        onActivateResume={onActivateResume}
+        activating
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Use Resume 2" });
+    expect(button).toBeDisabled();
+    // A disabled native button does not fire its click handler at all --
+    // pinning the END RESULT (handler never called), not just the
+    // `disabled` attribute, so a future change that disables the button
+    // only visually (e.g. CSS `pointer-events`) without the real
+    // attribute would still be caught.
+    fireEvent.click(button);
+    expect(onActivateResume).not.toHaveBeenCalled();
+  });
+
+  // Acceptance criterion (ticket 11ead86): "Respects the same guards the
+  // collapsed bar's 'Change' has where they apply -- in particular,
+  // searching... changing resumes under a running search must be
+  // prevented or clearly refused." Unlike the no-active-resume picker in
+  // ResumeInput.tsx (provably unreachable mid-search per that file's own
+  // comment), this list is a whole separate, always-mounted tab, so it
+  // needs this gate for real.
+  it("disables every 'Use' button and shows an explanatory note while a search is running", () => {
+    const onActivateResume = vi.fn();
+    render(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        onActivateResume={onActivateResume}
+        searching
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Use Resume 1" });
+    expect(button).toBeDisabled();
+    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(onActivateResume).not.toHaveBeenCalled();
+  });
+
+  it("does not show the searching note or disable anything when a search is not running", () => {
+    render(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        searching={false}
+      />,
+    );
+
+    expect(
+      screen.queryByText("Can't change resumes while a search is running."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Resume 1" })).not.toBeDisabled();
+  });
+
+  it("shows a single activation error as an alert, matching the search tab's own picker wording", () => {
+    render(
+      <MyResumes
+        resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]}
+        activateError="Could not reach the API"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load that resume: Could not reach the API",
+    );
+  });
+
+  it("shows no error and no searching note when neither is set", () => {
+    render(<MyResumes resumes={[makeSummary({ id: "resume-1", resumeNickname: "Resume 1" })]} />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});

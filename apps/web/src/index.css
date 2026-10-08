@@ -1034,6 +1034,32 @@ button[aria-disabled="true"] {
   border-color: color-mix(in srgb, currentColor 45%, transparent);
 }
 
+/* Ticket 11ead86: the per-row "Use {nickname}" activate action. Reuses
+   `.resume-picker-option`'s own pill styling (same control, same visible
+   word, same place it already appears -- the search tab's "Change"
+   picker) rather than inventing a second button style for the identical
+   action. */
+.resume-activate-button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+/* Ticket 11ead86: the CURRENTLY ACTIVE resume's row, in place of the
+   button above -- see MyResumes.tsx's own `isActive` comment for why a
+   plain status label was chosen over hiding the row or disabling the
+   button. Muted, like `.resume-created-at`, since this is informational,
+   not an affordance. */
+.resume-active-marker {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
 .resume-list-item summary {
   display: flex;
   justify-content: space-between;

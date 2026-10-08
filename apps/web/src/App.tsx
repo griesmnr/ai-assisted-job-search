@@ -1401,6 +1401,18 @@ function JobSearchApp() {
       setResumeEditing(false);
       setResumeChanging(false);
       setResumeError(null);
+      // Ticket 11ead86 (acceptance criterion): land on "New Job Search" on
+      // a successful activation -- `handleViewResume` already demonstrates
+      // the tab-switch pattern in the other direction (results -> My
+      // Resumes). A no-op when this fires from the search tab's own
+      // "Change" picker (ticket 88f11d7), which is already on this tab --
+      // `setActiveTab` with an unchanged value bails out of a re-render,
+      // so that caller pays nothing for this. It only actually MOVES
+      // anything for the new caller this ticket adds, `MyResumes`'s own
+      // "Use {nickname}" action, which is reachable from the "My Resumes"
+      // tab and needs to land the user back where they can act on the
+      // resume they just picked.
+      setActiveTab("search");
     } catch (err) {
       // Same supersession guard as the success path above -- a failure
       // for an activation the user already cancelled/replaced must not
@@ -2191,6 +2203,18 @@ function JobSearchApp() {
               // runs over THIS array -- refetching it is what actually
               // moves the row, not anything MyResumes can do locally.
               onRenamed={refreshResumesList}
+              // Ticket 11ead86: the SAME activation state/handler the
+              // search tab's "Change" picker already uses (ticket
+              // 88f11d7) -- a second caller of `handleActivateResume`,
+              // not a second copy of its state. `activeResumeId` is what
+              // lets exactly one row show "Active" instead of a redundant
+              // "Use {nickname}" button; see MyResumes.tsx's own comment
+              // for why that row isn't simply hidden.
+              activeResumeId={resumeId}
+              onActivateResume={(id) => void handleActivateResume(id)}
+              activating={resumeActivating}
+              activateError={resumeActivateError}
+              searching={searchRunning}
             />
           )}
         </section>
