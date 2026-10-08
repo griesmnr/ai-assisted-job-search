@@ -904,6 +904,37 @@ describe("MyResumes — activate action (ticket 11ead86)", () => {
     expect(screen.getByText("Resume 1")).toBeInTheDocument();
   });
 
+  // Review fix (Required 5, ticket 11ead86): the marker is a bare
+  // `<span>Active</span>` -- every row renders the identical visible
+  // word, so without a nickname-carrying accessible name a screen-reader
+  // user has no way to tell WHICH resume is active from this element
+  // alone. Same convention `aria-label={`Edit ${displayNickname} text`}`/
+  // `aria-label={`Rename ${displayNickname}`}` already follow two
+  // elements below in this same row.
+  it("gives the 'Active' marker an accessible name that carries the nickname", () => {
+    render(
+      <MyResumes
+        resumes={[
+          makeSummary({ id: "resume-1", resumeNickname: "Resume 1" }),
+          makeSummary({ id: "resume-2", resumeNickname: "Backend-focused resume" }),
+        ]}
+        activeResumeId="resume-2"
+      />,
+    );
+
+    // Found by its real accessible name, not merely its visible text --
+    // this is the part a bare `<span>Active</span>` would fail: the
+    // marker's `aria-label` IS this element's accessible name, so it has
+    // to actually be there for this query to succeed at all.
+    expect(screen.getByLabelText("Active — Backend-focused resume")).toBeInTheDocument();
+    // And it's genuinely non-interactive -- not merely unlabeled: no
+    // BUTTON anywhere carries "Active" in its accessible name (the
+    // Rename button on this same row also legitimately carries the
+    // nickname, which is why this checks for "Active" specifically
+    // rather than the nickname alone).
+    expect(screen.queryByRole("button", { name: /Active/ })).not.toBeInTheDocument();
+  });
+
   it("fires onActivateResume with the clicked row's id, and that row's id alone", () => {
     const onActivateResume = vi.fn();
     render(

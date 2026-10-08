@@ -407,14 +407,41 @@ function ResumeRow({
           for exactly this fact -- the collapsed summary bar on the search
           tab shows "Using {nickname}" as plain text, never as a dead
           button, for the same resume/session relationship. */}
-      <div className="resume-text-actions resume-activate-actions">
+      <div className="resume-text-actions">
         {isActive ? (
-          <span className="resume-active-marker">Active</span>
+          // Review fix (Required 5, ticket 11ead86): `aria-label` carries
+          // the nickname, same convention "Edit {nickname} text" and
+          // "Rename {nickname}" already follow two elements below -- every
+          // row renders the same bare visible word ("Active"), so without
+          // this a screen-reader user gets no way to tell WHICH resume is
+          // active from this element alone (unlike those two buttons, a
+          // bare `<span>` has no accessible name of its own to even fall
+          // back to). The visible text stays the short "Active" -- the
+          // row's own `<summary>` already names the resume right next to
+          // it for a sighted user.
+          <span className="resume-active-marker" aria-label={`Active — ${displayNickname}`}>
+            Active
+          </span>
         ) : (
           <button
             type="button"
             className="resume-activate-button"
             aria-describedby={searching ? "my-resumes-searching-note" : undefined}
+            // Review fix (F5, ticket 11ead86): `.resume-activate-button`
+            // sets its own `color`/`background`/`cursor`, which overrides
+            // the UA's native disabled-button styling -- without this, a
+            // disabled "Use {nickname}" looked IDENTICAL to an enabled
+            // one, across a whole uncapped list, for the entire duration
+            // of a search (every other row already gets this for free:
+            // `index.css`'s `button[aria-disabled="true"]` rule is what
+            // actually dims a button here, the same mechanism
+            // SearchFlow.tsx's "Estimate search cost" button already
+            // relies on for its own click-time-gated disable). Plain
+            // boolean, not `? true : undefined`: `aria-disabled="false"`
+            // is the explicit, correct value while enabled, not an
+            // attribute to omit -- same convention SearchFlow.tsx's own
+            // `aria-disabled` follows.
+            aria-disabled={activating || searching}
             disabled={activating || searching}
             onClick={() => onActivate?.(resume.id)}
           >
