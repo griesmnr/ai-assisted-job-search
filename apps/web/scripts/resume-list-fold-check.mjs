@@ -224,6 +224,29 @@ function buildFixtureHtml(css, n) {
     -->
     <p class="signed-in-cue">These results are saved to <strong>verified@example.com</strong></p>
   </div>
+  <!-- Ticket 0a378a5 (review F2): the welcome paragraph is UNCONDITIONAL as of
+       that ticket, so it belongs in this fixture. It was absent here because
+       this script predates the paragraph losing its gate, and that absence
+       made this file model a page the app no longer renders -- it under-reported
+       above-fold height by 146.3px at 1366/1280px wide and 235.9px at 390px,
+       which is to say it was blind to the single largest thing above the paste
+       form. Its PASS verdict survived only because the verdict keys on
+       label.top / textarea.top, both of which stay above the fold; the
+       headroom it printed was fiction.
+
+       Text is copied verbatim from App.tsx's <p className="app-welcome">
+       (verified against that file 2026-10-08). Copy length is the dominant
+       term in this element's height at phone widths, so a paraphrase here
+       would be a fixture-fidelity bug of exactly the kind the SignedInCue
+       note above documents. If the paragraph's wording changes, change it
+       here in the same commit. -->
+  <p class="app-welcome">
+    Welcome to FitScore! Find jobs that fit your experience&mdash;not just your search terms. We take
+    the pain out of job hunting by searching open roles for you and comparing them directly with
+    your resume. Each job gets a match score from 1&ndash;100, so you can quickly spot the
+    opportunities that best align with your skills and experience. Spend less time searching and
+    more time applying!
+  </p>
   <nav class="tab-nav" aria-label="Sections">
     <button type="button" class="tab-button" aria-pressed="true">New Job Search</button>
     <button type="button" class="tab-button">Already Scored Jobs</button>
@@ -358,7 +381,14 @@ async function main() {
   console.log(
     anyBelowFold
       ? "\nFAIL (informational, not a hard exit): at least one case has the label or textarea top below the fold."
-      : "\nPASS: label and textarea top are above the fold (< viewport height) in every case measured above.",
+      : // Scoped deliberately (ticket 0a378a5 review): this verdict only ever
+        // answered the label/textarea-TOP question it was built for (6b14962).
+        // Since the welcome paragraph became unconditional, textarea.bottom is
+        // clipped in every row above, so an unqualified "PASS" printed directly
+        // beneath them reads as a general all-clear that it is not.
+        "\nPASS (label and textarea TOP only -- textarea.bottom is clipped/below in the rows above; " +
+          "that is a known, measured, bounded cost of the always-visible welcome paragraph, tracked in " +
+          "git-bug 7ca41c4, NOT a regression this script is failing to catch).",
   );
   // No process.exit(1) on "FAIL", UNLIKE layout-check.mjs's own exitCode=1
   // -- that script guards ONE fixed claim (a 1rem gap) as a pass/fail gate;
