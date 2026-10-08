@@ -42,7 +42,6 @@ import { useAllResults } from "./hooks/useAllResults";
 import { useResults } from "./hooks/useResults";
 import { useResumesList } from "./hooks/useResumesList";
 import { useSources } from "./hooks/useSources";
-import { getVerifiedEmail } from "./identity";
 import { clearAppState, readAppState, writeAppState, type CriteriaFormState } from "./session";
 import { splitPhrases } from "./criteriaText";
 
@@ -1727,90 +1726,67 @@ function JobSearchApp() {
   const showSignInRecovery =
     resumeId === undefined && noResumesOnThisAccount && nothingScoredInThisBrowser;
 
-  // Ticket 9e00bc9: whether the welcome paragraph explaining what FitScore
-  // does is still worth showing. Nicole's own constraint: an explainer that
-  // never goes away is clutter for her (she sees this screen constantly as
-  // its own user), but one that disappears outright leaves a
-  // returning-but-confused visitor with nothing. `SignInRecovery` above
-  // already resolved the identical tension for a different feature by tying
-  // visibility to DATA rather than to a one-time "have they been here
-  // before" flag this app has no way to answer -- see its own doc comment: a
-  // first-timer and a returning visitor with cleared storage are
-  // INDISTINGUISHABLE here. The same resolution applies: show the paragraph
-  // until this browser/account can prove the visitor has actually used the
-  // app -- a saved resume, or a result they can see on screen -- then stop.
-  // Concretely, that means it disappears for Nicole after her very first
-  // resume (exactly the clutter she wants gone), while a returning visitor
-  // who lost their storage and is legitimately confused is, by this same
-  // check, indistinguishable from a first-timer and sees the explanation
-  // again -- not because of a flag that remembers them, but because the gate
-  // re-reads the same evidence every render.
+  // Ticket 9e00bc9 built a gate here (`showWelcomeParagraph`, backed by
+  // `hasOwnResumes` and an App-level `verifiedEmail` read) so the welcome
+  // paragraph below would disappear once this browser/account had evidence
+  // of prior use. Ticket 0a378a5 removed that gate at Nicole's explicit
+  // instruction -- "make that paragraph always visible" -- after she looked
+  // for the paragraph she had asked for on her own app and could not find
+  // it. The gated behavior was never something she asked for; the PM had
+  // put "should it show for returning users too" into 9e00bc9's scope and
+  // framed a permanent explainer as clutter on her behalf. This is a
+  // correction of that framing, not a reversal of a decision she made.
   //
-  // `hasOwnResumes`/`scoredArmReady` (the latter defined above for the
-  // magic-link prompt's own gate) diverge from the pessimistic
-  // `nothingScoredInThisBrowser`/`noResumesOnThisAccount` pair above on
-  // exactly ONE axis: `loading`/`idle`, not `error` too -- on `error` both
-  // pairs agree and show their respective offer (see that pair's own
-  // comment: "guessing 'empty' costs a returning user one redundant offer").
-  // `loading` is where this gate chose to diverge FIRST, reasoning only
-  // "the first-time visitor must see this paragraph in the first paint" --
-  // but that reasoning was incomplete on its own, see `verifiedEmail` below,
-  // which is the actual fix.
+  // The gate's own history is worth keeping even though the gate is gone.
+  // Opus review round 1 (F2) measured, in real Chromium against this app's
+  // built CSS, a real layout jump on every load for a returning user with
+  // data if the paragraph defaulted to visible during the loading window
+  // before `useResumesList`/`useAllResults` resolve -- 146.3px at 1280px
+  // wide, 235.9px at 390px, both hooks starting `idle` and settling in a
+  // post-mount effect. `getVerifiedEmail()` read synchronously
+  // (`useState(getVerifiedEmail)`, the same pattern `SignedInCue` still
+  // uses) eliminated it: a verified visitor never saw the paragraph for even
+  // one frame, so there was no loading window left to jump out of.
   //
-  // Opus review round 1 (F2), measured in real Chromium against this app's
-  // own built CSS: showing the paragraph by default while `useResumesList`/
-  // `useAllResults` are still `loading` produces a real, measured content
-  // jump on EVERY load for a returning user with data -- 146.3px at 1280px
-  // wide, 235.9px at 390px -- because both hooks start `idle` and resolve in
-  // a post-mount effect, so the paragraph commits on the first paint and
-  // then the layout snaps up ~200ms later once the fetches land. For Nicole
-  // specifically, that is not a one-time cost; it is every single page load.
-  // The reviewer also checked and rejected defaulting to HIDDEN instead:
-  // that turns the same gap into a DOWNWARD jump that shoves the resume
-  // textarea and Submit button under a cursor already moving toward them --
-  // done to a first-time visitor, which is the one audience this paragraph
-  // exists for. Neither default is free; this gate needed a signal that is
-  // actually available SYNCHRONOUSLY on the first render, not a default to
-  // pick between two bad ones.
+  // Those figures are NOT moot, and an earlier version of this comment
+  // saying so was exactly wrong -- opus review of 0a378a5 (F1) caught it.
+  // The gate never created that 146.3px / 235.9px cost; it HID it. Removing
+  // the gate converts a transient jump into a permanent COST of identical
+  // size (a jump is transient by definition; the cost is what persists): 146.3px at 1366/1280px wide and 235.9px at 390px are now the
+  // paragraph's STANDING contribution to above-fold height on every render
+  // for every visitor. Re-measured independently in real Chromium against
+  // this app's built CSS, 2026-10-08, and reproduced to the digit.
   //
-  // `verifiedEmail` is that signal, read with `useState(getVerifiedEmail)` --
-  // the exact pattern `SignedInCue` already uses for the same reason (a
-  // plain, synchronous `localStorage` read via `identity.ts`, nothing to
-  // await). A verified email is unambiguous evidence of prior use, so
-  // checking it costs nothing in time: it is correct from the very first
-  // render, with no fetch to wait on, which is what makes it able to
-  // eliminate the jump rather than just move it. This strictly dominates
-  // both alternatives above: the owner, who is always verified, never sees
-  // the paragraph for even one frame (zero flash, zero jump), while a
-  // genuine first-timer -- unverified by definition -- still gets it on the
-  // first paint, and so does a returning visitor with cleared storage, which
-  // is exactly the case the data-over-flag reasoning above argues for. It
-  // also closes a second bug the loading-only gate had: with BOTH fetches
-  // erroring, `hasOwnResumes`/`scoredArmReady` can never become true from
-  // data alone, so the paragraph used to stay on screen permanently right
-  // next to `SignedInCue`'s "these results are saved to <email>" -- an
-  // unverified-newcomer greeting and a you're-already-signed-in notice on
-  // the same screen at once. Checking `verifiedEmail` first closes that for
-  // anyone it actually applies to.
+  // What that costs, measured rather than guessed, and who pays it: a
+  // first-time visitor pays nothing -- no saved resumes and no signed-in cue
+  // (unverified by definition), so the paste box sits fully visible with
+  // 206px of headroom on a 1366x768 laptop and 148px on a 390x844 phone. The
+  // cost lands on a RETURNING user with saved resumes, which is to say the
+  // owner, who is the one person the paragraph is not for: the paste box's
+  // bottom edge sits 3.1px below the fold at 3 saved resumes on laptop,
+  // 67.6px below at 8, and 88.5px / 153.0px below on phone. It saturates at
+  // 8 because `.resume-pick-saved .resume-picker-options` caps at
+  // `max-height: 12rem`, so the worst case is bounded. The paste box is
+  // never HIDDEN in any measured case -- the "Paste your resume" label and
+  // the textarea's top edge stay above the fold throughout, and `Submit`
+  // only renders once there is text -- so this is degraded, not broken. It
+  // has its own ticket; see git-bug for the measured levers.
   //
-  // THE HONEST LIMIT, named rather than overclaimed: this does nothing for
-  // an anonymous visitor who has genuinely used the app before but never
-  // verified an email. `identity.ts`'s `getUserId()` creates an id on first
-  // read when none exists, so the mere presence of a stored id proves
-  // nothing about whether this browser has been here before -- it cannot
-  // stand in for `verifiedEmail` the way it does for `showSignInRecovery`'s
-  // `resumeId` check above. That visitor still sees the same loading-then-
-  // settle flash this comment just finished describing. Fixing that would
-  // need a real "has this browser rendered real data before" flag, which is
-  // more than this ticket's paragraph needs to solve today.
-  const hasOwnResumes =
-    resumesListState.status === "ready" && resumesListState.data.resumes.length > 0;
-  // Same pattern as `SignedInCue`/`SignInRecovery`: read once at mount, a
-  // plain `localStorage` lookup with nothing to await, so it is correct on
-  // the very first render -- see the long comment above for why that is the
-  // whole point.
-  const [verifiedEmail] = useState(getVerifiedEmail);
-  const showWelcomeParagraph = verifiedEmail === undefined && !hasOwnResumes && !scoredArmReady;
+  // Do not read any of this as license to reintroduce a gate. The owner
+  // asked for the paragraph to be always visible, in those words, after
+  // looking for it on her own app and not finding it. The fold cost is paid
+  // by shortening or tightening the paragraph, or by reclaiming vertical
+  // space elsewhere on the page -- not by hiding it from anyone.
+  //
+  // One known defect is made permanent by this change, recorded here rather
+  // than dropped (review F3) because 9e00bc9 documented it and deleting the
+  // note while universalizing the defect would lose it: beside
+  // `SignedInCue`, a verified user now sees this unverified-newcomer
+  // greeting and "These results are saved to <email>" on screen at the same
+  // time. 9e00bc9's gate closed that as a side effect. Accepted consequence
+  // of an explicit instruction, not an oversight -- the fix is to reword the
+  // paragraph so it reads sensibly to someone already signed in, which is a
+  // copy decision and hers to make.
 
   // Latches true the first time the recovery offer is due, so the component is
   // not mounted before then. A ref rather than state: it only ever goes true,
@@ -1861,17 +1837,20 @@ function JobSearchApp() {
           the row instead gets that behavior for free, in normal flow, with
           zero risk of disturbing where the cue or the recovery link land --
           and the ticket's own placement rule ("in `.app-header` or
-          immediately after it") allows exactly this. See
-          `showWelcomeParagraph` above for whether it renders at all. */}
-      {showWelcomeParagraph && (
-        <p className="app-welcome">
-          Welcome to FitScore! Find jobs that fit your experience—not just your search terms. We
-          take the pain out of job hunting by searching open roles for you and comparing them
-          directly with your resume. Each job gets a match score from 1–100, so you can quickly spot
-          the opportunities that best align with your skills and experience. Spend less time
-          searching and more time applying!
-        </p>
-      )}
+          immediately after it") allows exactly this.
+
+          Ticket 0a378a5: renders unconditionally now -- see the comment
+          above `signInRecoveryEverShownRef` for the gate this replaced and
+          why its own measurements are kept. Deliberately a `<p>`, not a
+          `<section>`: `index.css`'s global `section` rule would give this a
+          top border that was never wanted here. */}
+      <p className="app-welcome">
+        Welcome to FitScore! Find jobs that fit your experience—not just your search terms. We take
+        the pain out of job hunting by searching open roles for you and comparing them directly with
+        your resume. Each job gets a match score from 1–100, so you can quickly spot the
+        opportunities that best align with your skills and experience. Spend less time searching and
+        more time applying!
+      </p>
 
       <nav className="tab-nav" aria-label="Sections">
         <button
