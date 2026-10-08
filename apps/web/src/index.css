@@ -450,7 +450,16 @@ section {
   overflow-y: auto;
 }
 
-.resume-picker-option {
+/* Ticket 11ead86: `.resume-activate-button` (MyResumes.tsx's per-row "Use
+   {nickname}" action) joins this selector rather than duplicating it --
+   same pill, same visible word, same place it already appears (the
+   search tab's "Change" picker). An earlier draft gave it its own,
+   byte-for-byte-identical rule a few lines below while claiming in a
+   comment that it "reuses" this one; review caught that the comment and
+   the code disagreed. This is what makes the comment true: one rule, one
+   place both selectors can drift (or not) together. */
+.resume-picker-option,
+.resume-activate-button {
   padding: 0.4rem 0.8rem;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1032,6 +1041,17 @@ button[aria-disabled="true"] {
 .resume-list-item-focused {
   background: color-mix(in srgb, currentColor 12%, transparent);
   border-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+
+/* Ticket 11ead86: the CURRENTLY ACTIVE resume's row, in place of the
+   button above -- see MyResumes.tsx's own `isActive` comment for why a
+   plain status label was chosen over hiding the row or disabling the
+   button. Muted, like `.resume-created-at`, since this is informational,
+   not an affordance. */
+.resume-active-marker {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .resume-list-item summary {

@@ -328,7 +328,18 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
     });
 
     expect(screen.getByRole("button", { name: "Change resume" })).toBeDisabled();
-    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+    // Scoped to the search tab's own collapsed bar -- ticket 11ead86 added
+    // a SECOND, identically-worded note to the "My Resumes" tab (which
+    // stays mounted, `hidden`, alongside this one), so an unscoped
+    // `getByText` for this exact sentence is ambiguous now. Both notes
+    // reusing the same wording is deliberate (one true fact, one piece of
+    // copy -- see MyResumes.tsx's own searching-note comment); this scope
+    // is what keeps this test about THIS note specifically.
+    expect(
+      within(screen.getByRole("button", { name: "Change resume" }).closest("section")!).getByText(
+        "Can't change resumes while a search is running.",
+      ),
+    ).toBeInTheDocument();
   });
 
   // Review fix (F1, ticket 88f11d7): the primary product path -- a resume
@@ -377,7 +388,13 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
     // `isLocked` catches up -- otherwise a click in this exact window
     // still reopens the paste form mid-request.
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit resume" })).toBeDisabled());
-    expect(screen.getByText("Can't change resumes while a search is running.")).toBeInTheDocument();
+    // Scoped for the same reason as the other "Change resume" test above --
+    // ticket 11ead86's identically-worded My Resumes note is also mounted.
+    expect(
+      within(screen.getByRole("button", { name: "Edit resume" }).closest("section")!).getByText(
+        "Can't change resumes while a search is running.",
+      ),
+    ).toBeInTheDocument();
 
     await act(async () => {
       resolveStart({ searchId: "search-1", status: "pending", skippedSources: [] });

@@ -218,6 +218,29 @@ function JobSearchApp() {
   // appearing inline the moment a resume is pasted, before any new search
   // runs, read as "jarring... old stuff".
   const [activeTab, setActiveTab] = useState<Tab>("search");
+  // Review fix (F2, ticket 11ead86): the "latest value" ref idiom --
+  // `handleActivateResume` below needs to read `activeTab` AFTER an
+  // `await`, where its own closed-over `activeTab` (captured at the start
+  // of that call, when the click fired) is frozen at whatever it was
+  // THEN, not whatever it is NOW. This ref is kept current every render
+  // specifically so that call can ask "is the tab still what it was when
+  // I started," not just "what is it."
+  //
+  // An earlier version of this comment also claimed a `useState` snapshot
+  // "can't tell 'unchanged since the click' apart from 'changed and
+  // changed back'." Re-review deleted that: the ref cannot tell them
+  // apart either -- `activeTabRef.current === tabAtClick` is equally blind
+  // to a round trip, proven by navigating My Resumes -> Already Scored ->
+  // My Resumes mid-fetch and watching the switch still fire. The
+  // behaviour is right (a user who returned to the originating tab did
+  // still ask to activate); the justification was false.
+  //
+  // Mutated directly during render (no effect) -- safe and ordinary
+  // for this exact pattern, and this repo has no react-hooks lint plugin
+  // to object (SearchFlow.tsx's own mount-only effects make the same
+  // note for a different idiom).
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   /** Opus review F1 (ticket 5a7e957): latches true the first time the
    * "been here before?" offer is shown, so its host stays mounted and its
    * in-flight state survives the gate closing underneath it. See the mount
@@ -336,6 +359,35 @@ function JobSearchApp() {
   const [pastingNewResume, setPastingNewResume] = useState(false);
   const [resumeActivating, setResumeActivating] = useState(false);
   const [resumeActivateError, setResumeActivateError] = useState<string | null>(null);
+  // Review fix (F3, ticket 11ead86): clear a stale activation error on any
+  // TAB CHANGE, not just the search-tab-specific escapes that already
+  // cleared it (`handleChangeResume`, `handleCancelChange`, and the start
+  // of `handleActivateResume` itself). Before `MyResumes` existed as a
+  // second renderer of this SAME shared state, those three were every
+  // place `resumeActivateError` could be shown, so they were also every
+  // place that needed to clear it. Now a failure from the search tab's
+  // picker plants a `role="alert"` above the My Resumes list too (both
+  // read the same state), and it had no clear point of its own: switching
+  // TO that tab didn't drop it, and once there, it had no Cancel-equivalent
+  // to dismiss it with -- it would simply persist for the rest of the
+  // session, including across further navigation.
+  //
+  // CHOSEN OVER a per-row/per-tab dismiss button: every existing clear
+  // point for this state is already "the user left the context that
+  // produced the error" (Cancel out of the picker, or a successful retry
+  // already covers the only in-context case worth clearing for).
+  // "Switched tabs" is the exact same kind of event for `MyResumes`, which
+  // has no modal state to Cancel out of in the first place -- there is no
+  // "context" narrower than the tab itself to attach a dismiss control to.
+  // Adding one would be a second, bespoke dismissal idiom for a single
+  // error line, where this is one rule already covering every surface.
+  useEffect(() => {
+    setResumeActivateError(null);
+    // Mount-only concern is a non-issue: `resumeActivateError` is already
+    // `null` at mount, so this effect's first run is a true no-op: see
+    // SearchFlow.tsx's own mount-only effects for the same observation
+    // applied to a different piece of state.
+  }, [activeTab]);
   // Review fix (F2, ticket 88f11d7): a generation counter guarding
   // `handleActivateResume`'s async `getResume` against being applied AFTER
   // the user has already left the picker (Cancel or "Paste a new resume")
@@ -1374,6 +1426,12 @@ function JobSearchApp() {
     // (Cancel, "Paste a new resume", or a second activation click) is
     // unambiguously detectable once this resolves.
     const token = ++activationTokenRef.current;
+    // Review fix (F2, ticket 11ead86): which tab this click actually
+    // happened on -- a plain closure read of `activeTab` is correct here
+    // specifically BECAUSE it's taken before the `await` below, while this
+    // call is still running with the render that owned the click. See the
+    // tab-switch call near the end of this function for what it's for.
+    const tabAtClick = activeTab;
     setResumeActivating(true);
     setResumeActivateError(null);
     try {
@@ -1400,6 +1458,69 @@ function JobSearchApp() {
       setResumeEditing(false);
       setResumeChanging(false);
       setResumeError(null);
+      // Adversarial review fix (F1, ticket 11ead86, blocker): this handler
+      // used to leave `pastingNewResume` untouched, on an invariant
+      // `saveResumeText`'s own comment states explicitly -- "the picker
+      // that sets it is reachable only from a locked resume's 'Change',
+      // since only a locked resume has a 'Change' button at all" -- which
+      // was true back when `handleActivateResume` had exactly one caller
+      // (that same picker, always reached with `resumeLocked` true
+      // alongside it). `MyResumes`'s new "Use {nickname}" action is a
+      // SECOND caller, reachable with `pastingNewResume` true and
+      // `resumeLocked` either value: a user can open "Change" -> "Paste a
+      // new resume" (setting `pastingNewResume` true), think better of it,
+      // switch to the "My Resumes" tab INSTEAD of clicking Cancel, and
+      // activate a different saved resume from there. Without this reset,
+      // every future action on the NEWLY ACTIVATED resume was silently
+      // misrouted by `pastingNewResume` still reading true:
+      // `handleNicknameCommit`'s `if (pastingNewResume) return;` swallowed
+      // a rename of the real, now-active resume with no error and no
+      // visible sign it hadn't happened, and `saveResumeText` routed a
+      // text edit to `createResume` instead of `updateResumeText` --
+      // minting a surprise new resume on an ordinary edit, which is ticket
+      // 6ba221e's own user report ("I make an edit and I hit save and it's
+      // still called resume one, it actually becomes resume 2") restored
+      // through a door that ticket's fix never anticipated. Resetting here
+      // restores the invariant for BOTH callers: a no-op for the picker's
+      // own "Use Resume N" (which never sets this flag in the first
+      // place), real for this one.
+      setPastingNewResume(false);
+      // Investigated, not fixed (reviewer's flag): does `nicknameUserEditedRef`/
+      // `nicknameSuggestionSeededRef` need the same reset? No live bug found --
+      // recorded rather than silently dropped. `nicknameUserEditedRef.current`
+      // is read only inside `handleResumeSubmit`'s rename-reconciliation gate,
+      // behind `isNewResumeSave` (`resumeId === undefined || pastingNewResume`,
+      // captured fresh at THAT call's own start) -- with `pastingNewResume`
+      // now correctly false here, any later submit against the just-activated
+      // resume has `isNewResumeSave === false`, so a stale `true` left over
+      // from an abandoned "paste new" never reaches that gate regardless of
+      // this ref's value. `nicknameSuggestionSeededRef`'s own effect
+      // independently re-checks `resumeId !== undefined && !pastingNewResume`
+      // first and returns before ever consulting this ref -- also now closed
+      // by the same reset. Both refs are inert here once `pastingNewResume`
+      // itself is correct; resetting them too would be redundant defense, not
+      // a second bug.
+      // Ticket 11ead86 (acceptance criterion): land on "New Job Search" on
+      // a successful activation -- `handleViewResume` already demonstrates
+      // the tab-switch pattern in the other direction (results -> My
+      // Resumes).
+      //
+      // Review fix (F2, ticket 11ead86): GUARDED, not unconditional. An
+      // earlier version fired this unconditionally, on the claim that it
+      // was "a no-op when this fires from the search tab's own picker,
+      // already on that tab." That claim is only true if the tab hasn't
+      // changed since the click -- false in general, because this `await`
+      // gives the user a real window to navigate: click "Use Resume 8"
+      // from "My Resumes", switch to "Already Scored Jobs" while
+      // `getResume` is still in flight, and the unconditional version
+      // yanked the user back to "New Job Search" out from under whatever
+      // they'd switched to read. `activeTabRef` (declared near
+      // `activeTab`'s own `useState`) is what makes "still on the tab this
+      // click happened from" checkable here, where a plain closure read of
+      // `activeTab` (frozen at `tabAtClick`, above) cannot be: only switch
+      // if nothing moved the tab out from under this call while it was
+      // waiting on the network.
+      if (activeTabRef.current === tabAtClick) setActiveTab("search");
     } catch (err) {
       // Same supersession guard as the success path above -- a failure
       // for an activation the user already cancelled/replaced must not
@@ -2170,6 +2291,18 @@ function JobSearchApp() {
               // runs over THIS array -- refetching it is what actually
               // moves the row, not anything MyResumes can do locally.
               onRenamed={refreshResumesList}
+              // Ticket 11ead86: the SAME activation state/handler the
+              // search tab's "Change" picker already uses (ticket
+              // 88f11d7) -- a second caller of `handleActivateResume`,
+              // not a second copy of its state. `activeResumeId` is what
+              // lets exactly one row show "Active" instead of a redundant
+              // "Use {nickname}" button; see MyResumes.tsx's own comment
+              // for why that row isn't simply hidden.
+              activeResumeId={resumeId}
+              onActivateResume={(id) => void handleActivateResume(id)}
+              activating={resumeActivating}
+              activateError={resumeActivateError}
+              searching={searchRunning}
             />
           )}
         </section>
