@@ -6,7 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadEnvFile } from "./load-env.js";
-import { makeResendSenderFromEnv, type SendEmailFn } from "./email/sender.js";
+import { makeEmailSenderFromEnv, type SendEmailFn } from "./email/sender.js";
 import { registerIdentity } from "./identity.js";
 import { EstimateProgressTracker } from "./matching/estimateProgress.js";
 import { makeClaudeScorer, type ScoreJobFn } from "./matching/index.js";
@@ -51,10 +51,12 @@ export type BuildAppDeps = {
    */
   inferTitles: (resumeText: string) => Promise<string[]>;
   /**
-   * Overrides how `POST /auth/magic-link` sends its email (ticket 9f06f8f).
-   * A FACTORY, for exactly the reason `getScoreJob` above is one: the real
-   * sender needs `RESEND_API_KEY` and `MAGIC_LINK_FROM_EMAIL`
-   * (email/sender.ts's `makeResendSenderFromEnv` throws without them), and
+   * Overrides how `POST /auth/magic-link` sends its email (ticket 9f06f8f,
+   * extended by ticket 184b9ae to pick a provider by which key is present --
+   * see email/sender.ts's header). A FACTORY, for exactly the reason
+   * `getScoreJob` above is one: the real sender needs `MAGIC_LINK_FROM_EMAIL`
+   * and one of `SENDGRID_API_KEY` / `RESEND_API_KEY`
+   * (email/sender.ts's `makeEmailSenderFromEnv` throws without them), and
    * nothing else in this app may be made to depend on those existing --
    * `pnpm build`, `rtk vitest`, and every other route must keep working on a
    * machine that has never configured email.
@@ -273,11 +275,13 @@ export function buildApp(deps: BuildAppDeps) {
   );
   registerJobStatusRoutes(app, deps.db);
   registerHandoffRoutes(app, deps.db);
-  // Ticket 9f06f8f: `?? makeResendSenderFromEnv` keeps the real sender the
+  // Ticket 9f06f8f: `?? makeEmailSenderFromEnv` keeps the real sender the
   // default without constructing it here -- passing the FUNCTION, not a call
-  // of it, is what preserves the "no RESEND_API_KEY needed until an actual
-  // send" property this whole seam exists for (see BuildAppDeps.getSendEmail).
-  registerAuthRoutes(app, deps.db, deps.getSendEmail ?? makeResendSenderFromEnv);
+  // of it, is what preserves the "no email key needed until an actual send"
+  // property this whole seam exists for (see BuildAppDeps.getSendEmail).
+  // `makeEmailSenderFromEnv` (ticket 184b9ae) is itself the provider
+  // selection -- SendGrid if configured, else Resend, else a lazy throw.
+  registerAuthRoutes(app, deps.db, deps.getSendEmail ?? makeEmailSenderFromEnv);
 
   return app;
 }

@@ -210,10 +210,12 @@ export function registerAuthRoutes(
   /**
    * Lazily produces the real email sender. A factory, not a value, for
    * exactly the reason `BuildAppDeps.getScoreJob` is one (see index.ts): the
-   * Resend client needs `RESEND_API_KEY`, and no other route -- nor `pnpm
-   * build`, nor `rtk vitest` -- may be made to depend on that secret
-   * existing. Called on the first actual send, and the failure to configure
-   * it is therefore one route's 503, never a boot failure.
+   * provider client needs `SENDGRID_API_KEY` or `RESEND_API_KEY` (ticket
+   * 184b9ae picks between them by which is set -- see email/sender.ts's
+   * `makeEmailSenderFromEnv`), and no other route -- nor `pnpm build`, nor
+   * `rtk vitest` -- may be made to depend on either secret existing. Called
+   * on the first actual send, and the failure to configure it is therefore
+   * one route's 503, never a boot failure.
    */
   getSendEmail: () => SendEmailFn,
 ): void {
