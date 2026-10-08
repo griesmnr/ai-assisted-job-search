@@ -174,6 +174,82 @@ describe("SignInRecovery (ticket 5a7e957)", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  /**
+   * Ticket 05ff2a5. Proving this independently of `MagicLinkPrompt.test.tsx`
+   * rather than assuming the shared `MagicLinkForm` covers both -- the whole
+   * point of the ticket's acceptance criteria is not trusting that.
+   */
+  describe("spam-folder note (ticket 05ff2a5)", () => {
+    it("tells the user to check spam, naming FitScore as the sender, once the link is sent", async () => {
+      requestMagicLink.mockResolvedValue({
+        email: "returning@example.com",
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      });
+      render(<SignInRecovery offered />);
+
+      fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+      // Not present before a send.
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "returning@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+      await screen.findByRole("heading", { name: /check your inbox/i });
+
+      const note = screen.getByText(/didn't get it\?/i);
+      expect(note).toBeVisible();
+      expect(note.textContent).toBe(
+        "Didn't get it? Give it a minute, then check your spam folder — it'll be from FitScore.",
+      );
+
+      // This caller's own exact-text pin (below, pre-existing) already
+      // proves the facts sentence is untouched; this is a lighter spot check
+      // that it is still visible alongside the new note.
+      expect(screen.getByText(/works once and expires in about 15 minutes/i)).toBeVisible();
+    });
+
+    it("does not appear while collapsed or while a send is in flight", async () => {
+      let release: (value: { email: string; expiresAt: string }) => void = () => {};
+      requestMagicLink.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+      render(<SignInRecovery offered />);
+
+      // Collapsed -- no form, no note.
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "returning@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+
+      expect(await screen.findByRole("button", { name: /sending/i })).toBeInTheDocument();
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+
+      release({ email: "returning@example.com", expiresAt: new Date().toISOString() });
+      await screen.findByRole("heading", { name: /check your inbox/i });
+      expect(screen.getByText(/check your spam folder/i)).toBeVisible();
+    });
+
+    it("does not appear on a send failure", async () => {
+      requestMagicLink.mockRejectedValue(new Error("network down"));
+      render(<SignInRecovery offered />);
+
+      fireEvent.click(screen.getByRole("button", { name: /been here before/i }));
+      fireEvent.change(screen.getByLabelText(/email address/i), {
+        target: { value: "returning@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /send me a sign-in link/i }));
+
+      await screen.findByRole("alert");
+      expect(screen.queryByText(/check your spam folder/i)).not.toBeInTheDocument();
+    });
+  });
+
   it("surfaces a send failure without losing what was typed", async () => {
     requestMagicLink.mockRejectedValue(new Error("network down"));
     render(<SignInRecovery offered />);

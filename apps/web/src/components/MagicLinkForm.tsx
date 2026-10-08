@@ -58,6 +58,76 @@ function sentFactsLine(): ReactNode {
   return "Open it in this browser. It works once and expires in about 15 minutes.";
 }
 
+/**
+ * The spam-folder nudge (ticket 05ff2a5). Context: ticket 184b9ae moved
+ * magic-link email to SendGrid's Single Sender Verification so sign-in works
+ * without owning DNS -- a deliberate trade whose known cost is that single-
+ * sender verification configures no DKIM and no custom Return-Path, so some
+ * of these emails land in spam. Without a note on screen the failure mode is
+ * silent: someone requests a link, never sees it, concludes the app is
+ * broken, and leaves -- and nobody learns that is what happened.
+ *
+ * Wording is Nicole's, approved verbatim and NOT to be reworded here --
+ * magic-link copy has already cost three separate live back-and-forths
+ * (a3062b4, c719af2, f199f55; see `sentFactsLine` above for what two of
+ * those earned). Naming the sender is deliberate, not filler: it lets
+ * someone SEARCH their mail for "FitScore" rather than scroll looking for it.
+ *
+ * PLACEMENT, ARGUED (the ticket's own open question): a fourth option this
+ * function could have taken is simply tacking the sentence onto
+ * `sentFactsLine`'s existing return, making it a third sentence in the one
+ * paragraph callers already build as `{sentBody(email)} {sentFactsLine()}`.
+ * Rejected, for two reasons:
+ *
+ * 1. The two facts `sentFactsLine` already owns -- same-browser, expiry --
+ *    are unconditional mechanics: true of every link, useful to every
+ *    reader, regardless of whether anything has gone wrong. This sentence
+ *    is conditional troubleshooting advice, relevant only to the subset of
+ *    readers who DON'T see the mail land. Grafting a "didn't get it?"
+ *    aside onto the end of a success confirmation forces every reader --
+ *    including the majority for whom the email just arrives -- to read past
+ *    a sentence that assumes trouble. Three sentences of increasingly
+ *    different registers (what it does / how long it lasts / what to do if
+ *    it's missing) in one run-on paragraph is exactly what the ticket
+ *    flagged as too much for someone scanning a confirmation.
+ * 2. This file already has a convention for exactly this shape of content:
+ *    `MagicLinkLanding.tsx` renders its own conditional secondary note
+ *    (`switchedAccount`) as a separate `<p className="magic-link-note">`
+ *    sibling, never spliced into the primary confirmation paragraph. Matching
+ *    that is more consistent than inventing a second way to say "this part is
+ *    secondary" in the same app.
+ *
+ * Given (1) and (2), this renders as a distinct line, which is also why it is
+ * a sibling function next to `sentFactsLine` rather than textual content
+ * folded into that function's own return value: `sentFactsLine()` is called
+ * INSIDE the same `<p>` as `sentBody` (so the two already-pinned facts stay
+ * exactly where `SignInRecovery.test.tsx`'s exact-text regression test
+ * expects them, untouched by this ticket), and `<p>` cannot validly contain
+ * another `<p>` -- so a second, visually distinct paragraph has to be a
+ * sibling in the tree, not a value threaded through `sentFactsLine`'s return.
+ * It still lives here, in `MagicLinkForm.tsx`, called exactly once by this
+ * shared component rather than copied into either caller's `sentBody` --
+ * which is the actual requirement the ticket is protecting (one copy, not
+ * two silently drifting), not the specific function name.
+ *
+ * THE COUPLING THIS COMMENT EXISTS TO RECORD: "it'll be from FitScore"
+ * asserts the From NAME, not the address -- set by `MAGIC_LINK_FROM_EMAIL`
+ * in the API's environment as `"FitScore <nicole@griesmeyer.org>"` (see
+ * `apps/api/src/email/sender.ts`, which splits that env var's `"Name <addr>"`
+ * format for both providers). Today the name is "FitScore". If that
+ * environment variable's display name ever changes, this sentence is wrong
+ * until it changes with it -- nothing enforces the link mechanically, since
+ * this is frontend copy describing backend configuration.
+ */
+function sentSpamNote(): ReactNode {
+  return (
+    <p className="magic-link-note">
+      Didn&apos;t get it? Give it a minute, then check your spam folder — it&apos;ll be from
+      FitScore.
+    </p>
+  );
+}
+
 export function MagicLinkForm({
   pitch,
   sentBody,
@@ -152,6 +222,7 @@ export function MagicLinkForm({
           <p>
             {sentBody(phase.email)} {sentFactsLine()}
           </p>
+          {sentSpamNote()}
           <button
             type="button"
             className="magic-link-secondary"
