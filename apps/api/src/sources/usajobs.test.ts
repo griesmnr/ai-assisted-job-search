@@ -500,15 +500,53 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(url.searchParams.has("Keyword")).toBe(false);
   });
 
-  it("ticket 78f48df: a hyphen in a title phrase is normalized to a space before being sent as PositionTitle -- measured live 2026-10-07 that PositionTitle=Writer-Editor returns 0 while PositionTitle=Writer Editor returns the expected count (identical words, space instead of hyphen)", async () => {
+  it("ticket 78f48df (F1 fix): title-mode searches request ResultsPerPage=500 (TITLE_SEARCH_RESULTS_PER_PAGE), not the default 25 -- measured live that USAJOBS accepts it, and a dense profession like 'Program Analyst' (1,344 real matches) needs the bigger page to complete in a handful of requests instead of dozens", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(emptyResponse());
     const source = makeSource(fetchImpl);
 
-    await source.search({ keywords: ["Writer-Editor"] });
+    await source.search({ keywords: ["program analyst"] });
+
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("ResultsPerPage")).toBe("500");
+  });
+
+  it("ticket 78f48df (F1 fix): the plain, non-title criteria.keyword path keeps the DEFAULT ResultsPerPage (25), unaffected by the title-mode page-size increase", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(real));
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keyword: "engineer" });
+
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("ResultsPerPage")).toBe("25");
+  });
+
+  it("ticket 78f48df: a hyphen, slash, plus sign, or underscore in a title phrase is normalized to a space before being sent as PositionTitle -- measured live 2026-10-07 that USAJOBS drops a token containing any of them entirely (PositionTitle=Writer-Editor | Writer/Editor | Writer+Editor | Writer_Editor all return 0; PositionTitle=Writer Editor returns the real count). Round-2 review (F4) found the same silent-drop failure on /, +, and _ that an earlier version of this fix had only patched for -.", async () => {
+    // A fresh Response per call -- reusing one Response instance across
+    // multiple fetchImpl calls fails with "Body has already been read"
+    // once its stream is consumed by the first read.
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    for (const phrase of ["Writer-Editor", "Writer/Editor", "Writer+Editor", "Writer_Editor"]) {
+      fetchImpl.mockClear();
+      await source.search({ keywords: [phrase] });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const url = fetchImpl.mock.calls[0]![0] as URL;
+      expect(url.searchParams.get("PositionTitle")).toBe("Writer Editor");
+    }
+  });
+
+  it("ticket 78f48df (F5): the plain, non-title criteria.keyword path sends Keyword VERBATIM, unnormalized -- Keyword=Writer-Editor and Keyword=Writer Editor measure as genuinely different live counts (3 vs. 6), so leaking PositionTitle's normalization into this path would silently change Keyword's own behavior", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keyword: "Writer-Editor" });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const url = fetchImpl.mock.calls[0]![0] as URL;
-    expect(url.searchParams.get("PositionTitle")).toBe("Writer Editor");
+    expect(url.searchParams.get("Keyword")).toBe("Writer-Editor");
+    expect(url.searchParams.has("PositionTitle")).toBe(false);
   });
 
   it("dedupes by externalId when the SAME real posting matches more than one phrase", async () => {
@@ -659,22 +697,23 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(result.jobs.map((j) => j.externalId).sort()).toEqual(["879434300", "999999999"]);
   });
 
-  it("ticket 78f48df: a title-mode phrase whose real PositionTitle total is huge (a generic-word blowup) stops at TITLE_SEARCH_MAX_PAGES (5) rather than fully paginating thousands of results, and warns that the cap bound", async () => {
+  it("ticket 78f48df (F1 fix, relevance-aware stop): a title-mode phrase with NO genuine match anywhere stops after TITLE_SEARCH_EMPTY_PAGE_GRACE (2) consecutive pages lacking a qualifying title, not by fully paginating a huge total, and warns that it stopped early", async () => {
     const HUGE_TOTAL = 10_000;
-    let callCount = 0;
+    let page = 0;
     const fetchImpl = vi.fn().mockImplementation(async () => {
-      const pageStart = callCount * 25;
-      callCount++;
+      page++;
+      const item = cloneItem(civilEngineer);
+      // Distinct id per page -- otherwise the outer dedup (same
+      // mechanism that merges overlapping phrases, see
+      // #searchMultipleKeywords) collapses these identical-id postings
+      // down to one, which would defeat this test's page-count assertion.
+      item.MatchedObjectId = `no-match-page-${page}`;
       return jsonResponse({
         SearchResult: {
           SearchResultCountAll: HUGE_TOTAL,
-          // 25 items every page, forever (unique ids per page) -- simulates
-          // a phrase whose PositionTitle OR-of-words match never runs out
-          // before the cap.
-          SearchResultItems: Array.from({ length: 25 }, (_, i) => ({
-            ...cloneItem(civilEngineer),
-            MatchedObjectId: `generic-${pageStart + i}`,
-          })),
+          // Every item titled "Civil Engineer (Structural)" -- never
+          // contains "specialist", so no page ever has a genuine match.
+          SearchResultItems: [item],
         },
       });
     });
@@ -683,31 +722,68 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
     const result = await source.search({ keywords: ["specialist"] });
 
-    // 5 pages, not the 400 pages full pagination of a 10,000-count
-    // result would otherwise take, and nowhere near #maxPages (200).
-    expect(fetchImpl).toHaveBeenCalledTimes(5);
-    expect(result.jobs).toHaveLength(5 * 25);
+    // 2 pages (TITLE_SEARCH_EMPTY_PAGE_GRACE), not the 400 pages a
+    // 10,000-count result at 25/page would otherwise take, and nowhere
+    // near #maxPages (200).
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.jobs).toHaveLength(2);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0]?.[0]).toContain('"specialist"');
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("10000 total");
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("TITLE_SEARCH_MAX_PAGES");
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("stopped early after page 2");
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("TITLE_SEARCH_EMPTY_PAGE_GRACE");
     warnSpy.mockRestore();
   });
 
-  it("ticket 78f48df: the SAME huge-total scenario does NOT cap early on the non-title (plain criteria.keyword) path -- only title-mode search gets TITLE_SEARCH_MAX_PAGES", async () => {
+  it("ticket 78f48df (F1 fix): a genuine match on a LATER page resets the empty-page counter back to zero, giving pages after it the FULL grace window again -- this specifically catches a mutant that stops incrementing but never resets", async () => {
+    // Deliberately NOT on page 1 -- a genuine hit while the counter is
+    // still at its initial value of 0 can't distinguish "resets to 0" from
+    // "a no-op mutant that never resets at all" (both leave it at 0). Page
+    // 1 is empty first (counter -> 1), THEN page 2 has the genuine hit, so
+    // a working reset takes the counter 1 -> 0, while a broken one (e.g.
+    // only increments, never resets) would leave it at 1 -- observably
+    // different page counts below.
+    const HUGE_TOTAL = 10_000;
+    const genuineMatch = cloneItem(civilEngineer);
+    genuineMatch.MatchedObjectId = "genuine-specialist-match";
+    genuineMatch.MatchedObjectDescriptor.PositionTitle = "IT Specialist";
+    let page = 0;
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      page++;
+      const items =
+        page === 2 ? [cloneItem(civilEngineer), genuineMatch] : [cloneItem(civilEngineer)];
+      return jsonResponse({
+        SearchResult: { SearchResultCountAll: HUGE_TOTAL, SearchResultItems: items },
+      });
+    });
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await source.search({ keywords: ["Specialist"] });
+
+    // page 1: empty -> counter 0->1. page 2: genuine hit -> counter
+    // RESETS to 0 (not just "doesn't increment"). page 3: empty -> 0->1.
+    // page 4: empty -> 1->2 -> grace reached, stop. 4 pages total -- a
+    // mutant that increments-but-never-resets would instead reach grace
+    // at page 3 (1 from page1, un-reset at page2, 2 at page3) and stop one
+    // page early.
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(result.jobs.some((j) => j.externalId === "genuine-specialist-match")).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("stopped early after page 4");
+    warnSpy.mockRestore();
+  });
+
+  it("ticket 78f48df (F3 fix): the SAME huge-total, no-genuine-match scenario does NOT stop early on the non-title (plain criteria.keyword) path -- only title-mode search gets the relevance-aware stop, and no warning naming an undefined phrase is ever logged", async () => {
     // A small, finite total (not literally full-paginating 10,000 items in
-    // a test) that still exceeds TITLE_SEARCH_MAX_PAGES*25 (125) to prove
-    // the general #maxPages ceiling (200), not the tighter title-mode one,
-    // governs this path.
-    const TOTAL = 150;
+    // a test) that still exceeds what the title-mode grace window would
+    // have stopped at, to prove the general #maxPages ceiling (200), not
+    // the title-mode early stop, governs this path.
+    const TOTAL = 90;
     const fetchImpl = vi.fn().mockImplementation(async () =>
       jsonResponse({
         SearchResult: {
           SearchResultCountAll: TOTAL,
-          SearchResultItems: Array.from({ length: 25 }, (_, i) => ({
-            ...cloneItem(civilEngineer),
-            MatchedObjectId: `generic-${i}`,
-          })),
+          SearchResultItems: [cloneItem(civilEngineer)],
         },
       }),
     );
@@ -716,10 +792,29 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
 
     const result = await source.search({ keyword: "specialist" });
 
-    // Fully paginates past where TITLE_SEARCH_MAX_PAGES (5) would have
-    // stopped -- 150 / 25 = 6 pages.
-    expect(fetchImpl).toHaveBeenCalledTimes(6);
-    expect(result.jobs).toHaveLength(6 * 25);
+    // Fully paginates to the real total (90 pages of 1 item each) -- the
+    // title-mode grace-of-2 never applies here.
+    expect(fetchImpl).toHaveBeenCalledTimes(90);
+    expect(result.jobs).toHaveLength(90);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("ticket 78f48df (F3 fix): a plain, keyword-less search({}) that legitimately walks to the general #maxPages (200) logs no title-search-flavored warning and no 'phrase \"undefined\"' message -- reachable in production when a user clears every title chip", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () =>
+      jsonResponse({
+        SearchResult: {
+          SearchResultCountAll: 100_000,
+          SearchResultItems: [cloneItem(civilEngineer)],
+        },
+      }),
+    );
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await source.search({});
+
+    expect(fetchImpl).toHaveBeenCalledTimes(200); // #maxPages
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
