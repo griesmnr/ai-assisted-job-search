@@ -191,6 +191,7 @@ export function ResumeInput({
   activating,
   activateError,
   searching,
+  pastingNewResume,
 }: {
   onSubmit: (resumeText: string) => void;
   submitting: boolean;
@@ -319,7 +320,10 @@ export function ResumeInput({
   /** Every other saved resume, for the picker's toggle buttons (ticket
    * 303cff0's `ResumeSummary` shape -- id/nickname only, no text). The
    * currently-active resume is filtered out of this list below (picking
-   * "Use Resume 16" while already using Resume 16 has nothing to do).
+   * "Use Resume 16" while already using Resume 16 has nothing to do) --
+   * ticket 582ee40 extends that same filter to the ordinary form branch's
+   * "Use a saved resume" list, now that it too can render with an active
+   * resume; see that branch's own comment for the full active-row argument.
    * Defaults to `[]` so every existing caller/test that doesn't pass this
    * keeps working unchanged. */
   resumes?: { id: string; resumeNickname: string }[];
@@ -336,6 +340,21 @@ export function ResumeInput({
    * window open — see this file's top-of-file doc comment for the full
    * story). */
   searching?: boolean;
+  /** Ticket 582ee40: App.tsx's own `pastingNewResume` -- "the form on
+   * screen is composing a resume that does not exist yet" (see that
+   * state's doc comment in App.tsx). The ordinary form branch below reads
+   * this directly rather than re-deriving it, because it is the ONE signal
+   * that tells apart the two routes that land on that branch WITH a
+   * `resumeId` already set: an unlocked "Edit" (composing an UPDATE to the
+   * active resume -- `pastingNewResume` false) versus the locked picker's
+   * "Paste a new resume" (composing a resume that doesn't exist yet --
+   * `pastingNewResume` true). Those two need opposite answers to "should
+   * the saved-resume list reappear here" -- see the form branch's own
+   * comment on `savedResumes` for why. `undefined` behaves like `false`
+   * (the ordinary, no-active-resume case this prop didn't exist for
+   * before), so every existing caller/test that doesn't pass this keeps
+   * working unchanged. */
+  pastingNewResume?: boolean;
 }) {
   const [text, setText] = useState(initialText);
 
@@ -467,29 +486,85 @@ export function ResumeInput({
   // flow; this was the step immediately after it, dead-ending.
   //
   // Rendered ABOVE the paste form rather than as a separate branch, and
-  // deliberately NOT a copy of the picker above: there is no active resume to
-  // exclude from the list, nothing to "Cancel" back to, and no need for a
-  // "Paste a new resume" button because the paste form is right here. Reuses
-  // that branch's `sortResumesByNickname` (ticket 336f1e6 -- see its own doc
-  // comment for why `numeric: true`), its classes, and the same
-  // `onActivateResume`/`activating`/`activateError` wiring, so there is one
-  // activation path, not two.
+  // deliberately NOT a copy of the picker above: there is nothing to "Cancel"
+  // back to, and no need for a "Paste a new resume" button because the paste
+  // form is right here. Reuses that branch's `sortResumesByNickname` (ticket
+  // 336f1e6 -- see its own doc comment for why `numeric: true`), its classes,
+  // and the same `onActivateResume`/`activating`/`activateError` wiring, so
+  // there is one activation path, not two.
   //
-  // Gated on `resumeId === undefined`, which is the whole point and which a
-  // first draft of this fix omitted -- caught by the existing
-  // App.resumeLock.test.tsx case "'Paste a new resume' opens the ordinary
-  // expanded paste form". This branch is also reached WITH an active resume
-  // (via the picker's "Paste a new resume", which sets `resumeEditing`), and
-  // there the list must NOT reappear: the user just explicitly declined it,
-  // and re-offering it contradicts the choice they made one click ago.
+  // TICKET 582ee40 WIDENS THE GATE. It used to be `resumeId === undefined`,
+  // which was "the whole point" of e2b5f9c above and which a first draft of
+  // THAT fix omitted -- caught by the existing App.resumeLock.test.tsx case
+  // "'Paste a new resume' opens the ordinary expanded paste form". That gate
+  // was also the dead end Nicole hit live, standing in the resume form,
+  // pressing "Edit" on an active-but-UNLOCKED resume: this branch is exactly
+  // where "Edit" lands, and with the old gate it showed the paste form with
+  // no way to switch resumes at all -- ticket 11ead86 gave My Resumes its own
+  // "Use {nickname}" action as A path off that dead end, but its own review
+  // judged that acceptable as *a* path, not *the* path, because the click she
+  // actually made was still a dead end. This ticket is the fix for that click.
   //
-  // No `searching` guard here, unlike the collapsed bar's "Change" button, and
-  // that is provably safe rather than an oversight (opus review): `setResumeId`
-  // has exactly two call sites, both with real ids, and `resumeId` is never
-  // cleared -- while `SearchFlow` is mounted only inside `{resumeId && ...}`.
-  // So `searchRunning` cannot be true while `resumeId === undefined`, and this
-  // block is unreachable with a search running.
-  const savedResumes = sortResumesByNickname(resumes ?? []);
+  // The gate is now `!pastingNewResume`, not `resumeId !== undefined`,
+  // because `resumeId !== undefined` is reachable by TWO routes that need
+  // OPPOSITE answers to "should the saved list show here" -- `pastingNewResume`
+  // (App.tsx) is the one signal that already tells them apart (see that prop's
+  // own doc comment above):
+  //   - an unlocked "Edit" (`pastingNewResume` false) -- the fix this ticket
+  //     exists for. The list must show.
+  //   - the locked picker's "Paste a new resume" (`pastingNewResume` true) --
+  //     e2b5f9c's own guard, UNCHANGED: the user just explicitly declined the
+  //     saved list one click ago (on the picker branch above), and
+  //     re-offering it here would contradict that choice. Still covered by
+  //     the same App.resumeLock.test.tsx case cited above, which this ticket
+  //     does not touch.
+  // `resumeId === undefined` (the original, no-active-resume case) is folded
+  // into the same condition for free: `pastingNewResume` can only ever be
+  // `true` once a resume already exists to decline reusing (it is set from
+  // the locked picker alone), so it is always falsy here, same as before.
+  //
+  // THE ACTIVE-ROW DISAGREEMENT, DECIDED. Once this list can render WITH an
+  // active resume, it has the same question MyResumes.tsx answered for
+  // itself (ticket 11ead86): does the active resume's own row appear.
+  // MyResumes says yes, as a non-interactive "Active" marker, because it is a
+  // browsable INVENTORY (ticket 303cff0's own framing) where every other
+  // row-level action stays available on the active row too, and hiding it
+  // would look like the resume vanished from its own inventory.
+  //
+  // This list is not an inventory. It has exactly one job -- offering a
+  // DIFFERENT resume to switch to -- and that was already this file's own
+  // answer before this ticket ever touched it: the `changingResume` picker
+  // branch above excludes the active resume outright (`r.id !== resumeId`,
+  // with the comment "picking 'Use Resume 16' while already using Resume 16
+  // has nothing to do"). This list is the SAME kind of control reached from
+  // the SAME component for the SAME reason (an unlocked "Edit" is the direct
+  // counterpart of a locked "Change"), so it gets the SAME answer: EXCLUDE
+  // the active resume, not an "Active" marker. Diverging from MyResumes here
+  // is not an oversight needing reconciliation -- MyResumes and this list are
+  // answering two different questions ("what exists" vs. "what else can I
+  // switch to"), and a chooser that includes a dead "Active" entry among its
+  // live "Use X" buttons would be the inconsistent choice, not this one.
+  //
+  // RE-PROVING THE MISSING `searching` GUARD, NOT JUST CARRYING IT FORWARD.
+  // The ORIGINAL proof below (opus review of e2b5f9c) only covered
+  // `resumeId === undefined`, which this gate is no longer limited to -- it
+  // needs re-checking for the NEW route (an unlocked "Edit"), not inherited
+  // for free. `searching` disables the collapsed bar's "Edit" button itself
+  // (see that branch above), so this form cannot be ENTERED via "Edit" while
+  // a search is running. And once entered, nothing in it can make
+  // `searching` become true: the sources/criteria/search section -- the only
+  // place a search is started -- is `hidden` (not merely inert) for as long
+  // as `editingResume` is true (App.tsx), and this branch only renders while
+  // exactly that is true. So `searching` is provably `false` for the entire
+  // time this branch can be showing via "Edit", same conclusion as the
+  // original proof, now covering both routes that reach this list.
+  //
+  // Original proof, for `resumeId === undefined` specifically, still holds
+  // unchanged: `setResumeId` has exactly two call sites, both with real ids,
+  // and `resumeId` is never cleared -- while `SearchFlow` is mounted only
+  // inside `{resumeId && ...}`. So `searchRunning` cannot be true while
+  // `resumeId === undefined` either.
+  const savedResumes = sortResumesByNickname((resumes ?? []).filter((r) => r.id !== resumeId));
 
   return (
     <form
@@ -499,7 +574,7 @@ export function ResumeInput({
         if (text.trim().length > 0) onSubmit(text);
       }}
     >
-      {resumeId === undefined && savedResumes.length > 0 && (
+      {!pastingNewResume && savedResumes.length > 0 && (
         <div className="resume-pick-saved">
           <p className="resume-picker-heading">Use a saved resume:</p>
           {/* Opus review (D1): disabled by `submitting` too, not just
