@@ -110,17 +110,26 @@ const KEYWORD_SEARCH_CONCURRENCY = 3;
 //    EVERY normalized word of the phrase (the same words actually sent to
 //    `PositionTitle` -- see `#fetchPage`); stop once `TITLE_SEARCH_EMPTY_
 //    PAGE_GRACE` consecutive pages hold none. Measured at
-//    `ResultsPerPage=500`: both "Registered Nurse" and "Program Analyst"
-//    complete via NATURAL termination (total < 2-3 pages) well before the
-//    stop could even trigger -- re-measured end to end, BOTH professions
-//    now fetch their FULL pool (672 of 723, and 1,192 of 1,344 respectively
-//    -- the gap is unmappable/skipped records, not truncation) and recover
-//    every one of the 215/147 real matches above, zero lost. The stop only
-//    ever fires on the genuinely noise-dominated chips (e.g. Jay's
-//    "Technical Documentation Specialist", "Technical Information
-//    Specialist" -- see `#searchOne`'s doc comment for exactly where and
-//    why), where every page checked beyond the stop point was independently
-//    confirmed to hold no qualifying title either.
+//    `ResultsPerPage=250`: both "Registered Nurse" and "Program Analyst"
+//    complete via NATURAL termination well before the stop could trigger,
+//    recovering every real match with zero lost. The stop only ever fires on
+//    genuinely noise-dominated chips (Jay's "Technical Information
+//    Specialist" and friends), where every page checked beyond the stop point
+//    was independently confirmed to hold no qualifying title either.
+//
+//    WHY 250 AND NOT 500, measured in re-review 2026-10-08. 500 works and is
+//    lossless, but it is slow and heavy: `Fields=Full` at 500 takes ~25s for
+//    the BODY alone (headers arrive in ~600ms either way), and one real
+//    "Contract Specialist" search took 157.8s with peak RSS 151MB. At 250 the
+//    same chip took 46.5s with peak RSS 125MB -- 3.4x faster, half the
+//    volume -- found the SAME 47 matches, and the stop still fired on page 3.
+//    Two further reasons 250 is the better operating point: a mid-body socket
+//    drop (this file documents hitting `UND_ERR_SOCKET` on 2 of 3 runs) now
+//    costs a 250-posting page rather than a 500-posting one, and
+//    `KEYWORD_SEARCH_CONCURRENCY = 3` means up to three bodies parse at once.
+//    Safety margin is unchanged in the way that matters: the stop still
+//    cannot fire before rank 500, and the deepest genuine match measured
+//    across seven chips over three rounds is rank 307.
 //
 // End-to-end re-measurement (live, 2026-10-07/2026-10-08 -- see
 // `#searchOne`'s doc comment for Jay's corrected before/after): lossless
@@ -138,7 +147,7 @@ const KEYWORD_SEARCH_CONCURRENCY = 3;
 // underneath this as the hard backstop against a runaway loop (now reached
 // far later in absolute postings, since each page is bigger) -- see
 // `#searchOne`.
-const TITLE_SEARCH_RESULTS_PER_PAGE = 500;
+const TITLE_SEARCH_RESULTS_PER_PAGE = 250;
 // See the big comment above. Both professions measured for this ticket,
 // including the two adversarial review supplied specifically to find a
 // counterexample (Registered Nurse, Program Analyst), needed ZERO grace at
@@ -1001,7 +1010,41 @@ function parseRetryAfter(header: string | null): number | undefined {
  * regression for another.
  */
 function normalizeForTitleSearch(phrase: string): string {
-  return phrase.replace(/[-/+_]/g, " ");
+  // Re-review R2, measured 2026-10-08: separator normalization alone turns
+  // `C++` into the single letter `C`, and `PositionTitle=C` returns 3,674 --
+  // of which EVERY sampled 25-item slice (ranks 1-25, ~500, ~1500, ~2500,
+  // ~3500) contained a title holding "c". So the relevance-aware early stop
+  // can NEVER fire for a one-character word, and a literal `C++` chip would
+  // fully paginate ~3,674 postings (~85 MB) for zero genuine matches. Before
+  // this ticket it was free: `PositionTitle=C++` returned 0.
+  //
+  // Dropping tokens shorter than 2 characters restores that cheapness without
+  // giving up F4's fix -- `Writer/Editor` still becomes `Writer Editor`, while
+  // `C++` becomes empty and `C++ Engineer` searches `Engineer` (470) rather
+  // than {c, engineer} (~4,000). An empty phrase is handled by the caller the
+  // same way any other no-op phrase is.
+  //
+  // Note this is a deliberate asymmetry with `criteria.ts`, whose own
+  // word-boundary matching DOES support `C++`/`.NET` shapes (ticket 59fdc52
+  // N5). The local filter can afford a one-letter token; a remote OR-semantics
+  // query cannot.
+  const normalized = phrase
+    .replace(/[-/+_]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 1)
+    .join(" ")
+    .trim();
+  // If dropping sub-2-character tokens leaves NOTHING, send the phrase
+  // unchanged rather than an empty `PositionTitle`. Caught by this file's own
+  // cap and 429 tests, which use single-character phrase names ("a".."j") --
+  // an empty string would have silently changed what those requests ask for.
+  //
+  // This is also the better outcome for the case that motivated the filter:
+  // `C++` normalizes to empty, so it falls back to `PositionTitle=C++`, which
+  // USAJOBS answers with 0 — exactly the free, pre-ticket behaviour, instead
+  // of the ~3,674-posting walk a bare `C` would cause. `C++ Engineer` still
+  // normalizes to `Engineer` (470) because that one has a surviving token.
+  return normalized.length > 0 ? normalized : phrase;
 }
 
 /**

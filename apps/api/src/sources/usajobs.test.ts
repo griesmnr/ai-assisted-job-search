@@ -500,14 +500,14 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(url.searchParams.has("Keyword")).toBe(false);
   });
 
-  it("ticket 78f48df (F1 fix): title-mode searches request ResultsPerPage=500 (TITLE_SEARCH_RESULTS_PER_PAGE), not the default 25 -- measured live that USAJOBS accepts it, and a dense profession like 'Program Analyst' (1,344 real matches) needs the bigger page to complete in a handful of requests instead of dozens", async () => {
+  it("ticket 78f48df (F1 fix): title-mode searches request ResultsPerPage=250 (TITLE_SEARCH_RESULTS_PER_PAGE), not the default 25 -- re-review R5 measured 500 at 157.8s/151MB for one chip versus 46.5s/125MB at 250, same matches, stop still firing", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(emptyResponse());
     const source = makeSource(fetchImpl);
 
     await source.search({ keywords: ["program analyst"] });
 
     const url = fetchImpl.mock.calls[0]![0] as URL;
-    expect(url.searchParams.get("ResultsPerPage")).toBe("500");
+    expect(url.searchParams.get("ResultsPerPage")).toBe("250");
   });
 
   it("ticket 78f48df (F1 fix): the plain, non-title criteria.keyword path keeps the DEFAULT ResultsPerPage (25), unaffected by the title-mode page-size increase", async () => {
@@ -534,6 +534,29 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       const url = fetchImpl.mock.calls[0]![0] as URL;
       expect(url.searchParams.get("PositionTitle")).toBe("Writer Editor");
+    }
+  });
+
+  it("re-review R6: a sub-2-character token is dropped from PositionTitle, because USAJOBS ORs the tokens together and a bare single character is a huge OR branch -- measured live 2026-10-07 that PositionTitle=C matches ~3,674 postings while PositionTitle=Engineer matches 470", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    await source.search({ keywords: ["C++ Engineer"] });
+
+    const url = fetchImpl.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get("PositionTitle")).toBe("Engineer");
+  });
+
+  it("re-review R6: a phrase whose every token is sub-2-character falls back to the phrase UNCHANGED rather than sending an empty PositionTitle -- an empty value would ask USAJOBS a completely different question (no title constraint at all), whereas the verbatim phrase is answered with 0 and costs one cheap request, which is the pre-ticket behaviour for a degenerate chip", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+    const source = makeSource(fetchImpl);
+
+    for (const phrase of ["C++", "C", "R"]) {
+      fetchImpl.mockClear();
+      await source.search({ keywords: [phrase] });
+
+      const url = fetchImpl.mock.calls[0]![0] as URL;
+      expect(url.searchParams.get("PositionTitle")).toBe(phrase);
     }
   });
 
@@ -773,6 +796,54 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     warnSpy.mockRestore();
   });
 
+  it("ticket 78f48df (re-review R1): the stop's page predicate requires EVERY word of the phrase, not any ONE of them -- a page whose titles hold only one query word is NOT signal", async () => {
+    // WHY THIS TEST EXISTS. Both of the stop tests above use a SINGLE-WORD
+    // phrase ("Specialist"), and for one word `every` and `some` are
+    // identical -- so a `titleHasAllWords` mutant changing `.every(...)` to
+    // `.some(...)` passed the ENTIRE suite (55 tests, re-review R1). That
+    // predicate is the whole mechanism of the relevance-aware stop: it is
+    // what separates "a genuine match" from "one word OR'd in by
+    // PositionTitle's own semantics".
+    //
+    // The mutant is not harmless. On real data EVERY item USAJOBS returns
+    // matched at least one query word by construction, so `some` makes every
+    // page count as signal, the stop never fires, and the branch silently
+    // reverts to full uncapped pagination -- the exact F1 regression this
+    // ticket's second round removed.
+    //
+    // So this uses a TWO-word phrase and a page whose title holds only the
+    // first word.
+    const HUGE_TOTAL = 10_000;
+    const partialWordOnly = cloneItem(civilEngineer);
+    partialWordOnly.MatchedObjectDescriptor.PositionTitle = "Technical Specialist"; // "technical" only
+    const bothWords = cloneItem(civilEngineer);
+    bothWords.MatchedObjectId = "holds-both-query-words";
+    bothWords.MatchedObjectDescriptor.PositionTitle = "Technical Writer-Editor"; // technical AND writer
+    let page = 0;
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      page++;
+      const item =
+        page === 2
+          ? bothWords
+          : { ...cloneItem(partialWordOnly), MatchedObjectId: `partial-${page}` };
+      return jsonResponse({
+        SearchResult: { SearchResultCountAll: HUGE_TOTAL, SearchResultItems: [item] },
+      });
+    });
+    const source = makeSource(fetchImpl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await source.search({ keywords: ["technical writer"] });
+
+    // page 1 partial -> counter 1. page 2 holds BOTH words -> reset to 0.
+    // page 3 partial -> 1. page 4 partial -> 2 -> grace reached, stop.
+    // Under a `some` mutant every page is "signal", the counter never
+    // reaches grace, and this never stops.
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("stopped early after page 4");
+    warnSpy.mockRestore();
+  });
+
   it("ticket 78f48df (F3 fix): the SAME huge-total, no-genuine-match scenario does NOT stop early on the non-title (plain criteria.keyword) path -- only title-mode search gets the relevance-aware stop, and no warning naming an undefined phrase is ever logged", async () => {
     // A small, finite total (not literally full-paginating 10,000 items in
     // a test) that still exceeds what the title-mode grace window would
@@ -891,11 +962,14 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
     const neverRequested = vi.fn(() => emptyResponse());
 
     const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
-      // Ticket 78f48df: PositionTitle normalizes hyphens to spaces (see
-      // #fetchPage's doc comment), so the phrase as SENT over the wire is
-      // "rate limited", not "rate-limited" -- the phrase names below (and
-      // the skip-reason assertions later in this test, which read the
-      // original un-normalized `phrase` string, not the URL) are unaffected.
+      // Ticket 78f48df: PositionTitle normalizes hyphens to spaces AND drops
+      // sub-2-character tokens (see #fetchPage's doc comment), so the phrase
+      // as SENT over the wire is "rate limited", not "rate-limited". The
+      // phrase names here spell their suffixes out ("healthy-two", not
+      // "healthy-2") so normalization is a no-op in the dimension this test
+      // cares about -- a single-digit "2" would be dropped and the key would
+      // never match. The skip-reason assertions below read the original
+      // un-normalized `phrase` string, not the URL, so they keep the hyphens.
       const keyword = url.searchParams.get("PositionTitle");
       if (keyword === "rate limited") {
         return new Response("Too Many Requests", {
@@ -903,15 +977,15 @@ describe("UsajobsSource — per-phrase failure isolation (ticket c419a12)", () =
           headers: { "Retry-After": "30" },
         });
       }
-      if (keyword === "healthy 2") return healthy2Deferred.promise;
-      if (keyword === "healthy 3") return healthy3Deferred.promise;
+      if (keyword === "healthy two") return healthy2Deferred.promise;
+      if (keyword === "healthy three") return healthy3Deferred.promise;
       if (keyword === "never requested") return neverRequested();
       return emptyResponse();
     });
     const source = makeSource(fetchImpl);
 
     const resultPromise = source.search({
-      keywords: ["rate-limited", "healthy-2", "healthy-3", "never-requested"],
+      keywords: ["rate-limited", "healthy-two", "healthy-three", "never-requested"],
     });
 
     // Let the rate-limited worker's microtasks (fetch resolve -> 429
