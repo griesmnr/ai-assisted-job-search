@@ -537,45 +537,42 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     }
   });
 
-  it("re-review R6: a sub-2-character token is dropped from PositionTitle, because USAJOBS ORs the tokens together and a bare single character is a huge OR branch -- measured live 2026-10-07 that PositionTitle=C matches ~3,674 postings while PositionTitle=Engineer matches 470", async () => {
+  it("re-review E2: a token is kept only if it holds 2+ ALPHANUMERIC characters, not 2+ characters -- USAJOBS drops non-alphanumerics before matching, so a raw-length filter let `C#` through while USAJOBS answered it identically to a bare `C` (measured live 2026-10-08: PositionTitle=C -> 3,674 and PositionTitle=C# -> 3,674, versus PositionTitle=Engineer -> 471)", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
     const source = makeSource(fetchImpl);
 
-    await source.search({ keywords: ["C++ Engineer"] });
+    // Left: the phrase as a user would type it. Right: what goes on the wire.
+    const cases: [string, string][] = [
+      ["C++ Engineer", "Engineer"],
+      ["C# Developer", "Developer"],
+      ["Writer/Editor", "Writer Editor"],
+      // ".NET" survives whole: NET is 3 alphanumerics, and periods are
+      // deliberately not normalized to space (see normalizeForTitleSearch).
+      [".NET", ".NET"],
+      ["Senior C# Engineer 3", "Senior Engineer"],
+    ];
 
-    const url = fetchImpl.mock.calls[0]![0] as URL;
-    expect(url.searchParams.get("PositionTitle")).toBe("Engineer");
-  });
-
-  it("re-review D1 case (a): a phrase whose every token is sub-2-character but which CARRIES a tokenizer-dropped character is sent UNCHANGED, not as an empty PositionTitle -- an empty value asks USAJOBS a different question entirely (no title constraint at all), whereas the verbatim phrase is answered with 0 for one cheap request, measured live 2026-10-08 (PositionTitle=C++ -> 0), which is the pre-ticket behaviour for a degenerate chip", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
-    const source = makeSource(fetchImpl);
-
-    for (const phrase of ["C++", "c/c", "a-b"]) {
+    for (const [phrase, sent] of cases) {
       fetchImpl.mockClear();
-      const result = await source.search({ keywords: [phrase] });
+      await source.search({ keywords: [phrase] });
 
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
       const url = fetchImpl.mock.calls[0]![0] as URL;
-      expect(url.searchParams.get("PositionTitle")).toBe(phrase);
-      expect(result.skipped).toEqual([]);
+      expect(url.searchParams.get("PositionTitle")).toBe(sent);
     }
   });
 
-  it("re-review D1 case (b): a phrase that is purely alphanumeric AND has no word of 2+ characters is unsearchable by title -- it is skipped with a reason and NO request is issued, because sending it verbatim is the worst case rather than a cheap one (measured live 2026-10-08: PositionTitle=C -> 3,674, R -> 2,137, A -> 5,037, each ~15 requests and ~85MB for zero genuine matches, with no early stop possible since the stop's word list is a single letter nearly every title contains)", async () => {
+  it("re-review E1/E2: a phrase with NO token holding 2+ alphanumeric characters is unsearchable by title -- it is skipped with a reason and NO request is issued at all. An earlier revision sent such a phrase verbatim on the rationale that USAJOBS answers it with 0 for one cheap request; E1 measured that false in general (PositionTitle=C++ -> 0 but PositionTitle=`C++ 3` -> 405 and `a-b 7` -> 12, because a surviving bare digit is a real OR branch), and E2 found `C#` measuring identically to a bare `C` at 3,674", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
     const source = makeSource(fetchImpl);
 
-    for (const phrase of ["C", "R", "7"]) {
+    for (const phrase of ["C", "R", "7", "C++", "C#", "F#", "c/c", "a-b", "C++ 3", "a-b 7"]) {
       fetchImpl.mockClear();
       const result = await source.search({ keywords: [phrase] });
 
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(result.jobs).toEqual([]);
       expect(result.skipped).toHaveLength(1);
-      expect(result.skipped[0]!.reason).toMatch(
-        new RegExp(`cannot search title phrase "${phrase}".*no word of 2 or more characters`),
-      );
+      expect(result.skipped[0]!.reason).toContain("no word in it holds 2 or more alphanumeric");
     }
   });
 
@@ -591,14 +588,34 @@ describe("UsajobsSource — criteria.keywords (ticket d1fc9e2, multi-phrase 'ANY
     expect(result.skipRate).toBe(1);
   });
 
-  it("re-review R6: a sub-2-character token is dropped from PositionTitle when OTHER tokens survive, because USAJOBS ORs the tokens together and a bare single character is a huge OR branch -- measured live 2026-10-07 that PositionTitle=C matches ~3,674 postings while PositionTitle=Engineer matches 470", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () => emptyResponse());
+  it("re-review E3: a MIXED search -- one unsearchable phrase plus one phrase that transiently fails -- THROWS rather than returning an empty success, because the only real query failed and an unsearchable phrase is no evidence USAJOBS is up. This is the test that discriminates: adding `successCount++` to the skip path survives every other test in this file, and under that mutant this case returns a quiet empty 'ok' -- exactly the defect class ticket c419a12's B1 fix exists to prevent", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (url: URL) => {
+      // "C" never reaches here (skipped, no request). "flaky phrase" does.
+      if (url.searchParams.get("PositionTitle") === "flaky phrase") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+      return emptyResponse();
+    });
     const source = makeSource(fetchImpl);
 
-    await source.search({ keywords: ["C++ Engineer"] });
+    await expect(source.search({ keywords: ["C", "flaky phrase"] })).rejects.toThrow(
+      TransientSourceError,
+    );
 
-    const url = fetchImpl.mock.calls[0]![0] as URL;
-    expect(url.searchParams.get("PositionTitle")).toBe("Engineer");
+    // Exactly one request: the unsearchable phrase issued none.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-review E3: a MIXED search -- one unsearchable phrase plus one HEALTHY phrase -- returns normally, with the unsearchable one recorded as a skip. The counterpart to the throwing case above: a real success means the source is up, so a phrase that was never attempted must not fail the call", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => singleItemResponse(civilEngineer));
+    const source = makeSource(fetchImpl);
+
+    const result = await source.search({ keywords: ["C", "civil engineer"] });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.jobs.map((j) => j.externalId)).toEqual(["879434300"]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toContain('cannot search title phrase "C"');
   });
 
   it("ticket 78f48df (F5): the plain, non-title criteria.keyword path sends Keyword VERBATIM, unnormalized -- Keyword=Writer-Editor and Keyword=Writer Editor measure as genuinely different live counts (3 vs. 6), so leaking PositionTitle's normalization into this path would silently change Keyword's own behavior", async () => {

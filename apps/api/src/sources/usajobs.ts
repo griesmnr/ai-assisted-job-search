@@ -387,16 +387,31 @@ export class UsajobsSource implements JobSource {
         nextIndex = i + 1;
         const phrase = phrases[i]!;
 
-        // Re-review D1: a phrase with no searchable title tokens AND no
-        // tokenizer-dropped punctuation (a chip that is literally `C` or `R`)
-        // is unsearchable by title -- sending it would download the entire
-        // ~3,674-posting pool for zero genuine matches with no early stop
-        // available. Record why and claim the next phrase without issuing a
-        // request. Deliberately does NOT touch `successCount`: nothing
-        // succeeded, but nothing failed either, and the total-outage rethrow
-        // below additionally requires `firstIsolatedError`, so an all-
-        // unsearchable search returns a normal, fully-explained empty result
-        // rather than throwing.
+        // Re-review D1/E1/E2: a phrase with no token holding 2+ alphanumeric
+        // characters is unsearchable by title (see `normalizeForTitleSearch`).
+        // Sending it in any form downloads thousands of postings for zero
+        // genuine matches with no early stop available. Record why and claim
+        // the next phrase without issuing a request.
+        //
+        // Deliberately does NOT touch `successCount`. Nothing succeeded, but
+        // nothing failed either, and the total-outage rethrow below
+        // additionally requires `firstIsolatedError`, so an all-unsearchable
+        // search returns a normal, fully-explained empty result rather than
+        // throwing. Re-review E3 verified both directions through the real
+        // class: ["C", "R"] returns (jobs 0, skipped 2, skipRate 1), while
+        // ["C", <phrase that throws TransientSourceError>] THROWS -- correct,
+        // because the only real query failed and an unsearchable phrase is no
+        // evidence USAJOBS is up. Incrementing `successCount` here would make
+        // that second case return an empty "ok", which is exactly the defect
+        // class ticket c419a12's B1 fix exists to prevent. E3's own test pins
+        // it; without that test the mutant survives all 61 others.
+        //
+        // This IS a behaviour change for mixed searches versus the previous
+        // revision, which sent the unsearchable phrase, usually got a 200, and
+        // set `successCount = 1` -- so a mixed search returned partial results
+        // where it now throws and `CompositeSource` marks the source errored.
+        // The new behaviour is the correct one, but it changes what the UI
+        // shows for that case, which is worth knowing rather than discovering.
         if (normalizeForTitleSearch(phrase) === undefined) {
           resultsByIndex[i] = {
             jobs: [],
@@ -404,10 +419,12 @@ export class UsajobsSource implements JobSource {
               {
                 externalId: undefined,
                 reason:
-                  `USAJOBS cannot search title phrase "${phrase}": it has no word of 2 or ` +
-                  `more characters, and USAJOBS matches PositionTitle words with OR, so a ` +
-                  `single-character title query returns thousands of unrelated postings ` +
-                  `(measured 2026-10-08: "C" -> 3,674, "R" -> 2,137, "A" -> 5,037). Not attempted.`,
+                  `USAJOBS cannot search title phrase "${phrase}": no word in it holds 2 or ` +
+                  `more alphanumeric characters, and USAJOBS matches PositionTitle words with ` +
+                  `OR after dropping non-alphanumerics, so such a query returns thousands of ` +
+                  `unrelated postings with no early stop possible (measured 2026-10-08: ` +
+                  `"C" -> 3,674, "C#" -> 3,674 identically, "R" -> 2,137, "A" -> 5,037). ` +
+                  `Not attempted.`,
               },
             ],
             skipRate: 1,
@@ -1038,19 +1055,26 @@ function parseRetryAfter(header: string | null): number | undefined {
  * the same relevance-aware stop every other broad chip is. Both halves were
  * wrong, and the second was dangerously wrong:
  *
- *   - "C++" no longer normalizes to "C" at all. Sub-2-character tokens are
- *     dropped (re-review R2), so it normalizes to the empty string and is
- *     then handled by `normalizeForTitleSearch`'s case (a) -- sent verbatim,
- *     answered with 0, one cheap request.
+ *   - "C++" no longer normalizes to "C" at all. A token must hold 2+
+ *     ALPHANUMERIC characters to be sent (re-review R2, then E2), so "C++"
+ *     keeps no token and the phrase is skipped outright -- no request issued.
  *   - The stop can NEVER fire for a single-letter word, so "C" was never
  *     bounded. Re-review D2 proved this through the real class: for phrase
  *     "C++" against pages titled "Civil Engineer", the stop never fired and
  *     the search ran to `maxPages` (50 requests). `titleSearchWords` splits
  *     on `/[^a-z0-9]+/`, so the word list is ["c"] -- a substring nearly
- *     every title contains. A purely alphanumeric degenerate chip is now
- *     skipped outright for exactly this reason (case (b)).
+ *     every title contains. That unboundedness is the whole reason such a
+ *     phrase is now skipped rather than sent in any form.
  *
- * "C++" and ".NET" remain shapes `criteria.ts` explicitly supports
+ * A third wrong version is worth recording for the same reason: the fix
+ * BETWEEN those two split degenerate phrases into "carries punctuation, so
+ * send it verbatim for a cheap 0" and "purely alphanumeric, so skip it".
+ * Re-review E1 measured the first half false in general (`C++ 3` -> 405,
+ * `a-b 7` -> 12), and E2 found `C#` slipping through the character-count
+ * filter entirely while measuring identically to a bare `C` (3,674). Both
+ * collapse into the single alphanumeric-count rule now in place.
+ *
+ * "C++", "C#" and ".NET" remain shapes `criteria.ts` explicitly supports
  * downstream (ticket 59fdc52 N5's word-boundary handling for a phrase that
  * starts or ends on a non-word character) -- this only changes what reaches
  * that filter, not what it keeps.
@@ -1062,21 +1086,65 @@ function parseRetryAfter(header: string | null): number | undefined {
  * regression for another.
  */
 function normalizeForTitleSearch(phrase: string): string | undefined {
-  // Re-review R2, measured 2026-10-08: separator normalization alone turns
-  // `C++` into the single letter `C`, and `PositionTitle=C` returns 3,674 --
-  // of which EVERY sampled 25-item slice (ranks 1-25, ~500, ~1500, ~2500,
-  // ~3500) contained a title holding "c". So the relevance-aware early stop
-  // can NEVER fire for a one-character word, and a literal `C++` chip would
-  // fully paginate ~3,674 postings (~85 MB) for zero genuine matches. Before
-  // this ticket it was free: `PositionTitle=C++` returned 0.
+  // Two rules, and re-review E1/E2 collapsed them into ONE after an earlier
+  // version of this fix needed two cases and still leaked a bad shape through.
   //
-  // Dropping tokens shorter than 2 characters restores that cheapness without
-  // giving up F4's fix -- `Writer/Editor` still becomes `Writer Editor`, while
-  // `C++ Engineer` searches `Engineer` (470) rather than {c, engineer}
-  // (~4,000).
+  // The rule: a token is worth sending only if it holds 2 or more ALPHANUMERIC
+  // characters. Count alphanumerics, not raw length -- that is the whole fix,
+  // and it is the correct unit because USAJOBS' own tokenizer is what decides,
+  // and it drops non-alphanumerics before matching. Measured 2026-10-08:
+  //
+  //   PositionTitle=C   -> 3,674     PositionTitle=C#  -> 3,674  (identical:
+  //   PositionTitle=R   -> 2,137                                  `#` dropped
+  //   PositionTitle=A   -> 5,037                                  server-side)
+  //   PositionTitle=Engineer -> 471
+  //
+  // Counting raw length let `C#` through: 2 characters long, so it survived a
+  // `word.length > 1` filter, but only ONE alphanumeric, so USAJOBS answers it
+  // exactly as it answers a bare `C` -- 3,674 postings, ~15 requests at
+  // 250/page, ~85MB, zero genuine matches, and NO early stop possible because
+  // `titleSearchWords` splits on /[^a-z0-9]+/ and gets the word list ["c"],
+  // a substring nearly every title contains. `F#` is the same shape. A bare
+  // `C#` chip is considerably more plausible than a bare `C`: it is a
+  // mainstream language name, and ticket 5ba5cca's incident was exactly
+  // bolted-on technology names reaching chips.
+  //
+  // What the rule does to each shape, measured:
+  //
+  //   Writer/Editor  -> "Writer Editor"  (both tokens survive -- F4's fix,
+  //                                       separators still normalize to space:
+  //                                       Writer-Editor | Writer/Editor |
+  //                                       Writer+Editor | Writer_Editor all
+  //                                       return 0, Writer Editor returns 7)
+  //   C++ Engineer   -> "Engineer" (471, not {c, engineer} at ~4,000)
+  //   C# Developer   -> "Developer" (the C# token carries one alphanumeric,
+  //                                  so it is dropped as the noise it is)
+  //   .NET           -> ".NET"  (NET is 3 alphanumerics -- survives. Periods
+  //                              are deliberately NOT normalized to space:
+  //                              unmeasured, and the leading period is what
+  //                              `criteria.ts`'s word-boundary logic depends
+  //                              on downstream, ticket 59fdc52 N5)
+  //   C++ | C# | F# | C | R | a-b | c/c | C++ 3  -> undefined (unsearchable)
+  //
+  // `undefined` means UNSEARCHABLE BY TITLE: no token gives USAJOBS anything
+  // to match on, so the caller skips the phrase with a reason and issues no
+  // request at all. An earlier version instead sent such a phrase verbatim,
+  // on the rationale that USAJOBS answers it with 0 for one cheap request.
+  // Re-review E1 measured that rationale false in general: it holds for `C++`
+  // (0), `a-b` (0) and `c/c` (0), but `C++ 3` normalizes to empty the same way
+  // and returns 405, and `a-b 7` returns 12 -- a surviving bare digit is a
+  // real OR branch. Skipping is correct for all of them and cheaper than all
+  // of them.
+  //
+  // HONEST LIMIT, stated because it is a prediction and not a measurement:
+  // skipping asserts that such a phrase WOULD match nothing useful, rather
+  // than asking USAJOBS. That is sound reasoning -- a phrase with no token
+  // holding two alphanumerics gives the server nothing with substance to
+  // match -- and it is measured true for every shape above as of 2026-10-08.
+  // It is not a guarantee about future USAJOBS behaviour.
   //
   // Dropping a short token can never COST a match, and this is provable, not
-  // merely plausible (re-review D-Q3, measured 2026-10-08: `Engineer 3` -> 873
+  // merely plausible (re-review Q3, measured 2026-10-08: `Engineer 3` -> 873
   // vs `Engineer` -> 471; `Tier 1 Analyst` -> 712 vs `Tier Analyst` -> 562;
   // `Writer 1` -> 159 vs `Writer` -> 7, so the digit really is its own OR
   // branch). With OR semantics, dropping a token while at least one survives
@@ -1090,41 +1158,16 @@ function normalizeForTitleSearch(phrase: string): string | undefined {
   // "Author 1" via the "1" branch rather than via {writer}) can be lost. Not
   // measured in the wild; narrow enough to accept, too narrow to leave unsaid.
   //
-  // Note this is a deliberate asymmetry with `criteria.ts`, whose own
-  // word-boundary matching DOES support `C++`/`.NET` shapes (ticket 59fdc52
-  // N5). The local filter can afford a one-letter token; a remote OR-semantics
-  // query cannot.
-  const normalized = phrase
+  // Note the deliberate asymmetry with `criteria.ts`, whose own word-boundary
+  // matching DOES support `C++`/`.NET`/`C#` shapes (ticket 59fdc52 N5). The
+  // local filter can afford a one-alphanumeric token; a remote OR-semantics
+  // query cannot. This only changes what reaches that filter, not what it
+  // keeps.
+  const kept = phrase
     .replace(/[-/+_]/g, " ")
     .split(/\s+/)
-    .filter((word) => word.length > 1)
-    .join(" ")
-    .trim();
-  if (normalized.length > 0) return normalized;
-
-  // Every token was sub-2-character, so there is no normalized phrase to
-  // send. The two ways that happens are NOT interchangeable, and re-review D1
-  // caught an earlier version of this fix treating them as if they were --
-  // it sent the raw phrase in both cases, on a rationale that is true for the
-  // first and false for the second.
-  //
-  // (a) The phrase carries a character USAJOBS' own tokenizer drops, so the
-  //     raw phrase is answered with 0 for ONE cheap request -- measured
-  //     2026-10-08: `PositionTitle=C++` -> 0, `PositionTitle=.NET` -> 0, and
-  //     a live adapter run on chip ["C++"] completed in 1 request / 0.4s /
-  //     0 jobs. That is exactly the free, pre-ticket behaviour, so send it.
-  //
-  // (b) The phrase is purely alphanumeric -- a chip that is literally `C` or
-  //     `R`. Here the raw phrase is the WORST case, not a cheap one:
-  //     `PositionTitle=C` -> 3,674, `R` -> 2,137, `A` -> 5,037, each ~15
-  //     requests at 250/page and ~85 MB downloaded for zero genuine matches,
-  //     with no possibility of an early stop (see `titleSearchWords` -- the
-  //     stop's word list for such a phrase is a single letter that nearly
-  //     every title contains). So this phrase is unsearchable-by-title:
-  //     return `undefined` and let the caller skip it with a reason, which
-  //     also tells the user something, where the old silent fallback reported
-  //     jobs: 0, skipped: 0, warnings: 0 and explained nothing.
-  return /[^a-z0-9\s]/i.test(phrase) ? phrase : undefined;
+    .filter((word) => word.replace(/[^a-z0-9]/gi, "").length > 1);
+  return kept.length > 0 ? kept.join(" ") : undefined;
 }
 
 /**
