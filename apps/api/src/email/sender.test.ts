@@ -199,6 +199,17 @@ describe("makeSendgridSender", () => {
     expect(body.from).toEqual({ email: "nicole@griesmeyer.org" });
   });
 
+  it('review F3: an EMPTY display name omits `name` entirely rather than sending `name: ""` -- SendGrid\'s reference marks `name` optional (required: ["email"]) and says nothing about how an empty string is handled, so omission is the only documented-safe option. Asserted with toEqual so an added empty `name` fails; this branch had a surviving mutant until the review caught it', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await makeSendgridSender("sg_test_key", "<nicole@griesmeyer.org>")(message);
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { from: unknown };
+    expect(body.from).toEqual({ email: "nicole@griesmeyer.org" });
+  });
+
   it("treats a 202 Accepted as success, not a failure", async () => {
     vi.stubGlobal(
       "fetch",

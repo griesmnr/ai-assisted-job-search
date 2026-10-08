@@ -71,7 +71,9 @@ export type SendEmailFn = (message: EmailMessage) => Promise<void>;
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
-/** How long to wait on Resend before giving up. A magic-link request is a
+/** How long to wait on the email provider before giving up -- shared by both
+ * senders below, Resend and SendGrid alike (review F4: this said "on Resend"
+ * while SendGrid was already using it). A magic-link request is a
  * synchronous, user-facing POST -- a provider hanging must surface as a
  * clear failure the user can retry, not as a request that never answers. */
 const SEND_TIMEOUT_MS = 10_000;
@@ -162,6 +164,18 @@ const SENDGRID_ENDPOINT = "https://api.sendgrid.com/v3/mail/send";
  * A bare address with no angle brackets is the email with no name -- the
  * variable's format itself does not change for this (see this file's header
  * and `.env.example`), only how the SendGrid sender reads it.
+ *
+ * An EMPTY display name (`<addr>`) omits `name` rather than sending `name: ""`.
+ * SendGrid's reference marks `name` optional (`required: ["email"]`) and says
+ * nothing about empty-string handling, so omitting it is the only
+ * documented-safe option rather than a guess.
+ *
+ * KNOWN COSMETIC LIMIT, disclosed rather than discovered later: an RFC 5322
+ * QUOTED display name (`"FitScore" <addr>`) keeps its literal quote
+ * characters, so the recipient's From line would read `"FitScore"` with
+ * visible quotes. Not a send failure, and not reachable from the current
+ * configuration -- `MAGIC_LINK_FROM_EMAIL` is set to an unquoted
+ * `FitScore <addr>`. Strip the quotes here if a quoted form is ever needed.
  */
 function parseFromAddress(fromAddress: string): { email: string; name?: string } {
   const match = /^(.*)<([^>]+)>\s*$/.exec(fromAddress);

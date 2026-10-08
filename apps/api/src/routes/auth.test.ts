@@ -5,7 +5,9 @@
  *
  * The sender is faked the same way route tests already fake the Anthropic
  * scorer and the AMQP publisher: nothing here sends real mail or needs a real
- * `RESEND_API_KEY`, and the fake records exactly what WOULD have been sent so
+ * provider key (`SENDGRID_API_KEY` or `RESEND_API_KEY` -- see
+ * `makeEmailSenderFromEnv`), and the fake records exactly what WOULD have been
+ * sent so
  * the "a real email goes out, carrying a working link" criterion is checked
  * on the message itself rather than asserted by inspection.
  */
@@ -323,13 +325,25 @@ describe("POST /auth/magic-link", () => {
 
   /**
    * THE NON-NEGOTIABLE from BuildAppDeps.getScoreJob's doc comment, applied
-   * to email: a machine that has never configured `RESEND_API_KEY` must still
-   * boot and serve every other route. Built here with NO `getSendEmail`
-   * override at all, so the real `makeResendSenderFromEnv` default is in play
-   * -- if it were constructed eagerly (at `buildApp`, or at module load), this
-   * test would throw before it could assert anything.
+   * to email: a machine that has configured NO email provider key at all must
+   * still boot and serve every other route. Built here with NO `getSendEmail`
+   * override, so the real `makeEmailSenderFromEnv` default is in play -- if it
+   * were constructed eagerly (at `buildApp`, or at module load), this test
+   * would throw before it could assert anything.
+   *
+   * ALL THREE stubs below are load-bearing, and `SENDGRID_API_KEY` was missing
+   * until ticket 184b9ae's review (F1) added it. `beforeAll` calls
+   * `loadEnvFile()`, which pulls the repo-root `.env` into `process.env` -- so
+   * on any machine that has a real SendGrid key (the owner's does), leaving it
+   * unstubbed meant this test still PASSED but through a different path: it
+   * threw "MAGIC_LINK_FROM_EMAIL must be set" rather than "no provider
+   * configured", quietly falsifying its own premise. Worse, it left the suite
+   * one dropped stub away from constructing a REAL SendGrid sender and firing
+   * live outbound mail from a test run. Stub every provider key here, not just
+   * the one that happened to exist when the test was written.
    */
   it("keeps every other route working with no email configuration at all, and fails only this one", async () => {
+    vi.stubEnv("SENDGRID_API_KEY", "");
     vi.stubEnv("RESEND_API_KEY", "");
     vi.stubEnv("MAGIC_LINK_FROM_EMAIL", "");
     const app = buildApp({
