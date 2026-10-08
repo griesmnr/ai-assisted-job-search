@@ -65,7 +65,7 @@ const EXACT_WELCOME_TEXT =
   "spot the opportunities that best align with your skills and experience. Spend less time " +
   "searching and more time applying!";
 
-describe("App welcome paragraph (ticket 9e00bc9)", () => {
+describe("App welcome paragraph (ticket 9e00bc9, unconditional since 0a378a5)", () => {
   it("renders the exact copy, with an em dash and an en dash, for a brand-new browser/account", async () => {
     getSources.mockResolvedValue(SOURCES);
     listResumes.mockResolvedValue({ resumes: [] } satisfies ListResumesResponse);
@@ -188,6 +188,34 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
     getAllResults.mockReturnValue(new Promise<GetAllResultsResponse>(() => {}));
 
     render(<App />);
+
+    expect(screen.queryByText(/Welcome to FitScore/)).not.toBeNull();
+  });
+
+  it("is visible for a verified user with a saved resume AFTER both fetches settle -- the owner's actual steady state, which is the one combination the other tests leave uncovered", async () => {
+    // Review F4: the test above holds both fetches permanently pending, so it
+    // only ever observes the loading window; the two inverted tests settle
+    // their fetches but set no verified email. Nicole is verified AND has
+    // saved resumes AND her fetches resolve, so the state she actually looks
+    // at on every single load had no test at all. The old gate read
+    // `verifiedEmail` FIRST, before any data condition, which makes this
+    // precise combination the one most likely to regress if a gate is ever
+    // reintroduced -- it is the only state where every input to the removed
+    // gate is simultaneously "hide it".
+    setVerifiedEmail("owner@example.com");
+    getSources.mockResolvedValue(SOURCES);
+    listResumes.mockResolvedValue({
+      resumes: [{ id: "resume-1", resumeNickname: "Resume 1", createdAt: "2026-01-01T00:00:00Z" }],
+    } satisfies ListResumesResponse);
+    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+
+    render(<App />);
+
+    await waitFor(() => expect(listResumes).toHaveBeenCalled());
+    await waitFor(() => expect(getAllResults).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "FitScore" })).toBeInTheDocument(),
+    );
 
     expect(screen.queryByText(/Welcome to FitScore/)).not.toBeNull();
   });

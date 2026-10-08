@@ -1748,14 +1748,45 @@ function JobSearchApp() {
   // uses) eliminated it: a verified visitor never saw the paragraph for even
   // one frame, so there was no loading window left to jump out of.
   //
-  // Those figures are still true measurements and are kept for that reason,
-  // not reverted-from error. They are moot now, not wrong: with the
-  // paragraph unconditional, there is no visible/hidden transition for any
-  // visitor to jump across, verified or not -- the jump this comment
-  // describes cannot occur against an element that never toggles. Do not
-  // read this as license to reintroduce a gate "because the flash might
-  // still happen"; it cannot, by construction, as long as rendering stays
-  // unconditional.
+  // Those figures are NOT moot, and an earlier version of this comment
+  // saying so was exactly wrong -- opus review of 0a378a5 (F1) caught it.
+  // The gate never created that 146.3px / 235.9px cost; it HID it. Removing
+  // the gate converts a transient jump into a permanent one of identical
+  // size: 146.3px at 1366/1280px wide and 235.9px at 390px are now the
+  // paragraph's STANDING contribution to above-fold height on every render
+  // for every visitor. Re-measured independently in real Chromium against
+  // this app's built CSS, 2026-10-08, and reproduced to the digit.
+  //
+  // What that costs, measured rather than guessed, and who pays it: a
+  // first-time visitor pays nothing -- no saved resumes and no signed-in cue
+  // (unverified by definition), so the paste box sits fully visible with
+  // 206px of headroom on a 1366x768 laptop and 148px on a 390x844 phone. The
+  // cost lands on a RETURNING user with saved resumes, which is to say the
+  // owner, who is the one person the paragraph is not for: the paste box's
+  // bottom edge sits 3.1px below the fold at 3 saved resumes on laptop,
+  // 67.6px below at 8, and 88.5px / 153.0px below on phone. It saturates at
+  // 8 because `.resume-pick-saved .resume-picker-options` caps at
+  // `max-height: 12rem`, so the worst case is bounded. The paste box is
+  // never HIDDEN in any measured case -- the "Paste your resume" label and
+  // the textarea's top edge stay above the fold throughout, and `Submit`
+  // only renders once there is text -- so this is degraded, not broken. It
+  // has its own ticket; see git-bug for the measured levers.
+  //
+  // Do not read any of this as license to reintroduce a gate. The owner
+  // asked for the paragraph to be always visible, in those words, after
+  // looking for it on her own app and not finding it. The fold cost is paid
+  // by shortening or tightening the paragraph, or by reclaiming vertical
+  // space elsewhere on the page -- not by hiding it from anyone.
+  //
+  // One known defect is made permanent by this change, recorded here rather
+  // than dropped (review F3) because 9e00bc9 documented it and deleting the
+  // note while universalizing the defect would lose it: beside
+  // `SignedInCue`, a verified user now sees this unverified-newcomer
+  // greeting and "These results are saved to <email>" on screen at the same
+  // time. 9e00bc9's gate closed that as a side effect. Accepted consequence
+  // of an explicit instruction, not an oversight -- the fix is to reword the
+  // paragraph so it reads sensibly to someone already signed in, which is a
+  // copy decision and hers to make.
 
   // Latches true the first time the recovery offer is due, so the component is
   // not mounted before then. A ref rather than state: it only ever goes true,
