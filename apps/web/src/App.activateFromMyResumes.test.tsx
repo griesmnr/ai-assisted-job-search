@@ -342,7 +342,7 @@ describe("App — My Resumes activate action respects the searching guard (ticke
     await screen.findByRole("button", { name: "Change resume" });
 
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
 
     await act(async () => {

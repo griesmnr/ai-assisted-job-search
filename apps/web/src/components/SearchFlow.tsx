@@ -178,7 +178,7 @@ export function SearchFlow({
   /** Ticket b9e6251: App.tsx sets this when the location criteria has no
    * real signal (no commute locations, remote not checked, "Any location"
    * not checked). Ticket 371713d changed HOW this blocks the estimate --
-   * see the "Estimate search cost" button below: it used to be the native
+   * see the "Get estimate" button below: it used to be the native
    * `disabled` attribute, which is why the gate still keeps
    * `sourceIds.length === 0` as a REAL `disabled` (no reason to scroll
    * anywhere for that one -- "select a source" isn't a location problem).
@@ -196,7 +196,7 @@ export function SearchFlow({
    * every time a new search is estimated." Optional so every other
    * existing caller/test keeps working unchanged. */
   onEstimateStart?: () => void;
-  /** Ticket 371713d: fired when "Estimate search cost" is clicked while
+  /** Ticket 371713d: fired when "Get estimate" is clicked while
    * `disableEstimate` is true -- i.e. an attempt that this component
    * blocks from ever reaching `handleEstimate`. App.tsx is the one place
    * that also holds the ref into SIBLING component `SearchCriteriaForm`'s
@@ -527,7 +527,7 @@ export function SearchFlow({
   // selection from ever reaching `handleConfirmRun` with a mismatched
   // estimate still on screen: it discards the stale estimate back to
   // "idle" the moment `resumeId`/`sourceIds` diverge from the snapshot,
-  // forcing a fresh "Estimate search cost" click (and a fresh, honest
+  // forcing a fresh "Get estimate" click (and a fresh, honest
   // price) before anything can spend money. Deliberately scoped to ONLY
   // the "estimated" phase — once the user has clicked "Run search"
   // ("starting"/"running"), the request is already in flight against its
@@ -709,7 +709,7 @@ export function SearchFlow({
             // button.
             aria-disabled={sourceIds.length === 0 || disableEstimate}
           >
-            Estimate search cost
+            Get estimate
           </button>
           {/* Ticket b9e6251, opus review F2: SearchCriteriaForm's own
               location warning only explains ONE of the two things that can

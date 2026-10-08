@@ -186,7 +186,7 @@ function buildSearchCriteria(form: CriteriaFormState & { titleChips: string[] })
  *   1. Paste a resume -> POST /resumes.
  *   2. Toggle sources -> filters the (already fetched) scored corpus
  *      instantly, client-side. Never triggers a fetch (decision #3).
- *   3. Explicit "Estimate search cost" / "Run search" flow (SearchFlow) ->
+ *   3. Explicit "Get estimate" / "Run search" flow (SearchFlow) ->
  *      the only place this app spends money, and only on confirm
  *      (decision #4).
  *   4. Curated results list, floor-applied with a stated hidden count, per
@@ -515,7 +515,7 @@ function JobSearchApp() {
   // rejected for title keywords ("I'd rather have it be a really
   // expensive search offered than a blind default"). Now that state
   // requires the explicit `anyLocationOk` opt-in (SearchCriteriaForm's own
-  // checkbox) before "Estimate search cost" is even reachable -- see the
+  // checkbox) before "Get estimate" is even reachable -- see the
   // `disableEstimate` prop passed to SearchFlow below.
   // Matches SearchCriteriaForm's own identical check (its warning text
   // depends on the same condition) -- both call the shared `splitPhrases`
@@ -544,7 +544,7 @@ function JobSearchApp() {
   function handleInvalidEstimateAttempt() {
     locationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     // Ticket 371713d, opus review F4: scrolling alone leaves DOM focus on
-    // the "Estimate search cost" button itself, which sits AFTER this
+    // the "Get estimate" button itself, which sits AFTER this
     // section in DOM order -- a keyboard user tabbing onward from there
     // moves further away from the field that needs fixing, and a screen
     // reader user gets no re-announcement at all on a blocked attempt.
@@ -2160,11 +2160,11 @@ function JobSearchApp() {
             </section>
 
             <section className="search-section">
-              <h2>Find new matches</h2>
+              <h2>Search these jobs — and see the cost first</h2>
               <p className="search-pitch">
-                This isn't a keyword search. Claude actually reads your resume against each job
-                description, one at a time, and judges how well you'd really fit — that real reading
-                is what the cost below pays for.
+                Claude actually compares your resume against each job description that matches your
+                titles, one at a time, and judges how well you&apos;d really fit. That real
+                comparison is what the cost below pays for.
               </p>
               <SearchFlow
                 resumeId={resumeId}

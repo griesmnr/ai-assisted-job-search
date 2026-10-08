@@ -161,7 +161,7 @@ function mockHappyPath(results: GetResumeResultsResponse) {
   });
 }
 
-/** Paste a resume and get as far as an enabled "Estimate search cost". Mirrors
+/** Paste a resume and get as far as an enabled "Get estimate". Mirrors
  * `submitResume` in App.tabs.test.tsx (including the ticket b9e6251 "Any
  * location" opt-in every test in that file also needs). */
 async function submitResume() {
@@ -175,7 +175,7 @@ async function submitResume() {
 }
 
 async function runSearchToCompletion() {
-  fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+  fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
   await screen.findByRole("button", { name: "Run search" });
   fireEvent.click(screen.getByRole("button", { name: "Run search" }));
   await act(async () => {
@@ -243,7 +243,7 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
       screen.queryByRole("heading", { name: /find these results again/i }),
     ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     // An estimate is not results. This is the boundary the ticket's "never
     // before" is actually about -- the user has been shown a price, not an
@@ -267,7 +267,7 @@ describe("the sign-in prompt is offered only after scored results land (ticket 9
     mockHappyPath(NO_RESULTS);
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     await act(async () => {

@@ -104,7 +104,7 @@ async function submitResume() {
   fireEvent.click(screen.getByRole("button", { name: "Submit" }));
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
   // Ticket b9e6251: an empty location now requires the explicit "Any
-  // location" opt-in before "Estimate search cost" is enabled.
+  // location" opt-in before "Get estimate" is enabled.
   fireEvent.click(screen.getByLabelText(/Any location/));
 }
 
@@ -161,7 +161,7 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
     });
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 

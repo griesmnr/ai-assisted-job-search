@@ -320,7 +320,7 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
     await screen.findByRole("button", { name: "Change resume" });
 
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
 
     await act(async () => {
@@ -380,7 +380,7 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
     expect(await screen.findByRole("button", { name: "Edit resume" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
 
     // "starting": POST /searches is in flight, no searchId adopted yet.

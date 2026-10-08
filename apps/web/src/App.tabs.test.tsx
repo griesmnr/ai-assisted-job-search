@@ -150,7 +150,7 @@ describe("App tabs (ticket f4a7f07)", () => {
 
     await submitResume();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     expect(screen.getByLabelText("Cost estimate")).toBeInTheDocument();
 
@@ -185,7 +185,7 @@ describe("App tabs (ticket f4a7f07)", () => {
       screen.queryByRole("heading", { name: "Results from this search" }),
     ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     // Still not shown -- only an ESTIMATE has happened, not a completed
@@ -240,7 +240,7 @@ describe("App tabs (ticket f4a7f07)", () => {
 
     await submitResume();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -258,7 +258,7 @@ describe("App tabs (ticket f4a7f07)", () => {
     // immediately, per Nicole: "cleared every time a new search is
     // estimated".
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     expect(
       screen.queryByRole("heading", { name: "Results from this search" }),

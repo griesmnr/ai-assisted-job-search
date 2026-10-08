@@ -554,7 +554,7 @@ section {
 /* Ticket 371713d: wraps the location text input, both location-related
    checkboxes, and the text warning -- the single unit `SearchFlow` (a
    SIBLING component, via a ref App.tsx hands down) scrolls into view when
-   "Estimate search cost" is clicked with no location signal set. Keeps the
+   "Get estimate" is clicked with no location signal set. Keeps the
    same flex/gap rhythm as `.search-criteria-form` itself, since wrapping
    these children in a div would otherwise drop them out of the parent's
    `gap`. */

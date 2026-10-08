@@ -107,7 +107,7 @@ async function runASearch(resumeId = "resume-1") {
   const view = render(
     <SearchFlow resumeId={resumeId} sourceIds={["a"]} onSearchComplete={() => {}} />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+  fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
   fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
   await screen.findByLabelText("Search running");
   return view;
@@ -170,10 +170,10 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
 
     // On screen immediately, before any network round trip: the restore is a
     // state initializer, not an effect, so there is no flash of the idle
-    // "Estimate search cost" button for the user to misread as "nothing
+    // "Get estimate" button for the user to misread as "nothing
     // happened."
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Estimate search cost" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Get estimate" })).not.toBeInTheDocument();
 
     await waitFor(() => expect(getSearchStatus).toHaveBeenCalledWith("search-abc"));
     expect(await screen.findByText("6 of 15 scored so far.")).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    expect(await screen.findByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     // Not an error panel: the user never asked THIS page load to run that
     // search, so "Could not run the search: No search with id ..." would be
     // a scary non-sequitur.
@@ -307,7 +307,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
     const { unmount } = render(
       <SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />,
     );
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     expect(getSearchStatus).not.toHaveBeenCalled();
     unmount();
 
@@ -318,7 +318,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       JSON.stringify({ searchId: "search-abc", resumeId: "resume-1", startedAt: Date.now() }),
     );
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     expect(getSearchStatus).not.toHaveBeenCalled();
   });
 
@@ -327,7 +327,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     expect(getSearchStatus).not.toHaveBeenCalled();
     // The deletion half is the one that costs money if it's wrong: that run
     // is still scoring jobs somewhere, and a mount for an unrelated resume
@@ -360,7 +360,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
     });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
 
     expect(await screen.findByLabelText("Search running")).toBeInTheDocument();
@@ -382,7 +382,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
     );
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run search" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Conflict");

@@ -458,7 +458,7 @@ function ResumeRow({
             // of a search (every other row already gets this for free:
             // `index.css`'s `button[aria-disabled="true"]` rule is what
             // actually dims a button here, the same mechanism
-            // SearchFlow.tsx's "Estimate search cost" button already
+            // SearchFlow.tsx's "Get estimate" button already
             // relies on for its own click-time-gated disable). Plain
             // boolean, not `? true : undefined`: `aria-disabled="false"`
             // is the explicit, correct value while enabled, not an

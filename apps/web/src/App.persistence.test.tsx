@@ -251,7 +251,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     estimateSearch.mockResolvedValue(makeEstimate());
     await setUpRealState();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByLabelText("Cost estimate");
     createResume.mockClear();
 
@@ -305,7 +305,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
     fireEvent.click(screen.getByLabelText(/Any location/));
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Get estimate" })).not.toBeDisabled();
     cleanup();
 
     render(<App />);
@@ -314,7 +314,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     expect(screen.getByLabelText(/Any location/)).toBeChecked();
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled(),
+      expect(screen.getByRole("button", { name: "Get estimate" })).not.toBeDisabled(),
     );
   });
 
@@ -326,7 +326,7 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
 
     render(<App />);
     await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     // Restoring the toggles without restoring what they MEAN would be the

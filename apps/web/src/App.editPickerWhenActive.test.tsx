@@ -180,7 +180,7 @@ describe("App — the saved-resume picker reappears on 'Edit' (ticket 582ee40)",
     // (ac141d0) -- proving it is reachable and functional now is the real
     // test, not just that the collapsed bar's text changed.
     fireEvent.click(screen.getByLabelText(/Any location/));
-    const estimateButton = screen.getByRole("button", { name: "Estimate search cost" });
+    const estimateButton = screen.getByRole("button", { name: "Get estimate" });
     expect(estimateButton).toBeVisible();
     expect(estimateButton).not.toBeDisabled();
   });

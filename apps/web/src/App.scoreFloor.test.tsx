@@ -153,7 +153,7 @@ async function submitResumeAndCompleteASearch() {
   await waitFor(() => expect(screen.getByLabelText("USAJOBS")).toBeChecked());
   fireEvent.click(screen.getByLabelText(/Any location/));
 
-  fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+  fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
   await screen.findByRole("button", { name: "Run search" });
   fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 

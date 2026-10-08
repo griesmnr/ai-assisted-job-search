@@ -195,7 +195,7 @@ export function SearchCriteriaForm({
           </button>
         </div>
       </div>
-      {/* Ticket 371713d: this whole block is what "Estimate search cost"
+      {/* Ticket 371713d: this whole block is what "Get estimate"
           (SearchFlow, a SIBLING component) scrolls into view when clicked
           with no location signal set -- see `locationSectionRef`'s own doc
           comment above. Grouping the text input, both location checkboxes,

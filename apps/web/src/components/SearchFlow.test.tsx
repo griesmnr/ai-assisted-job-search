@@ -85,7 +85,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     expect(screen.getByLabelText("Cost estimate")).toBeInTheDocument();
 
@@ -95,18 +95,18 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     });
 
     // Same hole, resumeId side: re-show an estimate, then change resumeId.
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     rerender(<SearchFlow resumeId="resume-2" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     });
   });
 
@@ -118,7 +118,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     // Request is now in flight (phase === "estimating"); the mocked
     // estimateSearch call captured the selection at click time, ["a", "b"].
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -146,7 +146,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     // let the user fire startSearch against a selection they never saw a
     // price for. The fix resets straight back to idle.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: "Run search" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
@@ -165,7 +165,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     expect(estimateSearch).toHaveBeenCalledWith(
       "resume-1",
       ["a", "b"],
@@ -184,7 +184,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: "Run search" })).not.toBeInTheDocument();
     expect(startSearch).not.toHaveBeenCalled();
@@ -202,7 +202,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     expect(estimateSearch).toHaveBeenCalledWith(
       "resume-1",
@@ -227,7 +227,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
     });
     expect(startSearch).not.toHaveBeenCalled();
   });
@@ -247,7 +247,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
@@ -275,7 +275,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     const { rerender } = render(
       <SearchFlow resumeId="resume-1" sourceIds={["a", "b"]} onSearchComplete={() => {}} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     await screen.findByRole("button", { name: "Starting..." });
@@ -283,7 +283,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     rerender(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
     expect(screen.getByRole("button", { name: "Starting..." })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Estimate search cost" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Get estimate" })).not.toBeInTheDocument();
 
     await act(async () => {
       resolve({ searchId: "s1" });
@@ -354,7 +354,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -469,7 +469,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -552,7 +552,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -664,7 +664,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -788,7 +788,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
     // Search 1: estimate, confirm, running.
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     await screen.findByLabelText("Search running");
@@ -804,7 +804,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
 
     // Start search 2.
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     await screen.findByLabelText("Search running");
@@ -850,7 +850,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     getSearchStatus.mockResolvedValue(result);
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
     // Longer than RTL's 1s default: the first poll tick doesn't fire until
@@ -1011,7 +1011,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -1042,7 +1042,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -1073,7 +1073,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -1090,7 +1090,7 @@ describe("SearchFlow — estimating phase feedback (ticket 541b55b)", () => {
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("this may take a minute");
@@ -1131,7 +1131,7 @@ describe("SearchFlow — estimate progress feedback (ticket bf2dd0a)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     // `startEstimateProgressPolling` fires its first poll synchronously
     // (not on the next 2s interval tick — see that function's own comment),
@@ -1163,7 +1163,7 @@ describe("SearchFlow — estimate progress feedback (ticket bf2dd0a)", () => {
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     const status = await screen.findByRole("status");
     // The plain spinner/copy is unaffected -- no "N of M" text ever
@@ -1216,7 +1216,7 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
         onRunningChange={onRunningChange}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("status");
 
     expect(onRunningChange).not.toHaveBeenCalledWith(true);
@@ -1257,7 +1257,7 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
         onRunningChange={onRunningChange}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -1297,7 +1297,7 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
         onRunningChange={onRunningChange}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
     fireEvent.click(screen.getByRole("button", { name: "Run search" }));
 
@@ -1329,7 +1329,7 @@ describe("SearchFlow — SourceOutcomesList text changes (ticket bd37f8a)", () =
     );
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     // The new text should appear in the source outcomes list
@@ -1358,7 +1358,7 @@ describe("SearchFlow — SourceOutcomesList text changes (ticket bd37f8a)", () =
     );
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     // The zero case should show the full text with 0
@@ -1374,7 +1374,7 @@ describe("SearchFlow — cost panel 'Already scored' visibility (ticket 83654fd)
     estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 0 }));
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     // The row with "Already scored" should not appear at all
@@ -1385,7 +1385,7 @@ describe("SearchFlow — cost panel 'Already scored' visibility (ticket 83654fd)
     estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 5 }));
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     // The row with "Already scored" should appear with the correct value
@@ -1397,7 +1397,7 @@ describe("SearchFlow — cost panel 'Already scored' visibility (ticket 83654fd)
     estimateSearch.mockResolvedValue(makeEstimate({ alreadyScored: 0 }));
 
     render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     const dlElement = screen

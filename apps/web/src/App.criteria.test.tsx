@@ -58,7 +58,7 @@ vi.mock("./api/client", () => ({
 // Ticket 371713d: jsdom does not implement `scrollIntoView` at all -- calling
 // it throws `TypeError: ... is not a function`. Most tests in this file
 // never trigger it (they check "Any location" or type a location before
-// clicking "Estimate search cost"), but several of the b9e6251 tests below
+// clicking "Get estimate"), but several of the b9e6251 tests below
 // deliberately click it WHILE invalid to prove the click is blocked, which
 // (as of this ticket) now also calls App.tsx's `handleInvalidEstimateAttempt`
 // -> `locationSectionRef.current?.scrollIntoView(...)`. A file-level
@@ -122,7 +122,7 @@ async function submitResume() {
   // Wait for CHECKED, not just present: the checkbox renders as soon as
   // sourcesState is "ready", one render BEFORE App.tsx's own auto-select
   // effect populates selectedSourceIds and re-renders it checked. Clicking
-  // "Estimate search cost" in that window hits a still-disabled button
+  // "Get estimate" in that window hits a still-disabled button
   // (sourceIds.length === 0) -- a real, if narrow, timing race in this
   // test, not the app. Confirmed by 3 consecutive real runs: flaky ~1/3
   // of the time on findByLabelText alone, deterministic once this waits
@@ -155,7 +155,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     // button is even enabled -- see SearchCriteriaForm's own location
     // warning.
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     // The critical assertion: exactly what's in titleChips, NOT undefined
@@ -201,7 +201,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {}, expect.any(String));
@@ -224,7 +224,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -258,7 +258,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: 'Remove "Backend Engineer"' }));
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -295,7 +295,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     fireEvent.click(screen.getByLabelText("Also show fully remote roles"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -331,7 +331,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByLabelText("Full-time"));
     fireEvent.click(screen.getByLabelText("Contract"));
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -349,9 +349,9 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
 // Ticket b9e6251: an empty location used to mean "search anywhere,
 // silently" -- the same shape of never-explicitly-chosen default Nicole's
 // own principle already rejected for title keywords. Now it requires a
-// real, explicit signal before "Estimate search cost" is even reachable.
+// real, explicit signal before "Get estimate" is even reachable.
 describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
-  it("blocks Estimate search cost (without a real `disabled` attribute) and shows a warning when no location signal is set", async () => {
+  it("blocks Get estimate (without a real `disabled` attribute) and shows a warning when no location signal is set", async () => {
     // Ticket 371713d: the button is no longer natively `disabled` for THIS
     // reason (see SearchFlow.tsx's own comment on why -- a real `disabled`
     // button can't fire onClick, which is needed for the "attempted click
@@ -368,7 +368,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     await submitResume();
 
-    const button = screen.getByRole("button", { name: "Estimate search cost" });
+    const button = screen.getByRole("button", { name: "Get estimate" });
     expect(button).not.toBeDisabled();
     expect(button).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(button);
@@ -388,7 +388,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
-    const button = screen.getByRole("button", { name: "Estimate search cost" });
+    const button = screen.getByRole("button", { name: "Get estimate" });
     fireEvent.click(button);
     expect(estimateSearch).not.toHaveBeenCalled();
 
@@ -418,7 +418,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       target: { value: "seattle" },
     });
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Get estimate" })).not.toBeDisabled();
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
   });
 
@@ -442,7 +442,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
       target: { value: "," },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     expect(estimateSearch).not.toHaveBeenCalled();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
@@ -462,7 +462,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     fireEvent.click(screen.getByLabelText("Also show fully remote roles"));
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Get estimate" })).not.toBeDisabled();
     expect(screen.queryByText(/No location restriction is set/)).not.toBeInTheDocument();
   });
 
@@ -478,14 +478,14 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Get estimate" })).toHaveAttribute(
       "aria-disabled",
       "false",
     );
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     expect(estimateSearch).not.toHaveBeenCalled();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
   });
@@ -510,13 +510,13 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     await screen.findByRole("button", { name: "Run search" });
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
     // The stale "Run search" confirmation must be gone -- back to a fresh,
-    // blocked "Estimate search cost", not a spendable leftover.
+    // blocked "Get estimate", not a spendable leftover.
     expect(screen.queryByRole("button", { name: "Run search" })).not.toBeInTheDocument();
     expect(screen.getByText(/No location restriction is set/)).toBeInTheDocument();
 
@@ -524,7 +524,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
     // reason, so this is the regression-proof that a click while invalid
     // still does not fire a SECOND, real estimate call against the
     // now-invalid criteria.
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
     expect(estimateSearch).toHaveBeenCalledTimes(1);
   });
 
@@ -548,7 +548,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    expect(screen.getByRole("button", { name: "Estimate search cost" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Get estimate" })).toBeDisabled();
     expect(screen.getByText(/Select at least one source/)).toBeInTheDocument();
   });
 
@@ -565,7 +565,7 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     const sentCriteria = estimateSearch.mock.calls[0]?.[2];
@@ -598,7 +598,7 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
 
   it("does not send the flag unless the user checks the box — the default stays strict all the way to the wire", async () => {
     await submitAndType("Seattle");
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     const sent = estimateSearch.mock.calls[0]?.[2];
@@ -609,7 +609,7 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
   it("sends expandMetroAreas: true once the checkbox is checked", async () => {
     await submitAndType("Seattle");
     fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch.mock.calls[0]?.[2]).toMatchObject({
@@ -624,7 +624,7 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
     await submitAndType("");
     fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch.mock.calls[0]?.[2]).not.toHaveProperty("expandMetroAreas");
@@ -733,7 +733,7 @@ describe("App — extra title chips folded in automatically at resume-submission
 
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(estimateSearch).toHaveBeenCalledWith(
@@ -805,7 +805,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
     Element.prototype.scrollIntoView = scrollIntoViewMock;
   });
 
-  it("clicking 'Estimate search cost' with no location signal scrolls the location section (not some unrelated element) into view, moves focus to the location input, and does NOT call the real estimate", async () => {
+  it("clicking 'Get estimate' with no location signal scrolls the location section (not some unrelated element) into view, moves focus to the location input, and does NOT call the real estimate", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -817,7 +817,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
 
     await submitResume();
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
     // Opus review F1 (blocking): asserting the CALL alone doesn't prove
@@ -853,7 +853,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
       target: { value: "seattle" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(scrollIntoViewMock).not.toHaveBeenCalled();
@@ -873,7 +873,7 @@ describe("App — attempting to estimate without a location scrolls back to it (
     await submitResume();
     fireEvent.click(screen.getByLabelText(/Any location/));
 
-    fireEvent.click(screen.getByRole("button", { name: "Estimate search cost" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     expect(scrollIntoViewMock).not.toHaveBeenCalled();
