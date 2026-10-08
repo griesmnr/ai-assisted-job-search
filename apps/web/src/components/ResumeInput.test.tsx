@@ -774,8 +774,52 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
    * "'Paste a new resume' opens the ordinary expanded paste form") and by none
    * of this ticket's own. Verified by mutation: dropping that half of the gate
    * fails this test.
+   *
+   * UPDATED, ticket 582ee40: the gate is no longer `resumeId === undefined`
+   * (see this file's top-of-file doc comment on the form branch for the full
+   * argument) -- it is `!pastingNewResume`, which this test now passes
+   * EXPLICITLY rather than relying on the prop's default. This is still
+   * exactly the scenario the test name and comment describe: the locked
+   * picker's own "Paste a new resume" exit, where the user just declined the
+   * saved list one click ago. The OTHER route that reaches this branch with a
+   * `resumeId` set -- an unlocked "Edit", `pastingNewResume` false -- is the
+   * new case covered by the tests just below, which this ticket's whole point
+   * is to make come out the opposite way.
    */
-  it("does NOT re-offer the saved list in the expanded paste form once a resume IS active", () => {
+  it("does NOT re-offer the saved list after the locked picker's 'Paste a new resume' (pastingNewResume true)", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        pastingNewResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    // This is the branch the picker's "Paste a new resume" lands on: the user
+    // declined the saved list one click ago, so re-offering it here would
+    // contradict the choice they just made.
+    expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Resume 8" })).not.toBeInTheDocument();
+    // Adversarial review of 582ee40 (fix 6): `toBeVisible()`, not
+    // `toBeInTheDocument()`, for the positive "the user can see this" claim.
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
+  });
+
+  /**
+   * TICKET 582ee40 -- the fix. Nicole hit this live: standing in the resume
+   * form, she pressed "Edit" on an active-but-UNLOCKED resume and got the
+   * paste form back with no way to switch which resume she was using. This is
+   * exactly that route: `resumeId` set, `editingResume` true (what "Edit"
+   * sets), `pastingNewResume` left at its default (`undefined`, same as what
+   * App.tsx's own state starts at and what every pre-existing caller/test
+   * that doesn't pass it gets) -- the ordinary "Edit", not the locked
+   * picker's "Paste a new resume" exit tested just above.
+   */
+  it("DOES offer the saved list in the expanded paste form once a resume is active via an ordinary 'Edit' (pastingNewResume undefined)", () => {
     render(
       <ResumeInput
         onSubmit={() => {}}
@@ -787,12 +831,140 @@ describe("ResumeInput — the picker branch (ticket 88f11d7)", () => {
       />,
     );
 
-    // This is the branch the picker's "Paste a new resume" lands on: the user
-    // declined the saved list one click ago, so re-offering it here would
-    // contradict the choice they just made.
+    // Adversarial review of 582ee40 (fix 6): `toBeVisible()`, not
+    // `toBeInTheDocument()`, throughout -- these are all claims about what
+    // the user can SEE.
+    expect(screen.getByText("Use a saved resume:")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use Resume 14" })).toBeVisible();
+    // Still an addition, not a replacement.
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
+  });
+
+  /**
+   * The active-row decision this ticket had to make and comment (see the
+   * form branch's own doc comment in ResumeInput.tsx): this list is a
+   * CHOOSER, same as the `changingResume` picker branch above, which already
+   * excludes the active resume (tested further below) -- NOT a browsable
+   * inventory like MyResumes.tsx, which shows the active row as a
+   * non-interactive "Active" marker instead. Diverging from MyResumes here is
+   * the deliberate answer, not an inconsistency to fix.
+   */
+  it("excludes the active resume from the reappeared list, same as the locked picker does", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        resumes={RESUMES}
+      />,
+    );
+
+    // Adversarial review of 582ee40 (fix 4): a POSITIVE assertion, not just
+    // an absence. Without this, the mutation that reverts the widened gate
+    // back to `resumeId === undefined` -- which makes the WHOLE list,
+    // including this button, disappear -- left this test green: no list at
+    // all also contains no "Use Resume 1". Asserting the OTHER buttons are
+    // actually there is what makes "excluded, not just absent because
+    // nothing rendered" a real claim.
+    expect(screen.getByRole("button", { name: "Use Resume 8" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Use Resume 14" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Use Resume 1" })).not.toBeInTheDocument();
+    // No "Active" marker either -- that idiom belongs to MyResumes.tsx, not
+    // this chooser.
+    expect(screen.queryByText("Active")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Adversarial review of 582ee40 (fix 5). The most common new-user state:
+   * exactly ONE saved resume, and it's the active one. The gate itself
+   * (`!pastingNewResume`) is satisfied here, so the only thing stopping an
+   * empty "Use a saved resume:" heading (and its divider) from rendering is
+   * that `savedResumes.length > 0` is checked AFTER filtering out the active
+   * resume, not on the raw `resumes` prop. The reviewer proved this gap by
+   * mutation: swapping in `(resumes ?? []).length > 0` (the unfiltered
+   * length) left the ENTIRE web suite green, because nothing else exercises
+   * "exactly one saved resume, and it's the active one." This test exists
+   * specifically to close that hole.
+   */
+  it("shows nothing extra when the only saved resume is the active one itself", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        resumes={[{ id: "resume-1", resumeNickname: "Resume 1" }]}
+      />,
+    );
+
     expect(screen.queryByText("Use a saved resume:")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Use Resume 8" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Paste your resume")).toBeInTheDocument();
+    expect(screen.queryByText("Or paste a new one")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Paste your resume")).toBeVisible();
+  });
+
+  it("fires onActivateResume, not onSubmit, from the reappeared list", () => {
+    const onActivateResume = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ResumeInput
+        onSubmit={onSubmit}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        resumes={RESUMES}
+        onActivateResume={onActivateResume}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Resume 8" }));
+
+    expect(onActivateResume).toHaveBeenCalledWith("resume-8");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ADVERSARIAL REVIEW OF 582ee40 (fix 1, the reason this didn't merge
+   * as-is): "Or paste a new one" used to be unconditional once the saved
+   * list rendered -- harmless before this ticket, when the only state that
+   * could reach it was `resumeId === undefined`, where a submit really is
+   * always a fresh `POST /resumes`. The widened gate breaks that promise: an
+   * unlocked "Edit" reaches the SAME list with a submit that is actually
+   * `saveResumeText`'s `updateResumeText` branch (App.tsx) -- an in-place
+   * overwrite of the ACTIVE resume, not a new one. The reviewer proved the
+   * user-harm with a probe (active unlocked Resume 1 -> "Edit" -> paste
+   * different text -> Submit -> `updateResumeText("resume-1", ...)`, text
+   * silently replaced). These two tests pin the fix: the divider now reads
+   * the exact same signal `saveResumeText` itself uses to decide
+   * create-vs-update.
+   */
+  it("hides 'Or paste a new one' for an unlocked 'Edit' -- a submit here overwrites the active resume, not create one", () => {
+    render(
+      <ResumeInput
+        onSubmit={() => {}}
+        submitting={false}
+        resumeId="resume-1"
+        nickname="Resume 1"
+        editingResume={true}
+        isLocked={false}
+        resumes={RESUMES}
+      />,
+    );
+
+    // The list itself is still correctly present -- only the divider's
+    // promise ("paste a new one") is false here.
+    expect(screen.getByText("Use a saved resume:")).toBeVisible();
+    expect(screen.queryByText("Or paste a new one")).not.toBeInTheDocument();
+  });
+
+  it("still shows 'Or paste a new one' with no resume active, where pasting really does create one", () => {
+    render(<ResumeInput onSubmit={() => {}} submitting={false} resumes={RESUMES} />);
+
+    expect(screen.getByText("Or paste a new one")).toBeVisible();
   });
 
   /**

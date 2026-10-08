@@ -2064,6 +2064,13 @@ function JobSearchApp() {
             activating={resumeActivating}
             activateError={resumeActivateError}
             searching={searchRunning}
+            // Ticket 582ee40: lets ResumeInput's ordinary form branch tell an
+            // unlocked "Edit" apart from the locked picker's "Paste a new
+            // resume" -- both reach that branch with `resumeId` already set,
+            // and only the former should show the saved-resume list again
+            // (see that branch's own comment in ResumeInput.tsx for the full
+            // argument).
+            pastingNewResume={pastingNewResume}
           />
           {/* Ticket 0308d7e: the "Resume ready." paragraph that used to
               sit here is gone -- Nicole, dogfooding ac141d0: "I don't
