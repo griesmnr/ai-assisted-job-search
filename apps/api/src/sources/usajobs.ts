@@ -55,6 +55,119 @@ const MAX_KEYWORD_SEARCHES = 10;
 // heavier per-item than Greenhouse's one-request-per-board, so a lower
 // concurrency here is the conservative choice pending real measurement.
 const KEYWORD_SEARCH_CONCURRENCY = 3;
+// Ticket 78f48df, REVISED after opus re-review round 2 (F1, BLOCKING): an
+// earlier version of this file capped title-mode searches at a fixed 5
+// PAGES (125 postings). That cap is a regression against `main`, not an
+// improvement -- re-review measured it live against real non-software
+// professions, and this file's own re-measurement (2026-10-07/2026-10-08,
+// using the real `compileFilter`, not an approximation) confirmed it:
+//
+//   chip               PositionTitle total  real compileFilter matches  deepest matched rank
+//   Registered Nurse                  723                          215                    278
+//   Program Analyst                 1,344                          147                    399
+//
+// Both deepest-matched ranks are past 125, so the old fixed page cap
+// SILENTLY DROPPED 115 of a nurse's 215 real federal title matches (only
+// 100 rank <= 125) and 73 of an analyst's 147 (only 74 rank <= 125) -- the
+// ticket's own defect class (real postings that exist and are never
+// fetched), reintroduced by the fix meant to cure it, on the one source
+// that serves non-software users at all. Jay's resume only survived the
+// old cap because his real matches happen to rank inside the first 125
+// across SOME chip in his set (relying on cross-chip redundancy, not on
+// matches genuinely living on page 1 -- see `#fetchPage`'s doc comment for
+// the corrected claim about where Jay's matches actually rank).
+//
+// Re-review also established the actual cost model, which changes what the
+// right fix is:
+//
+//   - Results are RELEVANCE-RANKED, with a stable, repeatable order.
+//     Default order is byte-identical to `SortField=Relevance&
+//     SortDirection=Desc`; the same page requested twice back-to-back
+//     returns identical ids; the first 25 results are identical whether
+//     `ResultsPerPage` is 25 or 500. This is what makes an early stop
+//     principled rather than a guess: once genuine matches stop appearing,
+//     later pages are reliably worse, not randomly interspersed.
+//   - `ResultsPerPage` is NOT capped at 25. 500 and 1,000 both work in a
+//     single response (measured; USAJOBS caps the RETURNED count at the
+//     query's own `SearchResultCountAll` once that's below the requested
+//     page size, it doesn't error). A single 500-per-page request does the
+//     work of 20 requests at the old default.
+//   - Fetch volume costs BANDWIDTH ONLY. `fetchSourceWorker` runs
+//     `compileFilter` before `ingestJobsForSearch`, so a larger raw fetch
+//     costs zero extra DB writes and zero extra scoring calls -- the only
+//     thing a looser bound spends is HTTP request time. Given that, a page
+//     cap trading real matches away to save HTTP calls is the wrong side of
+//     the trade, which is exactly what the old fixed cap did.
+//
+// THE FIX: two independent changes, both measured, neither a guess.
+//
+// 1. `TITLE_SEARCH_RESULTS_PER_PAGE` (below) raises the per-request page
+//    size for title-mode searches only, so a dense profession like
+//    "Program Analyst" (1,344 total) completes in 3 requests instead of 54.
+//
+// 2. A RELEVANCE-AWARE STOP (in `#searchOne`) replaces the page-count cap:
+//    keep paging while a page still contains at least one title holding
+//    EVERY normalized word of the phrase (the same words actually sent to
+//    `PositionTitle` -- see `#fetchPage`); stop once `TITLE_SEARCH_EMPTY_
+//    PAGE_GRACE` consecutive pages hold none. Measured at
+//    `ResultsPerPage=250`: both "Registered Nurse" and "Program Analyst"
+//    complete via NATURAL termination well before the stop could trigger,
+//    recovering every real match with zero lost. The stop only ever fires on
+//    genuinely noise-dominated chips (Jay's "Technical Information
+//    Specialist" and friends), where every page checked beyond the stop point
+//    was independently confirmed to hold no qualifying title either.
+//
+//    WHY 250 AND NOT 500, measured in re-review 2026-10-08. 500 works and is
+//    lossless, but it is slow and heavy: `Fields=Full` at 500 takes ~25s for
+//    the BODY alone (headers arrive in ~600ms either way), and one real
+//    "Contract Specialist" search took 157.8s with peak RSS 151MB. At 250 the
+//    same chip took 46.5s with peak RSS 125MB -- 3.4x faster, half the
+//    volume -- found the SAME 47 matches, and the stop still fired on page 3.
+//    Two further reasons 250 is the better operating point: a mid-body socket
+//    drop (this file documents hitting `UND_ERR_SOCKET` on 2 of 3 runs) now
+//    costs a 250-posting page rather than a 500-posting one, and
+//    `KEYWORD_SEARCH_CONCURRENCY = 3` means up to three bodies parse at once.
+//    Safety margin DOES shrink, and re-review D3 was right to flag the
+//    earlier wording ("unchanged in the way that matters") as overstating it:
+//    the earliest possible stop moves from rank 1,000 to rank 500, so margin
+//    over the deepest genuine match ever measured (rank 307, across seven
+//    chips over three rounds) halves from ~3.3x to ~1.6x. Accepted, with the
+//    reason stated rather than implied: no chip measured has ever shown a
+//    genuine match REAPPEARING after an empty page, which is the only
+//    distribution that a smaller page punishes. 250 was re-derived as lossless
+//    from the round-2 full-scan rank data rather than assumed -- Contract
+//    Specialist (deepest match rank 79), Human Resources Specialist (169) and
+//    Supervisory Program Analyst (117) all stop at page 3 = 750 fetched,
+//    keeping 47 / 96 / 15 matches with none lost, and Registered Nurse (724
+//    total, deepest 307) still terminates naturally.
+//
+// End-to-end re-measurement (live, 2026-10-07/2026-10-08 -- see
+// `#searchOne`'s doc comment for Jay's corrected before/after): lossless
+// for "Registered Nurse" (215/215 matched, before and after) and "Program
+// Analyst" (147/147), while still bounding the pure-noise blowup chips in
+// Jay's own set ("Technical Documentation Specialist" stops after 2 pages /
+// 1,000 postings instead of paginating its full 2,074).
+//
+// The stop is a HEURISTIC, not a proof: it is lossless everywhere it has
+// been measured, but a chip whose only genuine matches rank beyond TWO full
+// 500-item empty pages past the last hit would still lose them. No such
+// case has been found in any phrase measured for this ticket -- including
+// the two adversarial-review supplied specifically to break it. The
+// general `#maxPages`/`DEFAULT_MAX_PAGES` safety valve still applies
+// underneath this as the hard backstop against a runaway loop (now reached
+// far later in absolute postings, since each page is bigger) -- see
+// `#searchOne`.
+const TITLE_SEARCH_RESULTS_PER_PAGE = 250;
+// See the big comment above. Both professions measured for this ticket,
+// including the two adversarial review supplied specifically to find a
+// counterexample (Registered Nurse, Program Analyst), needed ZERO grace at
+// all -- both complete via natural pagination termination before the stop
+// could ever fire. 2 (not 1) keeps a full page of measured margin beyond
+// every empty-page observation made for this ticket (no case ever showed a
+// real match reappearing after an empty page), at the cost of at most one
+// extra 500-item request for a chip whose signal is already exhausted --
+// cheap, per the bandwidth-only cost model above.
+const TITLE_SEARCH_EMPTY_PAGE_GRACE = 2;
 
 export type UsajobsConfig = {
   /** From `USAJOBS_API_KEY`. Sent as the `Authorization-Key` header. */
@@ -274,8 +387,59 @@ export class UsajobsSource implements JobSource {
         nextIndex = i + 1;
         const phrase = phrases[i]!;
 
+        // Re-review D1/E1/E2: a phrase with no token holding 2+ alphanumeric
+        // characters is unsearchable by title (see `normalizeForTitleSearch`).
+        // Sending it in any form downloads thousands of postings for zero
+        // genuine matches with no early stop available. Record why and claim
+        // the next phrase without issuing a request.
+        //
+        // Deliberately does NOT touch `successCount`. Nothing succeeded, but
+        // nothing failed either, and the total-outage rethrow below
+        // additionally requires `firstIsolatedError`, so an all-unsearchable
+        // search returns a normal, fully-explained empty result rather than
+        // throwing. Re-review E3 verified both directions through the real
+        // class: ["C", "R"] returns (jobs 0, skipped 2, skipRate 1), while
+        // ["C", <phrase that throws TransientSourceError>] THROWS -- correct,
+        // because the only real query failed and an unsearchable phrase is no
+        // evidence USAJOBS is up. Incrementing `successCount` here would make
+        // that second case return an empty "ok", which is exactly the defect
+        // class ticket c419a12's B1 fix exists to prevent. E3's own test pins
+        // it; without that test the mutant survives all 61 others.
+        //
+        // This IS a behaviour change for mixed searches versus the previous
+        // revision, which sent the unsearchable phrase, usually got a 200, and
+        // set `successCount = 1` -- so a mixed search returned partial results
+        // where it now throws and `CompositeSource` marks the source errored.
+        // The new behaviour is the correct one, but it changes what the UI
+        // shows for that case, which is worth knowing rather than discovering.
+        if (normalizeForTitleSearch(phrase) === undefined) {
+          resultsByIndex[i] = {
+            jobs: [],
+            skipped: [
+              {
+                externalId: undefined,
+                reason:
+                  `USAJOBS cannot search title phrase "${phrase}": no word in it holds 2 or ` +
+                  `more alphanumeric characters, and USAJOBS matches PositionTitle words with ` +
+                  `OR after dropping non-alphanumerics, so such a query returns thousands of ` +
+                  `unrelated postings with no early stop possible (measured 2026-10-08: ` +
+                  `"C" -> 3,674, "C#" -> 3,674 identically, "R" -> 2,137, "A" -> 5,037). ` +
+                  `Not attempted.`,
+              },
+            ],
+            skipRate: 1,
+          };
+          continue;
+        }
+
         try {
-          resultsByIndex[i] = await this.#searchOne({ ...criteria, keyword: phrase });
+          // asTitleSearch: true -- see the PositionTitle semantics comment
+          // on #fetchPage below for why title chips go through this
+          // parameter now, not Keyword.
+          resultsByIndex[i] = await this.#searchOne(
+            { ...criteria, keyword: phrase },
+            { asTitleSearch: true },
+          );
           successCount++;
         } catch (err) {
           if (
@@ -426,9 +590,81 @@ export class UsajobsSource implements JobSource {
     return { jobs, skipped, skipRate };
   }
 
-  async #searchOne(criteria: SearchCriteria): Promise<SourceSearchResult> {
+  /**
+   * `opts.asTitleSearch` (default `false`) selects which USAJOBS query
+   * parameter `criteria.keyword` is sent on, and the page size used -- see
+   * `#fetchPage`'s doc comment for the measured reasoning. Only
+   * `#searchMultipleKeywords` (title chips) passes `true`; a caller
+   * supplying a plain `criteria.keyword` directly (no `criteria.keywords`
+   * array) gets the default full-text `Keyword` behavior, the default page
+   * size, and the general `#maxPages` ceiling -- all unchanged from before
+   * this ticket, and the relevance-aware early stop below never runs for
+   * it.
+   *
+   * That last guarantee is itself a fix (ticket 78f48df, opus re-review
+   * round 2, F3, must-fix): an earlier version of this method computed its
+   * title-mode early-stop warning from `effectiveMaxPages`/`criteria.
+   * keyword` UNCONDITIONALLY, before checking `asTitleSearch` at all. A
+   * plain, keyword-less `search({})` call (reachable in production: a user
+   * clears every title chip) legitimately walks all the way to the general
+   * `#maxPages` (200) on a large unrestricted pool, and that path logged a
+   * title-search-flavored warning naming `phrase "undefined"` and pointing
+   * an operator at `TITLE_SEARCH_EMPTY_PAGE_GRACE` for a limit that was
+   * actually `DEFAULT_MAX_PAGES`. Below, the entire early-stop block is
+   * gated on `asTitleSearch` first, so the non-title path is byte-for-byte
+   * what it was before this ticket touched the file: silent at `#maxPages`,
+   * exactly as `main` has always been.
+   *
+   * JAY'S CASE, END TO END, CORRECTED (opus re-review round 2, F2) -- live,
+   * same 10 real chips, both sides measured against the actual real
+   * `createUsajobsSourceFromEnv().search()` call and the actual
+   * `compileFilter`, not an approximation:
+   *
+   *   BEFORE (2026-10-07, unmodified `main`, Keyword):
+   *     3,419 distinct postings fetched (134 skipped, 3,553 raw) / 6 matched
+   *     (no location), 1 matched (Seattle). An earlier version of this
+   *     comment claimed 497 fetched -- that number did not reproduce on
+   *     re-measurement and was a one-off artifact of USAJOBS' pool/ranking
+   *     shifting mid-fetch, not a real baseline; 3,419 is in the same range
+   *     as the ticket's own originally-reported 4,255 (daily churn, not a
+   *     contradiction), and is the number this file now stands behind.
+   *
+   *   AFTER (2026-10-08, this file, PositionTitle + the relevance-aware
+   *   stop above): 2,278 distinct postings fetched (46 skipped) / 7 matched
+   *     (no location -- one MORE than before: "Writer-Editor" @ Department
+   *     of State, a real title match `Keyword` structurally could not
+   *     find), 1 matched (Seattle).
+   *
+   * Ratio: ~570:1 before, ~325:1 after -- better, not worse, and gained a
+   * real match besides. An earlier version of this comment also claimed
+   * "every genuine hit across Jay's ten chips landed on page 1" -- re-
+   * review scored every chip's own relevance-ordered list through the real
+   * `compileFilter` and found genuine matches as deep as rank 264 within a
+   * single chip's results. The accurate claim is narrower: every matched
+   * posting was reachable within the first `TITLE_SEARCH_RESULTS_PER_PAGE`
+   * results via AT LEAST ONE of Jay's ten chips -- survived by CROSS-CHIP
+   * REDUNDANCY plus relevance ranking, not because matches genuinely live
+   * on page 1 of every chip that finds them. That is exactly why a per-
+   * phrase page cap was unsafe for a single-chip search in the first place
+   * (see `TITLE_SEARCH_RESULTS_PER_PAGE`'s doc comment, and "Registered
+   * Nurse"/"Program Analyst" there for the single-chip professions that
+   * actually broke it).
+   */
+  async #searchOne(
+    criteria: SearchCriteria,
+    opts?: { asTitleSearch?: boolean },
+  ): Promise<SourceSearchResult> {
+    const asTitleSearch = opts?.asTitleSearch ?? false;
     const jobs: NormalizedJob[] = [];
     const skipped: SkippedRecord[] = [];
+
+    // Only meaningful in title mode -- see TITLE_SEARCH_EMPTY_PAGE_GRACE's
+    // doc comment for the full reasoning behind this stop. Computed from
+    // the SAME normalized phrase #fetchPage actually sends as
+    // PositionTitle, so this checks against what was genuinely searched
+    // for, not the raw, unnormalized chip text.
+    const titleWords = asTitleSearch && criteria.keyword ? titleSearchWords(criteria.keyword) : [];
+    let consecutiveEmptyPages = 0;
 
     let page = 1;
     let seen = 0;
@@ -444,7 +680,7 @@ export class UsajobsSource implements JobSource {
     // to change this ticket's return-type contract underneath the worker
     // ticket (RTK-08) that will actually call this.
     for (;;) {
-      const data = await this.#fetchPage(criteria, page);
+      const data = await this.#fetchPage(criteria, page, asTitleSearch);
       const items = data.SearchResult.SearchResultItems;
       const totalCount = data.SearchResult.SearchResultCountAll;
 
@@ -460,7 +696,43 @@ export class UsajobsSource implements JobSource {
       seen += items.length;
 
       const hasMore = items.length > 0 && seen < totalCount;
-      if (!hasMore || page >= this.#maxPages) {
+
+      // Ticket 78f48df: relevance-aware early stop, TITLE MODE ONLY (see
+      // F3 above and TITLE_SEARCH_EMPTY_PAGE_GRACE's doc comment). Gated on
+      // `asTitleSearch` AND `hasMore` first -- never runs for a plain
+      // Keyword search, and never runs on a page that was already the
+      // natural last page (nothing would be saved by "stopping early" one
+      // page before the loop was going to end anyway, and nothing should
+      // be confused with the general #maxPages backstop below).
+      let stoppedForNoSignal = false;
+      if (asTitleSearch && titleWords.length > 0 && hasMore) {
+        const pageHasGenuineMatch = items.some((item) =>
+          titleHasAllWords(item.MatchedObjectDescriptor?.PositionTitle, titleWords),
+        );
+        if (pageHasGenuineMatch) {
+          consecutiveEmptyPages = 0;
+        } else {
+          consecutiveEmptyPages += 1;
+        }
+        if (consecutiveEmptyPages >= TITLE_SEARCH_EMPTY_PAGE_GRACE) {
+          stoppedForNoSignal = true;
+          // Ticket 16c824a's rule applies here too: an early stop that
+          // trades real postings for fewer requests must be visible, not
+          // silent, even though (per measurement) it is not expected to
+          // cost a real match.
+          console.warn(
+            `USAJOBS: title search for phrase "${criteria.keyword}" stopped early after page ` +
+              `${page} (${seen} of ${totalCount} total PositionTitle matches fetched) -- the last ` +
+              `${TITLE_SEARCH_EMPTY_PAGE_GRACE} consecutive pages held no title containing every ` +
+              `word of the phrase. Measurement for ticket 78f48df found this reliably means the ` +
+              `rest is noise from PositionTitle's OR-of-words semantics (see #fetchPage's doc ` +
+              `comment), not real signal -- but see TITLE_SEARCH_EMPTY_PAGE_GRACE's doc comment ` +
+              `for the heuristic's limits.`,
+          );
+        }
+      }
+
+      if (!hasMore || stoppedForNoSignal || page >= this.#maxPages) {
         break;
       }
       page += 1;
@@ -472,11 +744,148 @@ export class UsajobsSource implements JobSource {
     return { jobs, skipped, skipRate };
   }
 
-  async #fetchPage(criteria: SearchCriteria, page: number): Promise<UsajobsSearchResponse> {
+  /**
+   * TICKET 78f48df, measured live against the real API 2026-10-07 (see
+   * `apps/api/src/scripts/probe-positiontitle-semantics.ts`, run then
+   * deleted -- the durable record is this comment, per this repo's
+   * claims-carry-their-measurement standard):
+   *
+   *   Keyword=Technical Writer                 ->    5
+   *   PositionTitle=Technical Writer            ->   40
+   *   PositionTitle=Technical Information Specialist -> 2149
+   *
+   * `PositionTitle` IS NOT a phrase or substring match. It is TOKEN-BASED
+   * and ORs every word in the query against the title field:
+   *
+   *   PositionTitle=Technical             ->   37
+   *   PositionTitle=Writer                ->    7
+   *   PositionTitle=Technical Writer      ->   40   (~37+7, minus overlap)
+   *   PositionTitle=Writer Technical      ->   40   (word order is irrelevant)
+   *   PositionTitle="Technical Writer"    ->    0   (quoting is NOT exact-
+   *                                                   phrase syntax -- it
+   *                                                   breaks the query)
+   *   PositionTitle=Technical Information Specialist -> 2149, of which the
+   *       sampled titles ("VISUAL INFORMATION SPECIALIST", "ADMINISTRATIVE/
+   *       TECHNICAL SPECIALIST", "IT SPECIALIST (INFOSEC)") show the count
+   *       is dominated by the single generic word "Specialist" (2051 alone)
+   *       OR'd in, not by anything resembling the 3-word phrase.
+   *
+   * This means a multi-word chip with one common role-word (e.g.
+   * "Specialist", "Manager", "Developer") fetches thousands of titles that
+   * merely share that one word, most of them irrelevant. This is NOT the
+   * same failure mode `Keyword` had (full-text matching duties/
+   * qualifications instead of the title) -- it is real title-field
+   * matching, just permissive (OR, not AND) on multi-word titles. See
+   * `TITLE_SEARCH_RESULTS_PER_PAGE`/`TITLE_SEARCH_EMPTY_PAGE_GRACE`'s doc
+   * comment above for how fetch VOLUME is bounded without truncating real
+   * matches (a fixed page cap tried first was a measured regression --
+   * opus re-review round 2, F1 -- against real non-software professions
+   * like "Registered Nurse" and "Program Analyst").
+   *
+   * CORRECTED CLAIM (opus re-review round 2, F2): an earlier version of
+   * this comment claimed "every genuine hit across Jay's ten chips landed
+   * on page 1." Re-review scored every chip's full relevance-ordered list
+   * through the real `compileFilter` and found genuine matches at ranks as
+   * deep as 264 within a single chip's own results. The accurate claim is
+   * narrower: every matched posting was reachable within the first
+   * `ResultsPerPage` results via AT LEAST ONE of Jay's ten chips -- the old
+   * fixed cap survived on CROSS-CHIP REDUNDANCY plus relevance ranking,
+   * not because matches genuinely live on page 1 of every chip that finds
+   * them. That distinction is exactly why a fixed page cap is unsafe for a
+   * single-chip search (one real profession, one chip, no redundancy to
+   * fall back on) even though it happened not to cost Jay's ten-chip case
+   * anything observable.
+   *
+   * CORRECTED BASELINE (opus re-review round 2, F2): an earlier version of
+   * this comment also claimed the OLD `Keyword`-only code fetched 497
+   * distinct postings for Jay's case. That number does not reproduce --
+   * re-measured live 2026-10-07 against unmodified `main`: 3,419 distinct
+   * postings fetched (134 skipped, 3,553 raw pre-outer-dedup) for the same
+   * 6 matched. The 497 figure was a one-off measurement artifact (this
+   * ticket's own live API calls are not perfectly reproducible run to run
+   * -- USAJOBS' pool and ranking shift during a single fetch), not a real
+   * baseline; 3,419/6 (~570:1) is the real "before," in the same range as
+   * the ticket's own originally-reported 4,255-fetched/1-matched case
+   * (daily churn, not a contradiction). The real win this ticket produces
+   * is therefore substantially BIGGER than first claimed -- see
+   * `#searchOne`'s doc comment for the corrected end-to-end numbers.
+   *
+   * Also measured: a token containing a hyphen, slash, plus sign, or
+   * underscore is DROPPED ENTIRELY by `PositionTitle`'s tokenizer --
+   *   PositionTitle=Writer-Editor | Writer/Editor | Writer+Editor | Writer_Editor -> 0 (all four)
+   *   PositionTitle=Writer Editor (space -- all words survive)                    -> 7
+   * -- see `normalizeForTitleSearch`'s doc comment for the full mechanism,
+   * the "Technical Writer-Editor -> exactly Technical alone" proof, and
+   * the known C++ -> "C" imprecision this normalization accepts.
+   *
+   * ACCEPTANCE CRITERION TABLE (opus re-review round 2, F6 -- chips of 1
+   * through 4 words, both parameters, live, 2026-10-08):
+   *
+   *   chip (words)                                    Keyword  PositionTitle
+   *   Writer (1)                                           19              7
+   *   Technical Writer (2)                                  5             40
+   *   Lead Technical Writer (3)                              1            410
+   *   Senior Technical Documentation Specialist (4)        31          2,198
+   *
+   * NOTE THE ONE-WORD CASE INVERTS THE HEADLINE: at one word,
+   * `PositionTitle` (7) returns FEWER than `Keyword` (19) -- the OR-of-
+   * words mechanism that over-matches a multi-word phrase has nothing to
+   * OR when there's only one word, so it falls back to a plain word match,
+   * narrower than `Keyword`'s full-text search for that one word. This
+   * matters because ticket 16738f4 is what makes a one-word chip a shape
+   * this app actually produces now; the 2-4 word rows are where
+   * `PositionTitle`'s real win (and its OR-blowup risk, see
+   * `TITLE_SEARCH_RESULTS_PER_PAGE`'s doc comment) both live.
+   *
+   * DECISION on `Keyword`'s role (ticket scope: "decide whether Keyword
+   * retains any role"): it keeps exactly its current meaning -- a single
+   * free-text term, sent as-is to USAJOBS' full-text search -- for any
+   * caller that sets `criteria.keyword` directly (not via `criteria.
+   * keywords`/title chips). No real caller does that for USAJOBS today
+   * (`routes/searches.ts`'s `buildFetchCriteria` only ever produces
+   * `keywords` or `{}`), but the field is part of the shared, adapter-
+   * generic `SearchCriteria` shape (types.ts) and existing tests exercise
+   * it directly, so changing its meaning here would be an unrelated,
+   * unrequested behavior change for a hypothetical future caller. A
+   * fallback-to-Keyword-when-PositionTitle-returns-nothing was considered
+   * and REJECTED: the ticket flags it as an option, not a requirement, and
+   * adding it would risk silently reintroducing the exact defect this
+   * ticket fixes (an empty title search quietly broadening into the
+   * unfocused full-text fetch that produced the original 4,255-fetched/
+   * 1-matched case) -- better to show a real empty title result than to
+   * guess our way back into the old failure mode.
+   */
+  async #fetchPage(
+    criteria: SearchCriteria,
+    page: number,
+    asTitleSearch: boolean,
+  ): Promise<UsajobsSearchResponse> {
     const url = new URL(this.#baseUrl);
-    if (criteria.keyword) url.searchParams.set("Keyword", criteria.keyword);
+    if (criteria.keyword) {
+      if (asTitleSearch) {
+        // See measurement above (`normalizeForTitleSearch`'s doc comment
+        // carries the full mechanism): a token containing -, /, +, or _ is
+        // dropped entirely by PositionTitle's tokenizer, so each is
+        // normalized to a space to keep its words alive as separate tokens.
+        // `?? criteria.keyword` is defensive only -- the title fan-out skips an
+        // unsearchable phrase before it ever reaches a request (see
+        // `normalizeForTitleSearch` case (b)).
+        url.searchParams.set(
+          "PositionTitle",
+          normalizeForTitleSearch(criteria.keyword) ?? criteria.keyword,
+        );
+      } else {
+        url.searchParams.set("Keyword", criteria.keyword);
+      }
+    }
     if (criteria.location) url.searchParams.set("LocationName", criteria.location);
-    url.searchParams.set("ResultsPerPage", String(this.#resultsPerPage));
+    // Ticket 78f48df: title-mode searches request a much bigger page (see
+    // TITLE_SEARCH_RESULTS_PER_PAGE's doc comment -- measured live that
+    // USAJOBS accepts at least 1,000 per page) so a dense profession like
+    // "Program Analyst" (1,344 real title matches) completes in 3 requests
+    // instead of 54. The plain, non-title path is unaffected.
+    const resultsPerPage = asTitleSearch ? TITLE_SEARCH_RESULTS_PER_PAGE : this.#resultsPerPage;
+    url.searchParams.set("ResultsPerPage", String(resultsPerPage));
     url.searchParams.set("Page", String(page));
     // Min (the default) omits UserArea.Details entirely, which is where
     // JobSummary/TeleworkEligible/RemoteIndicator live — without this,
@@ -617,6 +1026,234 @@ function parseRetryAfter(header: string | null): number | undefined {
   const asDate = Date.parse(header);
   if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
   return undefined;
+}
+
+/**
+ * Ticket 78f48df, opus re-review round 2 (F4, should-fix): normalizes a
+ * title-mode search phrase before it is sent as `PositionTitle`. Measured
+ * live 2026-10-07: a token containing any of `-`, `/`, `+`, or `_` is
+ * DROPPED ENTIRELY by USAJOBS' tokenizer -- not matched oddly, just
+ * removed from the query as if it were never typed --
+ *
+ *   PositionTitle=Technical Writer-Editor  ->   37   (EXACTLY "Technical"
+ *                                                      alone -- the whole
+ *                                                      "Writer-Editor"
+ *                                                      token vanishes)
+ *   PositionTitle=Writer-Editor  ->  0    PositionTitle=Writer/Editor -> 0
+ *   PositionTitle=Writer+Editor  ->  0    PositionTitle=Writer_Editor -> 0
+ *   PositionTitle=Writer Editor (space, all words survive)         ->  7
+ *
+ * An earlier version of this fix normalized only the hyphen. Round-2
+ * review found the identical failure mode on `/`, `+`, and `_` and the
+ * same one-line fix for all four: a hand-typed "Writer/Editor" chip was
+ * silently going from 3 fetched under the OLD `Keyword` code to 0 under
+ * this ticket's `PositionTitle` fix -- a real regression this now closes.
+ *
+ * HISTORY, kept because the wrong version of this note shipped twice and
+ * the correction is the useful part. An earlier revision said "C++"
+ * normalizes to a single-character token "C", and that "C" is bounded by
+ * the same relevance-aware stop every other broad chip is. Both halves were
+ * wrong, and the second was dangerously wrong:
+ *
+ *   - "C++" no longer normalizes to "C" at all. A token must hold 2+
+ *     ALPHANUMERIC characters to be sent (re-review R2, then E2), so "C++"
+ *     keeps no token and the phrase is skipped outright -- no request issued.
+ *   - The stop can NEVER fire for a single-letter word, so "C" was never
+ *     bounded. Re-review D2 proved this through the real class: for phrase
+ *     "C++" against pages titled "Civil Engineer", the stop never fired and
+ *     the search ran to `maxPages` (50 requests). `titleSearchWords` splits
+ *     on `/[^a-z0-9]+/`, so the word list is ["c"] -- a substring nearly
+ *     every title contains. That unboundedness is the whole reason such a
+ *     phrase is now skipped rather than sent in any form.
+ *
+ * A third wrong version is worth recording for the same reason: the fix
+ * BETWEEN those two split degenerate phrases into "carries punctuation, so
+ * send it verbatim for a cheap 0" and "purely alphanumeric, so skip it".
+ * Re-review E1 measured the first half false in general (`C++ 3` -> 405,
+ * `a-b 7` -> 12), and E2 found `C#` slipping through the character-count
+ * filter entirely while measuring identically to a bare `C` (3,674). Both
+ * collapse into the single alphanumeric-count rule now in place.
+ *
+ * "C++", "C#" and ".NET" remain shapes `criteria.ts` explicitly supports
+ * downstream (ticket 59fdc52 N5's word-boundary handling for a phrase that
+ * starts or ends on a non-word character) -- this only changes what reaches
+ * that filter, not what it keeps.
+ *
+ * Periods are deliberately NOT in this set: not measured, and a period is
+ * exactly the character `.NET`'s own leading edge depends on for
+ * `criteria.ts`'s word-boundary logic -- normalizing it without measuring
+ * what USAJOBS actually does with it risks trading one unverified
+ * regression for another.
+ */
+function normalizeForTitleSearch(phrase: string): string | undefined {
+  // Two rules, and re-review E1/E2 collapsed them into ONE after an earlier
+  // version of this fix needed two cases and still leaked a bad shape through.
+  //
+  // The rule: a token is worth sending only if it holds 2 or more ALPHANUMERIC
+  // characters. Count alphanumerics, not raw length -- that is the whole fix,
+  // and it is the correct unit because USAJOBS' own tokenizer is what decides,
+  // and it drops non-alphanumerics before matching. Measured 2026-10-08:
+  //
+  //   PositionTitle=C   -> 3,674     PositionTitle=C#  -> 3,674  (identical:
+  //   PositionTitle=R   -> 2,137                                  `#` dropped
+  //   PositionTitle=A   -> 5,037                                  server-side)
+  //   PositionTitle=Engineer -> 471
+  //
+  // Counting raw length let `C#` through: 2 characters long, so it survived a
+  // `word.length > 1` filter, but only ONE alphanumeric, so USAJOBS answers it
+  // exactly as it answers a bare `C` -- 3,674 postings, ~15 requests at
+  // 250/page, ~85MB, zero genuine matches, and NO early stop possible because
+  // `titleSearchWords` splits on /[^a-z0-9]+/ and gets the word list ["c"],
+  // a substring nearly every title contains. `F#` is the same shape. A bare
+  // `C#` chip is considerably more plausible than a bare `C`: it is a
+  // mainstream language name, and ticket 5ba5cca's incident was exactly
+  // bolted-on technology names reaching chips.
+  //
+  // What the rule does to each shape, measured:
+  //
+  //   Writer/Editor  -> "Writer Editor"  (both tokens survive -- F4's fix,
+  //                                       separators still normalize to space:
+  //                                       Writer-Editor | Writer/Editor |
+  //                                       Writer+Editor | Writer_Editor all
+  //                                       return 0, Writer Editor returns 7)
+  //   C++ Engineer   -> "Engineer" (471, not {c, engineer} at ~4,000)
+  //   C# Developer   -> "Developer" (the C# token carries one alphanumeric,
+  //                                  so it is dropped as the noise it is)
+  //   .NET           -> ".NET"  (NET is 3 alphanumerics -- survives. Periods
+  //                              are deliberately NOT normalized to space:
+  //                              unmeasured, and the leading period is what
+  //                              `criteria.ts`'s word-boundary logic depends
+  //                              on downstream, ticket 59fdc52 N5)
+  //   R&D Manager    -> "R&D Manager"  (R&D is 2 alphanumerics so the client
+  //                                     keeps it; USAJOBS drops the whole
+  //                                     `&`-bearing token exactly as it does
+  //                                     for - / + _, so `R&D Manager` -> 494,
+  //                                     identical to `Manager` -> 494. The
+  //                                     stop predicate merely gains "r" and
+  //                                     "d" as required substrings, which
+  //                                     makes it stop SOONER and cannot cost
+  //                                     a match, since a real "R&D Manager"
+  //                                     title contains all three. Re-review
+  //                                     expected this to break the threshold
+  //                                     and measured that it does not.)
+  //   C++ | C# | F# | C | R | a-b | c/c | C++ 3  -> undefined (unsearchable)
+  //
+  // `undefined` means UNSEARCHABLE BY TITLE: no token gives USAJOBS anything
+  // to match on, so the caller skips the phrase with a reason and issues no
+  // request at all. An earlier version instead sent such a phrase verbatim,
+  // on the rationale that USAJOBS answers it with 0 for one cheap request.
+  // Re-review E1 measured that rationale false in general: it holds for `C++`
+  // (0), `a-b` (0) and `c/c` (0), but `C++ 3` normalizes to empty the same way
+  // and returns 405, and `a-b 7` returns 12 -- a surviving bare digit is a
+  // real OR branch. Skipping is correct for all of them and cheaper than all
+  // of them.
+  //
+  // WHY 2 AND NOT SOME OTHER NUMBER -- measured, because `PositionTitle`
+  // matches title words by PREFIX, not as whole tokens, which is the actual
+  // mechanism behind the single-character blowup (re-review F3, 2026-10-08):
+  //
+  //   Wri -> 8      Writ -> 7 (the same 7 as Writer)
+  //   Engin -> 505  Engineer -> 471
+  //   Nurs -> 759   Nurse -> 699
+  //
+  // A one-letter prefix therefore matches every title with a word STARTING
+  // with it -- A 5,037, C 3,674, D 1,343. Two characters are already
+  // genuinely selective: IT 382, HR 195, QA 53, so even a bare "IT" chip
+  // terminates naturally in two pages. The threshold is empirical, not
+  // arbitrary.
+  //
+  // WHAT SKIPPING FORFEITS -- measured with the real `compileFilter`, because
+  // an earlier version of this comment said skipping was "measured true" to
+  // match nothing useful, and re-review F1 caught that as a prediction
+  // wearing a measurement's clothes. It is not true:
+  //
+  //   C++ | a-b | c/c | R&D   ->      0 postings  ->  0 matches (nothing lost)
+  //   C                       ->  3,674 postings  ->  6 matches
+  //   A                       ->  5,037 postings  ->  3 matches
+  //   7                       ->     12 postings  ->  5 matches
+  //
+  // Every one of those matches is incidental -- "Power Plant Electrician A",
+  // "Nursing Assistant (Bonham CLC C)", "Housekeeping Aid-WED-SUN-7-330pm" --
+  // but they ARE matches by the only definition this app has, and under the
+  // previous revision they were fetched, scored and shown. So skipping is a
+  // deliberate judgement about value, not a measurement that nothing matches:
+  // 3-6 incidental matches are not worth 3,674-5,037 postings and ~85-116MB
+  // per chip. Stated as the trade it is.
+  //
+  // The DIGIT case is forfeited for free, and that is a deliberate choice for
+  // uniformity rather than a cost saving (re-review F2). Single letters
+  // explode because of the prefix matching above; single digits do not --
+  // `7` is 12 postings in one request. So `7`, and the trailing digits of
+  // `C++ 3` and `a-b 7`, cost nothing to send and are skipped anyway. One
+  // rule that is easy to reason about beats two rules that are 12 postings
+  // cheaper on nonsense input; if a real digit-bearing chip ever turns up,
+  // gate the skip on "no single-LETTER token" instead and this comment is
+  // the reason why.
+  //
+  // None of the above is a guarantee about future USAJOBS behaviour.
+  //
+  // Dropping a short token can never COST a match, and this is provable, not
+  // merely plausible (re-review Q3, measured 2026-10-08: `Engineer 3` -> 873
+  // vs `Engineer` -> 471; `Tier 1 Analyst` -> 712 vs `Tier Analyst` -> 562;
+  // `Writer 1` -> 159 vs `Writer` -> 7, so the digit really is its own OR
+  // branch). With OR semantics, dropping a token while at least one survives
+  // NARROWS the server's result set to titles matching the remaining tokens --
+  // and any posting `compileFilter` keeps contains EVERY word of the chip,
+  // hence every surviving word, so it is still inside the narrower set. The
+  // client-side stop moves the safe way too: the predicate then needs only
+  // "writer" instead of "writer" AND "1", so it fires LATER, never earlier.
+  // One disclosed edge: a posting reachable only through a `titleSynonyms`
+  // variant of the DROPPED token (chip "Writer 1" matching a real title
+  // "Author 1" via the "1" branch rather than via {writer}) can be lost. Not
+  // measured in the wild; narrow enough to accept, too narrow to leave unsaid.
+  //
+  // Note the deliberate asymmetry with `criteria.ts`, whose own word-boundary
+  // matching DOES support `C++`/`.NET`/`C#` shapes (ticket 59fdc52 N5). The
+  // local filter can afford a one-alphanumeric token; a remote OR-semantics
+  // query cannot. This only changes what reaches that filter, not what it
+  // keeps.
+  const kept = phrase
+    .replace(/[-/+_]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.replace(/[^a-z0-9]/gi, "").length > 1);
+  return kept.length > 0 ? kept.join(" ") : undefined;
+}
+
+/**
+ * The distinct, lowercased words of a title-mode phrase, AFTER the same
+ * normalization `#fetchPage` sends to `PositionTitle` -- used only by
+ * `#searchOne`'s relevance-aware early stop (see
+ * `TITLE_SEARCH_EMPTY_PAGE_GRACE`'s doc comment) to judge whether a page
+ * still contains a title that genuinely matches every word of the phrase,
+ * not merely one word OR'd in by `PositionTitle`'s own semantics. This
+ * never goes out over the network -- it's a client-side read of a page
+ * USAJOBS already returned, not a second query.
+ */
+function titleSearchWords(phrase: string): string[] {
+  // `?? phrase` is defensive only: an unsearchable phrase (see
+  // `normalizeForTitleSearch` case (b)) is skipped by `#searchMultipleKeywords`
+  // before any request is issued, so the stop predicate is never built for one.
+  return (normalizeForTitleSearch(phrase) ?? phrase)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 0);
+}
+
+/**
+ * True if `title` contains EVERY word in `words` as a plain,
+ * case-insensitive substring. Deliberately NOT `compileFilter`'s
+ * word-boundary/synonym matcher (`criteria.ts`) -- that remains the single
+ * source of truth for which postings the app actually keeps; this is a
+ * much cruder, adapter-local heuristic used only to decide when PAGING can
+ * stop, never what gets kept. A false positive here just costs one extra
+ * page fetched for nothing; a false negative risks stopping before real
+ * signal is exhausted -- `TITLE_SEARCH_EMPTY_PAGE_GRACE`'s margin is what
+ * guards against that, not this function's precision.
+ */
+function titleHasAllWords(title: string | undefined, words: string[]): boolean {
+  if (!title || words.length === 0) return false;
+  const lower = title.toLowerCase();
+  return words.every((w) => lower.includes(w));
 }
 
 // ---------------------------------------------------------------------------
