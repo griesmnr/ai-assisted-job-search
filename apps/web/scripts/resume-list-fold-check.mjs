@@ -381,7 +381,14 @@ async function main() {
   console.log(
     anyBelowFold
       ? "\nFAIL (informational, not a hard exit): at least one case has the label or textarea top below the fold."
-      : "\nPASS: label and textarea top are above the fold (< viewport height) in every case measured above.",
+      : // Scoped deliberately (ticket 0a378a5 review): this verdict only ever
+        // answered the label/textarea-TOP question it was built for (6b14962).
+        // Since the welcome paragraph became unconditional, textarea.bottom is
+        // clipped in every row above, so an unqualified "PASS" printed directly
+        // beneath them reads as a general all-clear that it is not.
+        "\nPASS (label and textarea TOP only -- textarea.bottom is clipped/below in the rows above; " +
+          "that is a known, measured, bounded cost of the always-visible welcome paragraph, tracked in " +
+          "git-bug 7ca41c4, NOT a regression this script is failing to catch).",
   );
   // No process.exit(1) on "FAIL", UNLIKE layout-check.mjs's own exitCode=1
   // -- that script guards ONE fixed claim (a 1rem gap) as a pass/fail gate;

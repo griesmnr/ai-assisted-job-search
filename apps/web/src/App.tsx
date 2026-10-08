@@ -1751,8 +1751,8 @@ function JobSearchApp() {
   // Those figures are NOT moot, and an earlier version of this comment
   // saying so was exactly wrong -- opus review of 0a378a5 (F1) caught it.
   // The gate never created that 146.3px / 235.9px cost; it HID it. Removing
-  // the gate converts a transient jump into a permanent one of identical
-  // size: 146.3px at 1366/1280px wide and 235.9px at 390px are now the
+  // the gate converts a transient jump into a permanent COST of identical
+  // size (a jump is transient by definition; the cost is what persists): 146.3px at 1366/1280px wide and 235.9px at 390px are now the
   // paragraph's STANDING contribution to above-fold height on every render
   // for every visitor. Re-measured independently in real Chromium against
   // this app's built CSS, 2026-10-08, and reproduced to the digit.

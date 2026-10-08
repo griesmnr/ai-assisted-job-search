@@ -207,7 +207,37 @@ describe("App welcome paragraph (ticket 9e00bc9, unconditional since 0a378a5)", 
     listResumes.mockResolvedValue({
       resumes: [{ id: "resume-1", resumeNickname: "Resume 1", createdAt: "2026-01-01T00:00:00Z" }],
     } satisfies ListResumesResponse);
-    getAllResults.mockResolvedValue({ results: [] } satisfies GetAllResultsResponse);
+    // A real scored result, not an empty array. Re-review caught the earlier
+    // version of this test claiming "every input to the removed gate says
+    // hide" while passing `{ results: [] }`, which makes `scoredArmReady`
+    // FALSE -- so that conjunct voted *show* and only two of the three inputs
+    // actually said hide. Verified: gating on `!scoredArmReady` alone left
+    // that version green. With a scored result present the claim is true as
+    // written, and this test now also dies under that mutation.
+    getAllResults.mockResolvedValue({
+      results: [
+        {
+          resumeId: "resume-1",
+          jobId: "job-1",
+          externalId: "job-1",
+          title: "A Job",
+          company: "Acme",
+          dataSource: "usajobs",
+          location: null,
+          locationType: null,
+          applyUrl: "https://example.com/apply",
+          matchScore: 80,
+          rationale: "Good fit.",
+          strengths: [],
+          gaps: [],
+          status: null,
+          levelFit: null,
+          levelFitNote: null,
+          isContractOrTemp: false,
+          resumeNickname: "Resume 1",
+        },
+      ],
+    } satisfies GetAllResultsResponse);
 
     render(<App />);
 
