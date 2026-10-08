@@ -7,14 +7,16 @@ import App from "./App";
 import { setVerifiedEmail } from "./identity";
 
 /**
- * Ticket 9e00bc9: the welcome paragraph below the `<h1>`, and the decision
- * (recorded in App.tsx next to `showWelcomeParagraph`) that it shows until
- * this browser/account has real evidence of use -- a saved resume, or a
- * scored result actually visible on screen -- and disappears after that,
- * rather than on a one-time "seen it" flag. This file is the only coverage
- * for that behavior; everything else in this app's test suite happens to
- * leave the paragraph on screen (empty account, nothing scored) without ever
- * asserting it is there OR pinning its exact wording.
+ * Ticket 9e00bc9 built the welcome paragraph below the `<h1>` and gated it to
+ * disappear once this browser/account had real evidence of use -- a saved
+ * resume, or a scored result actually visible on screen. Ticket 0a378a5
+ * removed that gate at Nicole's explicit instruction ("make that paragraph
+ * always visible") and this file's three absence tests below are inverted
+ * to match: the paragraph now renders unconditionally, in every state. This
+ * file remains the only coverage for that behavior; everything else in this
+ * app's test suite happens to leave the paragraph on screen (empty account,
+ * nothing scored) without ever asserting it is there OR pinning its exact
+ * wording.
  *
  * The exact text matters here, not a substring: a test asserting the
  * paragraph merely CONTAINS "FitScore" would pass just as happily against
@@ -95,7 +97,10 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
     expect(nav!.previousElementSibling).toBe(paragraph);
   });
 
-  it("does not render once the account has a saved resume, even with nothing scored yet", async () => {
+  it("still renders once the account has a saved resume, even with nothing scored yet", async () => {
+    // Ticket 0a378a5: this used to assert absence -- the gate it was pinning
+    // (`showWelcomeParagraph`) is gone at Nicole's explicit instruction, so a
+    // saved resume must no longer hide the paragraph.
     getSources.mockResolvedValue(SOURCES);
     listResumes.mockResolvedValue({
       resumes: [{ id: "resume-1", resumeNickname: "Resume 1", createdAt: "2026-01-01T00:00:00Z" }],
@@ -104,18 +109,21 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
 
     render(<App />);
 
-    // Let both fetches settle before asserting an absence -- otherwise a
-    // false "not found" could just mean the loading state hasn't resolved.
+    // Let both fetches settle before asserting presence survives past the
+    // loading window too, not only during it.
     await waitFor(() => expect(listResumes).toHaveBeenCalled());
     await waitFor(() => expect(getAllResults).toHaveBeenCalled());
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "FitScore" })).toBeInTheDocument(),
     );
 
-    expect(screen.queryByText(/Welcome to FitScore/)).toBeNull();
+    expect(screen.queryByText(/Welcome to FitScore/)).not.toBeNull();
   });
 
-  it("does not render once a scored result is actually visible, even with no saved resume", async () => {
+  it("still renders once a scored result is actually visible, even with no saved resume", async () => {
+    // Ticket 0a378a5: this used to assert absence -- same inversion as the
+    // saved-resume case above, this time against the `scoredArmReady`-shaped
+    // condition the old gate also keyed off.
     getSources.mockResolvedValue(SOURCES);
     listResumes.mockResolvedValue({ resumes: [] } satisfies ListResumesResponse);
     getAllResults.mockResolvedValue({
@@ -151,21 +159,29 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
       expect(screen.getByRole("heading", { name: "FitScore" })).toBeInTheDocument(),
     );
 
-    expect(screen.queryByText(/Welcome to FitScore/)).toBeNull();
+    expect(screen.queryByText(/Welcome to FitScore/)).not.toBeNull();
   });
 
-  it("never flashes for a verified user, even in the loading window before the resume/results fetches settle", async () => {
-    // Opus review round 1 (F2): measured in real Chromium, a default of
-    // "visible while loading" produces a real layout jump on every load for
-    // a returning, already-verified user -- 146.3px at 1280px wide, 235.9px
-    // at 390px -- because `useResumesList`/`useAllResults` both start
-    // `loading` and only resolve in a post-mount effect. This proves the fix
-    // directly: `listResumes`/`getAllResults` are left PENDING forever below
-    // (never resolved), holding the component in exactly that loading
-    // window, and the assertion runs with no `await` at all -- on the very
-    // first render/commit. `verifiedEmail` is read synchronously
-    // (`useState(getVerifiedEmail)`, the same pattern `SignedInCue` uses),
-    // so it has to win this race regardless of what the fetches are doing.
+  it("is visible for a verified user in the loading window before the resume/results fetches settle", async () => {
+    // Ticket 9e00bc9 built this test to pin the ABSENCE of a flash: a verified
+    // user's `showWelcomeParagraph` gate read `verifiedEmail` synchronously
+    // so the paragraph was never shown even for one frame during the loading
+    // window, avoiding a measured layout jump (146.3px at 1280px wide,
+    // 235.9px at 390px -- see the history comment next to
+    // `signInRecoveryEverShownRef` in App.tsx) that an unconditionally-visible
+    // default would have caused while that gate still existed.
+    //
+    // Ticket 0a378a5 removed the gate at Nicole's explicit instruction. The
+    // original subject of this test -- a flash that needed preventing -- can
+    // no longer occur, because there is no hidden state left to flash FROM:
+    // the paragraph is unconditional. So this test now pins the new
+    // requirement instead: a verified user sees the paragraph from the very
+    // first render (no `await` below, same as the original -- the assertion
+    // still runs with `listResumes`/`getAllResults` left permanently PENDING,
+    // inside the exact loading window the old gate used to hide it in).
+    // Visibility surviving PAST this window, once those fetches settle, is
+    // what the two inverted tests above already cover -- this one is
+    // deliberately scoped to the loading window alone, matching its title.
     setVerifiedEmail("owner@example.com");
     getSources.mockResolvedValue(SOURCES);
     listResumes.mockReturnValue(new Promise<ListResumesResponse>(() => {}));
@@ -173,6 +189,6 @@ describe("App welcome paragraph (ticket 9e00bc9)", () => {
 
     render(<App />);
 
-    expect(screen.queryByText(/Welcome to FitScore/)).toBeNull();
+    expect(screen.queryByText(/Welcome to FitScore/)).not.toBeNull();
   });
 });
