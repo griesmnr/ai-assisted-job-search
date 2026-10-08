@@ -234,9 +234,24 @@ export function buildApp(deps: BuildAppDeps) {
     // (`apps/web/vite.config.ts`), so local dev is cross-origin too and the
     // same block applies there.
     //
-    // No `PUT` — this API serves none. Add the verb here in the same commit
-    // that adds the route, or the route is unreachable from a browser.
-    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"],
+    // KEEP THIS LIST IN STEP WITH THE ROUTES. The instruction that used to
+    // live here — "add the verb in the same commit that adds the route, or
+    // the route is unreachable from a browser" — was correct and was not
+    // enough. Ticket 6ba221e added the app's first `PUT`
+    // (`PUT /resumes/:id/text`, the in-place resume edit) hours after this
+    // comment was written, in a different commit, and nobody added the verb.
+    //
+    // The result, reported live by the owner (ticket fb00e02): editing a
+    // resume failed with "could not reach the API" and NOTHING in the server
+    // logs — because the browser, told PUT was not allowed, never sent the
+    // request. Identical in shape to the DELETE/PATCH outage 6e7008e fixed,
+    // one day later, in a new verb.
+    //
+    // So this list is no longer guarded by a comment: `index.test.ts`
+    // enumerates the app's actually-registered methods and asserts every one
+    // of them appears here. A prose instruction is not an enforcement
+    // mechanism, and this is the second time that was proved.
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
   });
 
   // Ticket dba885e (epic 2b9e9dd): every route below now requires the
