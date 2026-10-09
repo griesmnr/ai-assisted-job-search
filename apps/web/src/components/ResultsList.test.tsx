@@ -154,6 +154,130 @@ describe("ResultsList", () => {
   });
 });
 
+// Ticket d90d7dd: Jay's second round of testing (relayed by Nicole) --
+// "Showing 5 of 5 scored jobs..." and "201 more jobs scored below the
+// match-quality floor and are not shown." used to render as two separate
+// paragraphs, so the sentence that explained the gap sat apart from the
+// numbers that created it. These tests pin the exact merged sentence (via
+// `textContent`/`toBe`, NOT `toHaveTextContent` -- see
+// MagicLinkPrompt.test.tsx:162 for why that matcher's `exact` option would
+// silently no-op here) in each distinct state the ticket calls out.
+describe("ResultsList — below-floor count folded into the results-summary sentence (ticket d90d7dd)", () => {
+  it("joins the count and the floor explanation into ONE sentence when something is hidden below the floor (Jay's exact scenario)", () => {
+    const { container } = render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown.",
+    );
+    // No separate below-floor paragraph left behind -- it's been folded
+    // into the sentence above, not merely duplicated alongside it.
+    expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
+  });
+
+  it("produces no empty or dangling clause when nothing is hidden below the floor (hiddenBelowFloor absent)", () => {
+    const NO_FLOOR_HIDE: GetResumeResultsResponse = {
+      resumeId: "resume-1",
+      resumeNickname: "Resume 1",
+      results: DATA.results,
+      // hiddenBelowFloor deliberately omitted -- the floor either isn't
+      // in play or hid nothing; either way there is no count to fold in.
+    };
+
+    const { container } = render(
+      <ResultsList
+        data={NO_FLOOR_HIDE}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    // No trailing "; undefined more jobs...", no stray semicolon, no
+    // second sentence -- just the plain count, exactly as before this
+    // ticket touched anything.
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs from the sources you've selected.",
+    );
+    expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
+  });
+
+  it("says NOTHING about the floor when a genuine zero is hidden -- the merged sentence would otherwise spend the most-read line on the page explaining the absence of a gap. A deliberate departure from ticket 484889d's standalone-paragraph behaviour; see the clause's own comment", () => {
+    const ZERO_HIDDEN: GetResumeResultsResponse = { ...DATA, hiddenBelowFloor: 0 };
+
+    const { container } = render(
+      <ResultsList
+        data={ZERO_HIDDEN}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs from the sources you've selected.",
+    );
+    // Identical to the field-absent case, which is the point: to a reader of
+    // this sentence, "absent" and "zero" both mean nothing was hidden.
+    expect(summary?.textContent).not.toContain("match-quality floor");
+  });
+
+  it("uses singular wording when exactly 1 job is hidden below the floor", () => {
+    const ONE_HIDDEN: GetResumeResultsResponse = { ...DATA, hiddenBelowFloor: 1 };
+
+    const { container } = render(
+      <ResultsList
+        data={ONE_HIDDEN}
+        selectedSourceIds={new Set(["greenhouse", "usajobs"])}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs from the sources you've selected; 1 more job scored below the match-quality floor and is not shown.",
+    );
+  });
+
+  it("does not produce 'Showing 0 of 0 ... and N more' when everything is ALSO hidden by another mechanism -- the floor count stays its own line next to the emptyStateMessage instead", () => {
+    const { container } = render(
+      <ResultsList
+        data={DATA}
+        selectedSourceIds={new Set()}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    // The emptyStateMessage branch replaces the whole "Showing" sentence
+    // -- it must never grow a "Showing 0 of 0" clause of its own.
+    expect(summary?.textContent).toBe("No jobs match the current source selection.");
+    // The below-floor count is still real information, so it still
+    // renders -- just on its own line, since there's no "Showing N of N"
+    // sentence left to fold it into.
+    const floorNote = container.querySelector(".results-hidden-floor");
+    expect(floorNote?.textContent).toBe(
+      "4 more jobs scored below the match-quality floor and are not shown.",
+    );
+  });
+});
+
 // Ticket b182bde: opt-in, default-off client-side filter. Of DATA's two
 // jobs, only "Platform Engineer" (job-2) is levelFit "overqualified" —
 // "Senior Backend Engineer" (job-1) has levelFit null (an unjudged row),
@@ -202,7 +326,7 @@ describe(`ResultsList — "Hide roles I'm overqualified for" filter (ticket b182
     // hidden anything).
     expect(
       screen.getByText(
-        "Showing 1 of 2 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.)",
+        "Showing 1 of 2 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown. (1 hidden as maybe overqualified.)",
       ),
     ).toBeInTheDocument();
 
@@ -317,7 +441,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
     expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 2 of 3 scored jobs from the sources you've selected. (1 hidden as maybe underqualified.)",
+        "Showing 2 of 3 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown. (1 hidden as maybe underqualified.)",
       ),
     ).toBeInTheDocument();
 
@@ -375,7 +499,7 @@ describe(`ResultsList — "Hide roles I'm underqualified for" filter (ticket a34
     expect(screen.queryByText("Staff Backend Engineer")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
+        "Showing 1 of 3 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown. (1 hidden as maybe overqualified.) (1 hidden as maybe underqualified.)",
       ),
     ).toBeInTheDocument();
   });
@@ -452,7 +576,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 2 of 3 scored jobs from the sources you've selected. (1 contract/temp hidden.)",
+        "Showing 2 of 3 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown. (1 contract/temp hidden.)",
       ),
     ).toBeInTheDocument();
 
@@ -514,7 +638,7 @@ describe('ResultsList — "Hide contract/temp roles" filter (ticket 8f5a79c)', (
     expect(screen.queryByText("Software Engineer (Contract)")).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        "Showing 1 of 3 scored jobs from the sources you've selected. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
+        "Showing 1 of 3 scored jobs from the sources you've selected; 4 more jobs scored below the match-quality floor and are not shown. (1 hidden as maybe overqualified.) (1 contract/temp hidden.)",
       ),
     ).toBeInTheDocument();
   });
