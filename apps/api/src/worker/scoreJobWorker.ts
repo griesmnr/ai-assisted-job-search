@@ -249,7 +249,7 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * personal, single-operator project (the ticket's own words), which is
  * exactly what this project is.
  *
- * WHY $15 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
+ * WHY $30 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
  * this worker's own real numbers, not by analogy to anything else in the
  * codebase -- `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD`
  * is $5 (opus review, ticket b53c422, F2: an earlier draft of this comment
@@ -268,31 +268,53 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  *
  *   - "bootstrap" basis (no `prep/scoring-usage-stats.json` yet -- a fresh
  *     checkout, this sandbox's own state): `maxCostUsd` for ONE job is
- *     ~$0.0388, so $15 bounds roughly 387 worst-case scoring attempts
- *     before tripping.
+ *     ~$0.0388, so $30 bounds roughly 773 worst-case scoring attempts
+ *     before tripping ($15 bounded ~387).
  *   - "measured" basis (real historical per-call averages -- reused the
  *     same 3,874.5 in / 454.2 out tokens/call figures
  *     `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD` comment
  *     cites, with no cache history): `maxCostUsd` for ONE job is ~$0.0468,
- *     so $15 bounds roughly 320 worst-case scoring attempts.
+ *     so $30 bounds roughly 641 worst-case scoring attempts ($15 bounded
+ *     ~320).
  *
- * Either basis lands in the same 300-400 range -- AT THE TIME THIS WAS
- * SIZED, comfortably above `DEFAULT_SCORE_THRESHOLD` (200, the synchronous
- * CLI path's own per-run cap), so a single legitimate burst of activity
- * (e.g. one large search fanning out through this worker) did not itself
- * trip the guard, while still bounding a genuine runaway-bug's total
- * lifetime exposure to roughly $15.
+ * HISTORY, because the old justification was load-bearing on a constant
+ * that no longer exists. $15 was originally sized to land in the 300-400
+ * call range specifically because that was "comfortably above
+ * `DEFAULT_SCORE_THRESHOLD` (200)", so one large search fanning out through
+ * this worker could not itself trip the guard. Ticket d37511b deleted that
+ * cap at Nicole's explicit request, which killed the headroom argument
+ * outright: nothing now bounds how many jobs one search needs scored.
  *
- * THAT HEADROOM ARGUMENT NO LONGER HOLDS (ticket d37511b removed
- * `DEFAULT_SCORE_THRESHOLD` outright, at Nicole's explicit request). There
- * is now nothing bounding how many jobs a single search can need scored,
- * so a single sufficiently large, un-narrowed search CAN legitimately
- * trip this $15/300-400-call ceiling by itself -- not just a runaway bug.
- * That is an accepted consequence of the removal (see
- * matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment), not
- * something this file was updated to compensate for: raising
- * `DEFAULT_LIFETIME_SPEND_CEILING_USD` to "fix" this would be exactly the
- * kind of replacement guard that ticket explicitly ruled out adding.
+ * WHY $30 RATHER THAN REMOVING THE CEILING, decided by Nicole 2026-10-09
+ * ("Just don't put any cap at all. Or make it 30. this is just friends so
+ * far remember."): this guard does not constrain anybody's search. It
+ * bounds a RUNAWAY BUG -- a retry loop, a redelivery storm, a future
+ * scoring defect that re-scores the same jobs indefinitely. Removing it
+ * entirely would leave only the Anthropic ACCOUNT-level cap as a backstop,
+ * and that one presents as "the whole app is broken" rather than as one
+ * worker logging that it declined to spend more. A $30 ceiling is
+ * recoverable; an account cap hit unattended is a bill you find later.
+ *
+ * $30 was sized for current reality, not by doubling for its own sake:
+ * ~641-773 worst-case scoring attempts per worker process (see the two
+ * bases above), against a largest-observed real search of 206 jobs (Jay's
+ * second test round, 2026-10-09) and a user population of the owner plus a
+ * few friends. Raise it again deliberately when that changes.
+ *
+ * AND IT IS NOT THE "REPLACEMENT GUARD" TICKET d37511b FORBADE. An earlier
+ * version of this comment claimed it would be; that was wrong on two
+ * counts, and the claim is corrected here rather than quietly dropped.
+ * First, d37511b forbade ADDING a new guard to compensate for the cap it
+ * removed; this constant predates that ticket by weeks (b53c422) and
+ * guards a different thing. Second, this block's own closing paragraph
+ * already invites exactly this change -- "raise
+ * `DEFAULT_LIFETIME_SPEND_CEILING_USD` deliberately, with a real reason, if
+ * it proves too tight in practice" -- and deleting the constant its sizing
+ * depended on is precisely such a reason. The distinction that matters, and
+ * the one to preserve: this bounds DOLLARS PER WORKER PROCESS and resets on
+ * restart. No code path consults it to decide how many jobs a search may
+ * score. If a future change makes it answer that question, it has become a
+ * job cap by another name and is out of bounds.
  * (Worth noting the criterion actively EXCLUDES
  * `MAX_ESTIMATED_SPEND_USD`'s $5: that would bound only ~107-129 calls,
  * below the 200-call floor this paragraph argues for -- another reason the
@@ -319,7 +341,7 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * concurrent reservations from racing each other within one message or
  * across messages under `prefetch(1)`.
  */
-export const DEFAULT_LIFETIME_SPEND_CEILING_USD = 15;
+export const DEFAULT_LIFETIME_SPEND_CEILING_USD = 30;
 
 /** The minimal spend-guard surface `createScoreJobHandler` actually calls -
  * an interface, not the concrete `ScoringSpendGuard` class, for the same
