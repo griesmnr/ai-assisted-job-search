@@ -37,6 +37,12 @@ export default tseslint.config(
     // serializes and runs them inside the browser page, not this Node
     // process -- so without these, `no-undef` reads them as this script's
     // own undefined Node globals.
+    //
+    // `window` added (ticket 042db32): `magic-link-float-check.mjs`'s own
+    // `page.evaluate(() => window.scrollBy(...))` is the same
+    // ESLint-parses-browser-source-as-Node-source situation as the three
+    // globals above, just a fourth identifier none of this glob's existing
+    // fixtures happened to need yet.
     files: ["**/scripts/**/*.mjs"],
     languageOptions: {
       globals: {
@@ -44,6 +50,7 @@ export default tseslint.config(
         console: "readonly",
         document: "readonly",
         getComputedStyle: "readonly",
+        window: "readonly",
       },
     },
   },

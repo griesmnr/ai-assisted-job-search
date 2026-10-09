@@ -861,6 +861,22 @@ button[aria-disabled="true"] {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  /* Ticket 042db32: establishes the containing block for
+     `.magic-link-prompt-anchor`'s wide-viewport `position: absolute` rule
+     below (`top`/`left` on an absolutely positioned descendant resolve
+     against the nearest ancestor that is itself positioned -- without
+     this, they'd resolve against the viewport/initial containing block
+     instead, i.e. exactly the `position: fixed`-shaped bug this file has
+     already been bitten by three times). `padding: 0` above matters here
+     too: it's what makes this box's content-box top land EXACTLY on the
+     first `<li class="result-card">`'s own top with no offset to account
+     for, so the anchor's `top: 0` (see below) lines up with the first
+     result card's top with nothing to subtract. Harmless at narrow
+     viewports, where the anchor uses `position: sticky` instead (sticky
+     doesn't need a positioned ancestor -- it resolves against the nearest
+     scroll container/block ancestor regardless), so this one rule serves
+     both. */
+  position: relative;
 }
 
 .result-card {
@@ -1236,6 +1252,138 @@ button[aria-disabled="true"] {
    page itself scrolls, so that pair would now be actively wrong (an
    incongruous inner scrollbar on an ordinary page element) rather than
    merely unnecessary. */
+
+/* Ticket 042db32, superseding 931df8a's choice ABOVE in one respect and
+   confirming it in another. 931df8a's in-flow placement fixed Jay's round-1
+   complaint (a `position: fixed` card appearing next to the search controls
+   before he knew results existed) by making the card a normal sibling of
+   the first result card, inside `.result-cards`' own flex column. It did
+   NOT fix everything: Jay, round 2, on exactly that in-flow placement --
+   "embedded among results, he couldn't tell which results it meant." And
+   Nicole lost the one thing she'd liked about the old fixed card: a visual
+   cue, distinct from being wedged between two specific postings, that the
+   search had actually produced something. Her instruction this round:
+   "float it again, off to the side, but not higher than the search
+   results."
+
+   That is three different placements having failed three different ways
+   (see the comment above this one for the first two), so the fix below is
+   held to all four constraints at once, not just the newest complaint:
+   beside the results (so a reader has already seen results exist before
+   being asked anything), out of the vertical flow (so it reads as an aside
+   about the page, not commentary sandwiched between card 1 and card 2),
+   top no higher than the first result card's top (Nicole's own words, and
+   931df8a's still-correct reasoning for why ABOVE the first card is wrong:
+   it would make the ask the first thing a scrolling user meets, ahead of
+   the results they opened the tab for), and reachable without scrolling an
+   unbounded list (the ORIGINAL d3a95d1 failure -- "Already Scored Jobs" is
+   every job ever scored, so "at the end" is never reached in practice).
+
+   WHY NOT `position: fixed` AGAIN: it would re-satisfy "beside"/"out of
+   flow" trivially and re-open the exact N1/N2/N3 occlusion history this
+   file already tells at length just above, plus Jay's round-1 complaint a
+   second time (a fixed card can render over the search controls before any
+   result has loaded). Nothing about THIS round's complaint (ambiguity
+   about which result the prompt refers to) argues for undoing that
+   retirement, so it stays retired.
+
+   WHY NOT simply "above the first result": explicitly the thing both
+   Nicole's phrasing and 931df8a's own reasoning rule out. Not reconsidered
+   here.
+
+   THE MECHANISM, wide viewports (see the `@media` block below the base
+   rule): the anchor `<li>` -- same DOM node, same position in the DOM, for
+   all the same reasons App.tsx's own comments give (one hoisted
+   `MagicLinkPrompt` instance, one portal root whose IDENTITY never
+   changes, this `<li>` immediately after the first result card) -- is
+   taken OUT of `.result-cards`' flex column via `position: absolute` and
+   placed at `top: 0; left: 100%` relative to `.result-cards` (made
+   `position: relative` above for exactly this). `top: 0` on a box whose
+   containing block's content-box top IS the first result card's top (no
+   padding in between) means the floated card's own top is the first
+   card's top -- not merely "no higher than" it, but exactly level with it.
+   `left: 100%` plus a small `margin-left` puts it in `.app`'s own right-
+   hand gutter (`.app { max-width: 760px }` leaves real room beside it on
+   any viewport wide enough -- see the measurement script below for how
+   wide "wide enough" was actually confirmed to be, not guessed). An
+   absolutely positioned box does not consume space in its old flex slot,
+   so card 2 is no longer pushed down by its presence or absence the way a
+   normal flex sibling would be -- the one piece of "out of the vertical
+   flow" that matters architecturally. MEASURED, not assumed, for the one
+   case this is riskiest in -- a very short list: an absolutely positioned
+   box does not GROW `.result-cards` to make room for itself, so a card
+   taller than the whole list it's floated beside DOES run past
+   `.result-cards`' own bottom (confirmed directly --
+   `apps/web/scripts/magic-link-float-check.mjs`'s "short list" rows show
+   the floated card's bottom edge 150+px below a single real result card's
+   bottom edge, and the "grouped list, short first group" row shows the
+   same thing happening with a second group's whole `<section>` -- heading
+   and cards -- sitting right where the first group's `<ul>` ends). That
+   sounds like exactly the overlap this ticket's acceptance criteria rule
+   out, and the script checks for it directly rather than taking the
+   `left: 100%` placement's word for it -- but running past `.result-
+   cards`' bottom and OVERLAPPING something are different claims, and only
+   the second one is checked here: `.app`'s own right-hand gutter is empty
+   of any other page content at any vertical position (nothing else in
+   this app renders there), so a floated card reaching further down the
+   gutter has nothing to collide with no matter how far past the list's
+   own height it runs -- confirmed by the same script's horizontal-overflow
+   check (the page never gets wider than the viewport, so the gutter is
+   real room, not an off-screen illusion) and its explicit "does the
+   floated prompt's rect intersect the NEXT group's rect" check (it does
+   not, on both axes, specifically because the next group's `<section>`
+   stays inside the main column and never reaches into the gutter). This
+   is a property of THIS LAYOUT (an empty right gutter beside a
+   fixed-max-width column), not a property that would survive unmodified
+   if a future change ever put something else in that gutter -- re-run the
+   script if one ever does, rather than assume this reasoning still holds.
+
+   THE MECHANISM, narrow viewports -- the decision this ticket's own scope
+   required be made and argued, not quietly defaulted: AT 390px (`.app`'s
+   content column is already using nearly the full viewport width once its
+   own 1rem side padding is subtracted) THERE IS NO SIDE TO FLOAT TO. Doing
+   the wide-viewport trick anyway would squeeze the actual result cards
+   into a sliver beside a form that needs real width for an email input,
+   which helps nobody. The explicit choice: leave the anchor exactly where
+   931df8a put it in the flex column (so it still occupies its old slot,
+   pushing card 2 down by its own height exactly as today) but make it
+   `position: sticky; top: 0` instead of a plain static flex item. At rest
+   (page just loaded, nothing scrolled) this looks identical to 931df8a's
+   placement -- sandwiched after card 1 -- which is the one part of Jay's
+   round-2 complaint this mobile fallback does NOT fully solve; said
+   plainly rather than claimed away. What sticky adds: the moment the user
+   scrolls AT ALL, the card detaches from that slot and pins to the top
+   edge of the viewport instead, for as long as any part of `.result-cards`
+   is still on screen -- at which point it visually reads as a persistent
+   page-level banner riding along above whichever cards are currently
+   scrolled into view, not as a remark stapled to card 1 specifically. That
+   is a real, if partial, answer to "which result does this mean" for a
+   screen with no room to go sideways, it never requires scrolling an
+   unbounded list to reach (bounded to right after card 1, same as before),
+   and it is NOT `position: fixed`: a plain CSS containing-block rule
+   (sticky is constrained to the nearest block-level ancestor,
+   `.result-cards` here) means it cannot stick past the bottom of that list
+   into whatever comes after, and cannot appear at all before the results
+   section itself has started scrolling into view -- so Jay's round-1
+   complaint (search controls occluded by a card from a search that hasn't
+   even returned yet) stays fixed too. The breakpoint below (`1366px`) is
+   deliberately NOT "the narrowest width that happens to fit" -- it is the
+   exact laptop width this ticket measured (see the script). Narrower real
+   laptops (1280px, 1024px, etc.) get the sticky/mobile treatment too,
+   untested rather than assumed to also have room; widen the breakpoint's
+   reach only after measuring a specific additional width, the same rule
+   this file's `layout-check.mjs` section already follows for its own
+   claim.
+
+   MEASURED, not eyeballed -- the thing the previous round of this exact
+   feature shipped without and got wrong twice. Run
+   `pnpm build && node apps/web/scripts/magic-link-float-check.mjs` from the
+   repo root; it reports real `getBoundingClientRect()` numbers at 1366x768
+   and 390x844, for a one-result ("short") and many-result ("long") list,
+   loaded against this file's own BUILT CSS the same way `layout-check.mjs`
+   and `resume-list-fold-check.mjs` already do. Re-run it if this rule, the
+   breakpoint, the floated width, or the anchor's surrounding markup
+   changes -- the script's own comment repeats this. */
 .magic-link-prompt-anchor {
   /* Ticket 931df8a: the portal target is an otherwise-empty `<li>` (see
      the component files for why) sitting between two result cards in a
@@ -1267,8 +1415,51 @@ button[aria-disabled="true"] {
   /* `block`, not the `<li>` default of `list-item` -- `.result-cards`
      already sets `list-style: none`, so there is no marker to preserve,
      and `block` is the unambiguous choice as a child of `display: flex`
-     regardless of how any given engine treats a `list-item` flex item. */
+     regardless of how any given engine treats a `list-item` flex item.
+
+     Ticket 042db32: this is now the NARROW-viewport rule too, not just the
+     shared "don't collapse to nothing" base -- `position: sticky; top: 0`
+     is the small-viewport decision argued at length in the comment above
+     this selector's base rule. It stays a normal member of
+     `.result-cards`' flex column (sticky does not remove a box from flow
+     the way `absolute` does), so it still occupies the same slot 931df8a
+     gave it; what's new is that scrolling detaches it from that slot and
+     pins it to the viewport's top edge instead, for as long as any part
+     of this list is on screen. The `@media` block below overrides this
+     for viewports wide enough to float it beside the list instead. */
   display: block;
+  position: sticky;
+  top: 0;
+}
+
+/* Ticket 042db32: the wide-viewport half of the small-viewport decision
+   above -- see this file's long comment above `.magic-link-prompt-anchor`
+   for why `1366px` specifically (the one laptop width this ticket actually
+   measured, not a guessed-at breakpoint). Overrides `position`/`top` from
+   the narrow-viewport rule above (`absolute`, not `sticky` -- an
+   absolutely positioned box is removed from `.result-cards`' flex flow
+   entirely, which `sticky` deliberately is not) and adds the horizontal
+   placement `sticky` has no equivalent of. `top: 0` here means the same
+   thing it means above -- flush with `.result-cards`' own content-box top,
+   which `position: relative` + `padding: 0` on that rule make exactly the
+   first result card's top (see that rule's own comment). `left: 100%`
+   plus `margin-left` puts the card in `.app`'s right-hand gutter rather
+   than stealing width from the result cards themselves -- `.app {
+   max-width: 760px }` leaves that gutter alone on any viewport this media
+   query matches. `width` is fixed rather than left to shrink-to-fit so the
+   email input inside (`.magic-link-form input { min-width: 12rem }`) has
+   room to sit on one line next to nothing else without forcing the card
+   wider than the gutter has to spare -- confirmed by the measurement
+   script this file's long comment above points at, not computed from
+   `.magic-link-form`'s own rules alone. */
+@media (min-width: 1366px) {
+  .magic-link-prompt-anchor:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) {
+    position: absolute;
+    top: 0;
+    left: 100%;
+    margin-left: 1rem;
+    width: 15rem;
+  }
 }
 
 /* Review round 2, required fix: `.magic-link-prompt` keeps `margin-top:
@@ -1303,7 +1494,20 @@ button[aria-disabled="true"] {
    to match `ResultsList.tsx`'s DOM shape, so it can drift silently if that
    component changes without this rule changing too (see
    HEADLESS-BROWSER.md's "The demonstration" section for exactly what it
-   does and does not cover). */
+   does and does not cover).
+
+   Ticket 042db32: still correct, for a second reason now, in the WIDE
+   viewport case. The anchor there is `position: absolute` with `top: 0`,
+   which already puts its own box flush with `.result-cards`' top -- but
+   the CARD rendered inside it is a nested descendant several levels down
+   (`<li> > .magic-link-prompt-host > .magic-link-prompt`) that still
+   carries its own box and its own margin. Without this zeroing, the base
+   rule's `margin-top: 1.5rem` would push the visible card 1.5rem below the
+   anchor's `top: 0`, i.e. 1.5rem below the first result card's top instead
+   of level with it -- still technically "no higher than," per the
+   acceptance criterion's literal wording, but not the tight alignment the
+   `top: 0` rule was written to produce, and not what the measurement
+   script below was written to confirm. Re-run it if this rule changes. */
 .magic-link-prompt-anchor .magic-link-prompt {
   margin-top: 0;
 }

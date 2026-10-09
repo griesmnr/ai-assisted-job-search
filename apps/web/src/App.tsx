@@ -1599,16 +1599,29 @@ function JobSearchApp() {
   // that no longer exists: the prompt was `position: fixed` (ticket
   // d3a95d1), which made it trivially detached from any particular
   // section -- "the card renders in the same corner either way" was true
-  // precisely because it rendered nowhere in document flow at all. It is
-  // now in-flow, after the topmost result of whichever tab is active (see
-  // `magicLinkAnchor`/`magicLinkPortalRoot`, declared below this
-  // function's `showMagicLinkPrompt`), which is the opposite property:
-  // which section it visually belongs to is no longer incidental, it is
+  // precisely because it rendered nowhere in document flow at all. The
+  // anchor DOM node is placed right after the topmost result of whichever
+  // tab is active (see `magicLinkAnchor`/`magicLinkPortalRoot`, declared
+  // below this function's `showMagicLinkPrompt`), which is the opposite
+  // property: which section it belongs to is no longer incidental, it is
   // exactly the gate below. What hasn't changed is the REASON for one
   // hoisted instance -- `<MagicLinkPrompt />` still mounts once, at this
   // same JSX call site, never duplicated per tab -- only how its RENDERED
   // DOM gets to the right section (a portal moved between anchors,
   // instead of a fixed box that didn't need to move at all).
+  //
+  // Ticket 042db32: that anchor DOM node's OWN position here is unchanged
+  // by this paragraph's ticket -- still right after the topmost result,
+  // for all the same reasons above. What 042db32 changed is purely CSS,
+  // in index.css, on top of this same node: at a wide-enough viewport the
+  // card now renders visually beside the results (taken out of the
+  // results list's own vertical flow) rather than sandwiched between two
+  // specific result cards, with a separate, explicitly-argued fallback for
+  // viewports with no "side" to float to. See index.css's comment at
+  // `.magic-link-prompt-anchor` for why (another round of real user
+  // feedback: in-flow placement fixed one complaint and caused another),
+  // and for why that is a CSS-only change that needed nothing different
+  // from this hook or from `ResultsList.tsx`/`GroupedResultsList.tsx`.
   //
   // WHAT THE GATE PRESERVES: ticket 9f06f8f's placement rule is unchanged
   // -- the email is asked for only after real scored results are on
@@ -2361,11 +2374,21 @@ function JobSearchApp() {
           whichever results list is relevant, handed back by `ResultsList`/
           `GroupedResultsList` via `onFirstResultAnchorChange`.
           `position: fixed` and the `.results-section` clearance padding it
-          required (index.css) are both gone with it; see that file's
-          comment at the old `.magic-link-prompt-floating` site for why
-          in-flow placement retires the whole occlusion-bug class that
-          fixed positioning kept reopening, rather than adding another fix
-          to it.
+          required (index.css) are both gone, and stay gone -- see that
+          file's comment at the old `.magic-link-prompt-floating` site for
+          why fixed positioning's occlusion-bug history (N1/N2/N3) is not
+          something ticket 042db32 reopens even though this card floats
+          again.
+
+          Ticket 042db32: that ticket changed how this SAME anchor node is
+          styled, not where it sits in the DOM -- it's still this one node,
+          right after the topmost result, for the reasons above. Index.css
+          now renders it beside the results on a wide-enough viewport
+          (`position: absolute`, out of `.result-cards`' own flex flow) and
+          pinned to the viewport's top edge while scrolling on a narrow one
+          (`position: sticky`, still a flex-flow member) -- see that file's
+          long comment at `.magic-link-prompt-anchor` for the full
+          reasoning and the measurement script that checked both.
 
           Still genuinely unmounts when NEITHER arm is ready -- e.g. a
           criteria or source change resets `hasFreshSearchResults`. That

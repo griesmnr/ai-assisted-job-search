@@ -8,7 +8,8 @@
     "dev": "vite --strictPort",
     "preview": "vite preview",
     "layout-check": "node scripts/layout-check.mjs",
-    "resume-list-fold-check": "node scripts/resume-list-fold-check.mjs"
+    "resume-list-fold-check": "node scripts/resume-list-fold-check.mjs",
+    "magic-link-float-check": "node scripts/magic-link-float-check.mjs"
   },
   "dependencies": {
     "@app/shared": "workspace:*",

@@ -26,31 +26,52 @@ import { MagicLinkForm } from "./MagicLinkForm";
  * and nothing at all on "My Resumes". Read that gate, not this file, for
  * exactly when the prompt is allowed on screen.
  *
- * WHY THIS NO LONGER FLOATS (ticket 931df8a, superseding d3a95d1): d3a95d1
- * made this `position: fixed`, bottom-right of the viewport, precisely to
- * avoid the old inline-at-the-end-of-the-list placement, where a long
- * results list could push it below the fold -- "never reached" in
- * practice. That traded one failure for a worse one: Jay's search finished
- * while he was still scrolled at the top, at the search controls, and the
- * fixed card appeared right next to them -- "out of nowhere," before he had
- * any idea results existed. Nicole, after first hearing this mis-read as a
- * timing bug: "the timing was correct. The placement was not... When he
- * happens to scroll down is when he should start being able to see that
- * email message."
+ * WHERE THIS RENDERS, THREE ROUNDS IN (ticket 042db32, superseding 931df8a,
+ * which superseded d3a95d1): d3a95d1 made this `position: fixed`,
+ * bottom-right of the viewport, precisely to avoid the ORIGINAL inline-at-
+ * the-end-of-the-list placement, where a long results list could push it
+ * below the fold -- "never reached" in practice. That traded one failure
+ * for a worse one: Jay's search finished while he was still scrolled at
+ * the top, at the search controls, and the fixed card appeared right next
+ * to them -- "out of nowhere," before he had any idea results existed.
+ * Nicole, after first hearing this mis-read as a timing bug: "the timing
+ * was correct. The placement was not... When he happens to scroll down is
+ * when he should start being able to see that email message." 931df8a's
+ * fix was to stop floating at all: a node sitting just after the TOPMOST
+ * result (never above it, never at the list's end), in the normal
+ * document flow. That fixed Jay's round-1 complaint and cost Nicole the
+ * one thing she'd liked about the fixed card -- a visual cue, distinct
+ * from sitting between two specific postings, that the search had actually
+ * produced something. It also, per Jay's round 2, did not fully fix his
+ * complaint either: "embedded among results, he couldn't tell which
+ * results it meant."
  *
- * The fix is neither of the two placements d3a95d1 weighed: App.tsx now
- * portals this component's rendered DOM to a node sitting just after the
- * TOPMOST result (never above it, never at the list's end), so scrolling
- * to the results is what brings the card into view, and a short list never
- * buries it. `createPortal` is what makes that compatible with the one-
+ * 042db32's fix floats it again, deliberately NOT back to `position:
+ * fixed` (see index.css's comment at `.magic-link-prompt-anchor`, both the
+ * long one above the base rule and the N1/N2/N3 occlusion history above
+ * that, for why that stays retired): on a viewport wide enough, CSS takes
+ * the anchor out of the results list's flex flow (`position: absolute`)
+ * and places it in `.app`'s own right-hand gutter, top-aligned with the
+ * first result card -- beside the results, not fixed to the viewport and
+ * not sandwiched between two of them. On a narrow viewport with no "side"
+ * to float to, it stays a normal member of the results flex column
+ * (occupying the same slot 931df8a gave it) but becomes `position: sticky`,
+ * so scrolling detaches it from that slot and pins it to the screen's top
+ * edge instead, reading as a page-level aside rather than commentary on
+ * card 1 specifically, for as long as the results list is still on screen.
+ * Both are plain CSS on the same DOM node this component has used since
+ * d0a7074/931df8a -- nothing here changed to make it possible.
+ *
+ * `createPortal` is what makes ANY of this compatible with the one-
  * hoisted-instance requirement below: the component's position in the
  * REACT TREE does not move (it still mounts once, where d0a7074 put it),
  * only its rendered DOM does -- so this stays exactly one instance with
- * exactly one local `dismissed`/`email`/`phase`, same as when it floated.
- * See App.tsx's own comment at the mount site for the portal wiring, and
- * index.css's comment at the old `.magic-link-prompt-floating` site for
- * why in-flow placement also retires the occlusion-bug class that fixed
- * positioning kept reopening (N1/N2/N3 in that file's history).
+ * exactly one local `dismissed`/`email`/`phase`, same as when it was
+ * `position: fixed`, same as when it was in-flow, same now that it floats
+ * beside the results again. See App.tsx's own comment at the mount site
+ * for the portal wiring, and index.css's comment at
+ * `.magic-link-prompt-anchor` for the full placement history and the
+ * current CSS mechanism in detail.
  *
  * WHY IT IS FRAMED AS "SO YOU CAN FIND THIS AGAIN" AND NOT AS A LOGIN WALL
  * (Nicole's framing, on the ticket): nothing here is gated. The results are
