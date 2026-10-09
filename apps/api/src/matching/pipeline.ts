@@ -29,7 +29,7 @@ import { describeCrossSourceMerge, ingestJobsForSearch } from "../ingest/ingestJ
 import { loadEnvFile } from "../load-env.js";
 import { CompositeSource, type PerSourceOutcome } from "../sources/composite.js";
 import type { JobSource, NormalizedJob, SearchCriteria, TokenOutcome } from "../sources/types.js";
-import { DEFAULT_SCORE_THRESHOLD, MODEL, type ScoreJobFn, type ScoredJob } from "./scoring.js";
+import { MODEL, type ScoreJobFn, type ScoredJob } from "./scoring.js";
 import {
   type CostEstimate,
   describeCostEstimate,
@@ -216,8 +216,11 @@ export type RunDemoMatchOptions = {
    * below for the real one) pass it explicitly. Every survivor gets
    * ingested — ticket 16c824a removed the `maxJobs` truncation that used
    * to slice this down in source/board iteration order before any of it
-   * reached the database. What gets SCORED (as opposed to merely ingested)
-   * is a separate, later decision — see `scoreThreshold`/`allowAboveThreshold`.
+   * reached the database — AND, as of ticket d37511b, every survivor also
+   * gets SCORED: there is no later budget decision carving a subset of
+   * `candidates` back out. See this function's own "EVERY CANDIDATE GETS
+   * SCORED" comment below for why, and for the one note worth carrying
+   * forward about the cap this replaces.
    */
   filter?: (jobs: NormalizedJob[]) => NormalizedJob[];
   /**
@@ -242,23 +245,6 @@ export type RunDemoMatchOptions = {
    * same reporting channel — see `SourceOutcome.excludedForMissingWorkArrangement`.
    */
   excludedForMissingWorkArrangement?: (jobs: NormalizedJob[]) => NormalizedJob[];
-  /**
-   * Spend guard (ticket 16c824a). Above this many jobs actually NEEDING a
-   * new score this run (already-scored jobs are free — ticket 620ca30),
-   * scoring stops here unless `allowAboveThreshold` is set — see
-   * `DEFAULT_SCORE_THRESHOLD`'s doc comment for the pool-size assumption
-   * and for exactly what this does and does not truncate (it bounds
-   * SCORING/spend, not ingestion, and a plain rerun drains it for free).
-   * Defaults to `DEFAULT_SCORE_THRESHOLD`.
-   */
-  scoreThreshold?: number;
-  /**
-   * Explicit opt-in to score MORE than `scoreThreshold` jobs in one run.
-   * Defaults to `false` — a pool above the threshold gets capped, not
-   * silently scored in full, unless a caller deliberately sets this (or,
-   * in `main()`, sets `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
-   */
-  allowAboveThreshold?: boolean;
   /**
    * Where real per-call token usage accumulates across runs (see
    * `recordUsageStats`), read back by `estimateScoringCost` so the
@@ -402,36 +388,26 @@ export type RunDemoMatchResult = {
   sourceOutcomes: SourceOutcome[];
   /**
    * How many jobs needed a NEW score this run (ingested candidates minus
-   * `skipped`), before the spend-guard cap was applied. `newlyScored +
-   * failed + cappedCount === candidatesNeedingScore` (ticket 16c824a).
+   * `skipped`). `newlyScored + failed === candidatesNeedingScore` (ticket
+   * 16c824a) — as of ticket d37511b there is no third bucket: every job
+   * needing a score is attempted, none is deferred for budget reasons.
    */
   candidatesNeedingScore: number;
   /**
-   * How many of `candidatesNeedingScore` were NOT scored this run because
-   * `scoreThreshold` applied and `allowAboveThreshold` wasn't set. Always 0
-   * when the pool was at/under the threshold, or the override was active.
-   * A nonzero value here means this run's `results` is a truncated view of
-   * what's scoreable, not the whole pool — callers must not present it as
-   * complete without surfacing this number.
-   */
-  cappedCount: number;
-  /**
-   * The `scoreThreshold` actually in effect this run (the caller's override
-   * or `DEFAULT_SCORE_THRESHOLD`). Ticket 59fdc52 review round 2: the REST
-   * API's cost-estimate response was reporting the cost of scoring the
-   * WHOLE pool while a real run caps spend at this number — carrying the
-   * threshold itself is what lets a caller understand why `costEstimate`
-   * and `candidatesNeedingScore` disagree.
-   */
-  scoreThreshold: number;
-  /**
-   * The pre-scoring cost estimate for whatever was actually ATTEMPTED this
-   * run — i.e. after `scoreThreshold` capping, exactly like a real run's
-   * spend (see `estimateScoringCost`). `estimateOnly` computes this the
-   * same cap-aware way rather than pricing the full uncapped pool: pricing
-   * the uncapped pool overstated cost by ~30x against what a real run
-   * (which caps at `scoreThreshold`) would actually bill (ticket 59fdc52
-   * review round 2).
+   * The pre-scoring cost estimate for every job in `candidatesNeedingScore`
+   * (see `estimateScoringCost`) — the whole pool needing a new score,
+   * because a real run now scores all of it, not a capped subset.
+   *
+   * Ticket d37511b removed the cap that used to make this field
+   * cap-AWARE: before this ticket, `costEstimate` deliberately priced only
+   * the first `scoreThreshold` of `needsScoreIds` (not the full pool),
+   * because that subset was the only part a real run would actually
+   * attempt and bill — pricing the full pool would have overstated real
+   * spend by ~30x (ticket 59fdc52 review round 2's history). Now that a
+   * real run attempts the full pool too, pricing the full pool here is
+   * what keeps this field equal to what a real run will actually bill —
+   * the same invariant as before, preserved by removing the capping on
+   * BOTH sides rather than by changing what this field promises.
    */
   costEstimate: CostEstimate;
 };
@@ -1266,8 +1242,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     criteria = {},
     filter = (jobs: NormalizedJob[]) => jobs,
     excludedForMissingWorkArrangement: excludeMissingArrangementFn = () => [],
-    scoreThreshold = DEFAULT_SCORE_THRESHOLD,
-    allowAboveThreshold = false,
     usageStatsPath = DEFAULT_USAGE_STATS_PATH,
     outputPath = "prep/match-results.json",
     log = console.log,
@@ -1384,9 +1358,10 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // ingested and is a scoring CANDIDATE — the old bug was slicing this list
   // to 12 in source/board iteration order before any of it reached the
   // database, so employers late in the token list (Coinbase, Databricks,
-  // ...) were never even ingested, let alone scored. The spend guard below
-  // (`scoreThreshold`/`allowAboveThreshold`) gates which candidates get
-  // SCORED, not which ones get persisted.
+  // ...) were never even ingested, let alone scored. As of ticket d37511b
+  // that is now also true of SCORING, not just ingestion — see this
+  // function's "EVERY CANDIDATE GETS SCORED" comment below, where the
+  // budget this paragraph used to point at used to live.
   const candidates = filtered;
 
   const sourceOutcomes = buildSourceOutcomes(
@@ -1471,8 +1446,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       results: [],
       sourceOutcomes,
       candidatesNeedingScore: 0,
-      cappedCount: 0,
-      scoreThreshold,
       costEstimate: {
         jobCount: 0,
         estimatedInputTokens: 0,
@@ -1597,44 +1570,63 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
   // pool, since already-scored jobs cost nothing to reconfirm (ticket
   // 620ca30).
   const usageStats = readUsageStats(usageStatsPath);
-  const preCapEstimate = estimateScoringCost(needsScoreJobs, resumeText, usageStats);
   log(
     `${filtered.length} survivor(s) after filtering; ${needsScoreIds.length} need scoring ` +
       `(${alreadyScoredIds.size} already scored — skipped, saving that many Claude calls).`,
   );
+
+  /**
+   * EVERY CANDIDATE GETS SCORED (ticket d37511b). There used to be a
+   * spend-guard cap here — `scoreThreshold`, defaulting to the removed
+   * `DEFAULT_SCORE_THRESHOLD` (200) — that sliced `needsScoreIds` down to
+   * its first N in deterministic order and deferred the rest to a later
+   * run (`cappedCount`), unless a caller explicitly opted in
+   * (`allowAboveThreshold` / `ALLOW_SCORE_ABOVE_THRESHOLD=true`) to score
+   * the whole pool in one run. Nicole, after a real user's testing session
+   * found "Deferred this run (over the cap)" and "Permanently failed"
+   * incomprehensible: asked directly whether she meant the on-screen
+   * display or the underlying mechanism, she chose both — remove the
+   * concept and the code that enforces it, not just its UI surface.
+   *
+   * WORTH RECORDING, SINCE THE ONLY OTHER NOTE ABOUT IT IS NOW GONE WITH
+   * THE CONSTANT: `DEFAULT_SCORE_THRESHOLD` itself (ticket 16c824a) existed
+   * to REPLACE an earlier bug, `MAX_JOBS`, which silently sliced the
+   * shortlist to 12 in board-iteration order with nothing measuring or
+   * reporting the truncation — it went uncaught for two funnel-widening
+   * tickets (545 -> 6,038 -> 11,609 postings). This removal does not bring
+   * that specific failure mode back: there is no cap left to bind
+   * silently, because there is no cap left, full stop — every job that
+   * survives `filter` above is both ingested AND scored, unconditionally,
+   * so "some postings never got scored and nothing said so" cannot recur
+   * from this code path the way it did at N=12. What this removal DOES
+   * reintroduce, deliberately and with Nicole's explicit sign-off, is
+   * unbounded per-search SPEND: a large search can now cost proportionally
+   * more at the Anthropic API than it could under the 200-job cap, with
+   * nothing in this codebase (CLI or REST) bounding a single run's bill
+   * any more. The pre-scoring cost ESTIMATE below (`costEstimate`,
+   * `POST /searches/estimate`) is explicitly preserved — the user can
+   * still see the price before authorizing it — but nothing stops them
+   * from authorizing a large one. The backstop is now entirely external:
+   * Nicole's own account-level Anthropic spend cap. `scoreJobWorker.ts`'s
+   * `ScoringSpendGuard` (a $15 LIFETIME-PER-PROCESS ceiling, ticket
+   * b53c422) is unrelated and untouched by this ticket — it bounds one
+   * worker process's total uptime spend across every search it ever
+   * handles, not any single search's, and was never part of this
+   * per-search budget concept.
+   */
+  const costEstimate = estimateScoringCost(needsScoreJobs, resumeText, usageStats);
   log(
-    `Estimated cost to score all ${needsScoreIds.length}: ${describeCostEstimate(preCapEstimate)}.`,
-  );
-
-  // Above `scoreThreshold`, cap SCORING (not ingestion) here unless the
-  // caller explicitly opted in — see `DEFAULT_SCORE_THRESHOLD`'s doc
-  // comment for precisely what this does and does not truncate, and why a
-  // plain rerun drains a bound cap for free. Computed BEFORE the
-  // `estimateOnly` check below (ticket 59fdc52 review round 2, "estimate is
-  // wrong by ~30x"): a real run never spends more than this cap allows in
-  // one call, so an estimate that priced `preCapEstimate` — the FULL
-  // uncapped pool — was answering a different question than "what will
-  // POST /searches actually bill me". `costEstimate` from here on is
-  // cap-aware: exactly what would be attempted (and billed) this run.
-  const overThreshold = needsScoreIds.length > scoreThreshold && !allowAboveThreshold;
-  const toScoreIds = overThreshold ? needsScoreIds.slice(0, scoreThreshold) : needsScoreIds;
-  const cappedCount = needsScoreIds.length - toScoreIds.length;
-
-  const costEstimate = estimateScoringCost(
-    toScoreIds.map(requireNormalizedJob),
-    resumeText,
-    usageStats,
+    `Estimated cost to score all ${needsScoreIds.length}: ${describeCostEstimate(costEstimate)}.`,
   );
 
   // Ticket 59fdc52: `estimateOnly` stops HERE, before any `scoreJob` call —
   // fetching and ingestion above already happened (free), but nothing below
-  // this point that costs money runs. `costEstimate`/`cappedCount` are the
-  // SAME cap-aware numbers a real run would compute (see above) — this is
-  // "what would POST /searches actually spend and defer if run right now",
-  // not the full pool's price. `results` still comes from the database
-  // (decision: "results come from the database, not a run's in-memory
-  // state"), scoped to whatever was ALREADY scored before this call — there
-  // is nothing newly scored to add to it.
+  // this point that costs money runs. `costEstimate` is exactly what a real
+  // run would spend scoring this same pool (see above) — "what would
+  // POST /searches actually spend if run right now". `results` still comes
+  // from the database (decision: "results come from the database, not a
+  // run's in-memory state"), scoped to whatever was ALREADY scored before
+  // this call — there is nothing newly scored to add to it.
   if (estimateOnly) {
     log(
       `estimateOnly=true — stopping before any scoring call. Nothing new was scored or billed ` +
@@ -1655,11 +1647,16 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
       results,
       sourceOutcomes,
       candidatesNeedingScore: needsScoreIds.length,
-      cappedCount,
-      scoreThreshold,
       costEstimate,
     };
   }
+
+  // No cap: every job that needs a new score is attempted this run (ticket
+  // d37511b). `toScoreIds` keeps its old name — unchanged below — even
+  // though it is now simply `needsScoreIds`, so the scoring loop that
+  // follows (and its own extensive comments on cache-warming order) didn't
+  // need to be rewritten along with the cap it used to also describe.
+  const toScoreIds = needsScoreIds;
 
   log(`Scoring ${toScoreIds.length} of ${linkedJobIds.length} candidates with ${MODEL}...\n`);
 
@@ -1832,30 +1829,12 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     }
   }
 
-  // Cap summary — emitted AFTER scoring, not before (ticket 16c824a review
-  // F2): "scored" must be what actually got persisted, not a prediction
-  // `Promise.allSettled` could still falsify with a failure. Base is
-  // `linkedJobIds.length`, not `filtered.length` — `linkedJobIds.length ===
-  // alreadyScoredIds.size + needsScoreIds.length` exactly (every linked id
-  // is either already-scored or needs one), and `needsScoreIds.length ===
-  // newlyScoredCount + failedCount + cappedCount` exactly (every id sent to
-  // `Promise.allSettled` either fulfills or rejects, and every id NOT sent
-  // is capped) — so the four numbers below always sum to the total with no
-  // unaccounted remainder, unlike the earlier `filtered.length`-based line
-  // this replaced.
-  if (cappedCount > 0) {
-    const nextRerunPicksUp = Math.min(cappedCount, scoreThreshold);
-    log(
-      `${linkedJobIds.length} candidate(s): ${alreadyScoredIds.size} already scored, ` +
-        `${newlyScoredCount} scored this run, ${failedCount} failed, ${cappedCount} not scored (cap). ` +
-        `${needsScoreIds.length} jobs needed scoring this run, above the ${scoreThreshold}-job ` +
-        `spend-guard threshold (estimated cost of what was actually attempted: ` +
-        `${describeCostEstimate(costEstimate)}). A plain rerun with no flags will pick up the next ` +
-        `${nextRerunPicksUp} of the remaining ${cappedCount} at no extra cost (already-scored jobs are ` +
-        `free — ticket 620ca30); set allowAboveThreshold (or ALLOW_SCORE_ABOVE_THRESHOLD=true for the ` +
-        `CLI) to score all ${cappedCount} remaining in this run instead.`,
-    );
-  }
+  // Ticket d37511b removed the cap summary line that used to live here —
+  // it existed to explain WHY `cappedCount` was nonzero, and there is no
+  // `cappedCount` any more: `needsScoreIds.length === newlyScoredCount +
+  // failedCount` exactly now (every id sent to `Promise.allSettled` either
+  // fulfills or rejects — no third, capped bucket). Per-job failures are
+  // still logged individually above, in the `Promise.allSettled` loop.
 
   // Final results come from the database, not from this run's in-memory
   // scores — so a second run, which scores nothing new, still prints the
@@ -1884,8 +1863,6 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
     results,
     sourceOutcomes,
     candidatesNeedingScore: needsScoreIds.length,
-    cappedCount,
-    scoreThreshold,
     costEstimate,
   };
 }

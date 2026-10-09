@@ -28,13 +28,13 @@ describe("ping", () => {
  */
 function describeSearchStatus(r: SearchStatusResponse): string {
   if (r.status === "complete") {
-    // `cappedForBudget` is read here (ticket c9c676d) for the same reason
-    // every other field on this member is: narrowing on `status` alone has
-    // to reach it, or the union has regressed.
-    return (
-      `scored ${r.scored} job(s), ${r.permanentlyFailed} permanently failed, ` +
-      `${r.cappedForBudget} not scored (budget)`
-    );
+    // `failed` is read here for the same reason every other field on this
+    // member is: narrowing on `status` alone has to reach it, or the union
+    // has regressed. Named `failed`, not `permanentlyFailed`/
+    // `cappedForBudget` (ticket d37511b removed the budget-capped third
+    // bucket that pair used to distinguish between — see this field's own
+    // doc comment on `SearchStatusResponse`).
+    return `scored ${r.scored} job(s), ${r.failed} failed`;
   }
   if (r.status === "complete-details-unavailable") {
     return `complete, details unavailable: ${r.note}`;
@@ -55,8 +55,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       resumeId: "r1",
       status: "complete",
       scored: 3,
-      permanentlyFailed: 1,
-      cappedForBudget: 2,
+      failed: 1,
       linked: 6,
       sources: [
         { sourceId: "usajobs", status: "complete", linkedJobCount: 6 },
@@ -71,9 +70,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       completedAt: "2026-09-22T00:00:00.000Z",
       degraded: true,
     };
-    expect(describeSearchStatus(r)).toBe(
-      "scored 3 job(s), 1 permanently failed, 2 not scored (budget)",
-    );
+    expect(describeSearchStatus(r)).toBe("scored 3 job(s), 1 failed");
   });
 
   it("narrows the 'pending' member's own durable progress fields", () => {
@@ -83,8 +80,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
       status: "pending",
       scoredSoFar: 2,
       linked: 5,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [{ sourceId: "usajobs", status: "pending", linkedJobCount: null }],
     };
@@ -92,7 +88,7 @@ describe("SearchStatusResponse — discriminated union (ticket 59fdc52 review ro
     // `linked` is the denominator a reloaded page needs — previously not
     // rebuildable from GET /searches/:id at all (ticket 4f88339).
     if (r.status === "pending") expect(r.linked).toBe(5);
-    if (r.status === "pending") expect(r.cappedForBudget).toBe(0);
+    if (r.status === "pending") expect(r.failed).toBe(0);
   });
 
   it("narrows the restart-fallback 'complete-details-unavailable' member separately", () => {

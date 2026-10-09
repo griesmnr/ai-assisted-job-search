@@ -63,8 +63,6 @@ function makeEstimate(overrides: Partial<EstimateSearchResponse> = {}): Estimate
       basis: "bootstrap",
     },
     candidatesNeedingScore: 10,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -99,8 +97,7 @@ async function runASearch(resumeId = "resume-1") {
     resumeId,
     scoredSoFar: 0,
     linked: 0,
-    permanentlyFailed: 0,
-    cappedForBudget: 0,
+    failed: 0,
     sourcesSettled: false,
     sources: [],
   });
@@ -161,8 +158,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       // where `linked` stays under the estimate and the denominator
       // correctly stays pinned at it.
       linked: 15,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [],
     });
@@ -213,8 +209,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
         resumeId: "resume-1",
         scoredSoFar: 2,
         linked: 9,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
       })
@@ -227,8 +222,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
         // — `linked` growing on its own, independent of the persisted
         // estimate's fixed `jobCount` (10), and now past it.
         linked: 13,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
       });
@@ -256,8 +250,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       status: "complete",
       resumeId: "resume-1",
       scored: 4,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       linked: 5,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",
@@ -353,8 +346,7 @@ describe("SearchFlow — surviving a reload (git-bug 3f05144)", () => {
       resumeId: "resume-1",
       scoredSoFar: 3,
       linked: 3,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [],
     });

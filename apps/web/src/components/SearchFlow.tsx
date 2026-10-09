@@ -102,12 +102,6 @@ type Phase =
        * count for most of a run, not a total, and rendering it bare made
        * the shown denominator visibly grow over the course of a search. */
       linked: number | undefined;
-      /** Ticket 2e7ba8a / c9c676d: live, growing count of jobs already
-       * deferred over this search's scoring budget. Not a failure — see
-       * `cappedForBudget`'s doc comment on `SearchStatusResponse` — so it
-       * gets its own honest note below, never folded into an error/failure
-       * treatment. */
-      cappedForBudget: number;
       /** Ticket 2e7ba8a: per-source status, live. Lets the running panel
        * show a source going `"failed"` (dead-lettered) WHILE the search is
        * still going, not just after it finishes. */
@@ -262,13 +256,12 @@ export function SearchFlow({
       startedAt: record.startedAt,
       scoredSoFar: 0,
       // Ticket 2e7ba8a: none of these ride along in `record` (unlike
-      // `scoredSoFar`, `linked`/`cappedForBudget`/`sources` are durable
-      // server state, not something worth re-serializing to storage on
-      // every poll tick — see `PersistedActiveSearch`'s doc comment) — the
-      // mount effect below polls immediately, so the real values replace
-      // these within one round trip, same as `scoredSoFar`.
+      // `scoredSoFar`, `linked`/`sources` are durable server state, not
+      // something worth re-serializing to storage on every poll tick —
+      // see `PersistedActiveSearch`'s doc comment) — the mount effect
+      // below polls immediately, so the real values replace these within
+      // one round trip, same as `scoredSoFar`.
       linked: undefined,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     };
@@ -509,7 +502,6 @@ export function SearchFlow({
       startedAt: Date.now(),
       scoredSoFar: 0,
       linked: undefined,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     });
@@ -651,7 +643,6 @@ export function SearchFlow({
                 // `?? 0` on the LEFT side only, for the brief pre-first-poll
                 // window where `prev.linked` is still `undefined`.
                 linked: Math.max(prev.linked ?? 0, result.linked),
-                cappedForBudget: Math.max(prev.cappedForBudget, result.cappedForBudget),
                 sources: result.sources,
                 stalledSince: result.stalledSince,
               }
@@ -766,12 +757,6 @@ export function SearchFlow({
                 <dd>{phase.estimate.alreadyScored}</dd>
               </>
             )}
-            {phase.estimate.cappedCount > 0 && (
-              <>
-                <dt>Deferred this run (over the cap)</dt>
-                <dd>{phase.estimate.cappedCount}</dd>
-              </>
-            )}
           </dl>
           <SourceOutcomesList
             sourceOutcomes={phase.estimate.sourceOutcomes}
@@ -832,13 +817,6 @@ export function SearchFlow({
             {phase.scoredSoFar} of{" "}
             {Math.max(phase.estimate.costEstimate.jobCount, phase.linked ?? 0)} scored so far.
           </p>
-          {phase.cappedForBudget > 0 && (
-            <p className="capped-for-budget-note">
-              {phase.cappedForBudget} job{phase.cappedForBudget === 1 ? "" : "s"} already matched
-              but deferred, not scored — this search has hit its {phase.estimate.scoreThreshold}
-              -job budget. Nothing went wrong; this can keep climbing as more sources land.
-            </p>
-          )}
           {phase.stalledSince && (
             <p className="search-stalled-note" role="alert">
               This search has been stuck since {new Date(phase.stalledSince).toLocaleString()} and
@@ -856,59 +834,36 @@ export function SearchFlow({
               {/* Ticket 2e7ba8a: real polish on top of ticket 4f88339's
                   minimal compile-fix (commit b39550a) -- that fix got the
                   panel back to reading the real queue-driven fields
-                  (scored/permanentlyFailed/linked/sources) with a plain
-                  inline listing; this replaces it with per-source status
-                  badges (SearchSourceStatusList, below), an honest
-                  `degraded` note instead of just a heading suffix, and
-                  `cappedForBudget`'s own distinct, non-error treatment. */}
+                  (scored/failed/linked/sources) with a plain inline
+                  listing; this replaces it with per-source status badges
+                  (SearchSourceStatusList, below) and an honest `degraded`
+                  note instead of just a heading suffix.
+                  Ticket d37511b removed the "Permanently failed" dt/dd row
+                  and the "Deferred this run (over the cap)" row this used
+                  to also render -- Jay's testing session found both
+                  incomprehensible, and the scoring cap `cappedForBudget`
+                  used to report on is gone outright (see
+                  matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED"
+                  comment). The `degraded` note below deliberately shows no
+                  COUNT any more either, for the same reason -- a number of
+                  "permanently failed" jobs is exactly the internal
+                  scoring bookkeeping this ticket exists to stop surfacing
+                  to a user who just wants jobs; an operator who needs the
+                  real count still has it in `job_match_failures` and the
+                  worker logs (CLAUDE.md's diagnosability requirement). */}
               <h3>Search complete{phase.result.degraded ? " (with some failures)" : ""}</h3>
-              {/* `degraded` means `permanentlyFailed > 0` ONLY (see that
-                  field's doc comment on SearchStatusResponse) -- a genuine
-                  fault, but still a FINISHED, USABLE result, not an error
-                  state. This reads as a normal completion with an honest
-                  note about what went wrong, never as an alert/error panel
-                  (no `role="alert"`, no red styling) -- the per-source list
-                  below already carries the `errorKind`/`errorMessage` detail
-                  for any source that dead-lettered, so this note stays a
-                  short summary rather than repeating that detail. */}
               {phase.result.degraded && (
                 <p className="search-degraded-note" role="status">
-                  {phase.result.permanentlyFailed} job
-                  {phase.result.permanentlyFailed === 1 ? "" : "s"} failed to score — retries were
-                  exhausted or something else went wrong partway through. The rest of this search's
-                  results are unaffected and ready below.
+                  Some jobs failed to score — retries were exhausted or something else went wrong
+                  partway through. The rest of this search's results are unaffected and ready below.
                 </p>
               )}
               <dl>
                 <dt>Scored</dt>
                 <dd>{phase.result.scored}</dd>
-                <dt>Permanently failed</dt>
-                <dd>{phase.result.permanentlyFailed}</dd>
-                {phase.result.cappedForBudget > 0 && (
-                  <>
-                    <dt>Deferred this run (over the cap)</dt>
-                    <dd>{phase.result.cappedForBudget}</dd>
-                  </>
-                )}
                 <dt>Total jobs found</dt>
                 <dd>{phase.result.linked}</dd>
               </dl>
-              {/* `cappedForBudget` gets its OWN honest note, deliberately
-                  separate from the `degraded` note above -- see that
-                  field's doc comment on SearchStatusResponse: hitting the
-                  budget is "nothing went wrong", a fully successful run of
-                  exactly the size the user was quoted and authorized before
-                  confirming, not a fault to apologize for. Folding it into
-                  the failure/degraded messaging would train the user to
-                  read THIS note as a problem too. */}
-              {phase.result.cappedForBudget > 0 && (
-                <p className="capped-for-budget-note">
-                  {phase.result.cappedForBudget} more job
-                  {phase.result.cappedForBudget === 1 ? "" : "s"} matched but weren't scored — this
-                  search hit its {phase.estimate.scoreThreshold}-job budget. Nothing went wrong:
-                  those jobs are saved and would score normally on a later run.
-                </p>
-              )}
               <SearchSourceStatusList sources={phase.result.sources} />
             </>
           ) : (

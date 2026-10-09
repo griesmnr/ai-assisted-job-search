@@ -92,8 +92,6 @@ function makeEstimate(): EstimateSearchResponse {
       basis: "bootstrap",
     },
     candidatesNeedingScore: 1,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -230,8 +228,7 @@ describe("App tabs (ticket f4a7f07)", () => {
     getSearchStatus.mockResolvedValue({
       status: "complete",
       scored: 1,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       linked: 1,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",

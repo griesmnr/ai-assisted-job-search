@@ -105,8 +105,6 @@ function makeEstimate(): EstimateSearchResponse {
       basis: "bootstrap",
     },
     candidatesNeedingScore: 0,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],

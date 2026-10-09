@@ -246,14 +246,34 @@ export function clearAppState(): void {
  * drift is an app-version change across a reload, and the `.v1` key
  * suffix is what retires the record in that case.
  */
+/**
+ * Ticket d37511b removed `cappedCount`/`scoreThreshold` from
+ * `EstimateSearchResponse` (the scoring cap they described is gone
+ * outright). This function used to validate `cappedCount` here — see the
+ * line this replaced in git history — and now simply doesn't check for it.
+ *
+ * WHAT THAT MEANS FOR A SESSION PERSISTED BEFORE THIS TICKET: a stale
+ * record on disk still HAS a `cappedCount` field (this validator never
+ * deletes unrecognized fields, it only reads the ones it checks), so it is
+ * harmless clutter here, not a crash risk — this function simply stops
+ * looking for it. The failure mode this comment exists to rule out is the
+ * OPPOSITE one: a record from AFTER this ticket obviously has no
+ * `cappedCount` at all, and if some future change re-added a check for it
+ * (e.g. a careless revert), every post-d37511b persisted estimate would
+ * fail this validator and `readActiveSearch`/`readAppState` would return
+ * `undefined` for it — which is still graceful (the caller just drops the
+ * stale state and starts fresh, per this function's own doc comment above
+ * on the `.v1` key suffix), not a crash. Confirmed no code path treats a
+ * `parseEstimate` `undefined` as fatal.
+ */
 function parseEstimate(value: unknown): EstimateSearchResponse | undefined {
   if (!isRecord(value)) return undefined;
-  const { costEstimate, alreadyScored, cappedCount, sourceOutcomes, skippedSources } = value;
+  const { costEstimate, alreadyScored, sourceOutcomes, skippedSources } = value;
   if (!isRecord(costEstimate)) return undefined;
   if (typeof costEstimate.jobCount !== "number") return undefined;
   if (typeof costEstimate.maxCostUsd !== "number") return undefined;
   if (typeof costEstimate.probableCostUsd !== "number") return undefined;
-  if (typeof alreadyScored !== "number" || typeof cappedCount !== "number") return undefined;
+  if (typeof alreadyScored !== "number") return undefined;
   if (!Array.isArray(sourceOutcomes) || !Array.isArray(skippedSources)) return undefined;
   return value as unknown as EstimateSearchResponse;
 }

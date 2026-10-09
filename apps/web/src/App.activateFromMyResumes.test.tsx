@@ -120,8 +120,6 @@ function makeEstimate(): EstimateSearchResponse {
       basis: "bootstrap",
     },
     candidatesNeedingScore: 1,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -332,7 +330,6 @@ describe("App — My Resumes activate action respects the searching guard (ticke
       status: "pending",
       scoredSoFar: 0,
       linked: 1,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     });

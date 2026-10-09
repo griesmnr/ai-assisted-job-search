@@ -21,69 +21,50 @@
  * authorize is bounded by things in OTHER files, not by anything in this
  * one.
  *
- * WHAT BOUNDS IT, AMENDED (ticket 4f88339, adversarial review round 1, F1).
- * An earlier version of this comment said `runDemoMatch`'s per-run
- * `DEFAULT_SCORE_THRESHOLD` cap of 200 jobs "does not apply to the queue
- * path at all", on the reasoning that no single place sees a whole
- * queue-driven run. True about the SEARCH; false as a conclusion, and the
- * gap was expensive: `POST /searches/estimate` shows the caller a filtered,
- * `DEFAULT_SCORE_THRESHOLD`-capped number, so a queue path with no cap at
- * all could spend ~30x what the user was shown and consented to — the exact
- * defect ticket 59fdc52 review round 2 had already fixed once for the
- * estimate itself. The cap is now applied where a single place DOES see a
- * bounded slice of the run: `fetchSourceWorker` publishes `score.job`
- * messages only up to what is left of a budget of `DEFAULT_SCORE_THRESHOLD`
- * jobs SHARED ACROSS ALL OF ONE SEARCH'S SOURCES.
+ * WHAT BOUNDS IT, REMOVED (ticket d37511b). This section used to describe
+ * a true per-search scoring budget cap (`DEFAULT_SCORE_THRESHOLD`, 200 jobs
+ * shared across all of one search's sources, enforced in
+ * fetchSourceWorker.ts under an advisory lock) that stood between
+ * `POST /searches/estimate`'s quoted price and what a real run could
+ * actually spend — first as a per-source cap (ticket 4f88339), then widened
+ * to a true per-search one (ticket c9c676d) once measurement showed the
+ * per-source version didn't actually bound per-search spend. See
+ * fetchSourceWorker.ts's "REMOVED: THE PER-SEARCH SCORING CAP" section for
+ * the full history and arithmetic that used to live here.
  *
- * AMENDED AGAIN (ticket c9c676d): that budget used to be per (search,
- * source) pair rather than per search, so the real worst case was
- * `num_sources x 200` — five configured adapters, 1,000 scored jobs, ~$22
- * actual against a 200-job estimate and against a $15 lifetime-per-process
- * spend ceiling that one search could therefore drain outright. Crucially
- * the overrun did NOT need the per-source cap to bind: five sources at 60
- * filtered jobs each publish 300 against a 200-job estimate while every one
- * of them sits at 30% of its own cap, and this codebase's own measured
- * survival numbers put an un-narrowed multi-source pool at ~250-310. It is
- * now a TRUE per-search cap, enforced with a SET-never-incremented claim
- * (`search_sources.published_job_count`) read and written under
- * `pg_advisory_xact_lock(hashtext(search_id))` — the same advisory-lock
- * pattern this file uses below for the in-flight guard, scoped to the search
- * instead of the resume. fetchSourceWorker.ts's "THE PER-SEARCH SCORING CAP"
- * section carries the arithmetic, the numbers above, and the invariant.
- * `scoreJobWorker`'s `ScoringSpendGuard` (a lifetime-per-process ceiling,
- * ticket b53c422) remains the last-resort backstop underneath it, not the
- * only one.
+ * Nicole, after a real user's testing session found the resulting
+ * "Deferred this run (over the cap)" / "Permanently failed" UI
+ * incomprehensible, was asked directly whether she meant the display or the
+ * mechanism and chose both. There is now NOTHING in this codebase bounding
+ * how much a single `POST /searches` can authorize `scoreJobWorker` to
+ * spend — `POST /searches/estimate` (below) still prices the real,
+ * UNCAPPED pool before the caller authorizes it (explicitly preserved: see
+ * matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment), so the
+ * caller still sees the true cost up front, but nothing stops them from
+ * authorizing a large one. `scoreJobWorker`'s `ScoringSpendGuard` (a $15
+ * lifetime-per-process ceiling, ticket b53c422) is unrelated, untouched,
+ * and now the only backstop left inside this codebase — see that file's own
+ * doc comment for why a single large search can now plausibly trip it on
+ * its own, which it could not before this ticket. The real backstop is
+ * external: Nicole's own account-level Anthropic spend cap. This is an
+ * accepted consequence of her explicit instruction, not an oversight.
  *
- * CLOSED (ticket 45ea34c) — this paragraph used to flag the QUALITY FILTER
- * as a known gap in the queue path, and it is worth keeping the history:
- * the filter below (`compileFilter`) is a LOCAL, post-fetch filter that
- * `runDemoMatch` applies between fetching and scoring, and ticket 4f88339's
- * queue path shipped with no equivalent. `fetchSourceWorker` ingested
- * everything a source returned and published `score.job` for the first
- * `DEFAULT_SCORE_THRESHOLD` linked jobs IN RAW SOURCE ORDER, so the user's
- * stated criteria took effect only on `POST /searches/estimate` (still
- * synchronous) and the CLI. Live consequence, 2026-09-23: a search for a
- * specific Seattle staff-engineering title, estimated at 1 job, linked all
- * 6,418 Greenhouse postings and scored 200 unrelated sales roles.
- *
- * The fix: `POST /searches` now puts the caller's full `@app/shared`
- * `SearchCriteria` on every `fetch.source` message as `filterCriteria`
- * (SEPARATE from the narrowed, source-query-hint `criteria` field —
- * `buildFetchCriteria` below drops everything but titles, so the two cannot
- * share a slot), and the worker applies `compileFilter` to it before
- * ingesting. The wire format for the filter's three-way state — absent
- * `criteria` -> the CLI default filter, an explicit `criteria` ->
- * `compileFilter(criteria)`, an explicit `{}` -> permissive/dedupe-only —
- * is encoded as `object | null | absent`; see
+ * THE QUALITY FILTER (ticket 45ea34c) remains exactly as important as it
+ * was, for a reason that got STRONGER after this ticket, not weaker: the
+ * filter below (`compileFilter`) is what decides WHICH jobs a search is
+ * about, and — with the scoring cap gone — it is now the ONLY thing
+ * standing between an unfiltered search and scoring every raw posting
+ * every selected source returns. `POST /searches` puts the caller's full
+ * `@app/shared` `SearchCriteria` on every `fetch.source` message as
+ * `filterCriteria` (SEPARATE from the narrowed, source-query-hint
+ * `criteria` field — `buildFetchCriteria` below drops everything but
+ * titles, so the two cannot share a slot), and the worker applies
+ * `compileFilter` to it before ingesting. The wire format for the filter's
+ * three-way state — absent `criteria` -> the CLI default filter, an
+ * explicit `criteria` -> `compileFilter(criteria)`, an explicit `{}` ->
+ * permissive/dedupe-only — is encoded as `object | null | absent`; see
  * `FetchSourceMessage.filterCriteria`'s doc comment for why `null` rather
- * than an omitted key carries "no criteria supplied". The scoring cap
- * (above) is orthogonal: it bounds HOW MANY jobs a run scores, this bounds
- * WHICH. Note what that orthogonality does NOT buy, since an earlier version
- * of this paragraph leaned on it (ticket c9c676d): filtering shrinks each
- * source's pool, so the cap binds less often per source — but the
- * estimate-vs-spend gap was never about the per-SOURCE cap binding, it was
- * about the per-SEARCH total, which filtering does not bound at all. That is
- * what the per-search cap now bounds.
+ * than an omitted key carries "no criteria supplied".
  *
  * Amended (ticket 39b4a48): `POST /resumes` also makes one real, small,
  * BOUNDED Claude call per genuinely-new resume (title-keyword inference,
@@ -209,15 +190,7 @@ import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import { createAmqpFetchSourcePublisher, type PublishFetchSourceFn } from "../queue/publisher.js";
 import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
-// `SCORE_THRESHOLD_CAPPED_KIND` is a VALUE import, not a type one (ticket
-// c9c676d): the completion derive below filters `job_match_failures.kind` on
-// it, so the writer and the reader of that string must be the same constant.
-// No cycle — fetchSourceWorker imports nothing from this file — and no new
-// runtime dependency, since this module already imports the AMQP publisher.
-import {
-  SCORE_THRESHOLD_CAPPED_KIND,
-  type FetchSourceMessage,
-} from "../worker/fetchSourceWorker.js";
+import type { FetchSourceMessage } from "../worker/fetchSourceWorker.js";
 import type { JobSource, SearchCriteria as SourceFetchCriteria } from "../sources/types.js";
 
 const searchCriteriaSchema = {
@@ -446,20 +419,16 @@ type DerivedSearchState = {
   linked: number;
   scored: number;
   /**
-   * GENUINE scoring failures only — a `job_match_failures` row whose `kind`
-   * is anything but `SCORE_THRESHOLD_CAPPED_KIND` (ticket c9c676d). Narrowed
-   * from "every failure row"; see `cappedForBudget`.
+   * Every `job_match_failures` row for this search — i.e. every linked job
+   * that isn't `scored`. Named `failed`, not `permanentlyFailed`: before
+   * ticket d37511b removed the per-search scoring budget, this counted only
+   * GENUINE failures (a row whose `kind` wasn't `SCORE_THRESHOLD_CAPPED_KIND`,
+   * ticket c9c676d), with budget-capped jobs counted separately
+   * (`cappedForBudget`, also removed). There is no longer a second bucket
+   * to exclude: every `job_match_failures` row is now a genuine failure,
+   * so this is back to a plain `count(*)` with no `kind` filter.
    */
-  permanentlyFailed: number;
-  /**
-   * Linked jobs the fetch worker never sent for scoring because the search's
-   * shared scoring budget was already spent —
-   * `job_match_failures.kind = SCORE_THRESHOLD_CAPPED_KIND`. Counted
-   * separately from `permanentlyFailed` because it is not a failure, and
-   * because reporting it as one made a budget-bounded run indistinguishable
-   * from an outage in the API response.
-   */
-  cappedForBudget: number;
+  failed: number;
   outstanding: number;
   isTerminal: boolean;
   /** True only when every source of a search that linked nothing failed —
@@ -617,28 +586,24 @@ export function registerSearchRoutes(
       .select({
         linked: sql<number>`count(*)`.mapWith(Number),
         scored: sql<number>`count(*) filter (where ${jobMatches.id} is not null)`.mapWith(Number),
-        // TWO FILTERS WHERE THERE USED TO BE ONE (ticket c9c676d).
-        // `job_match_failures` rows are written for two unrelated reasons —
-        // scoring was attempted and permanently failed, or scoring was
-        // deliberately never attempted because the search's shared budget was
-        // spent (fetchSourceWorker's `SCORE_THRESHOLD_CAPPED_KIND`) — and
-        // counting them together reported a run that merely hit its cost cap
-        // as though it had suffered an outage. The `kind` column has carried
-        // the distinction durably on every row since ticket 4f88339; these
-        // two `filter` clauses are what finally read it.
+        // ONE FILTER AGAIN, AS OF TICKET d37511b. This used to be split into
+        // TWO (ticket c9c676d) because `job_match_failures` rows were
+        // written for two unrelated reasons — scoring was attempted and
+        // permanently failed, or scoring was deliberately never attempted
+        // because the search's shared scoring budget was spent
+        // (fetchSourceWorker's now-removed `SCORE_THRESHOLD_CAPPED_KIND`) —
+        // and counting them together reported a run that merely hit its
+        // cost cap as though it had suffered an outage. Ticket d37511b
+        // removed that budget concept outright, so every
+        // `job_match_failures` row this search can have is now a genuine
+        // failure; there is nothing left to split out.
         //
-        // Deliberately split HERE rather than in a second query: same join,
-        // same scan, one extra aggregate. The `${jobMatches.id} is null`
-        // conjunct is preserved on both — a job with BOTH a score and a
-        // failure row (reachable: a capped job that a redelivered `score.job`
-        // later scored anyway) counts as `scored` and nothing else, exactly
-        // as before.
-        permanentlyFailed:
-          sql<number>`count(*) filter (where ${jobMatches.id} is null and ${jobMatchFailures.id} is not null and ${jobMatchFailures.kind} <> ${SCORE_THRESHOLD_CAPPED_KIND})`.mapWith(
-            Number,
-          ),
-        cappedForBudget:
-          sql<number>`count(*) filter (where ${jobMatches.id} is null and ${jobMatchFailures.id} is not null and ${jobMatchFailures.kind} = ${SCORE_THRESHOLD_CAPPED_KIND})`.mapWith(
+        // The `${jobMatches.id} is null` conjunct is preserved: a job with
+        // BOTH a score and a failure row (reachable: a job a redelivered
+        // `score.job` scored after an earlier attempt already failed)
+        // counts as `scored` and nothing else, exactly as before.
+        failed:
+          sql<number>`count(*) filter (where ${jobMatches.id} is null and ${jobMatchFailures.id} is not null)`.mapWith(
             Number,
           ),
         outstanding:
@@ -657,10 +622,10 @@ export function registerSearchRoutes(
       )
       // SCOPED TO THIS SEARCH (ticket 9a53485). The `searchId` conjunct is
       // the whole fix: without it this join matched any failure row for the
-      // same (resume, job), so a job an EARLIER search had capped or
-      // permanently failed was already non-outstanding here — counted into
-      // this search's `cappedForBudget`/`permanentlyFailed` and able to
-      // latch it terminal before its own freshly-published `score.job` had
+      // same (resume, job), so a job an EARLIER search had already failed
+      // (or, before ticket d37511b, capped) was already non-outstanding
+      // here — counted into this search's `failed` and able to latch it
+      // terminal before its own freshly-published `score.job` had
       // resolved. Both writers stamp `search_id` now; see
       // `jobMatchFailures`' doc comment in db/schema.ts for the decision.
       //
@@ -681,8 +646,7 @@ export function registerSearchRoutes(
     const counts = aggregates[0] ?? {
       linked: 0,
       scored: 0,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       outstanding: 0,
     };
 
@@ -714,8 +678,7 @@ export function registerSearchRoutes(
       sourcesSettled,
       linked: counts.linked,
       scored: counts.scored,
-      permanentlyFailed: counts.permanentlyFailed,
-      cappedForBudget: counts.cappedForBudget,
+      failed: counts.failed,
       outstanding: counts.outstanding,
       isTerminal: sourcesSettled && counts.outstanding === 0,
       allSourcesFailed,
@@ -750,14 +713,16 @@ export function registerSearchRoutes(
    * "complete, 90 scored, 90 failed" with the counts on screen; inventing
    * a "mostly failed" middle state would be a number nobody measured.
    *
-   * BUDGET-CAPPED JOBS ARE NOT PART OF THIS TEST (ticket c9c676d).
-   * `derived.permanentlyFailed` is now genuine failures only, so the total-
-   * scoring-failure carve-out below reads the number it always meant to.
-   * The old, conflated count could in principle have called a search
-   * `"failed"` for hitting its own cost cap — precisely the "outage dressed
-   * as a finished search" mistake in reverse, a successful search dressed as
-   * an outage. `cappedForBudget` is deliberately absent from this function:
-   * "we scored as many as you paid for" is a completion, not a failure.
+   * BUDGET-CAPPED JOBS USED TO NOT BE PART OF THIS TEST (ticket c9c676d;
+   * removed by ticket d37511b). `derived.failed` used to be named
+   * `permanentlyFailed` and counted genuine failures only, with
+   * budget-capped jobs excluded and counted separately — calling a search
+   * `"failed"` for merely hitting its own cost cap would have been the
+   * "outage dressed as a finished search" mistake in reverse, a successful
+   * search dressed as an outage. Ticket d37511b removed that budget concept
+   * (and the field split it required) outright, so `derived.failed` is
+   * simply every linked job that isn't `scored` again — there is no longer
+   * a capped bucket this test needs to exclude.
    */
   function terminalStatusFor(derived: DerivedSearchState): "complete" | "failed" {
     if (derived.linked === 0) {
@@ -766,7 +731,7 @@ export function registerSearchRoutes(
       // run at all and saying "complete, 0 results" would be a lie.
       return derived.allSourcesFailed ? "failed" : "complete";
     }
-    if (derived.scored === 0 && derived.permanentlyFailed > 0) return "failed";
+    if (derived.scored === 0 && derived.failed > 0) return "failed";
     return "complete";
   }
 
@@ -856,9 +821,8 @@ export function registerSearchRoutes(
           derived.linked === 0
             ? "Every source this search selected failed; nothing could be fetched."
             : `Total scoring failure: none of this search's ${derived.linked} job(s) could be ` +
-              `scored (${derived.permanentlyFailed} permanently failed). This is usually a ` +
-              `systemic problem — an expired API key, a retired model id, or an exhausted ` +
-              `spend guard — not a property of the jobs.`,
+              `scored. This is usually a systemic problem — an expired API key, a retired ` +
+              `model id, or an exhausted spend guard — not a property of the jobs.`,
       };
     }
     return {
@@ -866,18 +830,15 @@ export function registerSearchRoutes(
       resumeId,
       status: "complete",
       scored: derived.scored,
-      permanentlyFailed: derived.permanentlyFailed,
-      cappedForBudget: derived.cappedForBudget,
+      failed: derived.failed,
       linked: derived.linked,
       sources: derived.sources,
       completedAt: completedAt.toISOString(),
-      // GENUINE FAILURES ONLY (ticket c9c676d) — `cappedForBudget` is
-      // deliberately not in this disjunction. See the field's own doc
-      // comment in @app/shared for the full argument; the short version is
-      // that a search which scored exactly the 200 jobs its estimate priced
-      // is a successful search, and marking it `degraded` would burn the
-      // one signal the UI has for searches where something really did break.
-      degraded: derived.permanentlyFailed > 0,
+      // Ticket d37511b removed `cappedForBudget` (and the per-search
+      // scoring budget it reported on) outright, so `failed` is simply
+      // every linked job that isn't `scored` again — see
+      // `DerivedSearchState.failed`'s doc comment.
+      degraded: derived.failed > 0,
     };
   }
 
@@ -1012,8 +973,6 @@ export function registerSearchRoutes(
         resumeId,
         costEstimate: result.costEstimate,
         candidatesNeedingScore: result.candidatesNeedingScore,
-        scoreThreshold: result.scoreThreshold,
-        cappedCount: result.cappedCount,
         alreadyScored: result.skipped,
         sourceOutcomes: result.sourceOutcomes,
         skippedSources: resolved.skipped,
@@ -1083,10 +1042,12 @@ export function registerSearchRoutes(
        * a resumeId they don't own:
        *
        *   1. REAL MONEY against someone else's resume. This route
-       *      authorizes the spend `scoreJobWorker` performs -- up to
-       *      `DEFAULT_SCORE_THRESHOLD` (200) Claude scoring calls per
-       *      search, charged to this deployment, against a resume the
-       *      caller has no other way to read.
+       *      authorizes the spend `scoreJobWorker` performs -- at the time
+       *      of this audit, up to `DEFAULT_SCORE_THRESHOLD` (200) Claude
+       *      scoring calls per search; ticket d37511b later removed that
+       *      cap outright, so this finding's severity only grew -- charged
+       *      to this deployment, against a resume the caller has no other
+       *      way to read.
        *   2. A durable `searches` row FOR THAT RESUME -- which is exactly
        *      what `isResumeLocked` (routes/resumes.ts) reads, so a stranger
        *      could PERMANENTLY LOCK the owner's resume text (ticket
@@ -1529,9 +1490,9 @@ export function registerSearchRoutes(
     // DEVIATION FROM THE DESIGN, STATED (c54b9e0 §3.3 describes
     // `completed_at` as "a one-row fast path that skips the aggregate
     // query"): it cannot be, and the design contradicts itself here. §5.3
-    // requires the `complete` member to carry `scored`,
-    // `permanentlyFailed`, `linked` and `sources[]` — all of which ARE
-    // the aggregate. There is nothing to skip to. What `completed_at`
+    // requires the `complete` member to carry `scored`, `failed`, `linked`
+    // and `sources[]` — all of which ARE the aggregate. There is nothing
+    // to skip to. What `completed_at`
     // does buy, and what it is used for here, is the DISTINCTION the read
     // path actually needs: a row with the latch set has a queue-driven
     // ledger behind it and can be answered in full; a row without one
@@ -1617,12 +1578,10 @@ export function registerSearchRoutes(
       status: "pending",
       scoredSoFar: derived.scored,
       linked: derived.linked,
-      // Split the same way as the terminal member (ticket c9c676d): one
-      // number must not mean two different things in two members of one
-      // union, and a capped job is visible mid-flight — the fetch worker
-      // adjudicates the budget as each source lands, not at the end.
-      permanentlyFailed: derived.permanentlyFailed,
-      cappedForBudget: derived.cappedForBudget,
+      // Named the same as the terminal member (`failed`, not
+      // `permanentlyFailed`/`cappedForBudget` — ticket d37511b removed the
+      // per-search scoring budget that used to require splitting this).
+      failed: derived.failed,
       sourcesSettled: derived.sourcesSettled,
       sources: derived.sources,
       ...(stalled

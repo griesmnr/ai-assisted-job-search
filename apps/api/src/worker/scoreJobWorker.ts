@@ -111,18 +111,22 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  *
  * SPEND GUARD (ticket b53c422 - closes the gap ticket 4065511 deliberately
  * left open, see the two paragraphs this replaces in git history):
- * `runDemoMatch`'s synchronous CLI path caps how many jobs get scored PER
- * RUN (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`, matching/scoring.ts
- * and matching/pipeline.ts) and requires an explicit opt-in to exceed it. A
- * queue-driven worker consuming `score.job` indefinitely has no equivalent
- * "one run" to size a threshold against, so this file uses a different
- * mechanism entirely: `ScoringSpendGuard`, a LIFETIME-PER-PROCESS dollar
- * ceiling, checked with a real pre-call estimate (`estimateScoringCost`,
- * matching/usage-cost.ts) before every scoring attempt and reset only by
- * restarting the process. See `ScoringSpendGuard`'s own doc comment below
- * for the concrete numbers behind the default ceiling and why this
- * mechanism was chosen over a rolling time window or a per-message
- * threshold.
+ * `runDemoMatch`'s synchronous CLI path used to cap how many jobs got
+ * scored PER RUN (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`,
+ * matching/scoring.ts and matching/pipeline.ts) and required an explicit
+ * opt-in to exceed it — removed outright by ticket d37511b, which scores
+ * every job a run finds, no cap, at Nicole's explicit request. A
+ * queue-driven worker consuming `score.job` indefinitely never had an
+ * equivalent "one run" to size a threshold against in the first place, so
+ * this file uses a DIFFERENT mechanism, untouched by that removal:
+ * `ScoringSpendGuard`, a LIFETIME-PER-PROCESS dollar ceiling, checked with
+ * a real pre-call estimate (`estimateScoringCost`, matching/usage-cost.ts)
+ * before every scoring attempt and reset only by restarting the process.
+ * See `ScoringSpendGuard`'s own doc comment below for the concrete numbers
+ * behind the default ceiling and why this mechanism was chosen over a
+ * rolling time window or a per-message threshold — and for why it was
+ * never the per-run guard ticket d37511b removed, just a different,
+ * coarser backstop that happens to still exist underneath it.
  *
  * USAGE STATS (ticket b53c422): every batch of successful scores from ONE
  * message is now recorded via `recordUsageStats` (matching/usage-cost.ts),
@@ -212,8 +216,9 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
 /**
  * `SCORING SPEND GUARD` (ticket b53c422): this worker consumes `score.job`
  * off a queue indefinitely, with no natural "one run" the way
- * `runDemoMatch`'s `DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold` assumes
- * (see this module's own doc comment, "SPEND GUARD"). Three shapes were on
+ * `runDemoMatch`'s now-removed `DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`
+ * per-run cap (ticket d37511b) used to assume (see this module's own doc
+ * comment, "SPEND GUARD"). Three shapes were on
  * the table (per the ticket): a rolling time-window cap, a lifetime-per-
  * process cap with restart-to-reset, or a pre-call `estimateScoringCost`
  * check. This combines the last two: `ScoringSpendGuard` tracks a running
@@ -271,12 +276,24 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  *     cites, with no cache history): `maxCostUsd` for ONE job is ~$0.0468,
  *     so $15 bounds roughly 320 worst-case scoring attempts.
  *
- * Either basis lands in the same 300-400 range -- comfortably above
- * `DEFAULT_SCORE_THRESHOLD` (200, the synchronous CLI path's own per-run
- * cap) so a single legitimate burst of activity (e.g. one large search
- * fanning out through this worker) does not itself trip the guard, while
- * still bounding a genuine runaway-bug's total lifetime exposure to
- * roughly $15. (Worth noting the criterion actively EXCLUDES
+ * Either basis lands in the same 300-400 range -- AT THE TIME THIS WAS
+ * SIZED, comfortably above `DEFAULT_SCORE_THRESHOLD` (200, the synchronous
+ * CLI path's own per-run cap), so a single legitimate burst of activity
+ * (e.g. one large search fanning out through this worker) did not itself
+ * trip the guard, while still bounding a genuine runaway-bug's total
+ * lifetime exposure to roughly $15.
+ *
+ * THAT HEADROOM ARGUMENT NO LONGER HOLDS (ticket d37511b removed
+ * `DEFAULT_SCORE_THRESHOLD` outright, at Nicole's explicit request). There
+ * is now nothing bounding how many jobs a single search can need scored,
+ * so a single sufficiently large, un-narrowed search CAN legitimately
+ * trip this $15/300-400-call ceiling by itself -- not just a runaway bug.
+ * That is an accepted consequence of the removal (see
+ * matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment), not
+ * something this file was updated to compensate for: raising
+ * `DEFAULT_LIFETIME_SPEND_CEILING_USD` to "fix" this would be exactly the
+ * kind of replacement guard that ticket explicitly ruled out adding.
+ * (Worth noting the criterion actively EXCLUDES
  * `MAX_ESTIMATED_SPEND_USD`'s $5: that would bound only ~107-129 calls,
  * below the 200-call floor this paragraph argues for -- another reason the
  * two ceilings aren't meant to match.) Not a claim that $15 is uniquely
@@ -837,10 +854,13 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
    * redundant row is harmless where a missing one hangs a search.
    *
    * KIND: `handler-<kind>` rather than the bare `<kind>` the per-resume
-   * loop writes, so the ledger says WHERE the failure happened. Nothing
-   * branches on `kind` except `SCORE_THRESHOLD_CAPPED_KIND`
-   * (routes/searches.ts's derive), so these count as `permanentlyFailed`
-   * and mark the search degraded — which is the truth.
+   * loop writes, so the ledger says WHERE the failure happened. Ticket
+   * d37511b removed `routes/searches.ts`'s one `kind`-based branch
+   * (splitting a budget-capped row, `SCORE_THRESHOLD_CAPPED_KIND`, out of
+   * genuine failures) along with the scoring cap it existed to serve —
+   * every row this function writes now counts as a genuine failure and
+   * marks the search degraded, with no `kind` carve-out left anywhere to
+   * route around that — which is the truth.
    */
   async function recordOuterCatchFailures(
     jobId: string | undefined,

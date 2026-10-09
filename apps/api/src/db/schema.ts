@@ -785,30 +785,25 @@ export const searchSources = pgTable(
      */
     linkedJobCount: integer("linked_job_count"),
     /**
-     * How much of the SEARCH-WIDE scoring budget this source has claimed —
-     * the number of `score.job` messages `fetchSourceWorker` has published
-     * for this (search, source) pair (ticket c9c676d).
+     * VESTIGIAL AS OF TICKET d37511b — kept because dropping a column is a
+     * migration and this ticket's scope explicitly excludes one (verified:
+     * this column was never referenced anywhere but the removed cap
+     * mechanism, so leaving it in place changes nothing a reader can
+     * observe). No code reads or writes this column any more; a fresh row
+     * is simply never given a value here. Revisit (actually drop it) the
+     * next time a real migration touches `search_sources` anyway.
      *
-     * WHY THIS COLUMN EXISTS AT ALL. Ticket 4f88339 could only afford a
-     * PER-SOURCE cap (`DEFAULT_SCORE_THRESHOLD` publishes per message), so
-     * a search across N sources could authorize `N x 200` scores against a
-     * `POST /searches/estimate` that showed a single 200-job total. The two
-     * mechanisms that ticket rejected for a true per-search cap were a
-     * running counter (not idempotent under at-least-once redelivery) and a
-     * live cross-worker query (racy). This column is neither: it is a
-     * per-source CLAIM that is SET, never incremented — exactly the same
-     * idempotency posture as `linkedJobCount` right above — and the workers
-     * read-then-write it under `pg_advisory_xact_lock(hashtext(search_id))`,
-     * which is what makes the sum across sources safe to act on. See
-     * fetchSourceWorker.ts's "THE PER-SEARCH SCORING CAP" section for the
-     * budget arithmetic and the invariant it maintains.
-     *
-     * NULL means "this source has not adjudicated its share of the budget
-     * yet" and is read as 0 by the arithmetic. That is deliberately
-     * OPTIMISTIC (a source that has ingested but not yet adjudicated is not
-     * pre-reserved anything), and it is safe only because the advisory lock
-     * serializes adjudication: whoever gets the lock first takes what is
-     * left, and its claim is committed before the next source can read.
+     * WHAT IT USED TO BE, for whoever is reading this to understand old
+     * data rather than to write new code: how much of the SEARCH-WIDE
+     * scoring budget this source had claimed — the number of `score.job`
+     * messages `fetchSourceWorker` had published for this (search, source)
+     * pair (ticket c9c676d), under a per-search scoring cap
+     * (`DEFAULT_SCORE_THRESHOLD`, 200) that ticket d37511b removed outright
+     * at Nicole's explicit request ("remove the concept and the
+     * mechanism") after real-user testing found the resulting "Deferred
+     * this run (over the cap)" display incomprehensible. A pre-d37511b row
+     * can still carry a real historical value here; it means nothing to
+     * any code that runs today.
      */
     publishedJobCount: integer("published_job_count"),
     /**
@@ -884,12 +879,12 @@ export const searchSources = pgTable(
  *
  *   1. THE ROW IS A STATEMENT ABOUT AN ATTEMPT, NOT ABOUT A PAIR. Every
  *      `kind` this table stores is an accident of one moment: "the API key
- *      was expired", "the retries ran out", "this search's budget was
- *      already spent when this job was adjudicated". None of those is a
- *      durable property of the (resume, job) pair — rotate the key, wait
- *      out the outage, or run a narrower search whose budget has room, and
- *      the same pair scores fine. A cache keyed on the pair would be
- *      caching the weather.
+ *      was expired", "the retries ran out" (and, before ticket d37511b
+ *      removed the concept, "this search's budget was already spent when
+ *      this job was adjudicated"). None of those is a durable property of
+ *      the (resume, job) pair — rotate the key, wait out the outage, or
+ *      run a narrower search, and the same pair scores fine. A cache keyed
+ *      on the pair would be caching the weather.
  *   2. IT LATCHED LATER SEARCHES TERMINAL ON AN OLDER SEARCH'S VERDICT.
  *      `deriveSearchState` (routes/searches.ts) counts a linked job as
  *      OUTSTANDING only while it has neither a `job_matches` nor a
@@ -897,28 +892,38 @@ export const searchSources = pgTable(
  *      search A made the same job non-outstanding in search B — even
  *      though B had just published its own fresh `score.job` for it — so B
  *      could latch complete/degraded before its own scoring attempt
- *      resolved, reporting a `cappedForBudget`/`permanentlyFailed` it never
- *      incurred. Reproduced directly in opus's review of ticket c9c676d
- *      ({scored: 0, cappedForBudget: 3, linked: 3} on a search that had
- *      capped nothing); pinned by the regression test in
- *      routes/searches.test.ts.
+ *      resolved, reporting a failure it never incurred. Reproduced
+ *      directly in opus's review of ticket c9c676d (a search that had
+ *      capped nothing reporting as if it had); pinned by the regression
+ *      test in routes/searches.test.ts.
  *   3. THE BLAST RADIUS WAS GROWING, NOT SHRINKING. c9c676d's per-SEARCH
- *      scoring cap writes strictly more `SCORE_THRESHOLD_CAPPED_KIND` rows
- *      than the per-SOURCE cap it replaced (every search that binds the cap
- *      now, not just some), so every one of those rows was a fresh mine
- *      under the next search for the same resume.
+ *      scoring cap (removed outright by ticket d37511b; see below) wrote
+ *      strictly more capped-job rows than the per-SOURCE cap it replaced
+ *      (every search that bound the cap, not just some), so every one of
+ *      those rows was a fresh mine under the next search for the same
+ *      resume.
  *   4. SCORE REUSE ALREADY LIVES SOMEWHERE ELSE, AND IS UNAFFECTED. The
  *      thing that legitimately spans searches is a SUCCESS: `job_matches`
  *      is still keyed by (resume, job), so a second search over an
  *      already-scored job reuses the score and never pays for it twice.
- *      Only the give-up rows are per-search. Cost is bounded by the cap,
- *      which is itself per-search.
+ *      Only the give-up rows are per-search.
  *
- * The cost of the decision, stated plainly: a job that genuinely cannot be
+ * TICKET d37511b removed the per-search scoring budget this table used to
+ * also record (`kind = "score-threshold-capped"`, written by
+ * `fetchSourceWorker.ts` when a search had already spent its shared
+ * `DEFAULT_SCORE_THRESHOLD`-job budget) — at Nicole's explicit request,
+ * after real-user testing found the resulting "Permanently failed"/
+ * "Deferred this run" UI incomprehensible. No code writes that `kind`
+ * value any more; every row this table receives now is a GENUINE scoring
+ * failure. A row with that historical `kind` value can still exist from
+ * before this ticket — nothing migrates or deletes it — and reads as an
+ * ordinary failure to any code written after this ticket, since the
+ * distinction it used to carry no longer has anywhere to go. The cost of
+ * the ORIGINAL decision (this table being scoped per-search, item 2
+ * above) is unchanged and stated plainly: a job that genuinely cannot be
  * scored (a description the model refuses, say) is re-attempted once per
- * search rather than once ever. That is the intended behaviour — "a later
- * search gets a genuine fresh attempt" — and it is bounded by
- * `DEFAULT_SCORE_THRESHOLD` per search, not unbounded.
+ * search rather than once ever — "a later search gets a genuine fresh
+ * attempt."
  */
 export const jobMatchFailures = pgTable(
   "job_match_failures",

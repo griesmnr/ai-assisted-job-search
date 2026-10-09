@@ -84,11 +84,15 @@
  *    is OR'd (criteria.ts) -- but more chips is not unconditionally free
  *    elsewhere in the pipeline. `sources/usajobs.ts` caps live keyword
  *    searches at `MAX_KEYWORD_SEARCHES` and silently drops the rest, and
- *    `DEFAULT_SCORE_THRESHOLD` caps how many candidates get scored per
- *    search in list order -- so an extra chip, even a narrow one, can in
- *    principle still cost coverage or spend elsewhere. The 2+-word floor on
- *    split fragments is what keeps this unlikely to matter in practice, not
- *    a claim that splitting is free everywhere.
+ *    -- since ticket d37511b removed the per-search scoring cap that used
+ *    to exist here (`DEFAULT_SCORE_THRESHOLD`) -- every extra chip that
+ *    widens the candidate pool now directly costs more real Claude calls,
+ *    with nothing in this codebase bounding a single search's spend any
+ *    more. So an extra chip, even a narrow one, can in principle still cost
+ *    coverage (via `MAX_KEYWORD_SEARCHES`) or real money (via scoring every
+ *    survivor it admits). The 2+-word floor on split fragments is what
+ *    keeps this unlikely to matter in practice, not a claim that splitting
+ *    is free everywhere.
  *
  * 2. EXTRA QUALIFIER WORDS ("Backend Software Engineer" instead of "Backend
  *    Engineer"; "Cloud Software Engineer" instead of "Cloud Engineer", even
@@ -194,10 +198,13 @@ const MAX_OUTPUT_TOKENS = 2000;
  * and never crowded out, other sectors' names for that same CURRENT work
  * alongside it. Do not re-add a sector prohibition here.
  *
- * WHY THE CEILING IS 10 AND NOT HIGHER. More chips are free in SPEND terms --
- * `DEFAULT_SCORE_THRESHOLD` caps scoring at 200 candidates per search no
- * matter how many chips feed it, so breadth buys coverage at the same cost.
- * The binding constraint is `MAX_KEYWORD_SEARCHES` (= 10) in
+ * WHY THE CEILING IS 10 AND NOT HIGHER. More chips used to be free in SPEND
+ * terms -- `DEFAULT_SCORE_THRESHOLD` capped scoring at 200 candidates per
+ * search no matter how many chips fed it, so breadth bought coverage at the
+ * same cost. Ticket d37511b removed that cap: scoring is now unconditional
+ * on every candidate a chip's breadth admits, so more chips can now cost
+ * more real spend too, not just more `MAX_KEYWORD_SEARCHES` tail coverage.
+ * The binding constraint named here is still `MAX_KEYWORD_SEARCHES` (= 10) in
  * `sources/usajobs.ts`, which runs one live search per chip and SILENTLY
  * DROPS the rest in list order. Asking for 8-10 keeps the common case inside
  * that budget. It can still be exceeded, because `splitConjoinedTitles` may
@@ -453,10 +460,13 @@ const PROMPT_PREFIX =
  * `compileFilter` itself, since this feeds `titleInclude` only, which is
  * OR'd. It is NOT safe in an unqualified sense outside that: `usajobs.ts`
  * caps live keyword searches at `MAX_KEYWORD_SEARCHES` and silently drops
- * the rest, and `DEFAULT_SCORE_THRESHOLD` caps how many candidates get
- * scored per search in list order -- so MORE chips, including a genuinely
- * broad one, can still cost real coverage or spend elsewhere in the
- * pipeline even though `compileFilter` alone never loses a match from it.
+ * the rest, and -- since ticket d37511b removed the scoring cap that used
+ * to bound this (`DEFAULT_SCORE_THRESHOLD`) -- every candidate a wider
+ * chip admits now gets scored, unconditionally. So MORE chips, including a
+ * genuinely broad one, can still cost real coverage (via
+ * `MAX_KEYWORD_SEARCHES`) or real spend elsewhere in the pipeline (every
+ * extra candidate is a real Claude call) even though `compileFilter` alone
+ * never loses a match from it.
  * The 2+-word filter above is what keeps the added chips narrow enough that
  * this is very unlikely to matter in practice, not a claim that adding
  * chips is free.
@@ -538,11 +548,14 @@ const PROMPT_PREFIX =
  *
  * The bounded cost if one ever appears: 7 of 8 sources ignore `keywords` and
  * apply `titleInclude` locally as an OR, so there is no fetch amplification;
- * USAJOBS spends one of its 10 keyword slots; and `DEFAULT_SCORE_THRESHOLD`
- * is a shared per-search budget consumed in raw board order, so loose-chip
- * matches can displace specific-chip ones and spend real Claude calls.
- * `MATCH_SCORE_FLOOR = 55` then hides genuinely bad matches from the ranked
- * list. So the cost is spend and tail coverage, not visible garbage.
+ * USAJOBS spends one of its 10 keyword slots; and -- since ticket d37511b
+ * removed the per-search scoring budget that used to apply here
+ * (`DEFAULT_SCORE_THRESHOLD`) -- a loose chip's matches are no longer
+ * merely able to DISPLACE specific-chip ones inside a shared cap, they are
+ * simply additional real Claude calls, every one of them, with nothing
+ * bounding the total any more. `MATCH_SCORE_FLOOR = 55` then hides
+ * genuinely bad matches from the ranked list. So the cost is real spend and
+ * USAJOBS tail coverage, not visible garbage.
  *
  * Measured exposure: across 2 full 11-shape live eval runs (22 shape-runs,
  * ~210 raw titles) the model emitted exactly TWO single-word titles, "Nurse"
