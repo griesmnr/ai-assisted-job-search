@@ -316,6 +316,11 @@ function buildGroupedFixtureHtml(css, firstGroupCount) {
 // the iPhone 12/13/14 viewport, the most common modern iPhone form
 // factor).
 const VIEWPORTS = [
+  // 1280 is the breakpoint itself and the narrowest width that floats --
+  // kept here permanently as a regression guard, because the first version
+  // of this change used a 1366 breakpoint and silently served the in-flow
+  // fallback to every 1280-wide window (PM review, measured).
+  { name: "laptop (1280x800, breakpoint floor)", width: 1280, height: 800 },
   { name: "laptop (1366x768)", width: 1366, height: 768 },
   { name: "phone (390x844, iPhone 12/13/14)", width: 390, height: 844 },
 ];
@@ -421,7 +426,7 @@ async function main() {
           metrics.firstCard !== null &&
           metrics.prompt.top >= metrics.firstCard.top - 0.5; // 0.5px rounding tolerance
 
-        const isWide = viewport.width >= 1366;
+        const isWide = viewport.width >= 1280;
         const floatsBeside =
           isWide &&
           metrics.prompt !== null &&

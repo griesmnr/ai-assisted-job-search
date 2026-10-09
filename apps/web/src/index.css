@@ -1366,14 +1366,22 @@ button[aria-disabled="true"] {
    into whatever comes after, and cannot appear at all before the results
    section itself has started scrolling into view -- so Jay's round-1
    complaint (search controls occluded by a card from a search that hasn't
-   even returned yet) stays fixed too. The breakpoint below (`1366px`) is
-   deliberately NOT "the narrowest width that happens to fit" -- it is the
-   exact laptop width this ticket measured (see the script). Narrower real
-   laptops (1280px, 1024px, etc.) get the sticky/mobile treatment too,
-   untested rather than assumed to also have room; widen the breakpoint's
-   reach only after measuring a specific additional width, the same rule
-   this file's `layout-check.mjs` section already follows for its own
-   claim.
+   even returned yet) stays fixed too. The breakpoint below is `1280px`,
+   and getting there followed this comment's own rule -- "widen the
+   breakpoint's reach only after measuring a specific additional width".
+   It shipped at `1366px` first, on the defensible grounds that 1366 was
+   the one laptop width the ticket had measured. PM review then measured
+   seven widths and found that choice served the in-flow fallback at 1279,
+   1280 and 1365 -- so every 1280-wide screen, and any window not
+   maximized on a larger one, got exactly the in-flow placement Jay found
+   confusing. At 1280 the card measures flush with the first result card's
+   top (448.1px) at `left: 1036` against a `.result-cards` right edge of
+   1020, with no horizontal overflow. 1272px is the computed floor
+   (`.app`'s 760px column centred leaves (1272-760)/2 = 256px per side,
+   exactly what this card needs) and correctly falls back. Narrower real
+   viewports (1024px and below) still get the sticky/mobile treatment,
+   untested rather than assumed to have room -- the same rule, still
+   applying.
 
    MEASURED, not eyeballed -- the thing the previous round of this exact
    feature shipped without and got wrong twice. Run
@@ -1434,8 +1442,8 @@ button[aria-disabled="true"] {
 
 /* Ticket 042db32: the wide-viewport half of the small-viewport decision
    above -- see this file's long comment above `.magic-link-prompt-anchor`
-   for why `1366px` specifically (the one laptop width this ticket actually
-   measured, not a guessed-at breakpoint). Overrides `position`/`top` from
+   for why `1280px` specifically, and for why it is not the `1366px` this
+   first shipped with. Overrides `position`/`top` from
    the narrow-viewport rule above (`absolute`, not `sticky` -- an
    absolutely positioned box is removed from `.result-cards`' flex flow
    entirely, which `sticky` deliberately is not) and adds the horizontal
@@ -1452,7 +1460,7 @@ button[aria-disabled="true"] {
    wider than the gutter has to spare -- confirmed by the measurement
    script this file's long comment above points at, not computed from
    `.magic-link-form`'s own rules alone. */
-@media (min-width: 1366px) {
+@media (min-width: 1280px) {
   .magic-link-prompt-anchor:has(> .magic-link-prompt-host:not([hidden]) > .magic-link-prompt) {
     position: absolute;
     top: 0;
