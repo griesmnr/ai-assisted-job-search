@@ -187,8 +187,8 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * WHAT BOUNDS SPEND NOW: `POST /searches/estimate` still prices the real,
  * uncapped pool before the caller authorizes a search (matching/
  * pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment); `scoreJobWorker.ts`'s
- * `ScoringSpendGuard` (a $15 lifetime-per-process ceiling, ticket b53c422 —
- * see its own doc comment for the "WHY $15" sizing, now the only backstop
+ * `ScoringSpendGuard` (a $30 lifetime-per-process ceiling, ticket b53c422 —
+ * see its own doc comment for the "WHY $30" sizing, now the only backstop
  * left inside this codebase); beyond that, Nicole's own account-level
  * Anthropic spend cap. Accepted consequence of her explicit instruction,
  * not an oversight.

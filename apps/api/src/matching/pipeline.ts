@@ -1608,7 +1608,7 @@ export async function runDemoMatch(options: RunDemoMatchOptions): Promise<RunDem
    * still see the price before authorizing it — but nothing stops them
    * from authorizing a large one. The backstop is now entirely external:
    * Nicole's own account-level Anthropic spend cap. `scoreJobWorker.ts`'s
-   * `ScoringSpendGuard` (a $15 LIFETIME-PER-PROCESS ceiling, ticket
+   * `ScoringSpendGuard` (a $30 LIFETIME-PER-PROCESS ceiling, ticket
    * b53c422) is unrelated and untouched by this ticket — it bounds one
    * worker process's total uptime spend across every search it ever
    * handles, not any single search's, and was never part of this

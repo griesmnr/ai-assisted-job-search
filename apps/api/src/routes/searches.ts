@@ -41,7 +41,7 @@
  * UNCAPPED pool before the caller authorizes it (explicitly preserved: see
  * matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment), so the
  * caller still sees the true cost up front, but nothing stops them from
- * authorizing a large one. `scoreJobWorker`'s `ScoringSpendGuard` (a $15
+ * authorizing a large one. `scoreJobWorker`'s `ScoringSpendGuard` (a $30
  * lifetime-per-process ceiling, ticket b53c422) is unrelated, untouched,
  * and now the only backstop left inside this codebase — see that file's own
  * doc comment for why a single large search can now plausibly trip it on
