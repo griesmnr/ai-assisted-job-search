@@ -1084,13 +1084,23 @@ describe("the sign-in prompt is offered on Already Scored Jobs too (ticket d0a70
   });
 
   /**
-   * Ticket 931df8a's actual acceptance criterion: the host must never
-   * render ABOVE the topmost result. Checked as DOM order within the
-   * results region, which is the one piece of "where does this appear"
-   * jsdom can answer without a real layout engine -- see the ticket's own
-   * note that visual placement at desktop/phone widths could not be
-   * screenshotted in this environment (no working headless browser; see
-   * ticket 9c78da1) and must be eyeballed separately.
+   * Ticket 931df8a's actual acceptance criterion, still true after ticket
+   * 042db32 restyled this same anchor to float beside/stick above the
+   * results instead of rendering strictly in-flow: the host DOM node must
+   * never sit ABOVE the topmost result in the document. Checked as DOM
+   * order within the results region, which is the one piece of "where
+   * does this appear" jsdom can answer without a real layout engine --
+   * jsdom has no CSS box layout, so it cannot see `position: absolute`/
+   * `sticky` at all, let alone which viewport width switches between them.
+   * The VISUAL placement (floats beside the results on a wide viewport,
+   * pins to the top edge while scrolling on a narrow one) is checked
+   * separately, in a real headless browser against the app's built CSS --
+   * see `apps/web/scripts/magic-link-float-check.mjs` and the ticket's own
+   * report for the real `getBoundingClientRect()` numbers. (931df8a's
+   * version of this comment pointed at an eyeball check instead, because
+   * no working headless browser existed in this container yet -- ticket
+   * 9c78da1 built one afterward, which is exactly what made the real
+   * measurement above possible instead of a second repeat of that gap.)
    */
   it("never renders above the topmost result on the search tab", async () => {
     mockHappyPath(ONE_RESULT);
