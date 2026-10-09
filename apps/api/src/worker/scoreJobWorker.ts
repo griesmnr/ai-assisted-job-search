@@ -1271,8 +1271,20 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // refused job rides the normal retry budget and arrives here,
         // where it now becomes a `kind = "spend-guard-exceeded"` failure
         // row and dead-letters. Without that row, a budget-limited search
-        // would hang indefinitely instead of resolving as "complete, N
-        // deferred for budget".
+        // would hang indefinitely instead of resolving terminal at all.
+        //
+        // WHAT IT RESOLVES AS, CORRECTED (ticket d37511b, adversarial
+        // review): this comment used to say "complete, N deferred for
+        // budget" — a state that no longer exists. There is no "deferred"
+        // bucket any more; `job_match_failures` rows of every `kind`,
+        // `spend-guard-exceeded` included, count toward the one `failed`
+        // field (`routes/searches.ts`'s derive) and mark the search
+        // `degraded`, exactly like any other genuine scoring failure. A
+        // spend-guard exhaustion is a real fault from the caller's point
+        // of view — this process can no longer score anything until
+        // restarted — and ticket d37511b's removal of the separate
+        // "budget-capped, not a failure" treatment means it is no longer
+        // distinguished from one.
         await recordPermanentFailures(message.jobId, attempt, links, failed);
         channel.nack(msg, false, false);
         return;

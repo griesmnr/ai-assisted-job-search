@@ -901,13 +901,16 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     expect(screen.getByText("Search complete (with some failures)")).toBeInTheDocument();
-    // Ticket d37511b: the note names no COUNT any more -- "the user doesn't
-    // need 'permanently failed' on screen" (an operator still finds the real
-    // number in job_match_failures/the worker logs). Asserting the qualitative
-    // note appears, and that the removed count/label never do, is what would
-    // catch a mutation that quietly reintroduced either.
-    expect(screen.getByText(/Some jobs failed to score/)).toBeInTheDocument();
-    expect(screen.queryByText(/^3 job/)).not.toBeInTheDocument();
+    // Ticket d37511b, amended on adversarial review: the first draft of
+    // this note dropped the count entirely, which review correctly flagged
+    // as a NEW regression -- without it, "Scored: 7" / "Total jobs found:
+    // 10" plus "some jobs failed" leaves the 3 missing inferable only by
+    // subtraction, and is indistinguishable from a spend-guard stall.
+    // `failed`/`linked` are plain fields on the real contract (not a
+    // revived cap), so the count belongs back in the note. What stays
+    // removed is specifically the "Permanently failed" dt/dd row's own
+    // LABEL -- the exact wording Jay found confusing -- not the number.
+    expect(screen.getByText(/3 of 10 jobs couldn't be scored/)).toBeInTheDocument();
     expect(screen.queryByText("Permanently failed")).not.toBeInTheDocument();
     // Never an alert/error panel — this is a finished, usable result.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();

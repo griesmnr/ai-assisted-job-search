@@ -163,50 +163,40 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * responsible for not scoring the same job twice, is a better trade than
  * silently dropping jobs that need scoring.
  *
- * REMOVED: THE PER-SEARCH SCORING CAP (ticket d37511b). This section used
- * to document a true per-search spend-guard cap — `DEFAULT_SCORE_THRESHOLD`
- * (200) jobs shared across every source of one search, enforced by
- * `adjudicateScoringBudget` under `pg_advisory_xact_lock(hashtext(search_id))`
- * with a durable, SET-never-incremented claim on
- * `search_sources.published_job_count`, with jobs past the cap recorded as
- * `job_match_failures` rows of kind `SCORE_THRESHOLD_CAPPED_KIND` and
- * surfaced to the API caller as `cappedForBudget`. It replaced an earlier,
- * narrower per-SOURCE version (ticket 4f88339 review round 1 F1) once
- * measurement showed the per-source version did not actually bound
- * per-search spend (ticket c9c676d: five sources each sitting at an
- * unremarkable 30% of their own cap could still publish 300 `score.job`
- * messages against a 200-job estimate).
+ * REMOVED: THE PER-SEARCH SCORING CAP (ticket d37511b; compressed on
+ * adversarial review — the full per-source-vs-per-search lineage, ticket
+ * 4f88339 round 1 F1 through c9c676d, is in git history, not repeated
+ * here). This worker used to enforce a true per-search spend-guard cap —
+ * `DEFAULT_SCORE_THRESHOLD` (200) jobs shared across every source of one
+ * search, via `adjudicateScoringBudget` under
+ * `pg_advisory_xact_lock(hashtext(search_id))` (serializing sibling
+ * sources so they couldn't double-spend the same budget) — with jobs
+ * past the cap recorded as `job_match_failures` rows
+ * (`SCORE_THRESHOLD_CAPPED_KIND`; see that table's "9a53485" per-search
+ * scoping note in db/schema.ts for the UNRELATED cross-search leak those
+ * rows had to be guarded against separately) and surfaced as
+ * `cappedForBudget`.
  *
  * Nicole, after a real user's testing session found the resulting UI
- * ("Deferred this run (over the cap)", "Permanently failed") incomprehensible,
- * was asked directly whether she meant the display or the mechanism and
- * chose both: remove the concept and the code that enforces it, not just
- * its UI surface. This worker now publishes `score.job` for every job it
- * links, unconditionally — see `handleFetchSourceMessage` below, which no
- * longer calls `adjudicateScoringBudget` (deleted) at all.
+ * ("Deferred this run (over the cap)", "Permanently failed")
+ * incomprehensible, chose to remove both the display and the mechanism.
+ * This worker now publishes `score.job` for every linked job,
+ * unconditionally — `handleFetchSourceMessage` below no longer calls
+ * `adjudicateScoringBudget` (deleted) at all.
  *
- * WHAT THIS REMOVES, STATED PLAINLY SINCE THE DETAILED ARITHMETIC THAT USED
- * TO LIVE HERE IS GONE WITH THE CODE IT DOCUMENTED. There is no longer
- * anything in this codebase bounding how many jobs a single search can
- * cause to be scored, or how much a single search can spend at the
- * Anthropic API. `POST /searches/estimate` still prices the real pool
- * before the caller authorizes a search (unchanged, and explicitly
- * preserved — see matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED"
- * comment), so the caller still sees the cost up front; nothing stops them
- * from authorizing a large one. `scoreJobWorker.ts`'s `ScoringSpendGuard`
- * (a $15 LIFETIME-PER-PROCESS ceiling, ticket b53c422) remains exactly as
- * it was — it was never part of this per-search mechanism, bounds a
- * worker process's total uptime spend across every search it ever handles,
- * and is the only backstop left inside this codebase. The real backstop is
- * external: Nicole's own account-level Anthropic spend cap. This is an
- * accepted consequence of her explicit instruction, not an oversight.
+ * WHAT BOUNDS SPEND NOW: `POST /searches/estimate` still prices the real,
+ * uncapped pool before the caller authorizes a search (matching/
+ * pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment); `scoreJobWorker.ts`'s
+ * `ScoringSpendGuard` (a $15 lifetime-per-process ceiling, ticket b53c422 —
+ * see its own doc comment for the "WHY $15" sizing, now the only backstop
+ * left inside this codebase); beyond that, Nicole's own account-level
+ * Anthropic spend cap. Accepted consequence of her explicit instruction,
+ * not an oversight.
  *
- * `search_sources.published_job_count` (schema.ts) and
- * `job_match_failures.kind = "score-threshold-capped"` are not migrated
- * away — dropping either is a schema change this ticket's scope explicitly
- * excludes — they are simply never written or read by any code after this
- * ticket. See those columns' own doc comments in db/schema.ts for what they
- * meant historically.
+ * `search_sources.published_job_count` and
+ * `job_match_failures.kind = "score-threshold-capped"` are left in the
+ * schema, unwritten and unread — dropping either is a migration, out of
+ * this ticket's scope. See their own doc comments in db/schema.ts.
  *
  * THE QUALITY FILTER (ticket 45ea34c — read this before moving the
  * `compileFilter` call in the handler).

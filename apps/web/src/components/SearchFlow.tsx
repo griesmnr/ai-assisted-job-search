@@ -844,18 +844,38 @@ export function SearchFlow({
                   incomprehensible, and the scoring cap `cappedForBudget`
                   used to report on is gone outright (see
                   matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED"
-                  comment). The `degraded` note below deliberately shows no
-                  COUNT any more either, for the same reason -- a number of
-                  "permanently failed" jobs is exactly the internal
-                  scoring bookkeeping this ticket exists to stop surfacing
-                  to a user who just wants jobs; an operator who needs the
-                  real count still has it in `job_match_failures` and the
-                  worker logs (CLAUDE.md's diagnosability requirement). */}
+                  comment).
+                  RESTORED A COUNT (adversarial review, same ticket): the
+                  first draft of this note dropped the number entirely,
+                  on the reasoning that "permanently failed" bookkeeping
+                  was exactly what Jay found confusing. Review correctly
+                  called that out as a real regression in a different
+                  direction -- without ANY number, a search that scored
+                  320 of 800 reads as "Scored: 320" / "Total jobs found:
+                  800" with "some jobs failed" and nothing to say how many
+                  of the missing 480 that accounts for (the rest could be
+                  still-pending, if this were mid-flight, except it isn't
+                  -- the ambiguity is the problem). That distinction
+                  matters more now than it did before this ticket: a
+                  `scoreJobWorker` spend-guard stall can now plausibly
+                  produce a large `failed` count on its own (see that
+                  file's own doc comment on why), and it must read as
+                  distinguishable from "a handful of jobs individually
+                  failed," not folded into one vague sentence. `failed`
+                  is already a plain field on `SearchStatusResponse` --
+                  showing it is not the forbidden replacement guard (it
+                  adds no limit and defers nothing); it restores the
+                  diagnosability the ticket asked to KEEP ("remove the
+                  surface, not the ability to diagnose"), same as the
+                  per-source `errorKind`/`errorMessage` detail already
+                  shown below for a dead-lettered source. */}
               <h3>Search complete{phase.result.degraded ? " (with some failures)" : ""}</h3>
               {phase.result.degraded && (
                 <p className="search-degraded-note" role="status">
-                  Some jobs failed to score — retries were exhausted or something else went wrong
-                  partway through. The rest of this search's results are unaffected and ready below.
+                  {phase.result.failed} of {phase.result.linked} job
+                  {phase.result.linked === 1 ? "" : "s"} couldn't be scored — retries were exhausted
+                  or something else went wrong partway through. The rest of this search's results
+                  are unaffected and ready below.
                 </p>
               )}
               <dl>

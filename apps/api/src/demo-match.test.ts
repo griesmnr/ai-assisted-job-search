@@ -1392,9 +1392,17 @@ describe("runDemoMatch: no scoring cap (ticket d37511b; was 'spend guard', ticke
     const logs: string[] = [];
 
     // Deliberately NOT passing `scoreThreshold`/`allowAboveThreshold` —
-    // those options no longer exist on `RunDemoMatchOptions` at all
-    // (a mutation reintroducing either would be a TypeScript compile
-    // error here, not a silently-passing test).
+    // those OPTIONS no longer exist on `RunDemoMatchOptions` at all, so
+    // reintroducing either as a caller-facing option here would be a
+    // TypeScript compile error. CORRECTION (adversarial review): that is
+    // NOT the realistic regression, and an earlier version of this comment
+    // overclaimed by implying it was. The real risk is a hardcoded slice
+    // inside `runDemoMatch` ITSELF (e.g. `needsScoreIds.slice(0, 200)`
+    // where `toScoreIds` is assigned in pipeline.ts) — nothing about the
+    // type system catches that, because no option is involved at all. This
+    // small pool (5 jobs) cannot distinguish "no cap" from "a cap above 5";
+    // see the 205-job test below, which is sized specifically to catch a
+    // reintroduced 200-job slice and was kill-verified against one.
     const run = await runDemoMatch({
       db,
       sources: [source],
@@ -1416,6 +1424,48 @@ describe("runDemoMatch: no scoring cap (ticket d37511b; was 'spend guard', ticke
     // the counts above, but this also catches a reintroduction that
     // happens to keep the counts right while still talking about a cap.
     expect(logs.some((l) => /not scored \(cap\)|cappedCount|scoreThreshold/i.test(l))).toBe(false);
+  });
+
+  // THE GAP THIS CLOSES (adversarial review of this ticket). Every "no cap"
+  // test above runs small -- 20 jobs, 5 jobs -- which cannot tell "there is
+  // no cap" apart from "there is a cap, and it happens to sit above this
+  // pool's size." The deleted spend-guard tests used a 205-job pool (over
+  // the old 200-job default) specifically because that was the only size
+  // that could prove the cap bound; removing them left AC1 ("no code path
+  // defers, caps, or truncates scoring for budget reasons") unverified at
+  // the one scale that matters. Confirmed directly: hardcoding
+  // `needsScoreIds.slice(0, 200)` for `toScoreIds` in pipeline.ts passed
+  // the entire suite before this test existed.
+  it("scores all 205 of a pool well past the old 200-job default — the scale a cap would have bound at", async () => {
+    const POOL_SIZE = 205;
+    const SCALE_JOBS: NormalizedJob[] = Array.from({ length: POOL_SIZE }, (_, i) =>
+      job(`demo-match-no-cap-scale-${i}`, `Scale Engineer ${i}`),
+    );
+    allExternalIds.push(...SCALE_JOBS.map((j) => j.externalId));
+    const source = new FakeSource(SCALE_JOBS);
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-scale ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
+
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: () => {},
+    });
+
+    // THE BOUND ITSELF, KILL-VERIFIED: re-adding a `.slice(0, 200)` for
+    // `toScoreIds` in pipeline.ts makes `scorer.calls()` and
+    // `run.newlyScored` both come back 200, not 205 -- confirmed by hand,
+    // then reverted (see PM's report for this round).
+    expect(run.candidatesNeedingScore).toBe(POOL_SIZE);
+    expect(run.newlyScored).toBe(POOL_SIZE);
+    expect(run.failed).toBe(0);
+    expect(scorer.calls()).toBe(POOL_SIZE);
+    expect(run.results).toHaveLength(POOL_SIZE);
   });
 
   it("F1: a failing usage-stats write does not discard already-persisted, already-paid-for scores", async () => {

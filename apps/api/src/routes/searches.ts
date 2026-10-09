@@ -1044,10 +1044,20 @@ export function registerSearchRoutes(
        *   1. REAL MONEY against someone else's resume. This route
        *      authorizes the spend `scoreJobWorker` performs -- at the time
        *      of this audit, up to `DEFAULT_SCORE_THRESHOLD` (200) Claude
-       *      scoring calls per search; ticket d37511b later removed that
-       *      cap outright, so this finding's severity only grew -- charged
-       *      to this deployment, against a resume the caller has no other
-       *      way to read.
+       *      scoring calls per search, charged to this deployment, against
+       *      a resume the caller has no other way to read.
+       *
+       *      CLOSED, STAYS CLOSED (checked again, ticket d37511b review):
+       *      `loadResumeText(resumeId, userId)` below still filters on
+       *      `and(eq(resumes.id, resumeId), eq(resumes.userId, userId))`,
+       *      so a stranger's `resumeId` still 404s here, same as always --
+       *      no spend, no abuse vector, regardless of what bounds the
+       *      spend a legitimate request authorizes. The counterfactual is
+       *      what's worth naming: HAD this scoping not shipped, removing
+       *      `DEFAULT_SCORE_THRESHOLD` (ticket d37511b) would have turned
+       *      a 200-call exposure into an unbounded one. It did ship, so
+       *      that counterfactual is the whole story -- this finding is not
+       *      reopened by anything in this ticket.
        *   2. A durable `searches` row FOR THAT RESUME -- which is exactly
        *      what `isResumeLocked` (routes/resumes.ts) reads, so a stranger
        *      could PERMANENTLY LOCK the owner's resume text (ticket

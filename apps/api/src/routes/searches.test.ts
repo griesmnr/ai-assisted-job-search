@@ -2353,6 +2353,73 @@ describe("fetch-level criteria reaches the source's own search() (ticket d1fc9e2
 // a capped-job case to reproduce it with.
 // ---------------------------------------------------------------------------
 
+describe("the queue path has NO scoring cap, at the scale a cap would have bound (ticket d37511b, adversarial review)", () => {
+  // THE GAP THIS CLOSES. Every surviving "no cap" test elsewhere in this
+  // repo runs small (20 jobs in demo-match.test.ts's MANY_JOBS, 5 in its
+  // SMALL_POOL_JOBS) -- none of them are large enough to tell "there is no
+  // cap" apart from "there is a cap, and it happens to be above this pool's
+  // size." The deleted "per-search scoring cap" suite (see the REMOVED
+  // comment above) was this repo's ONLY >200-job behavioural coverage on
+  // this path, and removing it along with the cap left AC1 ("a search
+  // scores every job it finds... no code path defers, caps, or truncates
+  // scoring for budget reasons") completely unverified at the scale a cap
+  // operates on. Confirmed directly: putting `.slice(0, 200)` back into
+  // `fetchSourceWorker.ts`'s publish loop passed the entire suite before
+  // this test existed.
+  it("publishes a score.job message for all 205 linked jobs in one source, not a 200-job slice", async () => {
+    const POOL_SIZE = 205;
+    const jobs = Array.from({ length: POOL_SIZE }, (_, i) =>
+      matchingJob(`no-cap-scale-${i}-${randomUUID()}`),
+    );
+    const publisher = fakePublisher();
+    const app = buildApp({
+      db,
+      inferTitles: async () => [],
+      getScoreJob: makeFakeScorer,
+      resolveSourceIds: fakeResolver(new Set([DATA_SOURCE]), jobs),
+      publishFetchSource: publisher.publish,
+    });
+    const resumeId = await createResume(app);
+    const started = await app.inject({
+      method: "POST",
+      url: "/searches",
+      payload: { resumeId, sourceIds: [DATA_SOURCE], criteria: {} },
+    });
+    expect(started.statusCode).toBe(202);
+    const { searchId } = started.json() as { searchId: string };
+
+    const rig = makeQueueRig({ sources: { [DATA_SOURCE]: new FakeSource(jobs) } });
+    await rig.runFetch(publisher.published[0]!);
+
+    // THE BOUND ITSELF, KILL-VERIFIED: re-adding `.slice(0, 200)` to the
+    // publish loop in fetchSourceWorker.ts makes this line fail with
+    // length 200, not 205 — confirmed by hand, then reverted (see PM's
+    // report for this round).
+    const scoreJobs = rig.takeScoreJobs();
+    expect(scoreJobs).toHaveLength(POOL_SIZE);
+    expect(new Set(scoreJobs.map((s) => s.jobId)).size).toBe(POOL_SIZE);
+
+    // Ingestion was never capped either — every job is a real, linked
+    // `search_results` row, which is what makes a job eligible for
+    // `score.job` in the first place.
+    const linked = await db
+      .select({ jobId: searchResults.jobId })
+      .from(searchResults)
+      .where(eq(searchResults.searchId, searchId));
+    expect(linked).toHaveLength(POOL_SIZE);
+
+    // And no `job_match_failures` rows were written for any of them --
+    // the removed cap used to write one per capped job; its absence here
+    // is the other half of "there is no cap," not just "scoreJobs is long
+    // enough."
+    const failures = await db
+      .select()
+      .from(jobMatchFailures)
+      .where(eq(jobMatchFailures.resumeId, resumeId));
+    expect(failures).toHaveLength(0);
+  });
+});
+
 describe("job_match_failures is scoped to the search that wrote it (ticket 9a53485)", () => {
   it("a job whose scoring PERMANENTLY FAILED in one search gets a fresh attempt in a later search for the same resume", async () => {
     // The other half of the ticket's scenario: the row `scoreJobWorker`

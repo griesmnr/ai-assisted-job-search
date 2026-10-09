@@ -240,17 +240,17 @@ export function clearAppState(): void {
 /**
  * Validates only what the "Search running..." / "Search complete" panels
  * actually READ off the estimate (the three `toFixed`-ed currency numbers,
- * the two counts, and the two lists). Deeper per-`SourceOutcome`
- * validation would be ceremony: this object was produced by this app's own
- * API client, in this same tab, minutes ago — the only way its shape can
+ * one count, and the two lists). Deeper per-`SourceOutcome` validation
+ * would be ceremony: this object was produced by this app's own API
+ * client, in this same tab, minutes ago — the only way its shape can
  * drift is an app-version change across a reload, and the `.v1` key
  * suffix is what retires the record in that case.
- */
-/**
- * Ticket d37511b removed `cappedCount`/`scoreThreshold` from
- * `EstimateSearchResponse` (the scoring cap they described is gone
- * outright). This function used to validate `cappedCount` here — see the
- * line this replaced in git history — and now simply doesn't check for it.
+ *
+ * WAS "the two counts" (`alreadyScored` and `cappedCount`) before ticket
+ * d37511b removed `cappedCount`/`scoreThreshold` from
+ * `EstimateSearchResponse` outright, along with the scoring cap they
+ * described — this function simply stopped checking for the one that's
+ * gone, rather than being rewritten around it.
  *
  * WHAT THAT MEANS FOR A SESSION PERSISTED BEFORE THIS TICKET: a stale
  * record on disk still HAS a `cappedCount` field (this validator never
@@ -262,9 +262,9 @@ export function clearAppState(): void {
  * (e.g. a careless revert), every post-d37511b persisted estimate would
  * fail this validator and `readActiveSearch`/`readAppState` would return
  * `undefined` for it — which is still graceful (the caller just drops the
- * stale state and starts fresh, per this function's own doc comment above
- * on the `.v1` key suffix), not a crash. Confirmed no code path treats a
- * `parseEstimate` `undefined` as fatal.
+ * stale state and starts fresh, per this comment's own `.v1` note above),
+ * not a crash. Confirmed no code path treats a `parseEstimate` `undefined`
+ * as fatal.
  */
 function parseEstimate(value: unknown): EstimateSearchResponse | undefined {
   if (!isRecord(value)) return undefined;
