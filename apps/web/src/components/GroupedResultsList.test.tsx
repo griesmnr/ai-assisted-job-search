@@ -99,6 +99,113 @@ describe("GroupedResultsList — shows every scored job regardless of source (ti
   });
 });
 
+// Ticket d90d7dd: same fix, same reasoning, as ResultsList.test.tsx's
+// identical describe block -- GroupedResultsList duplicates the
+// results-summary/below-floor rendering rather than sharing it with
+// ResultsList (see that component's own doc comment), so this is a second,
+// independent regression surface, not a re-test of the same code path.
+// Pinned via `textContent`/`toBe`, not `toHaveTextContent` (see
+// MagicLinkPrompt.test.tsx:162).
+describe("GroupedResultsList — below-floor count folded into the results-summary sentence (ticket d90d7dd)", () => {
+  it("joins the count and the floor explanation into ONE sentence when something is hidden below the floor", () => {
+    const WITH_FLOOR_HIDE: GetAllResultsResponse = { ...DATA, hiddenBelowFloor: 4 };
+
+    const { container } = render(
+      <GroupedResultsList
+        data={WITH_FLOOR_HIDE}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs; 4 more jobs scored below the match-quality floor and are not shown.",
+    );
+    expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
+  });
+
+  it("produces no empty or dangling clause when nothing is hidden below the floor (hiddenBelowFloor absent)", () => {
+    const { container } = render(
+      <GroupedResultsList
+        data={DATA}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe("Showing 2 of 2 scored jobs.");
+    expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
+  });
+
+  it("still states a genuine zero below the floor outright, folded into the sentence", () => {
+    const ZERO_HIDDEN: GetAllResultsResponse = { ...DATA, hiddenBelowFloor: 0 };
+
+    const { container } = render(
+      <GroupedResultsList
+        data={ZERO_HIDDEN}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs; 0 more jobs scored below the match-quality floor and are not shown.",
+    );
+  });
+
+  it("uses singular wording when exactly 1 job is hidden below the floor", () => {
+    const ONE_HIDDEN: GetAllResultsResponse = { ...DATA, hiddenBelowFloor: 1 };
+
+    const { container } = render(
+      <GroupedResultsList
+        data={ONE_HIDDEN}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe(
+      "Showing 2 of 2 scored jobs; 1 more job scored below the match-quality floor and is not shown.",
+    );
+  });
+
+  it("does not produce 'Showing 0 of 0 ... and N more' in the all-below-floor empty state -- the floor count stays its own line next to emptyStateMessage instead", () => {
+    const ALL_BELOW_FLOOR: GetAllResultsResponse = {
+      results: [],
+      hiddenBelowFloor: 421,
+    };
+
+    const { container } = render(
+      <GroupedResultsList
+        data={ALL_BELOW_FLOOR}
+        groupFor={(r) => groupKeyForStatus(r.status)}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    const summary = container.querySelector(".results-summary");
+    expect(summary?.textContent).toBe("No scored jobs are above the current match-score floor.");
+    const floorNote = container.querySelector(".results-hidden-floor");
+    expect(floorNote?.textContent).toBe(
+      "421 more jobs scored below the match-quality floor and are not shown.",
+    );
+  });
+});
+
 // Ticket c49c088 review fix (F1): App.tsx (the only caller) renders this
 // component when `data.results.length > 0 || hiddenBelowFloor > 0` -- its
 // own separate "No jobs scored yet." paragraph handles the true

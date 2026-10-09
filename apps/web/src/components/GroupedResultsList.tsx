@@ -177,7 +177,22 @@ export function GroupedResultsList({
     <div className="results-list">
       <p className="results-summary">
         {emptyStateMessage ??
-          `Showing ${visible.length} of ${data.results.length} scored jobs.` +
+          `Showing ${visible.length} of ${data.results.length} scored jobs` +
+            // Ticket d90d7dd: see ResultsList.tsx's identical clause for
+            // the full reasoning and the judgement call it was asked to
+            // argue (semicolon-joined independent clause, not one of the
+            // trailing "(N hidden by ...)" parentheses below -- the floor
+            // is the dominant explanation, not a footnote, so it reads
+            // first). Same `!== undefined` (not `> 0`) guard, preserving
+            // the "always shown, even at 0" decision this component
+            // shares with ResultsList.
+            (data.hiddenBelowFloor !== undefined
+              ? `; ${data.hiddenBelowFloor} more job${
+                  data.hiddenBelowFloor === 1 ? "" : "s"
+                } scored below the match-quality floor and ${
+                  data.hiddenBelowFloor === 1 ? "is" : "are"
+                } not shown.`
+              : ".") +
             // Ticket b182bde review (F1a): see ResultsList.tsx's identical
             // clause for the full reasoning.
             (hiddenByOverqualifiedFilter > 0
@@ -222,7 +237,12 @@ export function GroupedResultsList({
         />
         Hide contract/temp roles ({contractOrTempCount})
       </label>
-      {data.hiddenBelowFloor !== undefined && (
+      {/* Ticket d90d7dd: see ResultsList.tsx's identical paragraph for the
+          full reasoning -- renders ONLY in the `emptyStateMessage` branch
+          now (e.g. "No scored jobs are above the current match-score
+          floor."), since the normal branch folds this same count into the
+          `results-summary` sentence above instead. */}
+      {emptyStateMessage !== null && data.hiddenBelowFloor !== undefined && (
         <p className="results-hidden-floor">
           {data.hiddenBelowFloor} more job{data.hiddenBelowFloor === 1 ? "" : "s"} scored below the
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.

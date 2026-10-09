@@ -152,7 +152,48 @@ export function ResultsList({
     <div className="results-list">
       <p className="results-summary">
         {emptyStateMessage ??
-          `Showing ${visible.length} of ${data.results.length} scored jobs from the sources you've selected.` +
+          `Showing ${visible.length} of ${data.results.length} scored jobs from the sources you've selected` +
+            // Ticket d90d7dd (Jay's 2nd round of testing, relayed by
+            // Nicole): the below-floor count used to live in its OWN
+            // paragraph below this one. A real run of his ("Showing 5 of
+            // 5... [separate paragraph] 201 more scored below the
+            // floor...") read as two unrelated facts, not cause and
+            // effect -- there was nothing on the "5 of 5" line to tell him
+            // that's WHY he only saw 5 out of a 206-job search. Folded in
+            // here as a semicolon-joined independent clause of the SAME
+            // sentence, placed BEFORE the toggle/level/contract clauses
+            // below, and deliberately NOT one of their trailing "(N hidden
+            // by ...)" parentheses -- the judgement call the ticket asks
+            // for an explicit argument on:
+            //
+            // Those parenthetical clauses explain a PARTIAL gap between
+            // two numbers already stated in the sentence -- a handful of
+            // an otherwise-meaningful "N of N" quietly peeled off by a
+            // minor, reversible, opt-in filter ("(2 hidden by source
+            // toggles.)"). The floor is a different kind of gap: in Jay's
+            // report BOTH numbers in "Showing 5 of 5" were tiny next to
+            // what was actually scored (206), and neither number hints at
+            // that -- 201 of 206 were never in play for either count. A
+            // footnote-weight parenthetical after three OTHER possible
+            // footnotes would still bury the one fact that explains the
+            // whole sentence, so it reads as a first-class clause instead,
+            // ahead of the lesser clauses.
+            //
+            // Guarded on `!== undefined`, not `> 0`, unlike the toggle/
+            // level/contract clauses below -- this preserves the existing
+            // "always shown, even at 0" decision (see this component's
+            // doc comment, ticket 484889d): a floor-filtered response with
+            // genuinely nothing hidden should still say so point-blank,
+            // the same reason an empty-looking short list states its
+            // below-floor count outright rather than going quiet in a way
+            // indistinguishable from the field being absent entirely.
+            (data.hiddenBelowFloor !== undefined
+              ? `; ${data.hiddenBelowFloor} more job${
+                  data.hiddenBelowFloor === 1 ? "" : "s"
+                } scored below the match-quality floor and ${
+                  data.hiddenBelowFloor === 1 ? "is" : "are"
+                } not shown.`
+              : ".") +
             // Only worth stating when it's a PARTIAL hide — if visible.length
             // is already 0, `emptyStateMessage` above already says
             // everything is hidden; repeating the count here would be
@@ -222,7 +263,22 @@ export function ResultsList({
         />
         Hide contract/temp roles ({contractOrTempCount})
       </label>
-      {data.hiddenBelowFloor !== undefined && (
+      {/* Ticket d90d7dd: this standalone paragraph now renders ONLY in the
+          `emptyStateMessage` branch above -- the normal (non-empty)
+          branch folds this same count into the `results-summary` sentence
+          instead (see that comment for why). When `emptyStateMessage` is
+          set, it has already REPLACED the "Showing N of N" sentence
+          entirely, so there is no sentence left to fold this into -- but
+          `hiddenBelowFloor` is still real, independent information (it
+          was excluded from `data.results` before source toggles or any
+          of the three hide-filters ever ran), so it still needs to render
+          somewhere rather than silently disappearing just because some
+          OTHER mechanism also emptied `visible`. This is also exactly
+          what keeps the all-hidden case from producing "Showing 0 of 0 …
+          and 201 more" alongside `emptyStateMessage` -- that malformed
+          sentence simply never gets constructed, because the "Showing"
+          template literal above is never the branch taken here. */}
+      {emptyStateMessage !== null && data.hiddenBelowFloor !== undefined && (
         <p className="results-hidden-floor">
           {data.hiddenBelowFloor} more job{data.hiddenBelowFloor === 1 ? "" : "s"} scored below the
           match-quality floor and {data.hiddenBelowFloor === 1 ? "is" : "are"} not shown.
