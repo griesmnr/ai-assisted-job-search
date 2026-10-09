@@ -212,7 +212,7 @@ describe("ResultsList — below-floor count folded into the results-summary sent
     expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
   });
 
-  it("still states a genuine zero below the floor outright, folded into the sentence (decision #1, ticket 484889d: never silent at 0)", () => {
+  it("says NOTHING about the floor when a genuine zero is hidden -- the merged sentence would otherwise spend the most-read line on the page explaining the absence of a gap. A deliberate departure from ticket 484889d's standalone-paragraph behaviour; see the clause's own comment", () => {
     const ZERO_HIDDEN: GetResumeResultsResponse = { ...DATA, hiddenBelowFloor: 0 };
 
     const { container } = render(
@@ -227,8 +227,11 @@ describe("ResultsList — below-floor count folded into the results-summary sent
 
     const summary = container.querySelector(".results-summary");
     expect(summary?.textContent).toBe(
-      "Showing 2 of 2 scored jobs from the sources you've selected; 0 more jobs scored below the match-quality floor and are not shown.",
+      "Showing 2 of 2 scored jobs from the sources you've selected.",
     );
+    // Identical to the field-absent case, which is the point: to a reader of
+    // this sentence, "absent" and "zero" both mean nothing was hidden.
+    expect(summary?.textContent).not.toContain("match-quality floor");
   });
 
   it("uses singular wording when exactly 1 job is hidden below the floor", () => {

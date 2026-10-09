@@ -179,15 +179,31 @@ export function ResultsList({
             // whole sentence, so it reads as a first-class clause instead,
             // ahead of the lesser clauses.
             //
-            // Guarded on `!== undefined`, not `> 0`, unlike the toggle/
-            // level/contract clauses below -- this preserves the existing
-            // "always shown, even at 0" decision (see this component's
-            // doc comment, ticket 484889d): a floor-filtered response with
-            // genuinely nothing hidden should still say so point-blank,
-            // the same reason an empty-looking short list states its
-            // below-floor count outright rather than going quiet in a way
-            // indistinguishable from the field being absent entirely.
-            (data.hiddenBelowFloor !== undefined
+            // Guarded on `> 0`, NOT `!== undefined`. This DEPARTS from ticket
+            // 484889d's "always shown, even at 0" decision, deliberately, and
+            // the departure is the point: that decision was made when this
+            // was a STANDALONE PARAGRAPH, where "0 more jobs scored below the
+            // match-quality floor and are not shown" is a slightly odd but
+            // self-contained statement, and where staying silent really was
+            // indistinguishable from the field being absent.
+            //
+            // Merging it into the summary sentence changes that. At 0 the
+            // sentence becomes "Showing 2 of 2 scored jobs from the sources
+            // you've selected; 0 more jobs scored below the match-quality
+            // floor and are not shown." -- which spends the most-read
+            // sentence on the page explaining the absence of a gap, in the
+            // exact slot ticket d90d7dd added to explain a gap. Nicole's
+            // instruction was to make the 201 explain the 5; there is nothing
+            // to explain when the number is 0.
+            //
+            // And 484889d's own justification does not survive the move: the
+            // distinction it protects -- field-absent versus field-is-zero --
+            // is visible only to someone reading the API response. To a
+            // reader of this sentence both mean "nothing was hidden", so
+            // saying it adds a clause and no information. The standalone
+            // paragraph in the empty-state branch below is untouched, so the
+            // all-hidden case still states its count point-blank.
+            (data.hiddenBelowFloor !== undefined && data.hiddenBelowFloor > 0
               ? `; ${data.hiddenBelowFloor} more job${
                   data.hiddenBelowFloor === 1 ? "" : "s"
                 } scored below the match-quality floor and ${

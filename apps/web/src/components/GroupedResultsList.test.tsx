@@ -143,7 +143,7 @@ describe("GroupedResultsList — below-floor count folded into the results-summa
     expect(container.querySelector(".results-hidden-floor")).not.toBeInTheDocument();
   });
 
-  it("still states a genuine zero below the floor outright, folded into the sentence", () => {
+  it("says NOTHING about the floor when a genuine zero is hidden -- same deliberate departure from ticket 484889d as ResultsList, for the same reason", () => {
     const ZERO_HIDDEN: GetAllResultsResponse = { ...DATA, hiddenBelowFloor: 0 };
 
     const { container } = render(
@@ -157,9 +157,8 @@ describe("GroupedResultsList — below-floor count folded into the results-summa
     );
 
     const summary = container.querySelector(".results-summary");
-    expect(summary?.textContent).toBe(
-      "Showing 2 of 2 scored jobs; 0 more jobs scored below the match-quality floor and are not shown.",
-    );
+    expect(summary?.textContent).toBe("Showing 2 of 2 scored jobs.");
+    expect(summary?.textContent).not.toContain("match-quality floor");
   });
 
   it("uses singular wording when exactly 1 job is hidden below the floor", () => {

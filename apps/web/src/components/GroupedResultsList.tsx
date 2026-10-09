@@ -183,10 +183,13 @@ export function GroupedResultsList({
             // argue (semicolon-joined independent clause, not one of the
             // trailing "(N hidden by ...)" parentheses below -- the floor
             // is the dominant explanation, not a footnote, so it reads
-            // first). Same `!== undefined` (not `> 0`) guard, preserving
-            // the "always shown, even at 0" decision this component
-            // shares with ResultsList.
-            (data.hiddenBelowFloor !== undefined
+            // first). Same `> 0` guard too, and the same deliberate
+            // DEPARTURE from ticket 484889d's "always shown, even at 0":
+            // merged into this sentence, a 0 spends the most-read line on
+            // the page explaining the absence of a gap. ResultsList.tsx
+            // carries the full argument; the standalone paragraph in the
+            // empty-state branch below is untouched either way.
+            (data.hiddenBelowFloor !== undefined && data.hiddenBelowFloor > 0
               ? `; ${data.hiddenBelowFloor} more job${
                   data.hiddenBelowFloor === 1 ? "" : "s"
                 } scored below the match-quality floor and ${
