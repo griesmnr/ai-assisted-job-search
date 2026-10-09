@@ -122,8 +122,6 @@ function makeEstimate(): EstimateSearchResponse {
       basis: "bootstrap",
     },
     candidatesNeedingScore: 1,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -327,8 +325,7 @@ describe("Score floor slider (ticket ffbf9fb)", () => {
       getSearchStatus.mockResolvedValue({
         status: "complete",
         scored: 0,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         linked: 0,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",

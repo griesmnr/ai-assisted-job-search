@@ -256,6 +256,11 @@ before it happens:
   `fetchSourceWorker`, and ticket `c9c676d` made the scoring cap
   genuinely per-search (see `DEFAULT_SCORE_THRESHOLD`, `matching/scoring.ts`)
   with capped-vs-failed jobs reported honestly rather than conflated.
+  **Superseded by ticket d37511b**, which removed the per-search cap and the
+  capped-vs-failed distinction entirely -- a real user could not understand
+  the "deferred for budget" counts. Kept as a dated record of what this
+  decision looked like at the time, which is what an ADR is for; neither
+  `DEFAULT_SCORE_THRESHOLD` nor a capped bucket exists now.
   Neither changed this document's own retry/DLQ/idempotency design.
 
 ## Notes

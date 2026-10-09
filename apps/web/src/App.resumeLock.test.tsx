@@ -83,8 +83,6 @@ function makeEstimate(): EstimateSearchResponse {
       basis: "bootstrap",
     },
     candidatesNeedingScore: 1,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -310,7 +308,6 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
       status: "pending",
       scoredSoFar: 0,
       linked: 1,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     });
@@ -370,7 +367,6 @@ describe("App — 'Change' unavailable during an active search (ticket 88f11d7)"
       status: "pending",
       scoredSoFar: 0,
       linked: 1,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     });

@@ -142,8 +142,6 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
         basis: "bootstrap",
       },
       candidatesNeedingScore: 2,
-      scoreThreshold: 100,
-      cappedCount: 0,
       alreadyScored: 0,
       sourceOutcomes: [],
       skippedSources: [],
@@ -152,8 +150,7 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
     getSearchStatus.mockResolvedValue({
       status: "complete",
       scored: 2,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       linked: 2,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",

@@ -77,55 +77,6 @@ export const MAX_OUTPUT_TOKENS = 2000;
 export const TYPICAL_OUTPUT_CHARS_PER_JOB = 1450;
 
 /**
- * Spend-guard threshold (ticket 16c824a) — replaces `MAX_JOBS`, which used
- * to silently slice the shortlist to 12 in board-iteration order. That was
- * the bug: it went uncaught for two funnel-widening tickets (545 -> 6,038
- * -> 11,609 postings) because nothing measured or reported the truncation.
- *
- * INGESTION has no truncation-by-order cap at all, full stop — every
- * survivor gets ingested and is a scoring candidate (see `candidates` in
- * `runDemoMatch`). SCORING is different, and this needs to be said
- * precisely (ticket 16c824a review F3 caught an earlier draft of this
- * comment overclaiming here): above this many jobs actually needing a
- * *new* score in one run (already-scored jobs are free — ticket 620ca30),
- * `runDemoMatch` caps scoring at the threshold, and when that cap binds,
- * the capped-out subset genuinely IS "the first `scoreThreshold` of
- * `needsScoreIds` in candidate order" — the SAME SHAPE as the original
- * `MAX_JOBS` bug, just at N=200 instead of N=12. Three things are
- * deliberately different this time:
- *
- *   1. It's reported explicitly, every single time it binds — never
- *      silent. A run log line always states it plainly:
- *      `"N candidate(s): ... K not scored (cap)"`.
- *   2. It bounds SPEND, not coverage: every survivor was already ingested
- *      before this cap is even evaluated, so nothing is lost from the
- *      database — only deferred out of THIS run's scoring.
- *   3. It's self-draining at no extra cost. A plain rerun with no flags
- *      sees this run's newly-scored jobs as already-scored (free, ticket
- *      620ca30) and the cap applies to the NEXT `scoreThreshold` of what's
- *      left — repeat until the backlog is gone, for the same total spend
- *      `allowAboveThreshold` would have cost in one run, just spread
- *      across runs. Scoring the whole backlog in a single run instead
- *      requires explicit opt-in (`allowAboveThreshold` /
- *      `ALLOW_SCORE_ABOVE_THRESHOLD=true`).
- *
- * Pool size this assumes: comfortably under a few hundred jobs needing a
- * new score per run. 129 total survivors (Greenhouse only) was the
- * measurement that motivated "score everything" over a cleverer selection
- * heuristic (git-bug 16c824a). Ticket 8d3f4a1 wires Lever, Ashby, and
- * SmartRecruiters into the same search and may grow the pool by an unknown
- * multiple — SmartRecruiters alone lists 4,771 postings for ONE company
- * before filtering, and at the ~2% observed survival rate a four-source
- * pool lands around 250, which means this cap can plausibly bind on the
- * very first real run after those sources are wired in. If real runs start
- * landing above this threshold routinely, that is this exact ticket's
- * original bug recurring at 10x the scale, pointed at the bank account
- * instead of at coverage — raise (or rethink) this number deliberately,
- * don't just flip the opt-in on permanently.
- */
-export const DEFAULT_SCORE_THRESHOLD = 200;
-
-/**
  * Exported (ticket d8746eb) so `scripts/validate-level-fit.ts` can import
  * the LIVE, shipped schema directly instead of re-typing it — the whole
  * point of that script's "arm B" is that it can never drift from what this

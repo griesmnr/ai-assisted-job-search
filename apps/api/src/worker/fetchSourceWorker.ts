@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
 import type { Job, SearchCriteria as FilterCriteria } from "@app/shared";
 import type { ConfirmChannel, ConsumeMessage } from "amqplib";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { jobMatchFailures, searchSources, searches } from "../db/schema.js";
+import { searchSources } from "../db/schema.js";
 import { describeCrossSourceMerge, ingestJobsForSearch } from "../ingest/ingestJobs.js";
-import { DEFAULT_SCORE_THRESHOLD } from "../matching/index.js";
 import { compileFilter } from "../sources/criteria.js";
 import {
   RateLimitedError,
@@ -19,10 +17,11 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * The fetch.source worker: consumes one message per (search, source) pair,
  * calls the matching adapter, persists whatever it found idempotently
  * (ingestJobsForSearch, ticket 6bf2196), and publishes one score.job
- * message per job now linked to the search - new or already known - up to
- * whatever is left of the SEARCH-WIDE budget of `DEFAULT_SCORE_THRESHOLD`
- * jobs shared across all of that search's sources (see "THE PER-SEARCH
- * SCORING CAP" below; ingestion itself stays uncapped).
+ * message per job now linked to the search - new or already known. Every
+ * linked job gets one: ticket d37511b removed the SEARCH-WIDE scoring
+ * budget (`DEFAULT_SCORE_THRESHOLD`) that used to cap this at a shared 200
+ * per search — see "REMOVED: THE PER-SEARCH SCORING CAP" below for what
+ * used to be here and why it's gone. Ingestion itself was always uncapped.
  *
  * Message shapes (JSON bodies on the "jobs" exchange):
  *
@@ -35,13 +34,11 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  *       why both are on the wire and why conflating them loses information.
  *
  *   score.job: { jobId: string }
- *     - one per job linked to this search, capped at
- *       `DEFAULT_SCORE_THRESHOLD` per SEARCH (shared across its sources,
- *       see `adjudicateScoringBudget`). NOT filtered
- *       to "rows this call happened to insert" (see the note on
- *       `newlyInsertedJobIds` below) - the scoring worker (RTK-10, out of
- *       scope here) owns deduping repeated score.job messages for a job it
- *       already scored.
+ *     - one per job linked to this search, unconditionally (ticket
+ *       d37511b). NOT filtered to "rows this call happened to insert" (see
+ *       the note on `newlyInsertedJobIds` below) - the scoring worker
+ *       (RTK-10, out of scope here) owns deduping repeated score.job
+ *       messages for a job it already scored.
  *
  * COMPLETION LEDGER (ticket 4f88339): this worker also owns the per-source
  * half of the record `GET /searches/:id` derives completion from. Three
@@ -166,214 +163,40 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * responsible for not scoring the same job twice, is a better trade than
  * silently dropping jobs that need scoring.
  *
- * THE PER-SEARCH SCORING CAP (ticket 4f88339 review round 1 F1 for the
- * original per-SOURCE version; ticket c9c676d for the per-SEARCH one that
- * replaced it — read this before removing or loosening `adjudicateScoringBudget`
- * below).
+ * REMOVED: THE PER-SEARCH SCORING CAP (ticket d37511b; compressed on
+ * adversarial review — the full per-source-vs-per-search lineage, ticket
+ * 4f88339 round 1 F1 through c9c676d, is in git history, not repeated
+ * here). This worker used to enforce a true per-search spend-guard cap —
+ * `DEFAULT_SCORE_THRESHOLD` (200) jobs shared across every source of one
+ * search, via `adjudicateScoringBudget` under
+ * `pg_advisory_xact_lock(hashtext(search_id))` (serializing sibling
+ * sources so they couldn't double-spend the same budget) — with jobs
+ * past the cap recorded as `job_match_failures` rows
+ * (`SCORE_THRESHOLD_CAPPED_KIND`; see that table's "9a53485" per-search
+ * scoping note in db/schema.ts for the UNRELATED cross-search leak those
+ * rows had to be guarded against separately) and surfaced as
+ * `cappedForBudget`.
  *
- * WHAT WENT WRONG WITHOUT ANY CAP. `POST /searches/estimate` shows the caller
- * a number that is both FILTERED (`compileFilter(criteria)`) and CAPPED
- * (`DEFAULT_SCORE_THRESHOLD`, 200 — matching/pipeline.ts applies it to
- * `needsScoreIds` before pricing anything). That number is what the user
- * reads and implicitly authorizes by clicking "Run search". The queue path
- * ticket 4f88339 introduced had NEITHER: it published one `score.job` per job
- * a source returned, unbounded. The only remaining backstop was
- * `scoreJobWorker`'s `ScoringSpendGuard` — a LIFETIME-PER-PROCESS ceiling
- * ($15, `DEFAULT_LIFETIME_SPEND_CEILING_USD`, ticket b53c422), not a
- * per-run one — so one large search could drain it and every later search
- * in that process would produce nothing but refused, dead-lettered
- * messages until someone restarted the worker. That is ticket 59fdc52
- * review round 2's ~30x estimate-vs-spend defect (see matching/pipeline.ts
- * around the `overThreshold`/`toScoreIds` slice, which documents the 30x)
- * reintroduced one layer down.
+ * Nicole, after a real user's testing session found the resulting UI
+ * ("Deferred this run (over the cap)", "Permanently failed")
+ * incomprehensible, chose to remove both the display and the mechanism.
+ * This worker now publishes `score.job` for every linked job,
+ * unconditionally — `handleFetchSourceMessage` below no longer calls
+ * `adjudicateScoringBudget` (deleted) at all.
  *
- * WHY THE PER-SOURCE VERSION WAS NOT ENOUGH — the measurement that decided
- * ticket c9c676d, recomputed 2026-09-23 AFTER the quality filter landed
- * (45ea34c), not inherited from before it.
+ * WHAT BOUNDS SPEND NOW: `POST /searches/estimate` still prices the real,
+ * uncapped pool before the caller authorizes a search (matching/
+ * pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment); `scoreJobWorker.ts`'s
+ * `ScoringSpendGuard` (a $30 lifetime-per-process ceiling, ticket b53c422 —
+ * see its own doc comment for the "WHY $30" sizing, now the only backstop
+ * left inside this codebase); beyond that, Nicole's own account-level
+ * Anthropic spend cap. Accepted consequence of her explicit instruction,
+ * not an oversight.
  *
- * The per-source cap bounded spend at `Σ_sources min(200, filtered_s)`.
- * The estimate is `min(200, |dedup(∪_sources filtered_s)|)`. Those two
- * expressions diverge WHENEVER THE UNION EXCEEDS 200, and — this is the
- * part that made "filtering shrank the pool, so the cap rarely binds now"
- * a false comfort — the divergence DOES NOT REQUIRE THE PER-SOURCE CAP TO
- * BIND AT ALL. Five sources returning 60 filtered jobs each are each an
- * unremarkable 30% of their own cap and still publish 300 `score.job`
- * messages against an estimate that says 200.
- *
- * That is not a hypothetical shape. This codebase's own recorded numbers
- * (`DEFAULT_SCORE_THRESHOLD`'s doc comment, matching/scoring.ts): 129
- * survivors from Greenhouse alone, a ~2% survival rate through the filter,
- * and "a four-source pool lands around 250". `sources/registry.ts` ships
- * FIVE configured adapters (usajobs, greenhouse, lever, ashby,
- * smartrecruiters), so the default, un-narrowed search — the CLI default
- * filter, the one a user gets by not typing criteria — was already expected
- * to publish ~250-310 `score.job` messages against a 200-job estimate, with
- * no single source anywhere near its own cap. The absolute worst case stayed
- * `5 x 200 = 1,000`.
- *
- * In money, using `scoreJobWorker`'s own live per-job figures (measured in
- * this repo 2026-09-21: ~$0.0388 worst-case on the bootstrap basis, ~$0.0468
- * on the measured basis) and the 2026-09-23 live smoke test (9 real scores
- * for ~$0.20, i.e. ~$0.022/job actual):
- *
- *   - Estimate shown to the user, always: 200 jobs → ~$4.40 actual /
- *     ~$7.76-$9.36 worst case.
- *   - Typical un-narrowed real spend under the per-source cap: ~250-310
- *     jobs → ~$5.50-$6.80 actual. A 1.25-1.55x overrun.
- *   - Worst case under the per-source cap: 1,000 jobs → ~$22 actual,
- *     ~$38.80-$46.80 worst case. A 5x overrun, and 1.5-3.1x the ENTIRE $15
- *     lifetime-per-process spend ceiling — so a single broad search could
- *     drain `ScoringSpendGuard` outright and leave every later search in
- *     that worker process producing nothing but refused, dead-lettered
- *     messages until an operator restarted it.
- *
- * The last line is what made this worth a real fix rather than a clearer
- * comment: the failure mode is not "the user overpaid a bit", it is "one
- * search bricks the scoring worker for every subsequent search".
- *
- * WHAT THE CAP IS NOW. A TRUE PER-SEARCH cap: across every source of one
- * search, and across every redelivery of every one of their messages, at
- * most `DEFAULT_SCORE_THRESHOLD` distinct jobs ever receive a `score.job`
- * message. That is exactly the bound `POST /searches/estimate` prices, so
- * the estimate is now an upper bound on real spend rather than a fifth of it.
- *
- * HOW, WITHOUT THE TWO MECHANISMS 4f88339 REJECTED. That ticket rejected
- * (a) a running counter — not idempotent, since a redelivered message
- * re-increments — and (b) a live cross-worker query — racy, since two
- * workers can both read-then-publish past the cap. Both objections are
- * about the same missing ingredient: a durable, SET-never-incremented claim
- * plus serialization. This has both.
- *
- *   - The claim is `search_sources.published_job_count` (schema.ts): how
- *     many `score.job` messages THIS (search, source) pair has published.
- *     SET, never incremented — the identical idempotency posture
- *     `linked_job_count` next to it already has, so a redelivery overwrites
- *     it with the same value instead of doubling it.
- *   - The serialization is `pg_advisory_xact_lock(hashtext(search_id))`,
- *     scoped PER SEARCH. Exactly the pattern `routes/searches.ts` already
- *     uses (hashed by `resume_id`) for the in-flight-search guard, and for
- *     the same reason: a read-then-write that must not interleave.
- *     Transaction-scoped, so COMMIT/ROLLBACK releases it with nothing to
- *     leak. Different searches never contend; `hashtext` collisions between
- *     two unrelated searches cost brief serialization, never a wrong answer,
- *     because the query inside the lock filters on `search_id` itself.
- *
- * THE ARITHMETIC, AND THE INVARIANT IT MAINTAINS. Under the lock, a source
- * reads every `published_job_count` for its search, sums the OTHER sources'
- * (NULL → 0: a source that has not adjudicated yet reserves nothing), and
- * takes what is left:
- *
- *     remaining = max(0, 200 - claimedByOtherSources)
- *     allowance = max(previousClaimOfThisSource, remaining)   // monotone
- *     published = min(linkedJobIds.length, allowance)
- *
- * The `max(previousClaim, ...)` is load-bearing, not defensive. Without it
- * a redelivery whose siblings have since claimed budget would compute a
- * SMALLER allowance and "un-publish" jobs it already sent — writing capped
- * rows for jobs that are already being scored, and letting the set of jobs
- * that ever received a `score.job` drift above 200 across a search's
- * lifetime even though no single instant exceeded it. With it, each
- * source's published set is a MONOTONE, non-shrinking prefix of a
- * deterministically-ordered list, so "how many jobs did this search ever
- * send for scoring" equals `Σ published_job_count`, which the invariant
- * below bounds directly.
- *
- * INVARIANT: `Σ_sources published_job_count ≤ DEFAULT_SCORE_THRESHOLD`,
- * maintained at every adjudication. Proof is one case split on the `max`.
- * If `remaining` wins, then `published + claimedByOtherSources ≤ 200` by
- * construction. If `previousClaim` wins, the sum is unchanged from the last
- * adjudication, which satisfied the invariant by induction. Base case: every
- * claim is NULL/0. The lock is what makes "claimedByOtherSources" a value
- * nobody can invalidate between the read and the write.
- *
- * WHAT THIS DELIBERATELY DOES NOT DO. It does not make the estimate EXACT,
- * and the residual gap is one-directional in ROLES scored — real runs score
- * fewer distinct roles than estimated, never more. Opus review, ticket
- * c9c676d: this does NOT mean real DOLLARS can never exceed the estimate.
- * The cross-source dedupe gap below (fewer distinct roles, but per-source
- * rather than per-union) means a role cross-posted to N boards can be
- * scored N times here against 1 time in the estimate — more Claude calls,
- * more real spend, for fewer distinct roles. Bounded well under the $15
- * lifetime ScoringSpendGuard regardless (200 jobs total per search caps
- * this at ~$4.40-$9.36), which is the catastrophic failure mode this
- * ticket exists to kill — but "never above" was true only for role count,
- * not dollars, and the two were conflated in this sentence before the fix:
- *
- *   - Cross-source dedupe. `compileFilter` dedupes on `${company}|${title}`;
- *     the estimate dedupes the UNION, this worker sees one source per
- *     message and dedupes per source (see "ONE KNOWN DIFFERENCE FROM THE
- *     CLI" below). A role cross-posted to two boards can consume two slots
- *     of the 200 here and one in the estimate, so the real run scores FEWER
- *     distinct roles than estimated, never more.
- *   - Already-scored jobs are free in the estimate (`candidatesNeedingScore`
- *     excludes them) but still consume a slot here, because this worker does
- *     not know which jobs `scoreJobWorker` will find already scored.
- *     Again: fewer real Claude calls than priced, never more.
- *   - First-come, first-served between sources. Whichever source adjudicates
- *     first takes what it needs; a source that adjudicates once the budget
- *     is spent scores nothing and reports all of its jobs as
- *     `SCORE_THRESHOLD_CAPPED_KIND`. That is a deliberate choice of
- *     simplicity over fairness — an even N-way split would starve a source
- *     that legitimately found 3 jobs to make room for one that found 3,000 —
- *     and it is why the cap binding is now VISIBLE in the API response
- *     (`cappedForBudget`, @app/shared) rather than silently indistinguishable
- *     from a scoring failure.
- *
- * WHY THE SLICE IS DETERMINISTIC, AND WHY THAT MATTERS. This whole file is
- * built on "a redelivery re-runs the same work and writes the same rows".
- * `ingestJobsForSearch` returns `linkedJobIds` in a stable order — verified
- * by reading it, not assumed: it builds a `Map` keyed by `externalId` from
- * `normalizedJobs` (insertion-ordered), takes `[...map.values()]`, and
- * pushes onto `linkedJobIds` in exactly that order. So for a given
- * `result.jobs` the first N ids are the SAME first N ids on every
- * redelivery, and a retried attempt republishes precisely the set it
- * published before. (If the SOURCE itself returns postings in a different
- * order on a later attempt, a different subset can be capped — harmless:
- * score.job is already at-least-once, the failure rows below are
- * `ON CONFLICT DO NOTHING`, and the completion derive prefers a
- * `job_matches` row over a `job_match_failures` row for the same pair.)
- *
- * WHY THE CAPPED JOBS GET A `job_match_failures` ROW, AND WHY THE LEDGER'S
- * `linkedJobCount` DOES NOT CHANGE. `ingestJobsForSearch` runs BEFORE the
- * cap and links everything — every capped job has a real `search_results`
- * row. Capping only the publish loop would therefore create a NEW and worse
- * bug than the one being fixed: the completion derive
- * (`sourcesSettled && outstanding === 0`, routes/searches.ts) counts a job
- * as outstanding while it has neither a `job_matches` nor a
- * `job_match_failures` row for the search itself (for the search's resume,
- * before ticket 9a53485) — and a job that was
- * never sent a `score.job` will never get either, so the search would hang
- * pending FOREVER. Two ways out were available; this takes the one that
- * keeps ingestion honest:
- *
- *   - NOT chosen: cap before ingest, so the extra jobs are never linked.
- *     That would make `search_results` a lie about what the source returned
- *     and would break `DEFAULT_SCORE_THRESHOLD`'s own stated contract
- *     ("INGESTION has no truncation-by-order cap at all, full stop" —
- *     matching/scoring.ts). The CLI path caps SCORING, never ingestion, and
- *     this path must match it.
- *   - CHOSEN: link everything, publish the first N, and write a
- *     `job_match_failures` row (kind `SCORE_THRESHOLD_CAPPED_KIND`) for the
- *     rest. That table already means exactly "we are not going to produce a
- *     score for this (resume, job) pair", which is precisely true here, and
- *     it is ADVISORY FOR COMPLETION ONLY — it never gates scoring (see its
- *     doc comment in db/schema.ts), so republishing a capped job later
- *     scores it normally. `linked_job_count` stays the TRUE number of jobs
- *     this source linked, because that is what the derive and the UI mean
- *     by it; capping it there would desynchronize the ledger from
- *     `search_results` for no gain.
- *
- * CLOSED (ticket c9c676d) — this used to read "the one honest wart: a capped
- * job is reported to the caller as `permanentlyFailed`/`degraded`, alongside
- * genuine scoring failures, which overstates how badly the search went". It
- * no longer is: `deriveSearchState` (routes/searches.ts) now splits the
- * `job_match_failures` count on `kind = SCORE_THRESHOLD_CAPPED_KIND`, and
- * `GET /searches/:id` reports the two separately (`cappedForBudget` vs
- * `permanentlyFailed`), with `degraded` keyed to genuine failures only. That
- * matters more now, not less: a per-SEARCH cap caps strictly more jobs than
- * the per-SOURCE one it replaced, so an honest presentation of "not scored
- * because the budget ran out" is what keeps the tighter cap from reading as
- * a fleet of new failures.
+ * `search_sources.published_job_count` and
+ * `job_match_failures.kind = "score-threshold-capped"` are left in the
+ * schema, unwritten and unread — dropping either is a migration, out of
+ * this ticket's scope. See their own doc comments in db/schema.ts.
  *
  * THE QUALITY FILTER (ticket 45ea34c — read this before moving the
  * `compileFilter` call in the handler).
@@ -389,9 +212,14 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  * `score.job` for the first `DEFAULT_SCORE_THRESHOLD` of them IN RAW BOARD
  * ORDER. Confirmed live 2026-09-23 (git-bug 45ea34c): a search for
  * titleInclude ["Staff Software Engineer"] / nearLocations ["Seattle, WA"]
- * — estimated at 1 job — linked all 6,418 Greenhouse postings and scored
- * 200 mostly-unrelated roles (Account Executive, sales, ...). The cap
- * bounds HOW MANY jobs a run scores; this filter is what decides WHICH.
+ * — estimated at 1 job — linked all 6,418 Greenhouse postings and, under
+ * the per-search scoring cap that existed at the time, scored 200
+ * mostly-unrelated roles (Account Executive, sales, ...). This filter is
+ * what decides WHICH jobs a search is about; it was never what bounded HOW
+ * MANY got scored (that was the now-removed cap — see "REMOVED: THE
+ * PER-SEARCH SCORING CAP" above) — without this filter, ticket d37511b's
+ * removal of that cap would mean an unfiltered search now scores EVERY
+ * raw posting a source returns, not a bounded 200 of them.
  *
  * WHERE IT IS APPLIED, AND WHY THERE. On `result.jobs`, BEFORE
  * `ingestJobsForSearch` — the exact position `runDemoMatch` uses (its
@@ -402,29 +230,31 @@ import { FETCH_SOURCE_DLQ, FETCH_SOURCE_RETRY_TIERS } from "../queue/topology.js
  *   - `search_results` and `search_sources.linkedJobCount` only ever hold
  *     jobs that actually match the user's criteria. That is the CLI's
  *     established meaning of those rows, and matching it is the whole point.
- *   - This is NOT in tension with `DEFAULT_SCORE_THRESHOLD`'s "ingestion has
- *     no truncation-by-order cap at all" contract (matching/scoring.ts), and
- *     the distinction matters: that contract forbids dropping jobs by
- *     ARBITRARY POSITION in board order — which is exactly what the "NOT
- *     chosen: cap before ingest" option under the cap section above would
- *     have done. Dropping jobs the caller's own criteria reject is not
- *     truncation; it is the criteria doing their job, and the CLI has always
- *     done it at this point.
+ *   - Ingestion itself stays uncapped — nothing drops a job by ARBITRARY
+ *     POSITION in board order, matching `runDemoMatch`'s own ingestion (see
+ *     matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment).
+ *     Dropping jobs the caller's own criteria reject is not truncation; it
+ *     is the criteria doing their job, and the CLI has always done it at
+ *     this point.
  *   - Filtering AFTER ingest was considered and rejected: a job that fails
  *     the user's filter was never part of this search, so recording it as a
  *     `search_results` row and then a `job_match_failures` row would invent a
  *     "failure" category for something that never failed, and un-ingesting an
  *     already-published row is a materially worse data-integrity story than
  *     never creating one.
- *   - The cap now applies to an already-relevant pool rather than a whole raw
- *     board, so it should rarely bind on a normal search at all.
+ *   - Since ticket d37511b removed the scoring cap entirely, this filter is
+ *     now the ONLY thing standing between an unfiltered search and scoring
+ *     every raw posting every selected source returns — not merely "what
+ *     gets scored first," as it was when a 200-job cap sat underneath it.
  *
  * ONE KNOWN DIFFERENCE FROM THE CLI, deliberate and structural: `compileFilter`
  * also dedupes on `${company}|${title}`. `runDemoMatch` filters the UNION of
  * every source's jobs, so its dedupe collapses a cross-posted opening across
  * sources; this worker sees exactly one source per message, so its dedupe is
- * PER SOURCE. Making it per-search would need cross-worker coordination for
- * the same reasons a per-search scoring cap does (see the cap section above).
+ * PER SOURCE. Making it per-search would need the same cross-worker
+ * coordination a true per-search scoring cap once did (see "REMOVED: THE
+ * PER-SEARCH SCORING CAP" above for what that coordination looked like
+ * before ticket d37511b removed it).
  * Duplicates across sources were already deduped one layer down anyway —
  * `ingestJobsForSearch` upserts on (dataSource, externalId) — this only means
  * the same role cross-posted to two boards can still be linked twice.
@@ -463,80 +293,6 @@ const ATTEMPT_HEADER = "x-attempt";
  * without turning a single message into a wall of log lines; anything
  * past the cap is summarized as a count instead of dropped silently. */
 const SKIPPED_LOG_LIMIT = 20;
-
-/**
- * `job_match_failures.kind` written for a job this worker linked but
- * deliberately did not send a `score.job` for, because the search's scoring
- * budget was already spent (see the module doc comment's "THE PER-SEARCH
- * SCORING CAP" section). Exported so tests — and the read path that presents
- * "deferred by the spend cap" differently from "scoring genuinely failed" —
- * can name it instead of retyping the string.
- *
- * Distinct from every `kind` `scoreJobWorker`'s `classifyScoringError()`
- * produces ("auth-failed", "rate-limited", "spend-guard-exceeded", ...) on
- * purpose: those record a job whose scoring was ATTEMPTED and failed; this
- * records one that was never attempted at all.
- *
- * READ BY `routes/searches.ts` (ticket c9c676d): `deriveSearchState` filters
- * the `job_match_failures` aggregate on exactly this string to split
- * `cappedForBudget` out of `permanentlyFailed`, and `degraded` keys off the
- * latter only. The string is therefore part of the API contract now, not just
- * a diagnostic — changing its value without a migration would silently
- * reclassify every historical capped row as a genuine failure.
- */
-export const SCORE_THRESHOLD_CAPPED_KIND = "score-threshold-capped";
-
-/**
- * How many `job_match_failures` rows go into one INSERT when the cap binds.
- *
- * Not tuning for tuning's sake: a single unfiltered source (SmartRecruiters
- * lists 4,771 postings for ONE company — see `DEFAULT_SCORE_THRESHOLD`'s
- * doc comment) can leave thousands of jobs past the cap, and each row binds
- * 7 parameters (6 before ticket 9a53485 added `search_id`). Postgres's wire
- * protocol caps a single statement at 65,535 bound parameters, so an
- * unchunked insert of ~9,400 capped jobs would fail outright — and it would
- * fail on the SUCCESS path, turning a search that worked into a
- * retried-then-dead-lettered one. 500 rows (3,500 parameters) is far inside
- * the limit with room for the row shape to grow.
- */
-const CAPPED_FAILURE_INSERT_CHUNK = 500;
-
-/**
- * The transaction handle drizzle hands a `db.transaction()` callback.
- * Derived from `NodePgDatabase` rather than imported from a deep
- * `drizzle-orm/pg-core` path so it cannot drift from whatever `db` actually
- * is here (the worker is constructed with `NodePgDatabase<any>`, and
- * `tx.select`/`tx.insert`/`tx.update`/`tx.execute` are the only surface
- * `adjudicateScoringBudget` and `recordCappedJobs` use).
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = Parameters<Parameters<NodePgDatabase<any>["transaction"]>[0]>[0];
-
-/**
- * What `adjudicateScoringBudget` decided, for the caller to act on and log.
- * Every field is a number the log line needs to make the decision
- * intelligible — "this source published 40 of the 300 it linked" is not an
- * explanation until you know its siblings had already claimed 160.
- */
-type BudgetAdjudication = {
-  /** The prefix of `linkedJobIds` that gets a `score.job` message. */
-  toPublishJobIds: string[];
-  /** The rest — already recorded as `SCORE_THRESHOLD_CAPPED_KIND` rows. */
-  cappedJobIds: string[];
-  /** `Σ published_job_count` over this search's OTHER sources, read under
-   * the lock. NULL claims (sources that have not adjudicated) count 0. */
-  claimedByOtherSources: number;
-  /** This source's own claim before this adjudication: 0 on a first
-   * attempt, the previously-published count on a redelivery. */
-  previousClaim: number;
-  /** `max(previousClaim, DEFAULT_SCORE_THRESHOLD - claimedByOtherSources)` —
-   * how many jobs this source was allowed to publish. */
-  allowance: number;
-  /** False when this (search, source) pair has no `search_sources` row to
-   * record the claim on. See `adjudicateScoringBudget` for when that can
-   * happen and why it degrades rather than throws. */
-  hasLedgerRow: boolean;
-};
 
 export type FetchSourceMessage = {
   searchId: string;
@@ -1138,217 +894,16 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
   }
 
   /**
-   * Records every job this fetch LINKED but deliberately did NOT send a
-   * `score.job` for, because the search's shared scoring budget was already
-   * spent (ticket 4f88339 review round 1 F1; per-SEARCH since ticket
-   * c9c676d — the module doc comment's "THE PER-SEARCH SCORING CAP" section
-   * explains the whole decision).
-   *
-   * NOT best-effort, unlike `markSourceFailed` above, and the asymmetry is
-   * the point. `markSourceFailed` is swallowed because the message must
-   * dead-letter regardless and the staleness backstop covers a lost marker.
-   * This one is on the SUCCESS path, and losing it is not a cosmetic gap:
-   * without these rows the capped jobs sit in `search_results` with no
-   * `job_matches` row for the search's resume and no `job_match_failures`
-   * row for the search itself,
-   * which the completion derive counts as outstanding — forever, because
-   * nothing will ever score or fail them. So a failure here throws into the
-   * handler's catch and the message is RETRIED, exactly like the
-   * success-path ledger write below and for the same reason: re-running the
-   * fetch is wasteful but correct, and a stalled search is not.
-   *
-   * Idempotent under redelivery: `ON CONFLICT (search_id, resume_id,
-   * job_id) DO NOTHING`, mirroring `scoreJobWorker`'s own insert into this
-   * table. The `search_id` in that key is ticket 9a53485's — before it, a
-   * job this search capped could be a row an EARLIER search had already
-   * written, so this insert silently no-opped and the later search kept the
-   * earlier one's verdict instead of recording its own.
-   *
-   * Takes `tx`, not `db` (ticket c9c676d): these rows are what make this
-   * source's budget claim readable by its siblings ("linked but capped" is
-   * how a sibling knows a row is NOT consuming budget), so they must commit
-   * atomically with the `published_job_count` write in the same
-   * advisory-locked transaction. `adjudicateScoringBudget` is the only
-   * caller, and routes/searches.ts's own advisory-lock comment explains why
-   * nothing inside a locked transaction may reach for the pool-backed `db`
-   * handle: it would check out a second connection while holding the lock.
+   * NO SCORING BUDGET TO ADJUDICATE ANY MORE (ticket d37511b). This is
+   * where `recordCappedJobs` and `adjudicateScoringBudget` used to live —
+   * the per-search scoring cap's actual enforcement, under
+   * `pg_advisory_xact_lock(hashtext(search_id))`, with capped jobs recorded
+   * as `job_match_failures` rows of kind `SCORE_THRESHOLD_CAPPED_KIND`. See
+   * the module doc comment's "REMOVED: THE PER-SEARCH SCORING CAP" section
+   * for what it did and why it's gone. `handleFetchSourceMessage` below now
+   * publishes `score.job` for every linked job directly, with nothing to
+   * adjudicate first.
    */
-  async function recordCappedJobs(
-    tx: Tx,
-    message: FetchSourceMessage,
-    cappedJobIds: string[],
-    attempt: number,
-  ): Promise<void> {
-    // This message's body is `{searchId, sourceId, criteria}`: it carries
-    // the searchId `job_match_failures` is keyed by (ticket 9a53485) but no
-    // resumeId, and the table denormalizes the resume so the completion
-    // derive's two LEFT JOINs stay symmetric. One small lookup, taken only
-    // when the cap actually binds, so the common (under-cap) path pays
-    // nothing for it.
-    const searchRows = await tx
-      .select({ resumeId: searches.resumeId })
-      .from(searches)
-      .where(eq(searches.id, message.searchId))
-      .limit(1);
-    const resumeId = searchRows[0]?.resumeId;
-    if (resumeId === undefined) {
-      // Should be impossible: `ingestJobsForSearch` just wrote
-      // `search_results` rows whose `search_id` FK points at this row.
-      // Throwing (rather than silently skipping) sends this down the retry
-      // path and, if it persists, dead-letters with a real message —
-      // silently skipping would leave the capped jobs outstanding forever,
-      // which is the exact hang this function exists to prevent.
-      throw new Error(
-        `fetch.source: no searches row for searchId "${message.searchId}" while recording ` +
-          `${cappedJobIds.length} score-threshold-capped job(s). The search was deleted ` +
-          `mid-fetch, or the FK from search_results is not what it claims to be.`,
-      );
-    }
-
-    const errorMessage =
-      `Not scored: this search's shared scoring budget of ${DEFAULT_SCORE_THRESHOLD} job(s) ` +
-      `(DEFAULT_SCORE_THRESHOLD, the same number POST /searches/estimate prices) was already ` +
-      `spent across its sources when this source's ${cappedJobIds.length} remaining job(s) were ` +
-      `adjudicated. Scoring was never attempted for this job — republish a score.job for it ` +
-      `(and delete this row) to score it.`;
-
-    for (let i = 0; i < cappedJobIds.length; i += CAPPED_FAILURE_INSERT_CHUNK) {
-      const chunk = cappedJobIds.slice(i, i + CAPPED_FAILURE_INSERT_CHUNK);
-      await tx
-        .insert(jobMatchFailures)
-        .values(
-          chunk.map((jobId) => ({
-            id: randomUUID(),
-            searchId: message.searchId,
-            resumeId,
-            jobId,
-            kind: SCORE_THRESHOLD_CAPPED_KIND,
-            errorMessage,
-            attempts: attempt,
-          })),
-        )
-        .onConflictDoNothing({
-          target: [jobMatchFailures.searchId, jobMatchFailures.resumeId, jobMatchFailures.jobId],
-        });
-    }
-  }
-
-  /**
-   * THE PER-SEARCH SCORING CAP, enforced (ticket c9c676d). Decides — under
-   * `pg_advisory_xact_lock(hashtext(search_id))`, so that sibling sources of
-   * the same search cannot interleave — how many of this source's linked
-   * jobs may be sent for scoring, writes the `job_match_failures` rows for
-   * the ones that may not, and durably records this source's claim on the
-   * budget. See the module doc comment's "THE PER-SEARCH SCORING CAP"
-   * section for the arithmetic, the monotonicity argument, and the
-   * `Σ published_job_count ≤ DEFAULT_SCORE_THRESHOLD` invariant.
-   *
-   * ONE TRANSACTION, TWO WRITES THAT MUST NOT SPLIT: the capped rows and
-   * the `published_job_count` stamp are two halves of one statement about
-   * this source ("I claimed N, and these are the ones I gave up on"). A
-   * sibling that saw one without the other would either double-spend the
-   * budget or permanently orphan the capped jobs, so they commit together or
-   * not at all — and the whole thing is inside the lock, which is what makes
-   * the read of every sibling's claim a value nobody can invalidate before
-   * this source's own claim lands.
-   *
-   * ORDERED BEFORE THE `score.job` PUBLISHES, not after. The previous
-   * per-source version recorded capped jobs after publishing; that ordering
-   * existed only to keep capped jobs from looking outstanding while the
-   * source read `complete`, which this ordering satisfies strictly better.
-   * What it buys instead is the important direction of the crash window: if
-   * this commits and the publish then fails, the redelivery re-adjudicates,
-   * finds its own `previousClaim` already recorded, and republishes exactly
-   * the same prefix. If it were the other way round, a crash between the
-   * publish and the claim would let a sibling spend the same budget again.
-   *
-   * NOT best-effort: a throw here goes to the handler's catch and retries,
-   * for the same reason `recordCappedJobs` does.
-   */
-  async function adjudicateScoringBudget(
-    message: FetchSourceMessage,
-    linkedJobIds: string[],
-    attempt: number,
-  ): Promise<BudgetAdjudication> {
-    return db.transaction(async (tx) => {
-      // Scoped to the SEARCH, not the resume (routes/searches.ts's in-flight
-      // guard hashes `resume_id` for its own, unrelated question). Two
-      // different searches never serialize against each other; a `hashtext`
-      // collision between two unrelated searches costs brief serialization
-      // and nothing else, because every query below filters on `search_id`.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${message.searchId}))`);
-
-      const claimRows = await tx
-        .select({
-          sourceId: searchSources.sourceDescriptorId,
-          publishedJobCount: searchSources.publishedJobCount,
-        })
-        .from(searchSources)
-        .where(eq(searchSources.searchId, message.searchId));
-
-      let claimedByOtherSources = 0;
-      let previousClaim = 0;
-      let hasLedgerRow = false;
-      for (const row of claimRows) {
-        // NULL = "has not adjudicated yet" = claims nothing. Optimistic on
-        // purpose, and safe only because of the lock: whoever adjudicates
-        // first takes what is left and commits before the next one reads.
-        const claim = row.publishedJobCount ?? 0;
-        if (row.sourceId === message.sourceId) {
-          previousClaim = claim;
-          hasLedgerRow = true;
-        } else {
-          claimedByOtherSources += claim;
-        }
-      }
-
-      const remaining = Math.max(0, DEFAULT_SCORE_THRESHOLD - claimedByOtherSources);
-      // `max(previousClaim, ...)` is what makes a source's published set
-      // MONOTONE across redeliveries — see the module doc comment. Without
-      // it a redelivery could "un-publish" jobs already in flight.
-      const allowance = Math.max(previousClaim, remaining);
-      const toPublishJobIds = linkedJobIds.slice(0, allowance);
-      const cappedJobIds = linkedJobIds.slice(allowance);
-
-      if (cappedJobIds.length > 0) {
-        await recordCappedJobs(tx, message, cappedJobIds, attempt);
-      }
-
-      // `max` again, for the case where a redelivery's source returned FEWER
-      // postings than the attempt that set `previousClaim`: those earlier
-      // jobs really were published, so the claim must not shrink and hand a
-      // sibling budget that is already spent.
-      const claim = Math.max(previousClaim, toPublishJobIds.length);
-      if (hasLedgerRow) {
-        await tx
-          .update(searchSources)
-          .set({ publishedJobCount: claim, updatedAt: new Date() })
-          .where(
-            and(
-              eq(searchSources.searchId, message.searchId),
-              eq(searchSources.sourceDescriptorId, message.sourceId),
-            ),
-          );
-      }
-      // No `search_sources` row for this (search, source) pair at all —
-      // not reachable for a search `POST /searches` started (it writes the
-      // search and its source rows in one transaction), only for a
-      // hand-published message. The budget still bounds this message (the
-      // arithmetic above ran), it just cannot be recorded for siblings to
-      // read, which degrades to the old per-source behaviour for that one
-      // message rather than failing the fetch outright. The success-path
-      // ledger write below has the same property for the same reason.
-
-      return {
-        toPublishJobIds,
-        cappedJobIds,
-        claimedByOtherSources,
-        previousClaim,
-        allowance,
-        hasLedgerRow,
-      };
-    });
-  }
 
   return async function handleFetchSourceMessage(msg: ConsumeMessage): Promise<void> {
     const attempt = getAttempt(msg);
@@ -1483,27 +1038,21 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
         );
       }
 
-      // THE PER-SEARCH SCORING CAP (ticket 4f88339 review round 1 F1;
-      // per-SEARCH since ticket c9c676d). Everything above this line linked
+      // NO SCORING CAP (ticket d37511b). Everything above this line linked
       // EVERY job that MATCHED THIS SEARCH'S CRITERIA (ticket 45ea34c) —
-      // ingestion is still uncapped in the sense `DEFAULT_SCORE_THRESHOLD`'s
-      // own doc comment promises: nothing is dropped by its position in
-      // board order. What is capped is SPENDING: across ALL of this search's
-      // sources, at most `DEFAULT_SCORE_THRESHOLD` jobs get a `score.job`
-      // message — the same constant, applied to the same question and at the
-      // same (per-search) scope, that the CLI path and
-      // `POST /searches/estimate` already use. The slice is a deterministic
-      // prefix of a deterministically-ordered list and the allowance is
-      // monotone, so a redelivery republishes exactly the same set. See the
-      // module doc comment for the arithmetic and the invariant.
-      const budget = await adjudicateScoringBudget(message, linkedJobIds, attempt);
-      const { toPublishJobIds, cappedJobIds } = budget;
-
-      // Publish for every job linked to this search (up to the cap), not
-      // just the ones this particular call inserted - see the module doc
-      // comment above for why. The scoring worker is responsible for not
-      // double-scoring a job it's seen a score.job message for before.
-      for (const jobId of toPublishJobIds) {
+      // ingestion was always uncapped (nothing is dropped by its position in
+      // board order). As of this ticket, SCORING is uncapped too: every
+      // linked job gets a `score.job` message, unconditionally, with no
+      // search-wide budget adjudicated first. See the module doc comment's
+      // "REMOVED: THE PER-SEARCH SCORING CAP" section for what used to be
+      // enforced here and what bounds spend now instead.
+      //
+      // Publish for every job linked to this search, not just the ones this
+      // particular call inserted - see the module doc comment above
+      // ("On `newlyInsertedJobIds` vs `linkedJobIds`") for why. The scoring
+      // worker is responsible for not double-scoring a job it's seen a
+      // score.job message for before.
+      for (const jobId of linkedJobIds) {
         const payload: ScoreJobMessage = { jobId };
         channel.publish(
           JOBS_EXCHANGE,
@@ -1515,38 +1064,8 @@ export function createFetchSourceHandler(options: FetchSourceWorkerOptions) {
           },
         );
       }
-      if (toPublishJobIds.length > 0) {
+      if (linkedJobIds.length > 0) {
         await channel.waitForConfirms();
-      }
-
-      // The capped rows themselves were already committed, inside the
-      // advisory-locked transaction, BEFORE these publishes — see
-      // `adjudicateScoringBudget` for why that ordering is the safe one.
-      // What is left here is saying so out loud, with the numbers that
-      // explain WHY the cap bound for this particular source: "we linked
-      // 300 and published 40" is only intelligible alongside "our siblings
-      // had already claimed 160 of the search's 200".
-      if (cappedJobIds.length > 0) {
-        log(
-          `[fetch.source] SCORING CAP BOUND: source=${message.sourceId} ` +
-            `search=${message.searchId} linked ${linkedJobIds.length} job(s); the search's ` +
-            `shared budget is ${DEFAULT_SCORE_THRESHOLD} (DEFAULT_SCORE_THRESHOLD) and other ` +
-            `sources had already claimed ${budget.claimedByOtherSources}, so this source ` +
-            `published score.job for ${toPublishJobIds.length} and recorded the remaining ` +
-            `${cappedJobIds.length} as "${SCORE_THRESHOLD_CAPPED_KIND}" so the search can still ` +
-            `reach a terminal state. Those jobs are ingested and linked — they were not scored, ` +
-            `not lost, and GET /searches/:id reports them as cappedForBudget rather than as ` +
-            `scoring failures.`,
-        );
-      }
-      if (!budget.hasLedgerRow) {
-        log(
-          `[fetch.source] NO search_sources ROW for search=${message.searchId} ` +
-            `source=${message.sourceId}: this source's claim on the search's shared scoring ` +
-            `budget could not be recorded, so sibling sources cannot see it and the cap degrades ` +
-            `to per-source for this message. Only reachable for a hand-published fetch.source ` +
-            `message — POST /searches always writes the search and its source rows together.`,
-        );
       }
 
       // SUCCESS-PATH LEDGER WRITE (ticket 4f88339, design c54b9e0 §4.2).

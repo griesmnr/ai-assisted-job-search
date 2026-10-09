@@ -95,20 +95,13 @@ async function main() {
     // would incorrectly reject "Remote - US" / "Seattle, WA" / "Bellevue"
     // postings that `filterSoftwareEngineeringJobs` (title + location
     // regex + dedupe) is specifically written to keep.
-    // Spend-guard opt-in (ticket 16c824a): unset/anything-but-"true" means
-    // a pool needing more than DEFAULT_SCORE_THRESHOLD new scores gets
-    // capped at the threshold this run, reported plainly. Fails CLOSED on
-    // an unrecognized value (the safe direction — the spend guard stays
-    // active), but warns rather than silently guessing what was meant.
-    const rawAllowAboveThresholdFlag = process.env.ALLOW_SCORE_ABOVE_THRESHOLD;
-    const allowAboveThreshold = rawAllowAboveThresholdFlag === "true";
-    if (rawAllowAboveThresholdFlag !== undefined && !allowAboveThreshold) {
-      console.warn(
-        `ALLOW_SCORE_ABOVE_THRESHOLD is set to "${rawAllowAboveThresholdFlag}", not "true" — treating ` +
-          `as NOT opted in (the spend-guard threshold stays active). Set it to exactly "true" to opt in.`,
-      );
-    }
-
+    //
+    // Ticket d37511b removed the spend-guard cap (`DEFAULT_SCORE_THRESHOLD`
+    // / `allowAboveThreshold`) that used to live here, and with it the
+    // `ALLOW_SCORE_ABOVE_THRESHOLD` env var this CLI used to read to opt
+    // into exceeding it — see `matching/pipeline.ts`'s "EVERY CANDIDATE
+    // GETS SCORED" comment for why, and for what bounds spend instead now
+    // that this file no longer does.
     const result = await runDemoMatch({
       db,
       sources,
@@ -122,17 +115,8 @@ async function main() {
       criteria: {},
       filter: filterSoftwareEngineeringJobs,
       excludedForMissingWorkArrangement: excludedForMissingWorkArrangementFilter,
-      allowAboveThreshold,
     });
 
-    if (result.cappedCount > 0) {
-      console.error(
-        `${result.cappedCount} job(s) needing a score were NOT scored this run because the spend-guard ` +
-          `threshold applied. A plain rerun (no flags) picks up the next batch at no extra cost — ` +
-          `already-scored jobs are free. Set ALLOW_SCORE_ABOVE_THRESHOLD=true instead to score all ` +
-          `${result.cappedCount} remaining in one run.`,
-      );
-    }
     if (result.failed > 0) {
       console.error(
         `${result.failed} of ${result.failed + result.newlyScored} scoring call(s) failed this run ` +

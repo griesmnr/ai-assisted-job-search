@@ -130,24 +130,30 @@ route that authorizes spend accepts a self-minted header alone:
   dependency, and no hand-rolled limiter. `auth.ts`'s own header records
   this deliberately.
 
-**Spend IS bounded — but not in the way that protects you here.** Two real
-ceilings exist:
+**Spend is bounded by ONE ceiling only, and it is weaker than it looks.**
 
-- One search can bill at most `DEFAULT_SCORE_THRESHOLD` = **200** new
-  scoring calls, enforced per _search_ across all of its sources
-  (`apps/api/src/matching/scoring.ts`, plus "THE PER-SEARCH SCORING CAP" in
-  `apps/api/src/worker/fetchSourceWorker.ts`).
-- Underneath that, `ScoringSpendGuard` refuses any scoring call that would
-  push the score worker past **$15** of booked worst-case cost
-  (`DEFAULT_LIFETIME_SPEND_CEILING_USD`,
-  `apps/api/src/worker/scoreJobWorker.ts`). Refused work dead-letters rather
-  than billing.
+There used to be two. The per-search cap (`DEFAULT_SCORE_THRESHOLD` = 200
+scoring calls per search) was **removed outright by ticket d37511b**, at the
+owner's explicit instruction, because a real user could not understand the
+"deferred for budget" counts it produced. Nothing now bounds how many jobs a
+single search will score: every job a search finds and links gets scored.
 
-**The catch: that $15 is per worker *process*, not per month.** It is an
+What remains is `ScoringSpendGuard`, which refuses any scoring call that
+would push the score worker past **$30** of booked worst-case cost
+(`DEFAULT_LIFETIME_SPEND_CEILING_USD`,
+`apps/api/src/worker/scoreJobWorker.ts`). Refused work dead-letters rather
+than billing. At the per-job figures recorded in that file, $30 is roughly
+641–773 worst-case scoring attempts.
+
+**The catch: that $30 is per worker *process*, not per month.** It is an
 in-memory counter (`private spentUsd = 0`) that resets to zero on every
 restart — and Railway restarts containers on each redeploy and after any
 crash. So it bounds a runaway bug well, and a determined stranger poorly:
-$15 per restart, indefinitely.
+$30 per restart, indefinitely.
+
+**Read that number as the real per-restart exposure before making a URL
+public.** It is now the ONLY code-level ceiling; the account-level spend cap
+at Anthropic is the only thing behind it.
 
 Two more unguarded surfaces, since this section exists to enumerate them
 before a URL goes public:

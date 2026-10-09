@@ -68,8 +68,6 @@ function makeEstimate(overrides: Partial<EstimateSearchResponse> = {}): Estimate
       basis: "bootstrap",
     },
     candidatesNeedingScore: 10,
-    scoreThreshold: 100,
-    cappedCount: 0,
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
@@ -239,8 +237,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       status: "pending",
       scoredSoFar: 0,
       linked: 0,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [],
     });
@@ -266,8 +263,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       status: "pending",
       scoredSoFar: 0,
       linked: 0,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [],
     });
@@ -321,8 +317,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         // two. See SearchFlow.persistence.test.tsx for tests specifically
         // proving `linked` (not the estimate) drives the denominator.
         linked: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -332,8 +327,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 7,
         linked: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -344,8 +338,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         searchId: "search-1",
         resumeId: "resume-1",
         scored: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         linked: 10,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -436,8 +429,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 4,
         linked: 4,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -447,8 +439,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 5,
         linked: 7,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -459,8 +450,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         searchId: "search-1",
         resumeId: "resume-1",
         scored: 8,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         linked: 8,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -525,8 +515,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       status: string;
       scoredSoFar: number;
       linked: number;
-      permanentlyFailed: number;
-      cappedForBudget: number;
+      failed: number;
       sourcesSettled: boolean;
       sources: never[];
       searchId: string;
@@ -542,8 +531,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         searchId: "search-1",
         resumeId: "resume-1",
         scored: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         linked: 10,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -581,8 +569,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         // denominator (see the `linked`-specific tests in
         // SearchFlow.persistence.test.tsx).
         linked: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -601,8 +588,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 3,
         linked: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -627,9 +613,15 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
   // `Math.max` guard (mirroring `scoredSoFar`'s) completely unproven —
   // mutation-verified during review: replacing it with a bare
   // `result.linked` passed every other test in the suite. This test is the
-  // same out-of-order shape, but diverges `linked`/`cappedForBudget`
-  // instead of `scoredSoFar` to actually exercise that guard.
-  it("an out-of-order (slower, stale) poll response never regresses linked/cappedForBudget backward (ticket 2e7ba8a review, F3)", async () => {
+  // same out-of-order shape, but diverges `linked` instead of `scoredSoFar`
+  // to actually exercise that guard.
+  //
+  // Ticket d37511b removed `cappedForBudget`, which this test originally
+  // diverged ALONGSIDE `linked` (same out-of-order shape, same guard) —
+  // that half is gone with the field; `linked`'s own guard is still real
+  // and still needs its own coverage, so the test survives under its own
+  // name.
+  it("an out-of-order (slower, stale) poll response never regresses linked backward (ticket 2e7ba8a review, F3)", async () => {
     estimateSearch.mockResolvedValue(makeEstimate());
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
 
@@ -637,8 +629,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       status: string;
       scoredSoFar: number;
       linked: number;
-      permanentlyFailed: number;
-      cappedForBudget: number;
+      failed: number;
       sourcesSettled: boolean;
       sources: never[];
       searchId: string;
@@ -653,9 +644,8 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "complete",
         searchId: "search-1",
         resumeId: "resume-1",
-        scored: 15,
-        permanentlyFailed: 0,
-        cappedForBudget: 5,
+        scored: 20,
+        failed: 0,
         linked: 20,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -678,14 +668,13 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     );
 
     // Resolve the SECOND (later-fired) tick FIRST, simulating it being the
-    // FASTER response — genuinely-progressed, higher linked/capped counts.
+    // FASTER response — genuinely-progressed, higher linked count.
     await act(async () => {
       tickB.resolve({
         status: "pending",
         scoredSoFar: 10,
         linked: 18,
-        permanentlyFailed: 0,
-        cappedForBudget: 5,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -696,17 +685,15 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
     await waitFor(() => {
       expect(screen.getByText("10 of 18 scored so far.")).toBeInTheDocument();
     });
-    expect(screen.getByText(/5 jobs already matched but deferred/)).toBeInTheDocument();
 
     // NOW resolve the FIRST (earlier-fired) tick — the SLOWER, now-STALE
-    // response, carrying LOWER linked/capped counts than what's on screen.
+    // response, carrying a LOWER linked count than what's on screen.
     await act(async () => {
       tickA.resolve({
         status: "pending",
         scoredSoFar: 4,
         linked: 9,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -715,12 +702,11 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       await tickA.promise;
     });
 
-    // Must NOT regress — `linked` stays at 18, `cappedForBudget` stays at 5.
+    // Must NOT regress — `linked` stays at 18.
     await waitFor(() => {
       expect(screen.getByText("10 of 18 scored so far.")).toBeInTheDocument();
     });
     expect(screen.queryByText("10 of 9 scored so far.")).not.toBeInTheDocument();
-    expect(screen.getByText(/5 jobs already matched but deferred/)).toBeInTheDocument();
     expect(screen.getByLabelText("Search running")).toBeInTheDocument();
   }, 15000);
 
@@ -745,8 +731,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
       status: string;
       scoredSoFar: number;
       linked: number;
-      permanentlyFailed: number;
-      cappedForBudget: number;
+      failed: number;
       sourcesSettled: boolean;
       sources: never[];
       searchId: string;
@@ -762,8 +747,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         searchId: "search-1",
         resumeId: "resume-1",
         scored: 1,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         linked: 1,
         sources: [],
         completedAt: "2026-01-01T00:00:00.000Z",
@@ -777,8 +761,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 0,
         linked: 10,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-2",
@@ -826,8 +809,7 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
         status: "pending",
         scoredSoFar: 8,
         linked: 8,
-        permanentlyFailed: 0,
-        cappedForBudget: 0,
+        failed: 0,
         sourcesSettled: false,
         sources: [],
         searchId: "search-1",
@@ -868,8 +850,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
       searchId: "search-1",
       resumeId: "resume-1",
       scored: 2,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       linked: 2,
       sources: [
         { sourceId: "greenhouse", status: "complete", linkedJobCount: 2 },
@@ -912,8 +893,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
       searchId: "search-1",
       resumeId: "resume-1",
       scored: 7,
-      permanentlyFailed: 3,
-      cappedForBudget: 0,
+      failed: 3,
       linked: 10,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",
@@ -921,65 +901,72 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     });
 
     expect(screen.getByText("Search complete (with some failures)")).toBeInTheDocument();
-    expect(screen.getByText(/3 jobs failed to score/)).toBeInTheDocument();
+    // Ticket d37511b, amended on adversarial review: the first draft of
+    // this note dropped the count entirely, which review correctly flagged
+    // as a NEW regression -- without it, "Scored: 7" / "Total jobs found:
+    // 10" plus "some jobs failed" leaves the 3 missing inferable only by
+    // subtraction, and is indistinguishable from a spend-guard stall.
+    // `failed`/`linked` are plain fields on the real contract (not a
+    // revived cap), so the count belongs back in the note. What stays
+    // removed is specifically the "Permanently failed" dt/dd row's own
+    // LABEL -- the exact wording Jay found confusing -- not the number.
+    expect(screen.getByText(/3 of 10 jobs couldn't be scored/)).toBeInTheDocument();
+    expect(screen.queryByText("Permanently failed")).not.toBeInTheDocument();
     // Never an alert/error panel — this is a finished, usable result.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  // Acceptance criterion: `cappedForBudget` gets its own honest, distinct
-  // treatment, never lumped into the degraded/failure messaging — a run
-  // that only hit its budget is fully successful.
-  it("gives cappedForBudget its own honest note on a complete search, not the degraded/failure one", async () => {
+  // Ticket d37511b: removed the "Deferred this run (over the cap)" /
+  // "Permanently failed" dt/dd rows and the cappedForBudget note (Jay's
+  // testing found both incomprehensible; the mechanism behind them is gone
+  // too — see matching/pipeline.ts's "EVERY CANDIDATE GETS SCORED" comment).
+  // This replaces the two tests that used to prove `cappedForBudget`'s note
+  // appeared/didn't appear at the right threshold — there is no field left
+  // to thread through either branch, so the only thing left worth pinning
+  // is that none of the removed vocabulary ever renders again, regardless
+  // of how the search actually went.
+  it("never renders the removed cap/deferral vocabulary, on a clean search or a degraded one", async () => {
     await runToDone({
       status: "complete",
       searchId: "search-1",
       resumeId: "resume-1",
-      scored: 100,
-      permanentlyFailed: 0,
-      cappedForBudget: 42,
-      linked: 142,
-      sources: [],
-      completedAt: "2026-01-01T00:00:00.000Z",
-      degraded: false,
-    });
-
-    expect(screen.getByText(/42 more jobs matched but weren't scored/)).toBeInTheDocument();
-    // makeEstimate()'s scoreThreshold, above — the honest "why".
-    expect(screen.getByText(/100-job budget/)).toBeInTheDocument();
-    expect(screen.queryByText("Search complete (with some failures)")).not.toBeInTheDocument();
-  });
-
-  // Opus review (ticket 2e7ba8a, F1): the positive test above only proves
-  // the note APPEARS when cappedForBudget > 0 -- it never proved the guard
-  // is `> 0` and not `>= 0`. Mutation-verified during review: flipping the
-  // done-panel guard to `>= 0` passed every other test in the suite, which
-  // would have shipped "0 more jobs matched but weren't scored -- this
-  // search hit its 100-job budget" on every ordinary successful search --
-  // precisely the "don't train the user to read this as a problem"
-  // regression this field's own doc comment exists to prevent.
-  it("shows no capped-for-budget note on an ordinary successful search (cappedForBudget: 0)", async () => {
-    await runToDone({
-      status: "complete",
-      searchId: "search-1",
-      resumeId: "resume-1",
-      scored: 10,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      scored: 7,
+      failed: 3,
       linked: 10,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",
-      degraded: false,
+      degraded: true,
+      // NOT part of `SearchStatusResponse` any more (`result` is typed
+      // `Record<string, unknown>` here precisely so this compiles) —
+      // included anyway so this test still means something: if the old
+      // `phase.result.cappedForBudget > 0 && <p>...</p>` branch were ever
+      // reintroduced into SearchFlow.tsx, a redelivered/stale server
+      // response carrying this field is exactly what would make it fire,
+      // and this fixture reproduces that shape. Without it, the assertions
+      // below would pass vacuously merely because the field is typed away,
+      // not because the UI genuinely never renders it.
+      cappedForBudget: 42,
+      scoreThreshold: 100,
     });
 
-    expect(screen.queryByText(/matched but weren't scored/)).not.toBeInTheDocument();
-    // Re-review (ticket 2e7ba8a, opus round 2): the <dl> entry sharing this
-    // same `> 0` guard had no negative coverage of its own -- mutating it
-    // to `>= 0` passed the whole suite even after the fix above, since a
-    // "Deferred this run (over the cap): 0" row is cosmetic, not an
-    // alarming sentence, so the string-matching assertion above never
-    // reached it.
-    expect(screen.queryByText("Deferred this run (over the cap)")).not.toBeInTheDocument();
+    for (const removed of [
+      "Deferred this run",
+      "Permanently failed",
+      /matched but weren't scored/,
+      /already matched but deferred/,
+      /-job budget/,
+    ]) {
+      expect(screen.queryByText(removed)).not.toBeInTheDocument();
+    }
   });
+
+  // REMOVED (ticket d37511b): "gives cappedForBudget its own honest note"
+  // and "shows no capped-for-budget note" used to live here, proving the
+  // cap note's `> 0` guard was exact in both directions. `cappedForBudget`
+  // is gone from the wire entirely (see @app/shared's `SearchStatusResponse`)
+  // and SearchFlow.tsx no longer reads it, so there is no guard left to
+  // pin — the replacement test above ("never renders the removed
+  // cap/deferral vocabulary...") is what covers this surface now.
 
   // Opus review (ticket 2e7ba8a, F2): the headline claim -- and the whole
   // stated reason SearchSourceStatusList exists as a NEW component rather
@@ -1001,8 +988,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
       resumeId: "resume-1",
       scoredSoFar: 4,
       linked: 12,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [
         { sourceId: "greenhouse", status: "complete", linkedJobCount: 12 },
@@ -1024,33 +1010,10 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
     expect(screen.getByText(/12 jobs found/)).toBeInTheDocument();
   });
 
-  // Same field, mid-flight: the "running" panel must show cappedForBudget
-  // live as it climbs, not only once the search finishes.
-  it("shows cappedForBudget live while the search is still running", async () => {
-    estimateSearch.mockResolvedValue(makeEstimate());
-    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
-    getSearchStatus.mockResolvedValue({
-      status: "pending",
-      searchId: "search-1",
-      resumeId: "resume-1",
-      scoredSoFar: 4,
-      linked: 12,
-      permanentlyFailed: 0,
-      cappedForBudget: 6,
-      sourcesSettled: false,
-      sources: [],
-    });
-
-    render(<SearchFlow resumeId="resume-1" sourceIds={["a"]} onSearchComplete={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
-    await screen.findByRole("button", { name: "Run search" });
-    fireEvent.click(screen.getByRole("button", { name: "Run search" }));
-
-    // Longer than RTL's 1s default -- see runToDone's comment above for why.
-    expect(
-      await screen.findByText(/6 jobs already matched but deferred/, {}, { timeout: 4000 }),
-    ).toBeInTheDocument();
-  });
+  // REMOVED (ticket d37511b): "shows cappedForBudget live while the search
+  // is still running" used to live here. `Phase.running` no longer carries
+  // a `cappedForBudget` field at all (SearchFlow.tsx), so there is nothing
+  // left to show live.
 
   // Optional addition (ticket 2e7ba8a's judgment call): `stalledSince` has
   // no UI treatment anywhere yet, and without one a stuck search looks
@@ -1064,8 +1027,7 @@ describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", ()
       resumeId: "resume-1",
       scoredSoFar: 4,
       linked: 4,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       sourcesSettled: false,
       sources: [],
       stalledSince: "2026-09-20T00:00:00.000Z",
@@ -1244,7 +1206,6 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
       status: "pending",
       scoredSoFar: 0,
       linked: 1,
-      cappedForBudget: 0,
       sources: [],
       stalledSince: undefined,
     });
@@ -1281,8 +1242,7 @@ describe("SearchFlow — onRunningChange (ticket 88f11d7)", () => {
     getSearchStatus.mockResolvedValue({
       status: "complete",
       scored: 1,
-      permanentlyFailed: 0,
-      cappedForBudget: 0,
+      failed: 0,
       linked: 1,
       sources: [],
       completedAt: "2026-01-01T00:00:00.000Z",

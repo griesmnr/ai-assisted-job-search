@@ -66,9 +66,12 @@ Built, tested, and what `POST /searches` actually runs in production today:
   stays dormant; see `docs/resume-optimizer-handoff-contract.md`.)
 - The shortlist-truncation bug this section used to describe as open (a
   fixed `slice(0, 12)` silently dropping most of the ranked list once the
-  candidate pool grew) is fixed: every survivor is a scoring candidate, a
-  shared per-search cap (`DEFAULT_SCORE_THRESHOLD = 200`) bounds spend
-  instead of coverage, and when it binds it's reported, never silent — see
+  candidate pool grew) is fixed: every survivor is both ingested and scored,
+  with nothing truncating the list at any point. The per-search cap that
+  originally replaced that `slice` (`DEFAULT_SCORE_THRESHOLD = 200`) has
+  since been removed too, by ticket d37511b — it bounded spend rather than
+  coverage, but a real user could not understand the counts it produced.
+  Cost is now shown up front by the estimate instead of capped mid-run — see
   [What "adversarial review" actually catches](#what-adversarial-review-actually-catches).
 
 Known limitation:

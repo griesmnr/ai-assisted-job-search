@@ -29,7 +29,6 @@ import {
   describeBoardOutcome,
   describeCostEstimate,
   describeSourceOutcome,
-  DEFAULT_SCORE_THRESHOLD,
   estimateScoringCost,
   isTotalScoringFailure,
   makeClaudeScorer,
@@ -1331,30 +1330,38 @@ describe("runDemoMatch: cross-source duplicate merge (ticket 78d31b7, review F1/
   });
 });
 
-describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
+describe("runDemoMatch: no scoring cap (ticket d37511b; was 'spend guard', ticket 16c824a)", () => {
   // 20 candidates from one source, deliberately more than the old
   // MAX_JOBS=12 that used to silently slice this list in source/board
   // iteration order — this is the "employer late in the token list" the
   // original ticket's acceptance criteria asked for a test proving.
+  // Still a meaningful regression test after ticket d37511b removed the
+  // 200-job spend-guard cap that replaced MAX_JOBS: nothing in this
+  // codebase truncates by iteration order any more, at ANY threshold, and
+  // this is the test that would catch a silent truncation bug reappearing
+  // in either form.
   const MANY_JOBS: NormalizedJob[] = Array.from({ length: 20 }, (_, i) => ({
-    ...job(`demo-match-spend-guard-order-${i}`, `Engineer ${i}`),
+    ...job(`demo-match-no-cap-order-${i}`, `Engineer ${i}`),
     company: i === 19 ? "Last-In-Order Co" : "Test Co",
   }));
-  const CAP_JOBS: NormalizedJob[] = Array.from({ length: 5 }, (_, i) =>
-    job(`demo-match-spend-guard-cap-${i}`, `Engineer ${i}`),
+  // A small pool that used to sit comfortably under a real cap's default —
+  // kept, post-d37511b, to prove every one of them still gets scored with
+  // NO threshold option passed at all (there is no such option any more).
+  const SMALL_POOL_JOBS: NormalizedJob[] = Array.from({ length: 5 }, (_, i) =>
+    job(`demo-match-no-cap-small-pool-${i}`, `Engineer ${i}`),
   );
 
   beforeAll(() => {
     allExternalIds.push(
       ...MANY_JOBS.map((j) => j.externalId),
-      ...CAP_JOBS.map((j) => j.externalId),
+      ...SMALL_POOL_JOBS.map((j) => j.externalId),
     );
   });
 
-  it("does not truncate by iteration order — a candidate late in a pool well under the default threshold still gets scored", async () => {
+  it("does not truncate by iteration order — a candidate late in the pool still gets scored", async () => {
     const source = new FakeSource(MANY_JOBS);
     const scorer = makeCountingScorer();
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-order ${randomUUID()}`;
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-order ${randomUUID()}`;
     allResumeTexts.push(RESUME_TEXT);
 
     const run = await runDemoMatch({
@@ -1368,153 +1375,107 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
     });
 
     expect(run.candidatesNeedingScore).toBe(MANY_JOBS.length);
-    expect(run.cappedCount).toBe(0);
     expect(run.newlyScored).toBe(MANY_JOBS.length);
+    expect(run.failed).toBe(0);
     expect(scorer.calls()).toBe(MANY_JOBS.length);
     // The LAST job in the source's iteration order — exactly what MAX_JOBS
-    // used to drop — made it all the way to a persisted score.
+    // used to drop, and what a reintroduced cap would defer — made it all
+    // the way to a persisted score.
     expect(run.results.some((r) => r.company === "Last-In-Order Co")).toBe(true);
   });
 
-  it("caps scoring at scoreThreshold when the pool needing new scores exceeds it, and states the cap plainly", async () => {
-    const source = new FakeSource(CAP_JOBS);
+  it("scores every job needing a score, with no cap of any kind and no option to request one (ticket d37511b)", async () => {
+    const source = new FakeSource(SMALL_POOL_JOBS);
     const scorer = makeCountingScorer();
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-cap ${randomUUID()}`;
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-whole-pool ${randomUUID()}`;
     allResumeTexts.push(RESUME_TEXT);
     const logs: string[] = [];
+
+    // Deliberately NOT passing `scoreThreshold`/`allowAboveThreshold` —
+    // those OPTIONS no longer exist on `RunDemoMatchOptions` at all, so
+    // reintroducing either as a caller-facing option here would be a
+    // TypeScript compile error. CORRECTION (adversarial review): that is
+    // NOT the realistic regression, and an earlier version of this comment
+    // overclaimed by implying it was. The real risk is a hardcoded slice
+    // inside `runDemoMatch` ITSELF (e.g. `needsScoreIds.slice(0, 200)`
+    // where `toScoreIds` is assigned in pipeline.ts) — nothing about the
+    // type system catches that, because no option is involved at all. This
+    // small pool (5 jobs) cannot distinguish "no cap" from "a cap above 5";
+    // see the 205-job test below, which is sized specifically to catch a
+    // reintroduced 200-job slice and was kill-verified against one.
+    const run = await runDemoMatch({
+      db,
+      sources: [source],
+      resumeText: RESUME_TEXT,
+      scoreJob: scorer.scoreJob,
+      outputPath,
+      usageStatsPath,
+      log: (m) => logs.push(m),
+    });
+
+    expect(run.candidatesNeedingScore).toBe(SMALL_POOL_JOBS.length);
+    expect(run.newlyScored).toBe(SMALL_POOL_JOBS.length);
+    expect(run.failed).toBe(0);
+    expect(scorer.calls()).toBe(SMALL_POOL_JOBS.length);
+    expect(run.results).toHaveLength(SMALL_POOL_JOBS.length);
+    // No trace of the removed cap's own vocabulary anywhere in this run's
+    // log output — a mutation that silently reintroduced capping/deferral
+    // behaviour without reintroducing this exact wording would still fail
+    // the counts above, but this also catches a reintroduction that
+    // happens to keep the counts right while still talking about a cap.
+    expect(logs.some((l) => /not scored \(cap\)|cappedCount|scoreThreshold/i.test(l))).toBe(false);
+  });
+
+  // THE GAP THIS CLOSES (adversarial review of this ticket). Every "no cap"
+  // test above runs small -- 20 jobs, 5 jobs -- which cannot tell "there is
+  // no cap" apart from "there is a cap, and it happens to sit above this
+  // pool's size." The deleted spend-guard tests used a 205-job pool (over
+  // the old 200-job default) specifically because that was the only size
+  // that could prove the cap bound; removing them left AC1 ("no code path
+  // defers, caps, or truncates scoring for budget reasons") unverified at
+  // the one scale that matters. Confirmed directly: hardcoding
+  // `needsScoreIds.slice(0, 200)` for `toScoreIds` in pipeline.ts passed
+  // the entire suite before this test existed.
+  it("scores all 205 of a pool well past the old 200-job default — the scale a cap would have bound at", async () => {
+    const POOL_SIZE = 205;
+    const SCALE_JOBS: NormalizedJob[] = Array.from({ length: POOL_SIZE }, (_, i) =>
+      job(`demo-match-no-cap-scale-${i}`, `Scale Engineer ${i}`),
+    );
+    allExternalIds.push(...SCALE_JOBS.map((j) => j.externalId));
+    const source = new FakeSource(SCALE_JOBS);
+    const scorer = makeCountingScorer();
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-scale ${randomUUID()}`;
+    allResumeTexts.push(RESUME_TEXT);
 
     const run = await runDemoMatch({
       db,
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: scorer.scoreJob,
-      scoreThreshold: 2,
-      outputPath,
-      usageStatsPath,
-      log: (m) => logs.push(m),
-    });
-
-    expect(run.candidatesNeedingScore).toBe(5);
-    expect(run.cappedCount).toBe(3);
-    expect(run.newlyScored).toBe(2);
-    expect(run.failed).toBe(0);
-    expect(scorer.calls()).toBe(2);
-    expect(run.results).toHaveLength(2);
-
-    // A truncated run must never read like a complete one (ticket 16c824a
-    // review F2: the numbers here must close exactly — 0 already scored +
-    // 2 scored this run + 0 failed + 3 capped === 5 candidates).
-    expect(
-      logs.some((line) =>
-        line.includes(
-          "5 candidate(s): 0 already scored, 2 scored this run, 0 failed, 3 not scored (cap)",
-        ),
-      ),
-    ).toBe(true);
-  });
-
-  it("F2/F3: cap arithmetic closes exactly (including already-scored jobs and a failing call), and the capped-out jobs are pinned as a recorded decision, not an accident", async () => {
-    const ALL_JOBS: NormalizedJob[] = Array.from({ length: 10 }, (_, i) =>
-      job(`demo-match-spend-guard-f2f3-${i}`, `F2F3 Engineer ${i}`),
-    );
-    allExternalIds.push(...ALL_JOBS.map((j) => j.externalId));
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f2f3 ${randomUUID()}`;
-    allResumeTexts.push(RESUME_TEXT);
-    const source = new FakeSource(ALL_JOBS);
-
-    // Run 0: pre-score ONLY the first 4 (indices 0-3), via a filter — these
-    // are "already scored" going into run 1 below.
-    const preScore = await runDemoMatch({
-      db,
-      sources: [source],
-      resumeText: RESUME_TEXT,
-      scoreJob: makeCountingScorer().scoreJob,
       outputPath,
       usageStatsPath,
       log: () => {},
-      filter: (jobs) => jobs.filter((j) => Number(j.externalId.split("-").pop()) < 4),
-    });
-    expect(preScore.newlyScored).toBe(4);
-
-    // Run 1: the FULL pool (all 10). Of the 6 needing a score (indices
-    // 4-9, in that order), a flaky scorer fails index 4 specifically, and
-    // scoreThreshold=3 caps the attempt at the first 3 of those 6 (4,5,6)
-    // — so 7,8,9 are capped out.
-    const FAILING_EXTERNAL_ID = "demo-match-spend-guard-f2f3-4";
-    const flaky = makeFlakyScorer(new Set([FAILING_EXTERNAL_ID]));
-    const logs: string[] = [];
-
-    const run = await runDemoMatch({
-      db,
-      sources: [source],
-      resumeText: RESUME_TEXT,
-      scoreJob: flaky.scoreJob,
-      scoreThreshold: 3,
-      outputPath,
-      usageStatsPath,
-      log: (m) => logs.push(m),
     });
 
-    // The arithmetic itself (ticket 16c824a review F2): every one of the
-    // 10 linked candidates is accounted for exactly once.
-    expect(run.skipped).toBe(4);
-    expect(run.candidatesNeedingScore).toBe(6);
-    expect(run.newlyScored).toBe(2);
-    expect(run.failed).toBe(1);
-    expect(run.cappedCount).toBe(3);
-    expect(run.skipped + run.newlyScored + run.failed + run.cappedCount).toBe(10);
-
-    // WHICH jobs the cap selected is pinned, not accidental (ticket
-    // 16c824a review F3): 0-3 were pre-scored, 4 failed (will retry), 5-6
-    // were newly scored this run, and 7-9 are the ones the cap dropped.
-    //
-    // Read from `job_matches` directly rather than from `run.results`
-    // (ticket e8e59e6). What F3 pins is which jobs the run decided to spend
-    // a scoring call on and RECORDED — a persistence fact. `run.results` is
-    // the floor-filtered display list (`applyMatchScoreFloor`, ticket
-    // 1b9f81e), so a job can be correctly scored and persisted and still be
-    // absent from it merely for scoring below 55. Using it here conflated
-    // "the cap skipped this job" with "this job scored badly" — two
-    // different outcomes that must not share one assertion. The DB query
-    // below can only distinguish them: a row exists iff a score was
-    // computed and persisted, whatever its value.
-    const scoredRows = await db
-      .select({ title: jobsTable.title })
-      .from(jobMatches)
-      .innerJoin(jobsTable, eq(jobMatches.jobId, jobsTable.id))
-      .where(eq(jobMatches.resumeId, run.resumeId));
-    const scoredTitles = scoredRows.map((r) => r.title);
-    // Exactly the 6 below and nothing else — this resume is unique to this
-    // test, so every job_matches row under it came from these two runs.
-    expect(scoredTitles).toHaveLength(6);
-    for (const i of [0, 1, 2, 3, 5, 6]) {
-      expect(scoredTitles).toContain(`F2F3 Engineer ${i}`);
-    }
-    for (const i of [4, 7, 8, 9]) {
-      expect(scoredTitles).not.toContain(`F2F3 Engineer ${i}`);
-    }
-
-    // The post-scoring log line reflects what ACTUALLY happened (not a
-    // pre-scoring prediction a failure could falsify), closes arithmetically,
-    // and states that a plain rerun drains the cap for free.
-    const capLine = logs.find((l) => l.includes("not scored (cap)"));
-    expect(capLine).toBeDefined();
-    expect(capLine).toContain("10 candidate(s)");
-    expect(capLine).toContain("4 already scored");
-    expect(capLine).toContain("2 scored this run");
-    expect(capLine).toContain("1 failed");
-    expect(capLine).toContain("3 not scored (cap)");
-    expect(capLine).toMatch(/rerun/i);
+    // THE BOUND ITSELF, KILL-VERIFIED: re-adding a `.slice(0, 200)` for
+    // `toScoreIds` in pipeline.ts makes `scorer.calls()` and
+    // `run.newlyScored` both come back 200, not 205 -- confirmed by hand,
+    // then reverted (see PM's report for this round).
+    expect(run.candidatesNeedingScore).toBe(POOL_SIZE);
+    expect(run.newlyScored).toBe(POOL_SIZE);
+    expect(run.failed).toBe(0);
+    expect(scorer.calls()).toBe(POOL_SIZE);
+    expect(run.results).toHaveLength(POOL_SIZE);
   });
 
   it("F1: a failing usage-stats write does not discard already-persisted, already-paid-for scores", async () => {
     const F1_JOBS: NormalizedJob[] = [
-      job("demo-match-spend-guard-f1-1", "F1 Engineer 1"),
-      job("demo-match-spend-guard-f1-2", "F1 Engineer 2"),
-      job("demo-match-spend-guard-f1-3", "F1 Engineer 3"),
+      job("demo-match-no-cap-f1-1", "F1 Engineer 1"),
+      job("demo-match-no-cap-f1-2", "F1 Engineer 2"),
+      job("demo-match-no-cap-f1-3", "F1 Engineer 3"),
     ];
     allExternalIds.push(...F1_JOBS.map((j) => j.externalId));
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-f1 ${randomUUID()}`;
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-f1 ${randomUUID()}`;
     allResumeTexts.push(RESUME_TEXT);
 
     // Points at a directory that does not exist — `fs.writeFileSync`
@@ -1568,33 +1529,9 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
     expect(fs.existsSync(unwritableUsageStatsPath)).toBe(false);
   });
 
-  it("scores every candidate when allowAboveThreshold is set, even above scoreThreshold", async () => {
-    const source = new FakeSource(CAP_JOBS);
-    const scorer = makeCountingScorer();
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-override ${randomUUID()}`;
-    allResumeTexts.push(RESUME_TEXT);
-
-    const run = await runDemoMatch({
-      db,
-      sources: [source],
-      resumeText: RESUME_TEXT,
-      scoreJob: scorer.scoreJob,
-      scoreThreshold: 2,
-      allowAboveThreshold: true,
-      outputPath,
-      usageStatsPath,
-      log: () => {},
-    });
-
-    expect(run.candidatesNeedingScore).toBe(5);
-    expect(run.cappedCount).toBe(0);
-    expect(run.newlyScored).toBe(5);
-    expect(scorer.calls()).toBe(5);
-  });
-
-  it("already-scored jobs count toward neither the cap nor the cost estimate — a full rerun costs nothing regardless of scoreThreshold", async () => {
-    const source = new FakeSource(CAP_JOBS);
-    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} spend-guard-rerun-free ${randomUUID()}`;
+  it("already-scored jobs cost nothing on a rerun — a full rerun against the same pool makes zero new scoring calls", async () => {
+    const source = new FakeSource(SMALL_POOL_JOBS);
+    const RESUME_TEXT = `${RESUME_TEXT_PREFIX} no-cap-rerun-free ${randomUUID()}`;
     allResumeTexts.push(RESUME_TEXT);
 
     const first = await runDemoMatch({
@@ -1606,25 +1543,21 @@ describe("runDemoMatch: spend guard (ticket 16c824a)", () => {
       usageStatsPath,
       log: () => {},
     });
-    expect(first.newlyScored).toBe(5);
+    expect(first.newlyScored).toBe(SMALL_POOL_JOBS.length);
 
-    // A tiny threshold on the SECOND run must not cap anything: nothing
-    // needs a new score, so there is nothing to cap or to spend on.
     const second = await runDemoMatch({
       db,
       sources: [source],
       resumeText: RESUME_TEXT,
       scoreJob: makeCountingScorer().scoreJob,
-      scoreThreshold: 1,
       outputPath,
       usageStatsPath,
       log: () => {},
     });
 
     expect(second.candidatesNeedingScore).toBe(0);
-    expect(second.cappedCount).toBe(0);
     expect(second.newlyScored).toBe(0);
-    expect(second.skipped).toBe(5);
+    expect(second.skipped).toBe(SMALL_POOL_JOBS.length);
     expect(second.costEstimate).toMatchObject({ jobCount: 0, estimatedCostUsd: 0 });
   });
 
@@ -2744,10 +2677,6 @@ describe("estimateScoringCost / readUsageStats / recordUsageStats (ticket 16c824
     const statsPath = path.join(outputDir, `noop-${randomUUID()}.json`);
     recordUsageStats(statsPath, { calls: 0, totalInputTokens: 0, totalOutputTokens: 0 });
     expect(fs.existsSync(statsPath)).toBe(false);
-  });
-
-  it("DEFAULT_SCORE_THRESHOLD is a positive, sane number (regression guard against an accidental 0 or negative that would cap every run to nothing)", () => {
-    expect(DEFAULT_SCORE_THRESHOLD).toBeGreaterThan(0);
   });
 
   // Ticket 16c824a review F5: MODEL has already changed once (opus ->

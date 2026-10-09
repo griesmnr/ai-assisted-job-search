@@ -111,18 +111,22 @@ import { SCORE_JOB_DLQ, SCORE_JOB_QUEUE, SCORE_JOB_RETRY_TIERS } from "../queue/
  *
  * SPEND GUARD (ticket b53c422 - closes the gap ticket 4065511 deliberately
  * left open, see the two paragraphs this replaces in git history):
- * `runDemoMatch`'s synchronous CLI path caps how many jobs get scored PER
- * RUN (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`, matching/scoring.ts
- * and matching/pipeline.ts) and requires an explicit opt-in to exceed it. A
- * queue-driven worker consuming `score.job` indefinitely has no equivalent
- * "one run" to size a threshold against, so this file uses a different
- * mechanism entirely: `ScoringSpendGuard`, a LIFETIME-PER-PROCESS dollar
- * ceiling, checked with a real pre-call estimate (`estimateScoringCost`,
- * matching/usage-cost.ts) before every scoring attempt and reset only by
- * restarting the process. See `ScoringSpendGuard`'s own doc comment below
- * for the concrete numbers behind the default ceiling and why this
- * mechanism was chosen over a rolling time window or a per-message
- * threshold.
+ * `runDemoMatch`'s synchronous CLI path used to cap how many jobs got
+ * scored PER RUN (`DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`,
+ * matching/scoring.ts and matching/pipeline.ts) and required an explicit
+ * opt-in to exceed it — removed outright by ticket d37511b, which scores
+ * every job a run finds, no cap, at Nicole's explicit request. A
+ * queue-driven worker consuming `score.job` indefinitely never had an
+ * equivalent "one run" to size a threshold against in the first place, so
+ * this file uses a DIFFERENT mechanism, untouched by that removal:
+ * `ScoringSpendGuard`, a LIFETIME-PER-PROCESS dollar ceiling, checked with
+ * a real pre-call estimate (`estimateScoringCost`, matching/usage-cost.ts)
+ * before every scoring attempt and reset only by restarting the process.
+ * See `ScoringSpendGuard`'s own doc comment below for the concrete numbers
+ * behind the default ceiling and why this mechanism was chosen over a
+ * rolling time window or a per-message threshold — and for why it was
+ * never the per-run guard ticket d37511b removed, just a different,
+ * coarser backstop that happens to still exist underneath it.
  *
  * USAGE STATS (ticket b53c422): every batch of successful scores from ONE
  * message is now recorded via `recordUsageStats` (matching/usage-cost.ts),
@@ -212,8 +216,9 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
 /**
  * `SCORING SPEND GUARD` (ticket b53c422): this worker consumes `score.job`
  * off a queue indefinitely, with no natural "one run" the way
- * `runDemoMatch`'s `DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold` assumes
- * (see this module's own doc comment, "SPEND GUARD"). Three shapes were on
+ * `runDemoMatch`'s now-removed `DEFAULT_SCORE_THRESHOLD`/`allowAboveThreshold`
+ * per-run cap (ticket d37511b) used to assume (see this module's own doc
+ * comment, "SPEND GUARD"). Three shapes were on
  * the table (per the ticket): a rolling time-window cap, a lifetime-per-
  * process cap with restart-to-reset, or a pre-call `estimateScoringCost`
  * check. This combines the last two: `ScoringSpendGuard` tracks a running
@@ -244,7 +249,7 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * personal, single-operator project (the ticket's own words), which is
  * exactly what this project is.
  *
- * WHY $15 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
+ * WHY $30 (`DEFAULT_LIFETIME_SPEND_CEILING_USD`): sized concretely against
  * this worker's own real numbers, not by analogy to anything else in the
  * codebase -- `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD`
  * is $5 (opus review, ticket b53c422, F2: an earlier draft of this comment
@@ -263,20 +268,54 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  *
  *   - "bootstrap" basis (no `prep/scoring-usage-stats.json` yet -- a fresh
  *     checkout, this sandbox's own state): `maxCostUsd` for ONE job is
- *     ~$0.0388, so $15 bounds roughly 387 worst-case scoring attempts
- *     before tripping.
+ *     ~$0.0388, so $30 bounds roughly 773 worst-case scoring attempts
+ *     before tripping ($15 bounded ~387).
  *   - "measured" basis (real historical per-call averages -- reused the
  *     same 3,874.5 in / 454.2 out tokens/call figures
  *     `rescore-existing-matches.ts`'s own `MAX_ESTIMATED_SPEND_USD` comment
  *     cites, with no cache history): `maxCostUsd` for ONE job is ~$0.0468,
- *     so $15 bounds roughly 320 worst-case scoring attempts.
+ *     so $30 bounds roughly 641 worst-case scoring attempts ($15 bounded
+ *     ~320).
  *
- * Either basis lands in the same 300-400 range -- comfortably above
- * `DEFAULT_SCORE_THRESHOLD` (200, the synchronous CLI path's own per-run
- * cap) so a single legitimate burst of activity (e.g. one large search
- * fanning out through this worker) does not itself trip the guard, while
- * still bounding a genuine runaway-bug's total lifetime exposure to
- * roughly $15. (Worth noting the criterion actively EXCLUDES
+ * HISTORY, because the old justification was load-bearing on a constant
+ * that no longer exists. $15 was originally sized to land in the 300-400
+ * call range specifically because that was "comfortably above
+ * `DEFAULT_SCORE_THRESHOLD` (200)", so one large search fanning out through
+ * this worker could not itself trip the guard. Ticket d37511b deleted that
+ * cap at Nicole's explicit request, which killed the headroom argument
+ * outright: nothing now bounds how many jobs one search needs scored.
+ *
+ * WHY $30 RATHER THAN REMOVING THE CEILING, decided by Nicole 2026-10-09
+ * ("Just don't put any cap at all. Or make it 30. this is just friends so
+ * far remember."): this guard does not constrain anybody's search. It
+ * bounds a RUNAWAY BUG -- a retry loop, a redelivery storm, a future
+ * scoring defect that re-scores the same jobs indefinitely. Removing it
+ * entirely would leave only the Anthropic ACCOUNT-level cap as a backstop,
+ * and that one presents as "the whole app is broken" rather than as one
+ * worker logging that it declined to spend more. A $30 ceiling is
+ * recoverable; an account cap hit unattended is a bill you find later.
+ *
+ * $30 was sized for current reality, not by doubling for its own sake:
+ * ~641-773 worst-case scoring attempts per worker process (see the two
+ * bases above), against a largest-observed real search of 206 jobs (Jay's
+ * second test round, 2026-10-09) and a user population of the owner plus a
+ * few friends. Raise it again deliberately when that changes.
+ *
+ * AND IT IS NOT THE "REPLACEMENT GUARD" TICKET d37511b FORBADE. An earlier
+ * version of this comment claimed it would be; that was wrong on two
+ * counts, and the claim is corrected here rather than quietly dropped.
+ * First, d37511b forbade ADDING a new guard to compensate for the cap it
+ * removed; this constant predates that ticket by weeks (b53c422) and
+ * guards a different thing. Second, this block's own closing paragraph
+ * already invites exactly this change -- "raise
+ * `DEFAULT_LIFETIME_SPEND_CEILING_USD` deliberately, with a real reason, if
+ * it proves too tight in practice" -- and deleting the constant its sizing
+ * depended on is precisely such a reason. The distinction that matters, and
+ * the one to preserve: this bounds DOLLARS PER WORKER PROCESS and resets on
+ * restart. No code path consults it to decide how many jobs a search may
+ * score. If a future change makes it answer that question, it has become a
+ * job cap by another name and is out of bounds.
+ * (Worth noting the criterion actively EXCLUDES
  * `MAX_ESTIMATED_SPEND_USD`'s $5: that would bound only ~107-129 calls,
  * below the 200-call floor this paragraph argues for -- another reason the
  * two ceilings aren't meant to match.) Not a claim that $15 is uniquely
@@ -302,7 +341,7 @@ export const USAGE_STATS_PATH = "prep/scoring-usage-stats.json";
  * concurrent reservations from racing each other within one message or
  * across messages under `prefetch(1)`.
  */
-export const DEFAULT_LIFETIME_SPEND_CEILING_USD = 15;
+export const DEFAULT_LIFETIME_SPEND_CEILING_USD = 30;
 
 /** The minimal spend-guard surface `createScoreJobHandler` actually calls -
  * an interface, not the concrete `ScoringSpendGuard` class, for the same
@@ -837,10 +876,13 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
    * redundant row is harmless where a missing one hangs a search.
    *
    * KIND: `handler-<kind>` rather than the bare `<kind>` the per-resume
-   * loop writes, so the ledger says WHERE the failure happened. Nothing
-   * branches on `kind` except `SCORE_THRESHOLD_CAPPED_KIND`
-   * (routes/searches.ts's derive), so these count as `permanentlyFailed`
-   * and mark the search degraded — which is the truth.
+   * loop writes, so the ledger says WHERE the failure happened. Ticket
+   * d37511b removed `routes/searches.ts`'s one `kind`-based branch
+   * (splitting a budget-capped row, `SCORE_THRESHOLD_CAPPED_KIND`, out of
+   * genuine failures) along with the scoring cap it existed to serve —
+   * every row this function writes now counts as a genuine failure and
+   * marks the search degraded, with no `kind` carve-out left anywhere to
+   * route around that — which is the truth.
    */
   async function recordOuterCatchFailures(
     jobId: string | undefined,
@@ -1251,8 +1293,20 @@ export function createScoreJobHandler(options: ScoreJobWorkerOptions) {
         // refused job rides the normal retry budget and arrives here,
         // where it now becomes a `kind = "spend-guard-exceeded"` failure
         // row and dead-letters. Without that row, a budget-limited search
-        // would hang indefinitely instead of resolving as "complete, N
-        // deferred for budget".
+        // would hang indefinitely instead of resolving terminal at all.
+        //
+        // WHAT IT RESOLVES AS, CORRECTED (ticket d37511b, adversarial
+        // review): this comment used to say "complete, N deferred for
+        // budget" — a state that no longer exists. There is no "deferred"
+        // bucket any more; `job_match_failures` rows of every `kind`,
+        // `spend-guard-exceeded` included, count toward the one `failed`
+        // field (`routes/searches.ts`'s derive) and mark the search
+        // `degraded`, exactly like any other genuine scoring failure. A
+        // spend-guard exhaustion is a real fault from the caller's point
+        // of view — this process can no longer score anything until
+        // restarted — and ticket d37511b's removal of the separate
+        // "budget-capped, not a failure" treatment means it is no longer
+        // distinguished from one.
         await recordPermanentFailures(message.jobId, attempt, links, failed);
         channel.nack(msg, false, false);
         return;
