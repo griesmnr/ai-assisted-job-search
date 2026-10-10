@@ -98,26 +98,40 @@ export type ResultsState =
  * doc comment already says it does while data hasn't resolved, no change
  * needed there.
  *
- * WHERE THE MISMATCH CHECK ACTUALLY RUNS IS LOAD-BEARING, found the hard
- * way: an earlier version of this fix put the `fetchedForRef` comparison
- * INSIDE the effect below (`setState((prev) => prev.status === "ready" &&
- * fetchedForRef.current === searchId ? prev : {status:"loading"})`,
- * mirroring the exact snippet C1's own review comment suggested). That
- * still leaves a real, observable gap: `handleSearchComplete` batches
- * `setLastSearchId(new)` + `refresh()` + `setHasFreshSearchResults(true)`
- * into ONE render/commit, and React defers passive effects (this hook's
- * `useEffect`) until AFTER that commit -- so the commit that actually shows
- * the new `searchId` prop (and the "Search complete" heading, a sibling
- * update in the SAME batch) necessarily renders with `state` still holding
- * whatever the PREVIOUS commit left it at, because the effect that would
- * correct it hasn't run yet. A regression test written to hold the second
- * fetch open and inspect the DOM at the instant the heading appears caught
- * exactly this: the stale job was still there, heading and all, for that
- * one commit, before a SECOND commit (from the effect's own `setState`)
- * removed it. One commit's worth of staleness is small, but it is exactly
- * the frame John's report is about -- the instant the new signal pulls
- * attention to the panel -- so "eventually corrects itself" does not
- * satisfy this ticket's acceptance criterion.
+ * WHERE THE MISMATCH CHECK RUNS IS LOAD-BEARING, and the record of how we
+ * got here is worth more than the conclusion, because two different wrong
+ * explanations were written down before the right one.
+ *
+ * C1's review comment prescribed putting the comparison INSIDE the effect
+ * below: `setState((prev) => prev.status === "ready" &&
+ * fetchedForRef.current === searchId ? prev : {status:"loading"})`, with the
+ * ref write immediately after. That snippet does not merely lag -- IT NEVER
+ * CLEARS THE STALE DATA AT ALL. `setState` with an updater function defers
+ * the updater to render time, while the ref write beside it runs eagerly, so
+ * by the time the updater executes `fetchedForRef.current` already equals the
+ * new `searchId`, the guard returns `prev`, and the old payload is kept
+ * forever. Verified both ways: the prescribed snippet fails this file's C1
+ * regression test, the version below passes it, and neutralising the
+ * derivation fails it again. (The reviewer identified this itself on
+ * re-review and corrected its own prescription.)
+ *
+ * An earlier version of THIS comment then claimed the regression test had
+ * caught a one-commit lag. It had not, and no jsdom test can: `act()` and
+ * `findBy*` flush passive effects before any assertion runs, so an
+ * effect-based guard with the ref write moved into the success callback
+ * actually PASSES that test. What the test proves is narrower -- that the
+ * shipped code never shows the previous search's results -- and that is
+ * enough for the acceptance criterion.
+ *
+ * The real argument for render-time placement is about the BROWSER, not the
+ * test: passive effects are allowed to run after paint, so an effect-based
+ * correction can let a real user see one stale frame that jsdom cannot
+ * observe. `handleSearchComplete` batches `setLastSearchId(new)` +
+ * `refresh()` + `setHasFreshSearchResults(true)` into one commit, which is
+ * the same commit that reveals the "Search complete" heading -- exactly the
+ * instant John's report is about, when the new signal pulls attention to the
+ * panel. Computing the mismatch during render means there is no such frame
+ * to see, rather than one that corrects itself.
  *
  * The fix actually implemented below computes the mismatch SYNCHRONOUSLY
  * AT RENDER TIME instead -- comparing the prop (`searchId`, already fresh
@@ -151,6 +165,21 @@ export function useResults(
   // window a new one is in flight, which is exactly the signal
   // `effectiveState` needs to detect "the data on screen is for a
   // different search than the one now being asked about."
+  // INVARIANT, and the real reason reading this during render is safe:
+  // NEVER write this ref anywhere but alongside the `setState` in the fetch
+  // success path below. A ref mutation can only be read by a committed render
+  // the renderer never knew to redo if it happens UNPAIRED with a state
+  // update; pairing every write with `setState({status:"ready", data})`
+  // guarantees a re-render that re-reads it. That holds even under concurrent
+  // rendering, so this is not merely "safe until someone adds transitions"
+  // (there are none in apps/web/src today -- no useTransition,
+  // startTransition, useDeferredValue, Suspense or lazy, checked).
+  //
+  // Two StrictMode corollaries, both load-bearing: the double RENDER is
+  // harmless because the read is pure (nothing writes during render, so both
+  // passes compute the same `effectiveState`), and the double EFFECT on mount
+  // is harmless because the write sits inside `if (!cancelled)`, so the
+  // discarded first run cannot write the ref.
   const fetchedForRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {

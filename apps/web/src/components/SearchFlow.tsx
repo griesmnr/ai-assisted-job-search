@@ -744,7 +744,17 @@ export function SearchFlow({
           already-present node, which is what actually gets announced.
           Visually hidden (`.visually-hidden`, index.css) since sighted users
           already get the signal from `.search-complete-heading` below --
-          this exists purely for the screen-reader half of "noticeable". */}
+          this exists purely for the screen-reader half of "noticeable".
+
+          DISCLOSED LIMIT (review F4): this region sits inside App.tsx's
+          `<div hidden={activeTab !== "search"}>`, so a completion that lands
+          while the user is on another tab is never announced -- and switching
+          back reveals it already populated, which is the same
+          non-announcement. Accepted, not overlooked: it is exactly what a
+          SIGHTED user on another tab gets too, and it matches the stance the
+          "View N results" button's own comment already takes about hidden
+          tabs. The button documented that; this region did not, which is the
+          only thing being fixed here. */}
       <p className="search-flow-live visually-hidden" aria-live="polite">
         {phase.kind === "done" && phase.result.status === "complete"
           ? `Search complete${phase.result.degraded ? " with some failures" : ""}.`

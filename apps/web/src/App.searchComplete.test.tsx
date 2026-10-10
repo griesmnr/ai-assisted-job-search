@@ -544,6 +544,49 @@ describe("after a search completes (ticket 9e5fcf3)", () => {
     );
   });
 
+  it("(F3) the aria-live region is the SAME NODE before and after completion -- the structural property, because a region inserted together with its own content is not announced, and this repo has now made that mistake twice (N7 in MagicLinkForm, then here)", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      searchId: "search-1",
+      resumeId: "resume-1",
+      status: "complete",
+      scored: 0,
+      failed: 0,
+      linked: 0,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    await submitResume();
+
+    // HOLD the node before the search even starts. This is the whole point:
+    // a remount would leave this reference detached from the document, so
+    // asserting on THIS object after completion is what actually proves the
+    // region persisted rather than being created with its content.
+    const region = document.querySelector('p.search-flow-live[aria-live="polite"]');
+    expect(region).not.toBeNull();
+    // `=== ""` deliberately, NOT `toHaveTextContent("")` -- that matcher does
+    // substring matching, so an empty-string expectation always passes and
+    // would prove nothing here.
+    expect(region!.textContent).toBe("");
+
+    await runSearchToCompletion();
+
+    // Same node object, now carrying the announcement, and still attached.
+    expect(region!.isConnected).toBe(true);
+    expect(region!.textContent).toBe("Search complete.");
+    expect(document.contains(region)).toBe(true);
+  });
+
   it('(a) withholds the "View N results" button when the search found nothing', async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
