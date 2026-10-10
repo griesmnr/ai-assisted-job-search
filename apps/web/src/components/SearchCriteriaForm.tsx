@@ -221,26 +221,30 @@ export function SearchCriteriaForm({
             aria-invalid={!hasLocationSignal}
           />
         </label>
-        {/* Ticket 410e1a2. Sits directly under the location box because it
-            only ever modifies what is typed there. Nicole raised both
-            sides of this herself -- some searchers want "Seattle" to mean
-            the metro area, others would be annoyed by an unrequested
-            Kirkland commute -- and settled it as a visible opt-in: "I
-            think it'll just be a check, a checkbox or something like
-            that... I want it given that it meets both users' needs as long
-            as it can be seen." So: off by default, and the label says what
-            it will actually do (names real sibling cities) rather than
-            something vague like "search nearby" that a user cannot predict
-            the effect of. The curated table behind it lives in
-            apps/api/src/sources/metroAreas.ts. */}
+        {/* Ticket 410e1a2, redesigned by ticket e5e1aa1. Sits directly under
+            the location box because it only ever modifies what is typed
+            there. Nicole raised both sides of this herself -- some
+            searchers want "Seattle" to also mean nearby cities, others
+            would be annoyed by an unrequested Kirkland commute -- and
+            settled it as a visible opt-in: "I think it'll just be a check,
+            a checkbox or something like that... I want it given that it
+            meets both users' needs as long as it can be seen." So: off by
+            default, and the label says what it will actually do.
+            Ticket e5e1aa1 replaced the original curated-metro-table version
+            of this label (which named Seattle's own siblings by name, and
+            silently did nothing for any other city -- the bug that ticket
+            fixes) with the generic distance claim every typed city now
+            actually gets: see apps/api/src/sources/metroAreas.ts for the
+            60-mile radius, why 60 and not 50, and the straight-line-is-not-
+            driving caveat this text deliberately echoes rather than hides. */}
         <label className="search-criteria-checkbox">
           <input
             type="checkbox"
             checked={expandMetroAreas}
             onChange={(e) => set({ expandMetroAreas: e.target.checked })}
           />
-          Also include nearby cities in the same metro area — a Seattle search would also match
-          Bellevue, Kirkland, Redmond, Renton, Everett and Tacoma
+          Also include nearby cities — matches any posting within 60 miles (straight-line, not
+          driving distance) of a location above
         </label>
         <label className="search-criteria-checkbox">
           <input

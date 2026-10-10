@@ -606,7 +606,7 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
 
   it("sends expandMetroAreas: true once the checkbox is checked", async () => {
     await submitAndType("Seattle");
-    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities/));
     fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
@@ -620,7 +620,7 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
     // It only ever widens `nearLocations` entries. With none, sending it
     // would put a flag on the wire that cannot change a single result.
     await submitAndType("");
-    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities/));
     fireEvent.click(screen.getByLabelText(/Any location/));
     fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
