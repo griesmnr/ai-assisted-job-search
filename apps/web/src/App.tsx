@@ -46,43 +46,51 @@ import { clearAppState, readAppState, writeAppState, type CriteriaFormState } fr
 import { splitPhrases } from "./criteriaText";
 
 /**
- * Ticket 09b8e4d, then ticket 8a403ee: some employers phrase job titles
- * differently enough that a resume-inferred title alone misses them --
- * USAJOBS' federal job-series names (Program Analyst, IT Specialist,
- * Computer Scientist) are the concrete case that motivated this, but
- * Nicole's own point (dogfooding, ticket 8a403ee) is that it isn't
- * strictly a federal/private-sector split -- Boeing uses "Program
- * Analyst"/"Programmer Analyst" too. Fixed list, not resume-derived
- * guessing (inferring title-equivalents from arbitrary resume content is
- * speculative NLP no ticket has asked for).
+ * REMOVED by ticket 5c4242d, 2026-10-10: `EXTRA_TITLE_CHIPS` and
+ * `mergeTitleChips` used to live here, appending the fixed trio "Program
+ * Analyst" / "IT Specialist" / "Computer Scientist" to EVERY resume's
+ * title chips at the two call sites below, unconditionally (ticket
+ * 8a403ee).
  *
- * Ticket 09b8e4d originally surfaced these as a separate "click to add"
- * suggestion row, shown only while USAJOBS was selected. Ticket 8a403ee
- * folds them directly into `titleChips` instead, unconditionally, at the
- * same moment resume-inferred titles populate it (`handleResumeSubmit`
- * below) -- Nicole, dogfooding: "you never know if somebody's going to
- * zone out" past a suggestion they had to notice and click. Deliberately
- * NOT re-synced to source-toggle state after that: her own explicit
- * simplification ("I don't want to build all the functionality for...
- * they should just behave the same as every other chips") -- added once,
- * then a fully ordinary, user-owned, removable chip like any other.
+ * WHY REMOVED: John (IT/DevOps) tested on 2026-10-10 and got that
+ * identical trio -- the same one Nicole always gets -- and correctly
+ * cancelled two of three as wrong for his field. This hardcoded list was
+ * one of TWO sources of those three titles. The other,
+ * `resume-title-inference.ts`'s prompt, was already fixed by ticket
+ * 17a5c8f (2026-10-06, Jay's report: a technical writer got the same
+ * software trio) to DERIVE field-appropriate federal titles from the
+ * resume instead of copying hardcoded prompt examples. 17a5c8f closed
+ * having fixed only that one source, so the user-visible symptom
+ * reproduced for a different underlying reason: the AI was deriving
+ * John's titles correctly and this frontend list was overriding them.
+ *
+ * Deleted outright rather than conditioned on field, because the AI side
+ * already does that job -- `titleChips` is now simply `suggestedTitles`
+ * (or the user's own edits to it), nothing appended after the fact.
+ * Verified LIVE before deleting, per this ticket's own instruction not to
+ * trust the prompt fix by inference alone, that Nicole's standing
+ * requirement ("I do still want the government ones to come up") still
+ * holds without this list:
+ *
+ *   Full-stack engineer resume -> model's raw titles included "IT
+ *   Specialist" (alongside "Software Engineer", "Backend Engineer", etc).
+ *
+ *   Technical-writer resume (Jay's shape) -> model's raw titles included
+ *   "Writer-Editor" and "Technical Information Specialist"; the software
+ *   trio did not appear at all.
+ *
+ * Had the software resume NOT produced a federal equivalent live, this
+ * ticket's instructions were to leave the hardcode in place and report
+ * back instead of deleting something Nicole asked for twice -- that
+ * branch did not trigger, so no conditional-on-field logic was needed
+ * here.
+ *
+ * Related, not fixed here: ticket 99b6b25 is about gating these federal
+ * chips (now entirely the AI's decision) and their advertising copy
+ * (`SearchCriteriaForm.tsx`'s "A few title variations..." hint, still
+ * present) on USAJOBS being CONFIGURED at all -- a deployment question,
+ * independent of this ticket's per-resume field question.
  */
-const EXTRA_TITLE_CHIPS = ["Program Analyst", "IT Specialist", "Computer Scientist"];
-
-/**
- * Ticket 88f11d7: factored out of `handleResumeSubmit` so
- * `handleActivateResume` ("Change" -> "Use Resume N") can build the exact
- * same title-chip set from a DIFFERENT response shape
- * (`GetResumeResponse.suggestedTitles` instead of `CreateResumeResponse.
- * suggestedTitles`) without the two call sites drifting out of sync. Same
- * "resume-inferred titles, then EXTRA_TITLE_CHIPS appended, case-
- * insensitively deduped against them" behavior either way (ticket 8a403ee).
- */
-function mergeTitleChips(inferredTitles: string[]): string[] {
-  const inferredLower = new Set(inferredTitles.map((t) => t.toLowerCase()));
-  const extras = EXTRA_TITLE_CHIPS.filter((t) => !inferredLower.has(t.toLowerCase()));
-  return [...inferredTitles, ...extras];
-}
 
 /**
  * Derives the actual `SearchCriteria` to send from the current title chips
@@ -1118,16 +1126,14 @@ function JobSearchApp() {
       // response shape drift should degrade to "no suggestions" rather
       // than crash buildSearchCriteria's `.length` check below.
       const inferredTitles = suggestedTitles ?? [];
-      // Ticket 8a403ee: EXTRA_TITLE_CHIPS appended AFTER the resume-
-      // inferred ones (Nicole: "add the chips... after all of the other
-      // ones"), case-insensitively deduped against them so a resume whose
-      // own inferred titles already include e.g. "IT Specialist" doesn't
-      // get a visually-duplicate chip. Runs on every successful submit,
-      // not just the first -- same lifecycle `inferredTitles` itself
-      // already has (a resubmit already fully replaces titleChips from
-      // the server's fresh suggestedTitles; this follows that same reset,
-      // per Nicole's "behave the same as every other chip").
-      setTitleChips(mergeTitleChips(inferredTitles));
+      // Ticket 5c4242d: no more `mergeTitleChips` appending a fixed extra
+      // trio here (see the removal doc comment near the top of this file)
+      // -- `suggestedTitles` already carries whatever federal-equivalent
+      // titles genuinely fit THIS resume's field, derived by
+      // resume-title-inference.ts (ticket 17a5c8f). Runs on every
+      // successful submit, not just the first -- a resubmit fully
+      // replaces titleChips from the server's fresh suggestedTitles.
+      setTitleChips(inferredTitles);
       // Review fix round 2 (ticket cdc2c39): an edit is only "done" once
       // a submission actually lands -- not on the Edit click itself (see
       // `resumeEditing`'s own doc comment above). A no-op on the
@@ -1513,11 +1519,11 @@ function JobSearchApp() {
       setLastSavedNickname(data.resumeNickname);
       setResumeLocked(data.isLocked);
       setNicknameError(null);
-      // Ticket 88f11d7: same "resume-inferred titles + EXTRA_TITLE_CHIPS"
-      // rebuild a fresh submit already does (`mergeTitleChips`) -- an
-      // activated resume's OWN cached suggestions, not whatever chips
-      // happened to be showing for the resume being switched away from.
-      setTitleChips(mergeTitleChips(data.suggestedTitles ?? []));
+      // Ticket 88f11d7, then 5c4242d (no more appended extras -- see this
+      // file's removal doc comment near the top): an activated resume's
+      // OWN cached suggestions, not whatever chips happened to be showing
+      // for the resume being switched away from.
+      setTitleChips(data.suggestedTitles ?? []);
       setResumeEditing(false);
       setResumeChanging(false);
       setResumeError(null);

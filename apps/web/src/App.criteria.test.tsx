@@ -129,7 +129,15 @@ async function submitResume() {
 }
 
 describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
-  it("sends a REAL criteria object (never undefined) when the resume has no suggested titles of its own -- ticket 8a403ee's extras still populate it", async () => {
+  // Ticket 5c4242d: was "...ticket 8a403ee's extras still populate it" --
+  // that framing no longer applies now that 5c4242d deleted the extras
+  // mechanism (`mergeTitleChips`/`EXTRA_TITLE_CHIPS`, App.tsx). With
+  // nothing appended after `suggestedTitles`, a resume with no suggested
+  // titles of its own now lands DIRECTLY in the `titleChips.length === 0`
+  // state this test used to be unable to reach without manual removal --
+  // folded into one test with what used to be a second, separate test for
+  // that same empty-criteria-object property (see this test's own name).
+  it("sends a real empty criteria object (never undefined, never omitted) when the resume has no suggested titles of its own", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
@@ -141,12 +149,12 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
-    // Ticket 8a403ee: titleChips is never truly empty once a resume is
-    // submitted -- the extra chips populate it even with zero
-    // resume-inferred titles -- so the "no title keywords yet" empty
-    // state from ticket 39b4a48 is no longer reachable this way. That's
-    // fine: this test's real point (never a silent hidden-default
-    // fallback) is proven by the exact payload assertion below either way.
+    // Ticket 39b4a48's original empty-state hint is reachable directly
+    // now -- no manual removal needed, since nothing is appended to an
+    // empty `suggestedTitles` any more.
+    expect(
+      screen.getByText(/No title keywords yet.*leave this empty to search every title/),
+    ).toBeInTheDocument();
 
     // Ticket b9e6251: an empty location (no nearLocations, no remoteOk)
     // now requires the explicit "Any location" opt-in before the estimate
@@ -156,44 +164,38 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    // The critical assertion: exactly what's in titleChips, NOT undefined
+    // The critical assertion: a real `{}`, NOT undefined and NOT omitted
     // -- undefined would silently reproduce the old hardcoded default
     // this ticket exists to remove. `anyLocationOk` itself is a
     // frontend-only gating signal -- it never appears in the criteria
     // payload sent to the API.
-    expect(estimateSearch).toHaveBeenCalledWith(
-      "resume-1",
-      ["usajobs"],
-      { titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"] },
-      expect.any(String),
-    );
+    expect(estimateSearch).toHaveBeenCalledWith("resume-1", ["usajobs"], {}, expect.any(String));
   });
 
-  // Review round 1 finding (opus, F2): ticket 8a403ee means titleChips is
-  // never empty immediately after a submit (the extras always populate
-  // it), which left this file with no test at all exercising the
-  // `titleChips.length === 0` branch (buildSearchCriteria, App.tsx) --
-  // still live and reachable any time a user removes every chip by hand.
-  // Restores that coverage explicitly, now via manual removal rather than
-  // "nothing was ever suggested."
-  it("sends a real empty criteria object (not undefined, not omitted) once every chip -- including the extras -- is manually removed", async () => {
+  // Review round 1 finding (opus, F2), ticket 8a403ee: that ticket's
+  // extras meant titleChips was never empty immediately after a submit,
+  // which left this file with no test exercising the
+  // `titleChips.length === 0` branch (buildSearchCriteria, App.tsx) via
+  // MANUAL removal specifically -- still live and worth its own coverage
+  // distinct from "nothing was ever suggested" above, since the code path
+  // (remove down to zero) is different from "started at zero." Ticket
+  // 5c4242d: rewritten to remove a real resume-inferred chip rather than
+  // the now-deleted extras, which is the only way to reach this path
+  // post-removal.
+  it("sends a real empty criteria object (not undefined, not omitted) once every suggested chip is manually removed", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
       id: "resume-1",
       resumeNickname: "Resume 1",
-      suggestedTitles: [],
+      suggestedTitles: ["Backend Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
     getAllResults.mockResolvedValue(RESULTS);
     estimateSearch.mockResolvedValue(makeEstimate());
 
     await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: 'Remove "Program Analyst"' }));
-    fireEvent.click(screen.getByRole("button", { name: 'Remove "IT Specialist"' }));
-    fireEvent.click(screen.getByRole("button", { name: 'Remove "Computer Scientist"' }));
+    fireEvent.click(screen.getByRole("button", { name: 'Remove "Backend Engineer"' }));
 
-    // Ticket 39b4a48's original empty-state hint is reachable again, same
-    // as before this ticket ever added anything automatically.
     expect(
       screen.getByText(/No title keywords yet.*leave this empty to search every title/),
     ).toBeInTheDocument();
@@ -225,17 +227,15 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
+    // Ticket 5c4242d: was followed by the hardcoded "Program
+    // Analyst"/"IT Specialist"/"Computer Scientist" trio -- deleted along
+    // with `mergeTitleChips`. `titleInclude` is now exactly
+    // `suggestedTitles`, unmodified.
     expect(estimateSearch).toHaveBeenCalledWith(
       "resume-1",
       ["usajobs"],
       {
-        titleInclude: [
-          "Backend Engineer",
-          "Platform Engineer",
-          "Program Analyst",
-          "IT Specialist",
-          "Computer Scientist",
-        ],
+        titleInclude: ["Backend Engineer", "Platform Engineer"],
       },
       expect.any(String),
     );
@@ -263,12 +263,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       "resume-1",
       ["usajobs"],
       {
-        titleInclude: [
-          "Platform Engineer",
-          "Program Analyst",
-          "IT Specialist",
-          "Computer Scientist",
-        ],
+        titleInclude: ["Platform Engineer"],
       },
       expect.any(String),
     );
@@ -300,13 +295,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       "resume-1",
       ["usajobs"],
       {
-        titleInclude: [
-          "Backend Engineer",
-          "Program Analyst",
-          "IT Specialist",
-          "Computer Scientist",
-          "Site Reliability Engineer",
-        ],
+        titleInclude: ["Backend Engineer", "Site Reliability Engineer"],
         remoteOk: true,
       },
       expect.any(String),
@@ -318,7 +307,13 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
     createResume.mockResolvedValue({
       id: "resume-1",
       resumeNickname: "Resume 1",
-      suggestedTitles: [],
+      // Ticket 5c4242d: non-empty, not `[]` -- this test's own point is
+      // `commitmentIn`, but with the extras mechanism deleted an empty
+      // `suggestedTitles` would omit `titleInclude` entirely (see the
+      // dedicated empty-criteria tests above), which would stop this test
+      // from also exercising `titleInclude` alongside `commitmentIn` in
+      // the same payload.
+      suggestedTitles: ["Backend Engineer"],
     });
     getResults.mockResolvedValue(RESULTS);
     getAllResults.mockResolvedValue(RESULTS);
@@ -336,7 +331,7 @@ describe("App — resume-inferred title chips (ticket 39b4a48)", () => {
       "resume-1",
       ["usajobs"],
       {
-        titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
+        titleInclude: ["Backend Engineer"],
         commitmentIn: ["full-time", "contract"],
       },
       expect.any(String),
@@ -567,11 +562,11 @@ describe("App — explicit any-location opt-in (ticket b9e6251)", () => {
 
     await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
     const sentCriteria = estimateSearch.mock.calls[0]?.[2];
-    // Ticket 8a403ee: titleInclude always carries the extra chips now --
-    // the real point of this test is the `anyLocationOk` exclusion below.
-    expect(sentCriteria).toEqual({
-      titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"],
-    });
+    // Ticket 5c4242d: was "titleInclude always carries the extra chips
+    // now" -- that mechanism is deleted, so a resume with no suggested
+    // titles sends a bare `{}`. The real point of this test, unchanged, is
+    // the `anyLocationOk` exclusion below.
+    expect(sentCriteria).toEqual({});
     expect(sentCriteria).not.toHaveProperty("anyLocationOk");
   });
 });
@@ -629,143 +624,52 @@ describe("App — opt-in metro-area expansion (ticket 410e1a2)", () => {
   });
 });
 
-// Ticket 09b8e4d, superseded by ticket 8a403ee. 09b8e4d's original design:
-// a separate "click to add" suggestion row, shown only while USAJOBS was
-// selected, deliberately never auto-added ("suggest, don't silently
-// default"). Nicole, dogfooding after actually using it: "you never know
-// if somebody's going to zone out" past a suggestion they had to notice
-// and click -- and on discussion, explicitly rejected keeping any
-// source-toggle-aware add/remove logic at all: "I don't want to build all
-// the functionality for... they should just behave the same as every
-// other chips, get added automatically." These titles are now folded
-// directly into `titleChips` at resume-submission time (App.tsx), exactly
-// like the resume-inferred ones -- no separate suggestion UI, no
-// dependency on which sources are toggled, ever.
-describe("App — extra title chips folded in automatically at resume-submission time (ticket 8a403ee, superseding 09b8e4d)", () => {
-  it("adds the extra chips automatically once a resume is submitted, appended after the resume-inferred ones -- no separate suggestion UI at all", async () => {
-    getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({
-      id: "resume-1",
-      resumeNickname: "Resume 1",
-      suggestedTitles: ["Backend Engineer"],
-    });
-    getResults.mockResolvedValue(RESULTS);
-    getAllResults.mockResolvedValue(RESULTS);
-
-    await submitResume();
-
-    // Real, ordinary chips -- not a separate suggestion row (which no
-    // longer exists at all).
-    expect(screen.queryByRole("list", { name: "Suggested federal job titles" })).toBeNull();
-    expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
-    expect(screen.getByText("Program Analyst")).toBeInTheDocument();
-    expect(screen.getByText("IT Specialist")).toBeInTheDocument();
-    expect(screen.getByText("Computer Scientist")).toBeInTheDocument();
-    // Each is removable like any other chip -- indistinguishable from a
-    // resume-inferred one once added.
-    expect(screen.getByRole("button", { name: 'Remove "Program Analyst"' })).toBeInTheDocument();
-  });
-
-  // Review round 1 finding (opus, F1): the original version of this test
-  // used an EXACT-case match ("Program Analyst"), which a case-SENSITIVE
-  // dedupe would also have passed -- not a real proof of the
-  // case-insensitive comparison App.tsx's own comment claims. Claude
-  // (the real source of `suggestedTitles`) can plausibly return "Program
-  // analyst" or "program Analyst"; a mismatched-case fixture is what
-  // actually exercises that path. Mutation-verified: dropping the
-  // `.toLowerCase()` calls in App.tsx's dedupe made this exact test fail
-  // (two "Program Analyst"-ish chips instead of one), while it silently
-  // passed against the old exact-case fixture.
-  it("does not duplicate an extra chip the resume's own inferred titles already include, even in a different case", async () => {
-    getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({
-      id: "resume-1",
-      resumeNickname: "Resume 1",
-      suggestedTitles: ["program analyst"],
-    });
-    getResults.mockResolvedValue(RESULTS);
-    getAllResults.mockResolvedValue(RESULTS);
-
-    await submitResume();
-
-    // Exactly one chip for this title -- whichever casing the resume
-    // inference returned, not a second "Program Analyst" alongside it.
-    expect(screen.getByText("program analyst")).toBeInTheDocument();
-    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
-    // The other two extras still get added -- de-dupe is per-title, not
-    // "skip the whole list if anything overlaps."
-    expect(screen.getByText("IT Specialist")).toBeInTheDocument();
-    expect(screen.getByText("Computer Scientist")).toBeInTheDocument();
-  });
-
-  it("stays added regardless of USAJOBS being toggled off -- no source-toggle-aware add/remove logic exists", async () => {
-    getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({
-      id: "resume-1",
-      resumeNickname: "Resume 1",
-      suggestedTitles: [],
-    });
-    getResults.mockResolvedValue(RESULTS);
-    getAllResults.mockResolvedValue(RESULTS);
-
-    await submitResume();
-    expect(screen.getByText("Program Analyst")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("USAJOBS"));
-
-    // Nicole was explicit this should NOT be re-synced to toggle state --
-    // deselecting USAJOBS must not silently remove it.
-    expect(screen.getByText("Program Analyst")).toBeInTheDocument();
-  });
-
-  it("is sent to the API like any other title chip", async () => {
-    getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({
-      id: "resume-1",
-      resumeNickname: "Resume 1",
-      suggestedTitles: [],
-    });
-    getResults.mockResolvedValue(RESULTS);
-    getAllResults.mockResolvedValue(RESULTS);
-    estimateSearch.mockResolvedValue(makeEstimate());
-
-    await submitResume();
-    fireEvent.click(screen.getByLabelText(/Any location/));
-    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
-
-    await waitFor(() => expect(estimateSearch).toHaveBeenCalledTimes(1));
-    expect(estimateSearch).toHaveBeenCalledWith(
-      "resume-1",
-      ["usajobs"],
-      { titleInclude: ["Program Analyst", "IT Specialist", "Computer Scientist"] },
-      expect.any(String),
-    );
-  });
-
-  it("removing an extra chip removes it for good -- it is not re-added on a later render", async () => {
-    getSources.mockResolvedValue(SOURCES);
-    createResume.mockResolvedValue({
-      id: "resume-1",
-      resumeNickname: "Resume 1",
-      suggestedTitles: [],
-    });
-    getResults.mockResolvedValue(RESULTS);
-    getAllResults.mockResolvedValue(RESULTS);
-
-    await submitResume();
-    fireEvent.click(screen.getByRole("button", { name: 'Remove "Program Analyst"' }));
-
-    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
-    expect(screen.getByText("IT Specialist")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("USAJOBS"));
-    fireEvent.click(screen.getByLabelText("USAJOBS"));
-
-    // Toggling sources -- the one thing the old design's removed logic
-    // reacted to -- must not resurrect a chip the user just removed.
-    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
-  });
-
+// Ticket 09b8e4d, then 8a403ee, then 5c4242d. 09b8e4d's original design: a
+// separate "click to add" suggestion row, shown only while USAJOBS was
+// selected, deliberately never auto-added. 8a403ee folded a FIXED trio
+// ("Program Analyst"/"IT Specialist"/"Computer Scientist") directly into
+// `titleChips` at resume-submission time instead, unconditionally,
+// regardless of the resume's field.
+//
+// REMOVED by ticket 5c4242d, 2026-10-10: that frontend-side folding
+// mechanism (`EXTRA_TITLE_CHIPS`/`mergeTitleChips`, App.tsx) is gone --
+// see that file's own removal doc comment. John (IT/DevOps) got the
+// identical trio Nicole always got and correctly cancelled two of three as
+// wrong for his field; the AI side (resume-title-inference.ts, ticket
+// 17a5c8f) already derives field-appropriate federal titles, so nothing
+// is appended on the frontend any more. `titleChips` is now exactly
+// `suggestedTitles`.
+//
+// DELETED along with the mechanism (not just edited), because each test's
+// entire premise no longer holds and nothing else depended on it:
+//   - "adds the extra chips automatically... no separate suggestion UI" --
+//     there is no longer anything automatic to add.
+//   - "does not duplicate an extra chip... case-insensitive" -- the
+//     case-insensitive dedupe `mergeTitleChips` did was specific to
+//     reconciling the fixed trio against inferred titles; with no trio
+//     to reconcile against, there is nothing left for this property to
+//     describe. (General duplicate-chip handling for USER-typed custom
+//     chips, if any exists, is unrelated and untouched by this removal.)
+//   - "stays added regardless of USAJOBS toggle" -- asserted the ABSENCE
+//     of toggle-reactive removal logic for a mechanism that no longer
+//     exists to NOT react.
+//   - "is sent to the API like any other title chip" -- fully redundant
+//     with "pre-populates chips..." and "removing a suggested chip..."
+//     above, which already prove ordinary suggested/custom chips reach
+//     the API correctly; nothing in it was specific to the extras.
+//   - "removing an extra chip removes it for good" -- general chip-removal
+//     persistence (removing a chip doesn't come back on an unrelated
+//     re-render) remains covered by "removing a suggested chip changes
+//     what's sent" above, which removes a real suggested chip rather than
+//     an extra; that test's own property (removal sticks) is unchanged by
+//     this deletion.
+//
+// KEPT below: "shows the explanatory note near the title chips" -- that
+// hint renders unconditionally in SearchCriteriaForm regardless of
+// `titleChips` content (see that component's own updated comment) and is
+// independent of this removed mechanism, so it still has something real
+// to prove.
+describe("App — title chips (ticket 8a403ee, extras mechanism removed by ticket 5c4242d)", () => {
   it("shows the explanatory note near the title chips", async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({
@@ -779,6 +683,82 @@ describe("App — extra title chips folded in automatically at resume-submission
     await submitResume();
 
     expect(screen.getByText(/title variations some employers use/)).toBeInTheDocument();
+  });
+});
+
+// Ticket 5c4242d acceptance criteria: title chips must depend on the
+// resume's OWN field, not a universal frontend-appended set. The AI side
+// (resume-title-inference.ts) is what actually derives field-appropriate
+// federal titles -- verified separately via a live eval run (see this
+// ticket's own report) -- so these tests exercise the FRONTEND's half of
+// the contract: `createResume`/`getResume`'s `suggestedTitles` is the
+// resume's OWN field-derived set, exactly, with nothing frontend-added and
+// nothing frontend-subtracted, regardless of whether that set happens to
+// contain a federal title, a different field's federal title, or none at
+// all. A regression back to appending a fixed set (the actual bug this
+// ticket fixes) would make every one of these fail.
+describe("App — title chips reflect the resume's own field exactly (ticket 5c4242d)", () => {
+  it("a resume with no federal-equivalent titles in its own suggestions shows none of the software-federal trio", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      // Shaped after the marketing-manager eval shape -- a field with no
+      // public-sector history, which the live eval confirms gets no
+      // federal title at all.
+      suggestedTitles: ["Senior Marketing Manager", "Brand Manager"],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    expect(screen.getByText("Senior Marketing Manager")).toBeInTheDocument();
+    expect(screen.getByText("Brand Manager")).toBeInTheDocument();
+    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
+    expect(screen.queryByText("IT Specialist")).not.toBeInTheDocument();
+    expect(screen.queryByText("Computer Scientist")).not.toBeInTheDocument();
+  });
+
+  it("a non-software resume whose own field has a real federal equivalent shows THAT equivalent, not the software trio", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      // Shaped after the technical-writer eval shape (Jay's actual
+      // reported case, ticket 17a5c8f) -- confirmed live to produce the
+      // writing-family federal titles, never the software trio.
+      suggestedTitles: ["Senior Technical Writer", "Writer-Editor"],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    expect(screen.getByText("Senior Technical Writer")).toBeInTheDocument();
+    expect(screen.getByText("Writer-Editor")).toBeInTheDocument();
+    expect(screen.queryByText("Program Analyst")).not.toBeInTheDocument();
+    expect(screen.queryByText("IT Specialist")).not.toBeInTheDocument();
+    expect(screen.queryByText("Computer Scientist")).not.toBeInTheDocument();
+  });
+
+  it("a software resume whose own suggestions include a software federal title still shows it -- Nicole's own experience must not regress", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      // Confirmed live (this ticket's own eval run): a full-stack
+      // engineer resume's raw model output includes "IT Specialist".
+      suggestedTitles: ["Backend Engineer", "Senior Full Stack Engineer", "IT Specialist"],
+    });
+    getResults.mockResolvedValue(RESULTS);
+    getAllResults.mockResolvedValue(RESULTS);
+
+    await submitResume();
+
+    expect(screen.getByText("Backend Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Senior Full Stack Engineer")).toBeInTheDocument();
+    expect(screen.getByText("IT Specialist")).toBeInTheDocument();
   });
 });
 

@@ -214,6 +214,29 @@ describe("App — activating a resume from 'My Resumes' (ticket 11ead86)", () =>
     // A pure pick, never a paste -- the original createResume call is the
     // only one for the whole test.
     expect(createResume).toHaveBeenCalledTimes(1);
+
+    // Ticket 5c4242d, added by PM review of that ticket: the activated
+    // resume's chips are EXACTLY the server's `suggestedTitles`, with none
+    // of the software-federal trio bolted on.
+    //
+    // This assertion exists because the trio could be re-added at THIS call
+    // site and no test would have noticed. 5c4242d deleted
+    // `EXTRA_TITLE_CHIPS`/`mergeTitleChips` from both `setTitleChips` sites
+    // in App.tsx, but only the submit-path deletion was mutation-covered:
+    // re-introducing `[...suggestedTitles, "Program Analyst", "IT
+    // Specialist", "Computer Scientist"]` at the ACTIVATION site (App.tsx's
+    // `setTitleChips(data.suggestedTitles ?? [])`) left the full suite green
+    // at 1844/1844. Verified by running exactly that mutation.
+    //
+    // That is the gap worth closing rather than any other, because this is
+    // the path Nicole uses to switch resumes (tickets 11ead86 / 582ee40),
+    // and a silent reappearance here is precisely the bug John reported --
+    // every resume getting the same three government chips regardless of
+    // field.
+    expect(screen.getByRole("button", { name: 'Remove "Data Analyst"' })).toBeInTheDocument();
+    for (const notMine of ["Program Analyst", "IT Specialist", "Computer Scientist"]) {
+      expect(screen.queryByRole("button", { name: `Remove "${notMine}"` })).toBeNull();
+    }
   });
 
   // Dead end 2: a stale restored resumeId. The mount-only hydration effect
