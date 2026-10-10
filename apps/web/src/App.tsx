@@ -478,6 +478,23 @@ function JobSearchApp() {
     () => buildSearchCriteria({ titleChips, ...criteriaForm }),
     [titleChips, criteriaForm],
   );
+  // Ticket 4cafff3: memoized on the same deps as `criteria` above, and for a
+  // stronger reason than tidiness. SearchFlow's invalidation effect lists
+  // `formState` in its dependency array, so an inline object literal here
+  // would make that effect re-run on EVERY App render rather than only when
+  // the form actually changes. Harmless today -- `sameVisibleForm` compares
+  // by value -- but it leaves a trap: the natural "optimization" of that
+  // comparator to a reference check would then invalidate the estimate on
+  // any unrelated App re-render (a poll tick, a status write, results
+  // loading), making an estimate impossible to see at all. The PM review of
+  // this ticket confirmed by mutation that the App-level tests CANNOT catch
+  // that, because App happens not to re-render between the estimate landing
+  // and the assertion; only SearchFlow's own negative-control unit test
+  // does. Memoizing removes the trap rather than relying on that test.
+  const searchFormState = useMemo(
+    () => ({ titleChips, ...criteriaForm }),
+    [titleChips, criteriaForm],
+  );
 
   // Ticket 88f11d7: hydrates `resumeLocked` for a resumeId RESTORED from a
   // prior session/reload -- every other path that can set an active
@@ -2258,6 +2275,16 @@ function JobSearchApp() {
                 resumeId={resumeId}
                 sourceIds={[...selectedSourceIds]}
                 criteria={criteria}
+                // Ticket 4cafff3: the raw form, not just the derived
+                // `criteria` above -- see SearchFlow's own `formState` doc
+                // comment for why. Deliberately built the same shape
+                // `buildSearchCriteria` takes (titleChips + the whole
+                // `CriteriaFormState`), so every field this ticket's scope
+                // lists (nearLocations, expandMetroAreas, remoteOk,
+                // anyLocationOk, commitmentIn, titleChips) is covered by
+                // construction, not by an enumerated list that could drift
+                // out of sync with `CriteriaFormState` itself.
+                formState={searchFormState}
                 disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => {
                   setHasFreshSearchResults(false);

@@ -7,7 +7,12 @@ import type {
   SearchStatusResponse,
 } from "@app/shared";
 import { estimateSearch, getEstimateProgress, getSearchStatus, startSearch } from "../api/client";
-import { clearActiveSearchFor, readActiveSearch, writeActiveSearch } from "../session";
+import {
+  clearActiveSearchFor,
+  readActiveSearch,
+  writeActiveSearch,
+  type CriteriaFormState,
+} from "../session";
 import { SourceOutcomesList } from "./SourceOutcomesList";
 import { SearchSourceStatusList } from "./SearchSourceStatusList";
 
@@ -20,6 +25,33 @@ import { SearchSourceStatusList } from "./SearchSourceStatusList";
  * from splitting one text field in a stable left-to-right order, so the
  * same user input always produces the same array order. */
 function sameCriteria(a: SearchCriteria | undefined, b: SearchCriteria | undefined): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Ticket 4cafff3: every field the user can SEE change in the criteria form
+ * -- `CriteriaFormState` (session.ts) plus `titleChips`, which lives
+ * outside that type in App.tsx but is just as visible. This is deliberately
+ * the raw form, not the derived `SearchCriteria` payload: `buildSearchCriteria`
+ * (App.tsx) drops some of these fields from the request on purpose (e.g.
+ * `expandMetroAreas` with no city typed -- 410e1a2's conditional, which this
+ * ticket does not touch), so a `SearchCriteria`-only comparison is blind to
+ * a visible change that happens to leave the payload byte-identical. Using
+ * the form itself as the comparison basis can't have that gap: every field
+ * a user can toggle is a member of this type by construction.
+ */
+type VisibleSearchForm = CriteriaFormState & { titleChips: string[] };
+
+/** Same reasoning as `sameCriteria` above -- a small plain object of
+ * primitives/string arrays, so a structural `JSON.stringify` compare is
+ * correct and simpler than a field-by-field comparator. Order-sensitive
+ * within `titleChips`/`commitmentIn`, same acceptable reasoning as
+ * `sameCriteria`: App.tsx always builds these in a stable order for the
+ * same sequence of user actions. */
+function sameVisibleForm(
+  a: VisibleSearchForm | undefined,
+  b: VisibleSearchForm | undefined,
+): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
@@ -58,6 +90,16 @@ type Phase =
       resumeId: string;
       sourceIds: string[];
       criteria: SearchCriteria | undefined;
+      /** Ticket 4cafff3: the raw form snapshot, captured alongside
+       * `criteria` at the same moment and for the same reason (F1 above) --
+       * see `VisibleSearchForm`'s doc comment for why this is a SEPARATE
+       * field from `criteria` rather than a replacement for it: the two can
+       * legitimately disagree (a visible form change that leaves the
+       * derived payload unchanged), and the invalidation effect below checks
+       * both so neither kind of change goes unnoticed. Not threaded into
+       * `"starting"`/`"running"` -- nothing downstream of "estimated" ever
+       * reads it; it exists purely for the one comparison below. */
+      formState: VisibleSearchForm | undefined;
     }
   | {
       kind: "starting";
@@ -159,6 +201,7 @@ export function SearchFlow({
   resumeId,
   sourceIds,
   criteria,
+  formState,
   disableEstimate,
   onEstimateStart,
   onInvalidEstimateAttempt,
@@ -171,6 +214,22 @@ export function SearchFlow({
   resumeId: string;
   sourceIds: string[];
   criteria?: SearchCriteria;
+  /** Ticket 4cafff3: the live, raw criteria form -- everything the user can
+   * SEE on screen (`CriteriaFormState` plus `titleChips`), not the
+   * `SearchCriteria` App.tsx derives from it for the wire. The derived
+   * `criteria` prop above is what actually changes the request, but
+   * `buildSearchCriteria` deliberately omits some of these fields from the
+   * payload in some states (410e1a2: `expandMetroAreas` with no city typed
+   * "cannot change a single result", so it's left off) -- and in those
+   * states `criteria` can stay byte-identical across a visible toggle that
+   * the user clearly saw happen. Nicole's resolution on this ticket: "making
+   * it look like something happened is a good solution" -- i.e. invalidate
+   * on what the user can see change, not only on what the request ends up
+   * carrying. Optional, like `criteria`, so every existing caller/test that
+   * doesn't exercise this keeps working unchanged; the invalidation effect
+   * below treats two `undefined`s as equal, same as `sameCriteria` already
+   * does for the `criteria` prop. */
+  formState?: VisibleSearchForm;
   /** Ticket b9e6251: App.tsx sets this when the location criteria has no
    * real signal (no commute locations, remote not checked, "Any location"
    * not checked). Ticket 371713d changed HOW this blocks the estimate --
@@ -475,7 +534,17 @@ export function SearchFlow({
       // reference to the live `resumeId`/`sourceIds`/`criteria` closed over
       // above, which are exactly the same values right now but will
       // silently diverge if props change before confirm.
-      setPhase({ kind: "estimated", estimate, resumeId, sourceIds: [...sourceIds], criteria });
+      setPhase({
+        kind: "estimated",
+        estimate,
+        resumeId,
+        sourceIds: [...sourceIds],
+        criteria,
+        // Ticket 4cafff3: snapshotted for the same reason `criteria` is on
+        // the line above -- see the "estimated" phase's `formState` doc
+        // comment.
+        formState,
+      });
     } catch (err) {
       stopEstimateProgressPolling();
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -588,6 +657,24 @@ export function SearchFlow({
     // startSearch priced for the OLD criteria against the NEW, possibly
     // much larger or smaller, real candidate set.
     const sameCriteriaValue = sameCriteria(phase.criteria, criteria);
+    // Ticket 4cafff3: `sameCriteriaValue` alone is blind to a visible form
+    // change that leaves the DERIVED request unchanged -- e.g. toggling
+    // "include nearby cities" with no city typed, which `buildSearchCriteria`
+    // (410e1a2) deliberately omits from `criteria` either way, since it
+    // "cannot change a single result" with nothing to expand. John's
+    // testing hit exactly this: he toggled a checkbox, nothing on screen
+    // responded, and the app looked broken even though the (unchanged)
+    // estimate was still correct. Nicole's resolution: "making it look like
+    // something happened is a good solution" -- so this checks the FORM
+    // itself, not just what the form happens to produce on the wire. Kept
+    // ALONGSIDE `sameCriteriaValue`, not instead of it: SearchFlow's own
+    // tests (ticket 957bc22) exercise `criteria` changing with no
+    // `formState` prop supplied at all, and that must keep invalidating on
+    // its own -- every real caller (App.tsx) passes both, always derived
+    // from the same underlying state, so in production the two can never
+    // disagree about WHETHER something changed, only about whether the
+    // wire payload happened to change too.
+    const sameFormStateValue = sameVisibleForm(phase.formState, formState);
     // Ticket b9e6251 fable/opus review F1 (blocking): `disableEstimate`
     // (App.tsx's `!hasLocationSignal`) is NOT part of `criteria` --
     // `anyLocationOk` is a pure frontend gate that never reaches the
@@ -597,7 +684,13 @@ export function SearchFlow({
     // unrestricted search the warning above it says is disabled -- the
     // screen contradicted itself, and clicking through actually spent
     // money on a criteria the UI was simultaneously calling invalid.
-    if (!sameResume || !sameSources || !sameCriteriaValue || disableEstimate) {
+    if (
+      !sameResume ||
+      !sameSources ||
+      !sameCriteriaValue ||
+      !sameFormStateValue ||
+      disableEstimate
+    ) {
       setPhase({ kind: "idle" });
     }
     // `phase` IS in this dependency array (review round 3, git-bug 484889d):
@@ -624,7 +717,7 @@ export function SearchFlow({
     // (eslint.config.js is @eslint/js + typescript-eslint only), so there
     // is no exhaustive-deps rule enforcing this either way — the deps array
     // is maintained by hand.
-  }, [resumeId, sourceIds, criteria, disableEstimate, phase]);
+  }, [resumeId, sourceIds, criteria, formState, disableEstimate, phase]);
 
   /**
    * `fromStorage` marks a run this mount adopted from `sessionStorage`
