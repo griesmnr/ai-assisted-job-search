@@ -62,9 +62,16 @@ import {
 } from "@app/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { SQL } from "drizzle-orm";
-import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { jobMatches, jobs as jobsTable, resumes, searches, userJobStatuses } from "../db/schema.js";
+import {
+  jobMatches,
+  jobs as jobsTable,
+  resumes,
+  searches,
+  searchResults,
+  userJobStatuses,
+} from "../db/schema.js";
 import { SOURCE_DESCRIPTORS } from "../db/seed.js";
 import { requireUserId } from "../identity.js";
 import { getOrCreateResumeId, hashResumeText } from "../matching/index.js";
@@ -806,6 +813,21 @@ export function registerResumeRoutes(
     minScore?: string;
     status?: string;
     includeDismissed?: string;
+    /**
+     * Ticket 9e5fcf3 (part (b)): scopes `GET /resumes/:id/results` to one
+     * search's own `search_results` links. Parsed here (shared with `GET
+     * /results`, below) but only ever FORWARDED into `fetchScoredResults`
+     * by the single-resume route -- `GET /results` ("Already Scored Jobs")
+     * must stay cumulative across searches and resumes (Nicole confirmed
+     * this directly when asked), so that handler deliberately drops this
+     * field on the floor rather than acting on it. Existence/ownership
+     * (does this search even belong to this resume?) is NOT checked in
+     * `parseResultsQuery` below -- that needs a DB round trip, unlike every
+     * other field this function validates against a static list, so it's
+     * checked once, directly in the single-resume route handler, the same
+     * place `resumeId` itself is already existence/ownership-checked.
+     */
+    searchId?: string;
   };
 
   type ParsedResultsQuery =
@@ -815,6 +837,7 @@ export function registerResumeRoutes(
         minScoreNum?: number;
         statusFilter?: UserJobStatus;
         includeDismissedFlag: boolean;
+        searchId?: string;
       }
     | { ok: false; error: string };
 
@@ -823,7 +846,7 @@ export function registerResumeRoutes(
   // validations. Behavior is byte-for-byte what the single-resume route
   // always did.
   function parseResultsQuery(query: ResultsQuerystring): ParsedResultsQuery {
-    const { source, minScore, status, includeDismissed } = query;
+    const { source, minScore, status, includeDismissed, searchId } = query;
 
     // Ticket 484889d: validated the same way ?source= is below — an
     // unrecognized status string must 400, not silently match nothing.
@@ -866,6 +889,7 @@ export function registerResumeRoutes(
       minScoreNum,
       statusFilter: status as UserJobStatus | undefined,
       includeDismissedFlag: includeDismissed === "true",
+      searchId,
     };
   }
 
@@ -912,6 +936,16 @@ export function registerResumeRoutes(
     minScoreNum?: number;
     statusFilter?: UserJobStatus;
     includeDismissedFlag: boolean;
+    /**
+     * Ticket 9e5fcf3 (part (b)): `undefined` means "every search this
+     * resume has ever run" (the pre-9e5fcf3 behavior, and still what `GET
+     * /results` always passes -- see `ResultsQuerystring.searchId`'s own
+     * doc comment for why that route never forwards a caller-supplied
+     * value here). The single-resume route sets this once it's confirmed
+     * (via `searches.resumeId`) that the search actually belongs to the
+     * resume being queried.
+     */
+    searchId?: string;
   };
 
   // Ticket 3f0883f: the query + row-mapping logic both `GET
@@ -992,6 +1026,28 @@ export function registerResumeRoutes(
     if (filters.source !== undefined) conditions.push(eq(jobsTable.dataSource, filters.source));
     if (filters.minScoreNum !== undefined)
       conditions.push(gte(jobMatches.matchScore, filters.minScoreNum));
+    // Ticket 9e5fcf3 (part (b)): an `inArray` subquery against
+    // `search_results`, not a fourth `innerJoin` -- that table links
+    // `(searchId, jobId)` pairs, and a search can legitimately link the
+    // SAME job twice over its lifetime only once per `unique(searchId,
+    // jobId)` (schema.ts), so joining it can't multiply `jobMatches` rows
+    // the way the `userJobStatuses` join comment above warns a badly-scoped
+    // join could -- but it also adds nothing a join wouldn't already risk
+    // if that invariant ever changed, where a subquery structurally cannot.
+    // `search_results` already exists for an unrelated reason
+    // (ingestJobs.ts's idempotent re-link on a redelivered `fetch.source`
+    // message) -- this reuses it rather than adding new plumbing.
+    if (filters.searchId !== undefined) {
+      conditions.push(
+        inArray(
+          jobsTable.id,
+          db
+            .select({ jobId: searchResults.jobId })
+            .from(searchResults)
+            .where(eq(searchResults.searchId, filters.searchId)),
+        ),
+      );
+    }
 
     const rows = await db
       .select({
@@ -1102,6 +1158,26 @@ export function registerResumeRoutes(
       }
       if (filters.source !== undefined)
         hiddenConditions.push(eq(jobsTable.dataSource, filters.source));
+      // Ticket 9e5fcf3 (part (b)): same subquery as the main query's
+      // `conditions` above, and for the same reason -- without it, a
+      // floor-scoped-but-search-scoped request would report "N hidden
+      // below your floor" counting jobs from OTHER searches on this same
+      // resume, which the main query (correctly) never shows at all. Kept
+      // as its own push here (not factored into a shared helper with the
+      // main query's) because `hiddenConditions` already builds its array
+      // independently rather than cloning `conditions` -- same shape every
+      // other per-filter condition in this block already takes.
+      if (filters.searchId !== undefined) {
+        hiddenConditions.push(
+          inArray(
+            jobsTable.id,
+            db
+              .select({ jobId: searchResults.jobId })
+              .from(searchResults)
+              .where(eq(searchResults.searchId, filters.searchId)),
+          ),
+        );
+      }
       const hiddenRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(jobMatches)
@@ -1180,6 +1256,31 @@ export function registerResumeRoutes(
     // nicknames."
     const resumeNickname = resumeRows[0]!.resumeNickname;
 
+    // Ticket 9e5fcf3 (part (b)): `?searchId=` existence/ownership check --
+    // the one piece `parseResultsQuery` above can't do itself (it's a pure
+    // function with no DB access; every other field it validates is a
+    // static list). Scoped by BOTH `id` and `resumeId` in one query, same
+    // shape as the `resumeRows` ownership check just above it: a search
+    // that exists but belongs to a DIFFERENT resume (this user's own other
+    // resume, or -- `searches.resumeId` is a plain FK, not further scoped
+    // by `userId` -- another user's entirely) must 404 exactly like a
+    // search that doesn't exist at all, rather than silently falling back
+    // to "every search" (the pre-9e5fcf3 behavior) or leaking which
+    // resume a foreign searchId actually belongs to via a different error
+    // shape.
+    if (parsed.searchId !== undefined) {
+      const searchRows = await db
+        .select({ id: searches.id })
+        .from(searches)
+        .where(and(eq(searches.id, parsed.searchId), eq(searches.resumeId, resumeId)))
+        .limit(1);
+      if (searchRows.length === 0) {
+        return reply
+          .code(404)
+          .send({ error: `No search with id "${parsed.searchId}" for this resume.` });
+      }
+    }
+
     const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
       userId,
       resumeId,
@@ -1187,6 +1288,7 @@ export function registerResumeRoutes(
       minScoreNum: parsed.minScoreNum,
       statusFilter: parsed.statusFilter,
       includeDismissedFlag: parsed.includeDismissedFlag,
+      searchId: parsed.searchId,
     });
 
     const response: GetResumeResultsResponse = {
@@ -1230,6 +1332,11 @@ export function registerResumeRoutes(
     const parsed = parseResultsQuery(request.query);
     if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
 
+    // Ticket 9e5fcf3 (part (b)): `parsed.searchId` is deliberately NOT
+    // forwarded here -- "Already Scored Jobs" stays cumulative across every
+    // search and every resume (Nicole confirmed this directly when asked),
+    // so this route ignores a `?searchId=` even if one is somehow present
+    // on the request. See `ResultsQuerystring.searchId`'s own doc comment.
     const { results, hiddenBelowFloor, totalMatchingCount } = await fetchScoredResults({
       userId,
       source: parsed.source,

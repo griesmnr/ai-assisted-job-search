@@ -202,8 +202,50 @@ export type GetResultsParams = {
    * dismissed job comes back too, with its real status, instead of leaving
    * the visible set entirely. */
   includeDismissed?: boolean;
+  /**
+   * Ticket 9e5fcf3: narrows the single-resume results view to ONE search's
+   * own links (via `search_results`), rather than every search ever run
+   * against this resume -- see `getResults`'s own doc comment for why this
+   * lives here and not as a client-side filter. Deliberately typed onto the
+   * SHARED params object (`getAllResults` below reuses this same type) but
+   * only `getResults` actually forwards it onto the wire -- "Already Scored
+   * Jobs" stays cumulative across searches and resumes (Nicole confirmed
+   * this directly), so `GET /results` ignores this field even if a caller
+   * mistakenly set it, rather than needing a second, near-duplicate params
+   * type just to omit one field.
+   */
+  searchId?: string;
 };
 
+/**
+ * Ticket 9e5fcf3: `?searchId=` scopes this one resume's results to a SINGLE
+ * search (server-side, via `GET /resumes/:id/results`'s join against
+ * `search_results` -- see that route's own comment in
+ * apps/api/src/routes/resumes.ts for the full argument against the
+ * alternative, a client-side job-id filter).
+ *
+ * THE ALTERNATIVE CONSIDERED AND REJECTED: having App.tsx hold the set of
+ * job ids `GET /searches/:id`'s completion response already names
+ * (`linked`/per-job ids aren't actually returned, only a count -- so this
+ * would have needed a NEW field on `SearchStatusResponse` just to carry
+ * them) and filtering `resultsState.data.results` down to that set in
+ * memory. Two reasons server-side wins:
+ *
+ *  1. It already exists. `search_results` links `searchId` to `jobId` for
+ *     every job a search touched (ingestJobs.ts), entirely for a different
+ *     reason (idempotent re-linking on a redelivered `fetch.source`
+ *     message) -- reusing it here is one WHERE clause, not new plumbing.
+ *  2. Ticket d37511b's own notes (cited in this ticket's Scope) are about
+ *     exactly this class of state surviving a reload. A client-held job-id
+ *     set lives in React state alone (same as `hasFreshSearchResults`
+ *     already does, deliberately NOT persisted -- see App.tsx) -- a reload
+ *     mid-session would either lose the scope entirely (silently falling
+ *     back to "every search on this resume," reproducing (b)'s own bug) or
+ *     need its own sessionStorage entry to carry a potentially-large job-id
+ *     array around. The server already knows which jobs belong to which
+ *     search, durably, with no extra storage -- asking it beats
+ *     re-deriving and re-persisting the same fact client-side.
+ */
 export function getResults(
   resumeId: string,
   params: GetResultsParams = {},
@@ -213,6 +255,7 @@ export function getResults(
   if (params.minScore !== undefined) query.set("minScore", String(params.minScore));
   if (params.status !== undefined) query.set("status", params.status);
   if (params.includeDismissed) query.set("includeDismissed", "true");
+  if (params.searchId !== undefined) query.set("searchId", params.searchId);
   const qs = query.toString();
   return request<GetResumeResultsResponse>(
     `/resumes/${encodeURIComponent(resumeId)}/results${qs ? `?${qs}` : ""}`,

@@ -54,10 +54,27 @@ export type ResultsState =
  * first fetch for a given `resumeId` (starting from "idle") shows "loading".
  * This carries over cleanly to a `minScore` change (ticket ffbf9fb): moving
  * the slider updates the list in place rather than flashing it away.
+ *
+ * `searchId` (ticket 9e5fcf3): in the dependency array for the same reason
+ * `minScore` is -- App.tsx sets it the moment a search completes
+ * (`handleSearchComplete`), scoping "Results from this search" to that one
+ * search's own links rather than every search this resume has ever run.
+ * `undefined` means "no search scope" (every match for this resume, the
+ * pre-9e5fcf3 behavior) -- the honest state before any search has completed
+ * THIS session (App.tsx's `lastSearchId` starts `undefined` and is never
+ * persisted; see its own comment for why not). App.tsx only ever renders
+ * this hook's data for "Results from this search" while
+ * `hasFreshSearchResults` is true, which itself never flips true without a
+ * real `searchId` in hand, so by the time anyone is actually looking at
+ * `state` for that purpose `searchId` is always defined -- `undefined`
+ * stays reachable only for the window before that, where there is nothing
+ * to scope to and "every match for this resume" is the honest (if unused)
+ * answer.
  */
 export function useResults(
   resumeId: string | undefined,
   minScore: number,
+  searchId: string | undefined,
 ): {
   state: ResultsState;
   refresh: () => void;
@@ -72,7 +89,7 @@ export function useResults(
     }
     let cancelled = false;
     setState((prev) => (prev.status === "ready" ? prev : { status: "loading" }));
-    getResults(resumeId, { minScore, includeDismissed: true })
+    getResults(resumeId, { minScore, includeDismissed: true, searchId })
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
       })
@@ -87,7 +104,7 @@ export function useResults(
     return () => {
       cancelled = true;
     };
-  }, [resumeId, minScore, refreshToken]);
+  }, [resumeId, minScore, searchId, refreshToken]);
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 

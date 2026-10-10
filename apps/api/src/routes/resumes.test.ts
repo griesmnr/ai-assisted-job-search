@@ -19,6 +19,7 @@ import {
   jobs as jobsTable,
   resumes,
   searches,
+  searchResults,
   sourceDescriptors,
   userJobStatuses,
 } from "../db/schema.js";
@@ -2333,6 +2334,171 @@ describe("GET /resumes/:id/results", () => {
       "This posting asks for 1.5-2 years; you have far more.",
     );
   });
+
+  // Ticket 9e5fcf3 (part (b)): `?searchId=` scopes this resume's results to
+  // ONE search's own `search_results` links -- the server-side fix for "he
+  // was expecting to see results from only this search, and he was seeing
+  // results from all of his searches" (Nicole, relaying John's testing).
+  // `seedSearchWithJob` below mirrors `seedScoredJob` above but also links
+  // the job to a real `searches` row via `search_results`, the same table
+  // `ingestJobs.ts` writes during a real run -- these tests reuse it rather
+  // than inventing a parallel fixture.
+  describe("?searchId= (ticket 9e5fcf3, part (b))", () => {
+    async function seedSearchWithJob(
+      resumeId: string,
+      searchId: string,
+      matchScore: number,
+      title: string,
+    ): Promise<string> {
+      const jobId = await seedScoredJob(resumeId, matchScore, title);
+      await db.insert(searches).values({ id: searchId, resumeId, searchedAt: new Date() });
+      await db.insert(searchResults).values({ id: randomUUID(), searchId, jobId });
+      return jobId;
+    }
+
+    it("scopes to exactly the named search's own jobs -- a second search on the same resume does not pool with the first", async () => {
+      const app = buildTestApp();
+      const resumeText = `Search-scoped resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      const search1 = randomUUID();
+      const search2 = randomUUID();
+      const job1 = await seedSearchWithJob(resumeId, search1, 80, "First search's job");
+      const job2 = await seedSearchWithJob(resumeId, search2, 75, "Second search's job");
+
+      const firstView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?searchId=${search1}`,
+      });
+      expect(firstView.statusCode).toBe(200);
+      const firstBody = firstView.json() as { results: Array<{ jobId: string }> };
+      expect(firstBody.results.map((r) => r.jobId)).toEqual([job1]);
+
+      const secondView = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?searchId=${search2}`,
+      });
+      const secondBody = secondView.json() as { results: Array<{ jobId: string }> };
+      expect(secondBody.results.map((r) => r.jobId)).toEqual([job2]);
+
+      // No `?searchId=` at all -- the pre-9e5fcf3 behavior -- still returns
+      // every search's jobs pooled together. Proves the new param narrows
+      // rather than having quietly become the only way to see anything.
+      const unscoped = await app.inject({ method: "GET", url: `/resumes/${resumeId}/results` });
+      const unscopedBody = unscoped.json() as { results: Array<{ jobId: string }> };
+      expect(new Set(unscopedBody.results.map((r) => r.jobId))).toEqual(new Set([job1, job2]));
+    });
+
+    it("counts hiddenBelowFloor scoped to the named search too, not the resume's other searches", async () => {
+      const app = buildTestApp();
+      const resumeText = `Search-scoped floor resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      const search1 = randomUUID();
+      const search2 = randomUUID();
+      // search1: one job above the floor, one below it.
+      const aboveFloorJob1 = await seedSearchWithJob(
+        resumeId,
+        search1,
+        80,
+        "Above floor, search 1",
+      );
+      const belowFloorJob1 = randomUUID();
+      await db.insert(jobsTable).values({
+        id: belowFloorJob1,
+        externalId: `results-test-${belowFloorJob1}`,
+        dataSource: DATA_SOURCE,
+        title: "Below floor, search 1",
+        description: "a job description",
+        company: "Test Co",
+        linkToApply: `https://example.com/${belowFloorJob1}`,
+        postedAt: new Date("2026-01-01T00:00:00Z"),
+      });
+      await db.insert(jobMatches).values({
+        id: randomUUID(),
+        resumeId,
+        jobId: belowFloorJob1,
+        matchScore: 30,
+        rationale: "fake rationale",
+        strengths: [],
+        gaps: [],
+      });
+      await db
+        .insert(searchResults)
+        .values({ id: randomUUID(), searchId: search1, jobId: belowFloorJob1 });
+      // search2: a DIFFERENT job, also below the floor -- must NOT be
+      // counted when querying search1's hiddenBelowFloor.
+      await seedSearchWithJob(resumeId, search2, 20, "Below floor, search 2");
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?searchId=${search1}&minScore=55`,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as {
+        results: Array<{ jobId: string }>;
+        hiddenBelowFloor: number;
+      };
+      expect(body.results.map((r) => r.jobId)).toEqual([aboveFloorJob1]);
+      // Would be 2 if search2's below-floor job leaked in.
+      expect(body.hiddenBelowFloor).toBe(1);
+    });
+
+    it("404s for a searchId that exists but belongs to a different resume", async () => {
+      const app = buildTestApp();
+      const ownResumeText = `Owns the resume ${randomUUID()}`;
+      const ownCreated = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: ownResumeText },
+      });
+      const ownResumeId = (ownCreated.json() as { id: string }).id;
+
+      const otherResumeText = `A different resume ${randomUUID()}`;
+      const otherCreated = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText: otherResumeText },
+      });
+      const otherResumeId = (otherCreated.json() as { id: string }).id;
+
+      const foreignSearchId = randomUUID();
+      await seedSearchWithJob(otherResumeId, foreignSearchId, 80, "Belongs to the other resume");
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/resumes/${ownResumeId}/results?searchId=${foreignSearchId}`,
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it("404s for a searchId that does not exist at all", async () => {
+      const app = buildTestApp();
+      const resumeText = `No such search resume ${randomUUID()}`;
+      const created = await app.inject({
+        method: "POST",
+        url: "/resumes",
+        payload: { resumeText },
+      });
+      const resumeId = (created.json() as { id: string }).id;
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/resumes/${resumeId}/results?searchId=${randomUUID()}`,
+      });
+      expect(response.statusCode).toBe(404);
+    });
+  });
 });
 
 // Ticket b182bde: `ORDER BY match_score DESC, level_fit_rank ASC, job_id
@@ -2877,6 +3043,36 @@ describe("GET /results (ticket 3f0883f)", () => {
     );
     expect(withDismissedIds.has(dismissedUnderFirst)).toBe(true);
     expect(withDismissedIds.has(dismissedUnderSecond)).toBe(true);
+  });
+
+  // Ticket 9e5fcf3 (part (b)/hard constraint): "Already Scored Jobs" stays
+  // cumulative across searches AND resumes -- Nicole confirmed this
+  // directly when asked, in the SAME conversation that asked for the New
+  // Job Search tab's own list to narrow. `?searchId=` is a real param this
+  // route's own `ResultsQuerystring` shares with the single-resume route
+  // (so a caller COULD attach it), but this handler must never act on it.
+  it("ignores a ?searchId= even if one is present -- never narrows, unlike the single-resume route", async () => {
+    const app = buildTestApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/resumes",
+      payload: { resumeText: `searchId-ignored-on-/results resume ${randomUUID()}` },
+    });
+    const { id: resumeId } = created.json() as CreateResumeResponse;
+    const jobId = await seedJobRow("Scored under some search");
+    await seedMatch(resumeId, jobId, 70);
+
+    // A searchId that doesn't even exist -- if this route acted on it the
+    // way the single-resume route does, this would 404. It must not.
+    const response = await app.inject({
+      method: "GET",
+      url: `/results?searchId=${randomUUID()}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const ids = new Set(
+      (response.json() as { results: Array<{ jobId: string }> }).results.map((r) => r.jobId),
+    );
+    expect(ids.has(jobId)).toBe(true);
   });
 });
 

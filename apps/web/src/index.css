@@ -712,6 +712,44 @@ button[aria-disabled="true"] {
   font-weight: 600;
 }
 
+/* Ticket 9e5fcf3 (part (a)): the "Search complete" heading used to be a
+   plain `<h3>`, reading identically to every other heading on the page --
+   exactly the "not noticeable" complaint (Nicole, relaying John's testing:
+   "he was often just waiting there and didn't realize it was complete").
+   Same green used for `.search-source-status-complete` above (this file's
+   own existing "finished successfully" color), reused rather than a new
+   one so a user who's already seen that badge recognizes the same signal
+   here. Bold/larger on top of the color change, not color alone -- a user
+   relying on weight/size rather than hue (color-blind or otherwise) still
+   gets a distinct cue. See SearchFlow.tsx's own comment at this heading's
+   JSX for why `role="status"` (screen-reader half of "noticeable") lives
+   there instead of here. */
+.search-complete-heading {
+  color: #1f7a4d;
+  font-size: 1.15em;
+}
+
+/* The explicit "reachable without hunting" half of the same fix -- see
+   SearchFlow.tsx's JSX comment at this button's render site for the full
+   argument against auto-scrolling instead. Styled as a real call to
+   action (filled, same green as the heading above it) since it's the one
+   button on this panel actually worth noticing over "Done". */
+.view-results-button {
+  display: block;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #1f7a4d;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-results-button:hover {
+  background: color-mix(in srgb, #1f7a4d 85%, black);
+}
+
 .source-outcomes ul {
   padding-left: 1.1rem;
   font-size: 0.85rem;

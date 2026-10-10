@@ -165,6 +165,8 @@ export function SearchFlow({
   onSearchComplete,
   onRunningChange,
   onRealSearchStarted,
+  freshResultsCount,
+  onViewResults,
 }: {
   resumeId: string;
   sourceIds: string[];
@@ -200,7 +202,15 @@ export function SearchFlow({
    * side of the callback. Optional so every other existing caller/test
    * (none of which care about scrolling) keeps working unchanged. */
   onInvalidEstimateAttempt?: () => void;
-  onSearchComplete: () => void;
+  /** Ticket 9e5fcf3: now carries the completed run's OWN `searchId` --
+   * App.tsx needs it to scope "Results from this search" to that one
+   * search's links (`useResults`'s new `searchId` parameter), not every
+   * search this resume has ever run (ticket 3f0883f's bug: "he was
+   * expecting to see results from only this search"). The one call site
+   * (`poll` below) already has it on hand -- `result.searchId`, part of
+   * every `SearchStatusResponse` member -- so this is free to thread
+   * through. */
+  onSearchComplete: (searchId: string) => void;
   /** Ticket 88f11d7 (Nicole: "I don't think that we should allow a change
    * of resume while a search is in progress"): fired whenever this
    * component's own real-search phase (`"starting"` -- the `POST
@@ -234,6 +244,45 @@ export function SearchFlow({
    * comment). Optional so every existing caller/test keeps working
    * unchanged. */
   onRealSearchStarted?: () => void;
+  /**
+   * Ticket 9e5fcf3 (part (a)): the count the "done"/"complete" panel's
+   * "View N results" button reports -- `undefined` while App.tsx's own
+   * `resultsState` hasn't resolved yet (a real possibility: this panel can
+   * render before the post-completion `getResults` refetch lands), in
+   * which case the button is withheld rather than guessing or showing a
+   * stale number. Also withheld at `0` -- "View 0 results" has nothing to
+   * view, and the plain "No jobs matched this search." text already below
+   * (once the user does look) says that more honestly than a button would.
+   *
+   * THIS COMPONENT DOES NOT COMPUTE THIS ITSELF: SearchFlow has never known
+   * the results list exists at all -- it is a sibling in App.tsx, not a
+   * child -- and ticket 9e5fcf3's own notes are explicit that this is
+   * expected, not a gap to fix by reaching into SearchFlow for it. App.tsx
+   * derives it from the SAME `resultsState` the results section itself
+   * renders, so the two can't disagree about what "N" means.
+   */
+  freshResultsCount?: number;
+  /**
+   * Ticket 9e5fcf3 (part (a)): fired by the "View N results" button's
+   * click -- App.tsx owns a ref to the results section below this
+   * component (a plain DOM scroll target, same "sibling coordination
+   * through App.tsx" shape `locationSectionRef`/
+   * `onInvalidEstimateAttempt` already use) and scrolls to it.
+   *
+   * NO GUARD NEEDED HERE, unlike `activeTabRef`'s "only act if nothing
+   * changed since the click" pattern (ticket 11ead86) that this ticket's
+   * own notes point at as prior art. That pattern exists to protect an
+   * ASYNC action (resolving well after the click, during which the user
+   * can navigate away) from acting on stale intent. A click handler that
+   * synchronously calls `scrollIntoView` has no such gap -- there is
+   * nothing for the user to do between the click and the scroll for this
+   * to race against. The actual auto-scroll hazard that pattern would have
+   * guarded against (completion itself, which fires from a background
+   * poll with no click at all) is the exact scenario this design rejects
+   * auto-scroll for -- see the "View N results" button's own JSX comment,
+   * near its render site below, for the full argument.
+   */
+  onViewResults?: () => void;
 }) {
   // Ticket 3f05144: the first thing this component does on EVERY mount is
   // ask `sessionStorage` whether a real, already-paid-for run is still in
@@ -655,7 +704,7 @@ export function SearchFlow({
         pollRef.current = undefined;
       }
       setPhase({ kind: "done", estimate, result });
-      if (result.status === "complete") onSearchComplete();
+      if (result.status === "complete") onSearchComplete(result.searchId);
     } catch (err) {
       if (pollRef.current !== undefined) {
         window.clearInterval(pollRef.current);
@@ -869,7 +918,87 @@ export function SearchFlow({
                   surface, not the ability to diagnose"), same as the
                   per-source `errorKind`/`errorMessage` detail already
                   shown below for a dead-lettered source. */}
-              <h3>Search complete{phase.result.degraded ? " (with some failures)" : ""}</h3>
+              {/* Ticket 9e5fcf3 (part (a)). Nicole, relaying John's testing:
+                  "he was often just waiting there and didn't realize it was
+                  complete... I had to keep telling John to scroll down."
+                  Two separate problems, two separate fixes on this one
+                  line and the button right after it:
+
+                  NOTICEABLE: `aria-live="polite"` (not just the existing
+                  `aria-label="Search finished"` on the outer div, which is
+                  a static label, not a live region) -- so a screen reader
+                  announces the transition the instant it happens, not only
+                  if/when the user happens to tab back onto this panel.
+                  Deliberately `aria-live`, NOT this file's usual
+                  `role="status"` convention (the "estimating" spinner text
+                  and the `degraded` note just below both use it): `status`
+                  is itself an ARIA role, and setting ANY explicit role on
+                  an element overrides its implicit one -- `role="status"`
+                  on an `<h3>` would make it stop being exposed as a
+                  heading at all, which a real regression caught exactly
+                  this way (SearchFlow.test.tsx's own
+                  `getByRole("heading", { name: "Search complete" })`
+                  started failing the moment this was tried with
+                  `role="status"`, red before this fix and green after).
+                  `aria-live` is a plain attribute, not a role, so it adds
+                  the live-region behavior without taking the heading role
+                  away -- a screen reader user navigating by heading still
+                  finds this one. `.search-complete-heading` (index.css)
+                  gives it a visibly distinct green, bolder treatment for a
+                  sighted user scanning the page -- the plain `<h3>` before
+                  this ticket read identically to every other heading on
+                  screen, which is exactly "renders as a heading change"
+                  Nicole's report named as not noticeable enough.
+
+                  REACHABLE WITHOUT HUNTING: the "View N results" button
+                  right after it, scrolling to the results section App.tsx
+                  owns (`onViewResults`) -- argued over auto-scrolling
+                  straight to the results the moment this phase is entered:
+
+                  Auto-scroll DOES complete the action the user initiated,
+                  which is a real point in its favor, but it fires from
+                  `poll()` -- a background interval tick, not a click -- so
+                  "the moment this phase is entered" can land while the
+                  user has scrolled away to reread something above (editing
+                  criteria for next time, say), or even while this whole
+                  tab is `hidden` (App.tsx keeps SearchFlow mounted and
+                  polling under "Already Scored Jobs"/"My Resumes" too --
+                  see its own comment on why). Hijacking the user's scroll
+                  position out from under them the instant a background
+                  poll resolves is the "hostile if they've scrolled away
+                  meanwhile" case this ticket's own notes warn about, and a
+                  `scrollIntoView` fired against a `display: none` ancestor
+                  (the hidden-tab case) is either a silent no-op or, on some
+                  engines, a scroll that only becomes visible later when the
+                  user switches tabs for an unrelated reason -- neither is
+                  an improvement over doing nothing.
+
+                  An explicit button sidesteps both failure modes for free,
+                  not just in principle: it only exists inside this
+                  `hidden`-toggled tab panel (App.tsx's `<div hidden=
+                  {activeTab !== "search"}>` wraps this whole component), so
+                  while the tab is hidden the button is non-interactive and
+                  out of the a11y tree exactly like the rest of this panel
+                  -- no guard code needed to keep a background completion
+                  from doing anything to the screen the user is actually
+                  looking at. And because the click is synchronous
+                  (`scrollIntoView` runs in the same tick as the click), it
+                  needs none of `activeTabRef`'s (ticket 11ead86)
+                  "capture-then-compare" guard either -- that pattern exists
+                  to protect an async action from a user who moved on DURING
+                  the wait; there is no wait here for them to move on
+                  during. The one real cost -- an extra click between
+                  "notice completion" and "see results," versus zero for
+                  auto-scroll -- is a small, bounded price for never
+                  surprising a user who didn't ask to be moved. */}
+              <h3 className="search-complete-heading" aria-live="polite">
+                Search complete{phase.result.degraded ? " (with some failures)" : ""}
+              </h3>
+              {freshResultsCount !== undefined && freshResultsCount > 0 && (
+                <button type="button" className="view-results-button" onClick={onViewResults}>
+                  View {freshResultsCount} result{freshResultsCount === 1 ? "" : "s"}
+                </button>
+              )}
               {phase.result.degraded && (
                 <p className="search-degraded-note" role="status">
                   {phase.result.failed} of {phase.result.linked} job
