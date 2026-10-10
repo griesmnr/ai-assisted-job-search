@@ -17,6 +17,131 @@ import {
  * was not touched by this ticket).
  */
 
+/**
+ * Dataset invariants (ticket e5e1aa1 review round 2, Required 3/D5). The
+ * deleted hand-curated table had a test asserting exactly this CLASS of
+ * thing for its own 20 strings ("every city is lowercase plain words, which
+ * is what makes a bare \\b anchor correct") -- it was removed along with the
+ * table instead of being re-pointed at the new, much larger dataset, which
+ * left this module with LESS data-shape protection than when the data was
+ * 20 hand-written literals. A test asserting all 51 state codes are present
+ * would have caught the Hawaii gap (review round 2, D1) immediately, offline,
+ * instead of needing a live report; a name-shape assertion would have
+ * caught Juneau resolving to Wisconsin (D2) the same way.
+ */
+describe("CITY_COORDINATES -- dataset invariants", () => {
+  it("has all 51 state codes (50 states + DC) -- would have caught the Hawaii gap", () => {
+    const VALID_STATES = new Set([
+      "AL",
+      "AK",
+      "AZ",
+      "AR",
+      "CA",
+      "CO",
+      "CT",
+      "DE",
+      "DC",
+      "FL",
+      "GA",
+      "HI",
+      "ID",
+      "IL",
+      "IN",
+      "IA",
+      "KS",
+      "KY",
+      "LA",
+      "ME",
+      "MD",
+      "MA",
+      "MI",
+      "MN",
+      "MS",
+      "MO",
+      "MT",
+      "NE",
+      "NV",
+      "NH",
+      "NJ",
+      "NM",
+      "NY",
+      "NC",
+      "ND",
+      "OH",
+      "OK",
+      "OR",
+      "PA",
+      "RI",
+      "SC",
+      "SD",
+      "TN",
+      "TX",
+      "UT",
+      "VT",
+      "VA",
+      "WA",
+      "WV",
+      "WI",
+      "WY",
+    ]);
+    const present = new Set(CITY_COORDINATES.map((r) => r.state));
+    expect(present.size).toBe(51);
+    for (const state of present) expect(VALID_STATES.has(state), state).toBe(true);
+    for (const state of VALID_STATES) expect(present.has(state), state).toBe(true);
+  });
+
+  it("row count matches the header's documented count (19,670)", () => {
+    // A row count drifting out of sync with the header's own claimed count
+    // is a sign something was regenerated without the doc comment being
+    // updated to match -- exactly what happened across this ticket's own
+    // review rounds, caught here so it can't happen silently again.
+    expect(CITY_COORDINATES.length).toBe(19670);
+  });
+
+  it("every name is lowercase letters/apostrophes/hyphens/spaces only, with no leftover stripped-suffix residue", () => {
+    for (const { state, name } of CITY_COORDINATES) {
+      expect(name, `${state}: "${name}"`).toMatch(/^[a-z][a-z' -]*$/);
+      // The specific shape a BROKEN multi-word LSAD-suffix stripper leaves
+      // behind ("Juneau city and borough" -> only "borough" stripped ->
+      // "juneau city and") -- a trailing dangling function word is never a
+      // real place name's own ending.
+      expect(name, `${state}: "${name}"`).not.toMatch(/ (and|of|the|a|in|to|on)$/);
+    }
+  });
+
+  it("every coordinate is finite and within the real US geographic range", () => {
+    for (const { state, name, lat, lon, alandSqMi } of CITY_COORDINATES) {
+      const label = `${state}: "${name}"`;
+      expect(Number.isFinite(lat), label).toBe(true);
+      expect(Number.isFinite(lon), label).toBe(true);
+      expect(Number.isFinite(alandSqMi), label).toBe(true);
+      // The 50 states + DC span roughly 17N (southern tip of the Big
+      // Island, HI) to 72N (Point Barrow, AK), and 180W to 65W (the
+      // Aleutians to the western edge of Maine) -- generous bounds, not a
+      // tight bounding box, since the point is catching a wrong-hemisphere
+      // or swapped-lat/lon bug, not validating precise geography.
+      expect(lat, label).toBeGreaterThan(17);
+      expect(lat, label).toBeLessThan(72);
+      expect(lon, label).toBeGreaterThan(-180);
+      expect(lon, label).toBeLessThan(-65);
+      expect(alandSqMi, label).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("MUTATION CHECK: the name-shape assertion actually catches the Juneau-class bug", () => {
+    // Confirms the dangling-function-word check above is not vacuous: the
+    // EXACT residue a broken multi-word stripper left behind for Juneau
+    // ("Juneau city and borough" with only "borough" removed) is a string
+    // that passes the plain charset check (it's all lowercase letters and
+    // spaces) but must be caught by the trailing-function-word check, which
+    // is the one that's actually load-bearing here.
+    const brokenJuneau = "juneau city and";
+    expect(brokenJuneau).toMatch(/^[a-z][a-z' -]*$/);
+    expect(brokenJuneau).toMatch(/ (and|of|the|a|in|to|on)$/);
+    expect(CITY_COORDINATES.some((r) => r.name === brokenJuneau)).toBe(false);
+  });
+});
+
 function coordinateFor(name: string, state: string): { lat: number; lon: number } {
   const found = CITY_COORDINATES.find((c) => c.name === name && c.state === state);
   if (found === undefined) throw new Error(`test fixture problem: no ${name}, ${state} in dataset`);
@@ -77,6 +202,36 @@ describe("the 60-mile radius (NEARBY_CITY_RADIUS_MILES)", () => {
     expect(toBellevue).toBeLessThanOrEqual(NEARBY_CITY_RADIUS_MILES);
     // ...and still excludes Everett.
     expect(toEverett).toBeGreaterThan(NEARBY_CITY_RADIUS_MILES);
+  });
+
+  it("the 60-mile boundary is a knife-edge, not a wide margin -- pins it tightly, not just directionally", () => {
+    // Bellevue (51.8mi) and Everett (71.9mi) above survive almost ANY
+    // threshold from 52 to 71 -- they don't exercise the actual boundary at
+    // 60, they only prove the radius is "roughly 60-ish". Sixteen real WA
+    // places sit within [57, 63] miles of Olympia (measured 2026-10-10
+    // against this bundled dataset); the closest EXCLUDED one is Bothell at
+    // 60.061 miles -- excluded by 1/16th of a mile -- and the closest
+    // INCLUDED one near that edge is Brier at 59.519. This is the tightest
+    // real pair available, and it's still not a coincidence to rely on for
+    // an EXACT `<=` vs `<` mutation (no real place in this dataset sits at
+    // precisely 60.000000 miles -- see this file's header for why a
+    // different reference point moves a distance "by a few miles", which
+    // means Bothell's specific 60.061 is itself an artifact of using the
+    // Census internal point rather than, say, downtown Bothell; a few
+    // dozen feet of difference in START point could flip which side of 60
+    // it lands on). What this test DOES pin tightly: the acceptable
+    // threshold window for a passing mutant shrinks from the ~19-mile gap
+    // above to well under one mile.
+    const olympia = coordinateFor("olympia", "WA");
+    const brier = coordinateFor("brier", "WA");
+    const bothell = coordinateFor("bothell", "WA");
+    const toBrier = haversineMiles(olympia.lat, olympia.lon, brier.lat, brier.lon);
+    const toBothell = haversineMiles(olympia.lat, olympia.lon, bothell.lat, bothell.lon);
+    expect(toBrier).toBeLessThan(60);
+    expect(toBothell).toBeGreaterThan(60);
+    const siblings = nearbySiblingCitiesFor("Olympia");
+    expect(siblings, "brier (59.5mi) must be IN").toContain("brier");
+    expect(siblings, "bothell (60.06mi) must be OUT").not.toContain("bothell");
   });
 });
 
@@ -185,7 +340,13 @@ describe("compileMetroAreaMatchers -- the region guard, per posting", () => {
     expect(matchesAny("Los Angeles", "Pasadena, California")).toBe(true);
   });
 
-  it("rejects a same-named city whose trailing text hides the region (review finding F1)", () => {
+  it("rejects a same-named city whose trailing text hides the region (review finding F1, ticket 410e1a2)", () => {
+    // The whole point of F1: whole-field equality required the field to BE
+    // the region, so anything trailing it in the same field defeated the
+    // guard entirely. Every one of these matched a Seattle/LA search before
+    // the fix. "City, ST (suffix)" is not hypothetical -- the owner's real
+    // corpus (prep/match-results.json) contains "New York, NY (HQ); San
+    // Francisco, CA; Remote (US)".
     for (const location of ["Everett, MA 02149", "Everett, MA (HQ)", "Everett, MA (Hybrid)"]) {
       expect(matchesAny("Seattle", location), location).toBe(false);
     }
@@ -194,8 +355,14 @@ describe("compileMetroAreaMatchers -- the region guard, per posting", () => {
     expect(matchesAny("Los Angeles", "Pasadena, TX 77501")).toBe(false);
     expect(matchesAny("Los Angeles", "Pasadena, TX (Hybrid)")).toBe(false);
     expect(matchesAny("Los Angeles", "Long Beach, NY - Hybrid")).toBe(false);
+    // The original claimed-safe cases, re-pinned: no trailing text, and
+    // still correctly rejected.
     expect(matchesAny("Seattle", "Redmond, Oregon")).toBe(false);
     expect(matchesAny("Seattle", "Bellevue, Nebraska")).toBe(false);
+    // ...and the right region with the same trailing shapes still matches,
+    // including a bare hyphen with no space before it -- "WA" is not one of
+    // the ambiguous English-word codes, so it keeps resolving through a
+    // hyphen exactly like it does through a space (fable review round 3).
     expect(matchesAny("Seattle", "Bellevue, WA (HQ)")).toBe(true);
     expect(matchesAny("Seattle", "Bellevue, WA 98004")).toBe(true);
     expect(matchesAny("Seattle", "Bellevue, WA-Remote")).toBe(true);
@@ -227,11 +394,30 @@ describe("compileMetroAreaMatchers -- the region guard, per posting", () => {
     expect(matchesAny("Seattle", "Tacoma, CO-Hybrid")).toBe(false);
   });
 
-  it("requires a nationally-ambiguous city to name its region positively", () => {
+  it("accepts the symmetric cost: a non-ambiguous code shouted in caps as prose (fable review round 5, ticket 410e1a2)", () => {
+    // Restored (ticket e5e1aa1 review round 2, Required 7): dropped when
+    // this file was rewritten for the distance-based redesign even though
+    // `cityIsInRegions`/`regionOfField` -- the region guard itself -- were
+    // not touched by that rewrite, so the behavior this test pins is
+    // unchanged and it passes as-is. The all-caps discriminator can't tell
+    // "real code written in caps" from "ordinary word shouted in caps for
+    // emphasis" for a code that ISN'T on the ambiguous list -- there is no
+    // version of this rule that closes both directions for the same token.
+    // Pinned here (its own original comment's words) "so a future change
+    // that flips it is a visible, deliberate decision."
+    expect(matchesAny("Seattle", "Tacoma, CO-OP")).toBe(false);
+    expect(matchesAny("Seattle", "Tacoma, WI-FI")).toBe(false);
+    expect(matchesAny("Seattle", "Tacoma, HI-TECH")).toBe(false);
+  });
+
+  it("requires a nationally-ambiguous city to name its region positively (review finding F4, ticket 410e1a2)", () => {
     // "bellevue"/"everett"/"irvine" etc. are ambiguous across states in the
-    // bundled dataset (AMBIGUOUS_CITY_NAMES), so -- same as the old table's
-    // hand-picked REGION_REQUIRED_CITIES -- a bare mention on the POSTING
-    // side is not enough.
+    // bundled dataset (AMBIGUOUS_CITY_NAMES -- ticket e5e1aa1's
+    // generalization of the old table's hand-picked REGION_REQUIRED_CITIES,
+    // which these same nine names came from), so a bare mention on the
+    // POSTING side is not enough. Each of these matched before F4's fix.
+    // Measured cost on the owner's real corpus: zero -- all 29 real
+    // Bellevue postings spell WA/Washington out.
     expect(matchesAny("Los Angeles", "Santa Ana, Costa Rica")).toBe(false);
     expect(matchesAny("Los Angeles", "Irvine, Scotland")).toBe(false);
     expect(matchesAny("Los Angeles", "Irvine, United Kingdom")).toBe(false);
@@ -252,13 +438,25 @@ describe("compileMetroAreaMatchers -- the region guard, per posting", () => {
     expect(matchesAny("Seattle", "Seattle")).toBe(true);
   });
 
-  it("gives the caller's OWN city the same lenient matching as its siblings (review finding F2)", () => {
+  it("gives the caller's OWN city the same lenient matching as its siblings (review finding F2, ticket 410e1a2)", () => {
+    // The bug: the named city was skipped, so it got only criteria.ts's
+    // literal matcher while every sibling got the region-guarded one. A
+    // "Seattle, WA" search therefore matched "Bellevue, Washington" but not
+    // "Seattle, Washington" -- its own city, differently punctuated. On the
+    // owner's real corpus that cost 25 real Seattle-named postings. Ticket
+    // e5e1aa1 preserves this by construction (see
+    // `compileMetroAreaMatchers`'s own doc comment): the named city is
+    // always within its own 60-mile radius, so it always gets the same
+    // matcher its siblings do.
     expect(matchesAny("Seattle, WA", "Seattle, Washington")).toBe(true);
     expect(matchesAny("Seattle, WA", "Seattle, Washington, United States")).toBe(true);
     expect(matchesAny("Seattle, WA", "Seattle")).toBe(true);
     expect(matchesAny("Bellevue, WA", "Bellevue, Washington")).toBe(true);
+    // Additive, not a replacement: the F1 guard still applies to the named
+    // city, so trailing text does not defeat it either way.
     expect(matchesAny("Seattle, WA", "Seattle, WA (HQ)")).toBe(true);
     expect(matchesAny("Los Angeles, CA", "Los Angeles, California")).toBe(true);
+    // And it does not become a way into another metro.
     expect(matchesAny("Seattle, WA", "Denver, CO")).toBe(false);
   });
 
@@ -337,5 +535,48 @@ describe("fails closed AND visibly -- the actual bug this ticket fixes", () => {
     expect(matchers.length).toBeGreaterThan(0);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("Hawaii is reachable at all (review round 2, D1) -- Honolulu resolves and expands", () => {
+    // Before the fix, Hawaii's CDP-only data meant EVERY Hawaiian city,
+    // Honolulu included, was absent from the dataset outright -- no state
+    // suffix could rescue it, which is a worse version of this ticket's own
+    // bug (a checkbox that LOOKS like a real option but silently does
+    // nothing for a top-50-by-population US city).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const matchers = compileMetroAreaMatchers("Honolulu");
+    expect(matchers.length).toBeGreaterThan(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+    // Nearby Oahu cities should be pulled in; Hilo (on a different island,
+    // the Big Island) should not be -- Oahu's longest axis is well under 60
+    // miles, Hilo is roughly 200 miles away across open ocean.
+    const siblings = nearbySiblingCitiesFor("Honolulu");
+    expect(siblings).toContain("aiea");
+    expect(siblings).not.toContain("hilo");
+  });
+
+  it("Juneau is correctly ambiguous (review round 2, D2) -- a bare mention does not silently pick Wisconsin", () => {
+    // The actual bug this test guards: a broken LSAD-suffix stripper that
+    // only removed the trailing word turned "Juneau city and borough" (AK)
+    // into "juneau city and" -- not a key in the dataset at all -- which
+    // left "juneau" looking like it had exactly one state (WI) when it
+    // really has two (AK, WI). That false unambiguity meant a Juneau,
+    // Alaska searcher who ticked the box would have silently gotten 200+
+    // Wisconsin cities pulled in instead of an honest "add a state" report.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(compileMetroAreaMatchers("Juneau")).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0][0] as string;
+    expect(message).toContain("juneau");
+    expect(message).toContain("AK");
+    expect(message).toContain("WI");
+    warn.mockRestore();
+    // Qualified with its real state, it resolves to the real Alaska capital
+    // -- never to Wisconsin.
+    expect(compileMetroAreaMatchers("Juneau, AK").length).toBeGreaterThan(0);
+    const alaskaSiblings = nearbySiblingCitiesFor("Juneau, AK");
+    expect(alaskaSiblings).not.toContain("madison");
+    expect(alaskaSiblings).not.toContain("watertown");
   });
 });

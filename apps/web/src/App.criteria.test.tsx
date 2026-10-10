@@ -108,6 +108,7 @@ function makeEstimate(): EstimateSearchResponse {
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
+    locationWarnings: [],
   };
 }
 

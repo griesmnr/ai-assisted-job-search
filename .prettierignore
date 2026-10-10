@@ -21,3 +21,12 @@ apps/api/drizzle/meta/
 # a fixture that has been prettified is no longer evidence of what the API
 # actually returned.
 apps/api/src/sources/__fixtures__/
+
+# Bundled US Census Gazetteer city-coordinate dataset (ticket e5e1aa1) — a
+# verbatim derived-from-source data table (19,670 rows as one pipe-delimited
+# string literal), same reasoning as the fixtures above. Listed explicitly
+# rather than relying on "a single huge line already passes prettier --check
+# by accident" — that was true only until this line was added, and a future
+# edit reformatting the literal onto multiple lines would still pass
+# --check with no exclusion, which is the wrong invariant to depend on.
+apps/api/src/sources/cityCoordinates.ts

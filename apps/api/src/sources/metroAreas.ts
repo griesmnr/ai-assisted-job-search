@@ -181,7 +181,7 @@
  *    UNRESOLVED rather than guessed (see `resolveCallerCities`) -- a
  *    deliberate change from ticket 410e1a2's table, which let a caller's
  *    bare ambiguous name through unconditionally because the group it
- *    picked was small and hand-vetted. With 2,728 of 12,679 names in the
+ *    picked was small and hand-vetted. With 2,732 of 12,827 names in the
  *    bundled dataset ambiguous across states (measured 2026-10-10 -- see
  *    `cityCoordinates.ts`), guessing a coordinate for one would risk
  *    computing "nearby" from the wrong place entirely (a bare "Boston"
@@ -214,8 +214,8 @@
  *    contains an internal hyphen or apostrophe ("Winston-Salem",
  *    "Coeur d'Alene") -- `resolveCallerCities`'s word-tokenizer splits on
  *    both, same as the old table's `\b` treated a hyphen as a boundary
- *    ("Renton-upon-Thames" still finds "renton"). 87 of the dataset's
- *    12,679 names (0.7%, measured 2026-10-10) contain one; posting-side
+ *    ("Renton-upon-Thames" still finds "renton"). 84 of the dataset's
+ *    12,827 names (0.7%, measured 2026-10-10) contain one; posting-side
  *    matching is unaffected (it tests the literal city pattern against raw
  *    posting text, which handles a hyphen or apostrophe directly).
  * **The guard can only ever suppress an expansion, never create one**, and
@@ -307,57 +307,33 @@ export function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: n
 
 /**
  * Every bundled coordinate, grouped by lowercase name -- built once at
- * module load from `CITY_COORDINATES` (19,506 rows; see `cityCoordinates.ts`
+ * module load from `CITY_COORDINATES` (19,670 rows; see `cityCoordinates.ts`
  * for provenance). A name maps to MORE than one entry either because it is
  * genuinely ambiguous across states (11 different "bellevue"s) or because
  * normalization produced the same (state, name) pair twice for two distinct
- * real places (18 such pairs, e.g. two "Oakwood"s in OH -- see
+ * real places (21 such pairs, e.g. two "Oakwood"s in OH, or Hawaii's own
+ * "Kailua" and "Waimea" CDPs, each real on different islands -- see
  * `cityCoordinates.ts`'s own doc comment); either way, every entry is kept
  * and `resolveCallerCities`/the radius scan consider all of them.
  */
 const CITY_COORDINATES_BY_NAME: ReadonlyMap<
   string,
-  readonly { readonly state: string; readonly lat: number; readonly lon: number }[]
+  readonly {
+    readonly state: string;
+    readonly lat: number;
+    readonly lon: number;
+    readonly alandSqMi: number;
+  }[]
 > = (() => {
-  const map = new Map<string, { state: string; lat: number; lon: number }[]>();
-  for (const { state, name, lat, lon } of CITY_COORDINATES) {
+  const map = new Map<string, { state: string; lat: number; lon: number; alandSqMi: number }[]>();
+  for (const { state, name, lat, lon, alandSqMi } of CITY_COORDINATES) {
     const existing = map.get(name);
-    if (existing) existing.push({ state, lat, lon });
-    else map.set(name, [{ state, lat, lon }]);
+    if (existing) existing.push({ state, lat, lon, alandSqMi });
+    else map.set(name, [{ state, lat, lon, alandSqMi }]);
   }
   return map;
 })();
 
-/**
- * Names found in MORE than one state anywhere in the bundled dataset --
- * ticket e5e1aa1's generalization of ticket 410e1a2's hand-picked
- * `REGION_REQUIRED_CITIES` (nine names, chosen by inspection: "everett",
- * "glendale", "pasadena", "long beach", "kirkland", "redmond", "bellevue",
- * "santa ana", "irvine"). That hand-picked set could never scale past the
- * two curated metros it protected; this computes the SAME property --
- * "is a bare mention of this name trustworthy on its own, or does it need a
- * region to mean anything" -- from the full nationwide dataset instead.
- *
- * Measured 2026-10-10: 2,728 of 12,679 unique names (21.5%) are ambiguous by
- * this definition, including some a human would not expect -- "Boston"
- * (GA, IN, MA), "Austin" (AR, IN, MN, PA, TX), "Denver" (CO, IA, IN, MO, PA)
- * and "Portland" (AR, IN, ME, MI, ND, OR, PA, TN, TX) are all, technically,
- * multi-state names, even though common usage treats each as having one
- * obvious referent. This file has no population data to break that kind of
- * tie (the Gazetteer place file carries land area, not population), so it
- * does not try to -- a POSTING naming one of these bare, with no state,
- * is treated exactly like a posting naming "Bellevue" bare: not expanded
- * into, on the theory that an unresolved-but-honest miss is better than a
- * resolved-but-wrong guess. The real motivating names for this ticket --
- * Seattle, Olympia, Tacoma, Lacey, Los Angeles -- are each in exactly ONE
- * state and are unaffected.
- *
- * Same asymmetry as the old `REGION_REQUIRED_CITIES`: this set is consulted
- * for POSTINGS only (`cityIsInRegions`'s `side` parameter). A CALLER typing
- * one of these names bare is handled by `resolveCallerCities`, which has its
- * own (stricter, by necessity -- a coordinate, not just a region check, is
- * needed) decision about when a bare ambiguous name can resolve at all.
- */
 /**
  * Names that ARE unambiguous within the bundled (US-only) dataset but
  * collide with a real place OUTSIDE it, carried forward from ticket
@@ -377,6 +353,49 @@ const CITY_COORDINATES_BY_NAME: ReadonlyMap<
  */
 const FOREIGN_NAMESAKE_COLLISIONS: readonly string[] = ["santa ana"];
 
+/**
+ * Names found in MORE than one state anywhere in the bundled dataset --
+ * ticket e5e1aa1's generalization of ticket 410e1a2's hand-picked
+ * `REGION_REQUIRED_CITIES` (nine names, chosen by inspection: "everett",
+ * "glendale", "pasadena", "long beach", "kirkland", "redmond", "bellevue",
+ * "santa ana", "irvine"). That hand-picked set could never scale past the
+ * two curated metros it protected; this computes the SAME property --
+ * "is a bare mention of this name trustworthy on its own, or does it need a
+ * region to mean anything" -- from the full nationwide dataset instead.
+ *
+ * Measured 2026-10-10 (recomputed after review round 2's Hawaii/Juneau
+ * fixes to `cityCoordinates.ts`): 2,732 of 12,827 unique names (21.3%) are
+ * ambiguous by this definition, including some a human would not expect --
+ * "Boston" (GA, IN, MA), "Austin" (AR, IN, MN, PA, TX), "Denver" (CO, IA,
+ * IN, MO, PA) and "Portland" (AR, IN, ME, MI, ND, OR, PA, TN, TX) are all,
+ * technically, multi-state names, even though common usage treats each as
+ * having one obvious referent. This file has no population data to break
+ * that kind of tie (the Gazetteer place file carries land AREA, not
+ * population) -- and land area was tried and rejected as a substitute,
+ * measured, not assumed: picking the largest-land-area candidate resolves
+ * the colloquial referent correctly for Boston/Austin/Denver/Portland and
+ * Bellevue, but gets it WRONG for "pasadena" (picks TX over the far more
+ * famous Pasadena, CA), "nashville" (AR over TN), "lexington" (NC over KY),
+ * "rochester" (MN over NY) and "albany" (GA over NY) -- 5 of 23 probed
+ * names (2026-10-10), including the exact Pasadena/CA-vs-TX collision this
+ * file's own `FOREIGN_NAMESAKE_COLLISIONS`-adjacent reasoning already uses
+ * as its worked example of why a human-obvious answer isn't always the
+ * measurable one. So resolution does not try ANY tie-break: a POSTING
+ * naming one of these bare, with no state, is treated exactly like a
+ * posting naming "Bellevue" bare -- not expanded into, on the theory that
+ * an unresolved-but-honest miss is better than a resolved-but-wrong guess.
+ * (Land area IS used elsewhere, but only to word a WARNING's example text,
+ * where a wrong guess costs nothing worse than a slightly-off hint -- see
+ * `resolveCallerCities`.) The real motivating names for this ticket --
+ * Seattle, Olympia, Tacoma, Lacey, Los Angeles -- are each in exactly ONE
+ * state and are unaffected.
+ *
+ * Same asymmetry as the old `REGION_REQUIRED_CITIES`: this set is consulted
+ * for POSTINGS only (`cityIsInRegions`'s `side` parameter). A CALLER typing
+ * one of these names bare is handled by `resolveCallerCities`, which has its
+ * own (stricter, by necessity -- a coordinate, not just a region check, is
+ * needed) decision about when a bare ambiguous name can resolve at all.
+ */
 const AMBIGUOUS_CITY_NAMES: ReadonlySet<string> = (() => {
   const set = new Set<string>();
   for (const [name, candidates] of CITY_COORDINATES_BY_NAME) {
@@ -758,7 +777,7 @@ function cityPattern(city: string): RegExp {
 /**
  * Lazily-built, indefinitely-cached `cityPattern` results. The old table
  * precompiled a pattern for every one of its ~20 cities eagerly at module
- * load; that doesn't scale to this dataset's 12,679 unique names, almost
+ * load; that doesn't scale to this dataset's 12,827 unique names, almost
  * none of which are ever looked up in a given process's lifetime. Building
  * on first use and caching forever keeps the steady-state cost identical to
  * the old table's (one compiled `RegExp` per name actually matched against,
@@ -881,11 +900,18 @@ function wordTokensWithOffsets(text: string): { word: string; start: number; end
  * unusual but not wrong -- every resolved name's coordinates are returned,
  * not just the first.
  */
+type CityCoordinateCandidate = {
+  state: string;
+  lat: number;
+  lon: number;
+  alandSqMi: number;
+};
+
 function resolveCallerCities(phrase: string): {
-  resolved: Map<string, { state: string; lat: number; lon: number }[]>;
+  resolved: Map<string, CityCoordinateCandidate[]>;
   unresolvedMessages: string[];
 } {
-  const resolved = new Map<string, { state: string; lat: number; lon: number }[]>();
+  const resolved = new Map<string, CityCoordinateCandidate[]>();
   const unresolvedMessages: string[] = [];
   const tokens = wordTokensWithOffsets(phrase);
 
@@ -893,7 +919,7 @@ function resolveCallerCities(phrase: string): {
   while (i < tokens.length) {
     let matchedLen = 0;
     let candidateName = "";
-    let candidates: readonly { state: string; lat: number; lon: number }[] | undefined;
+    let candidates: readonly CityCoordinateCandidate[] | undefined;
     const maxLen = Math.min(MAX_CITY_NAME_WORDS, tokens.length - i);
     for (let len = maxLen; len >= 1; len--) {
       const name = tokens
@@ -930,9 +956,20 @@ function resolveCallerCities(phrase: string): {
       if (states.length === 1) {
         resolved.set(candidateName, [...(resolved.get(candidateName) ?? []), ...candidates]);
       } else {
+        // The example state named in the warning (NOT the resolution logic
+        // above, which never guesses) is picked by largest land area --
+        // measured, not assumed, to be a reasonable HINT even though it is
+        // not a reliable RESOLUTION heuristic (see `AMBIGUOUS_CITY_NAMES`'s
+        // doc comment for the measurement showing it gets Pasadena,
+        // Nashville, Lexington, Rochester and Albany wrong as a resolution
+        // rule). A wrong example state in a hint costs nothing worse than a
+        // slightly-off suggestion; a wrong example in the ACTUAL resolution
+        // would silently compute "nearby" from the wrong place entirely,
+        // which is exactly what this file refuses to do.
+        const suggestedState = [...candidates].sort((a, b) => b.alandSqMi - a.alandSqMi)[0].state;
         unresolvedMessages.push(
           `"${candidateName}" exists in multiple states (${states.join(", ")}) -- add one ` +
-            `(e.g. "${candidateName}, ${states[0]}") to use "include nearby cities" for it`,
+            `(e.g. "${candidateName}, ${suggestedState}") to use "include nearby cities" for it`,
         );
       }
     }
@@ -940,6 +977,50 @@ function resolveCallerCities(phrase: string): {
   }
 
   return { resolved, unresolvedMessages };
+}
+
+/**
+ * The default "no coordinate data at all" message, or `unresolvedMessages`
+ * verbatim when `resolveCallerCities` already has something more specific to
+ * say (ambiguous / wrong region). Factored out so `compileMetroAreaMatchers`'s
+ * `console.warn` (operator-visible) and `nearbyCityExpansionWarnings` (the
+ * caller-facing one surfaced through the API -- ticket e5e1aa1 review round
+ * 2, D8) can never drift out of sync in wording -- they call this with the
+ * SAME `unresolvedMessages` array `resolveCallerCities` already computed,
+ * not two independent re-derivations of it.
+ */
+function unresolvedReasonMessages(phrase: string, unresolvedMessages: string[]): string[] {
+  if (unresolvedMessages.length > 0) return unresolvedMessages;
+  return [
+    `no coordinate data for "${phrase.trim()}" in the bundled dataset -- "include nearby ` +
+      `cities" has no effect for this location`,
+  ];
+}
+
+/**
+ * The reasons `phrase` could not be expanded when `expandMetroAreas` is on --
+ * the caller-facing half of the fix for ticket e5e1aa1's central acceptance
+ * criterion ("a city with no coordinate data is reported to the user rather
+ * than silently matching nothing"), which `compileMetroAreaMatchers`'s
+ * `console.warn` alone did not satisfy (review round 2, D8: a server log
+ * line is visible to an operator, not to the user filling in the checkbox).
+ *
+ * `criteria.ts`'s `locationExpansionWarnings` calls this once per
+ * `nearLocations` phrase and `searches.ts` returns the result on
+ * `EstimateSearchResponse.locationWarnings`; `SearchCriteriaForm.tsx` renders
+ * it next to the checkbox. `[]` for a phrase that resolved (nothing to
+ * report) or that named no city at all AND is blank -- a non-blank phrase
+ * that names no recognizable city ("Remote", "EMEA", a typo) still reports,
+ * same as `compileMetroAreaMatchers`'s own console.warn and for the same
+ * reason: this function cannot tell "unsupported real city" apart from "not
+ * a city" either, and over-reporting a harmless case costs far less than
+ * silently swallowing a real one again.
+ */
+export function nearbyCityExpansionWarnings(phrase: string): string[] {
+  if (phrase.trim().length === 0) return [];
+  const { resolved, unresolvedMessages } = resolveCallerCities(phrase);
+  if (resolved.size > 0) return [];
+  return unresolvedReasonMessages(phrase, unresolvedMessages);
 }
 
 /**
@@ -1000,15 +1081,8 @@ export function compileMetroAreaMatchers(phrase: string): ((location: string) =>
   });
 
   if (matchers.length === 0 && phrase.trim().length > 0) {
-    if (unresolvedMessages.length > 0) {
-      for (const message of unresolvedMessages) {
-        console.warn(`[metroAreas] "include nearby cities" could not expand: ${message}`);
-      }
-    } else {
-      console.warn(
-        `[metroAreas] "include nearby cities" could not expand "${phrase.trim()}": no coordinate ` +
-          `data for it in the bundled dataset, so the checkbox has no effect for this location`,
-      );
+    for (const message of unresolvedReasonMessages(phrase, unresolvedMessages)) {
+      console.warn(`[metroAreas] "include nearby cities" could not expand: ${message}`);
     }
   }
 

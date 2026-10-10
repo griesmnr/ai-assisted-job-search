@@ -204,6 +204,7 @@ export function SearchFlow({
   formState,
   disableEstimate,
   onEstimateStart,
+  onEstimateReady,
   onInvalidEstimateAttempt,
   onSearchComplete,
   onRunningChange,
@@ -251,6 +252,14 @@ export function SearchFlow({
    * every time a new search is estimated." Optional so every other
    * existing caller/test keeps working unchanged. */
   onEstimateStart?: () => void;
+  /** Ticket e5e1aa1 review round 2 (D8/Required 4): fired the moment a real
+   * estimate response lands, with that response in hand -- App.tsx is the
+   * one place that also owns `SearchCriteriaForm` (a SIBLING component, same
+   * reasoning as `onInvalidEstimateAttempt` below), so this is how
+   * `EstimateSearchResponse.locationWarnings` gets from here to the
+   * checkbox that produced it. Optional so every other existing
+   * caller/test keeps working unchanged. */
+  onEstimateReady?: (estimate: EstimateSearchResponse) => void;
   /** Ticket 371713d: fired when "Get estimate" is clicked while
    * `disableEstimate` is true -- i.e. an attempt that this component
    * blocks from ever reaching `handleEstimate`. App.tsx is the one place
@@ -530,6 +539,7 @@ export function SearchFlow({
       startEstimateProgressPolling(estimateRequestId);
       const estimate = await estimateSearch(resumeId, sourceIds, criteria, estimateRequestId);
       stopEstimateProgressPolling();
+      onEstimateReady?.(estimate);
       // Snapshot props AT THE MOMENT the estimate landed (F1) — not a
       // reference to the live `resumeId`/`sourceIds`/`criteria` closed over
       // above, which are exactly the same values right now but will

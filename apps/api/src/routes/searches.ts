@@ -188,7 +188,11 @@ import { seedSourceDescriptors } from "../db/seed.js";
 import { EstimateProgressTracker } from "../matching/estimateProgress.js";
 import { ZeroResultEstimateCache } from "../matching/zeroResultCache.js";
 import { createAmqpFetchSourcePublisher, type PublishFetchSourceFn } from "../queue/publisher.js";
-import { compileExcludedForMissingWorkArrangement, compileFilter } from "../sources/criteria.js";
+import {
+  compileExcludedForMissingWorkArrangement,
+  compileFilter,
+  locationExpansionWarnings,
+} from "../sources/criteria.js";
 import { buildSourceSelection } from "../sources/registry.js";
 import type { FetchSourceMessage } from "../worker/fetchSourceWorker.js";
 import type { JobSource, SearchCriteria as SourceFetchCriteria } from "../sources/types.js";
@@ -976,6 +980,11 @@ export function registerSearchRoutes(
         alreadyScored: result.skipped,
         sourceOutcomes: result.sourceOutcomes,
         skippedSources: resolved.skipped,
+        // Ticket e5e1aa1 review round 2 (D8/Required 4): computed from the
+        // SAME `criteria` object `compileFilter` just ran, so a phrase that
+        // failed to expand is reported here rather than only via
+        // `compileMetroAreaMatchers`'s operator-only `console.warn`.
+        locationWarnings: locationExpansionWarnings(criteria),
       };
       return reply.send(response);
     },
