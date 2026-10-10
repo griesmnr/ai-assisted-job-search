@@ -105,7 +105,7 @@ describe("ResultCard — present-tense action buttons vs. state pill (ticket bed
 // and Open Job Page to be split back into two separate elements -- a
 // pure-navigation link (no status side effect) and a pure status button
 // (no navigation), rather than one element doing both.
-describe("ResultCard — Open Job Page (pure link) and Apply (pure status button) are separate", () => {
+describe("ResultCard — Open Job Page is a pure link; Apply sets status AND navigates (ticket 4a1f9c2)", () => {
   it("Open Job Page links to the real applyUrl and opens it in a new tab, with no status side effect", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
     render(
@@ -125,22 +125,86 @@ describe("ResultCard — Open Job Page (pure link) and Apply (pure status button
     expect(onSetStatus).not.toHaveBeenCalled();
   });
 
-  it("Apply is a plain button that records status=applied and does not navigate", () => {
+  it("Apply records status=applied AND opens the posting -- inverted from the old 'does not navigate' assertion, which was correct until Nicole changed it 2026-10-10 after John pressed Apply expecting to land on the job", () => {
     const onSetStatus = vi.fn().mockResolvedValue(undefined);
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
     render(
       <ResultCard
-        result={makeResult()}
+        result={makeResult({ applyUrl: "https://boards.example.com/jobs/42" })}
         onSetStatus={onSetStatus}
         onClearStatus={async () => {}}
         onViewResume={() => {}}
       />,
     );
 
+    // Still a button, not a link -- the status effect is real, and this is
+    // not ticket 3d80a85's merge of the two controls (which dbfd594-followup
+    // undid). It is a superset: Apply does both, the link still does one.
     const applyButton = screen.getByRole("button", { name: "Apply" });
     expect(applyButton).not.toHaveAttribute("href");
     fireEvent.click(applyButton);
 
     expect(onSetStatus).toHaveBeenCalledWith("job-1", "applied", "resume-1");
+    expect(open).toHaveBeenCalledWith("https://boards.example.com/jobs/42", "_blank", "noreferrer");
+  });
+
+  it("opens the posting SYNCHRONOUSLY, before awaiting the status write -- this is the assertion that matters, because after an await the browser blocks the tab as a popup, silently and with no error", () => {
+    // A status write that never settles. If the open were sequenced after
+    // `await onSetStatus(...)` it would never happen at all, which is exactly
+    // the invisible failure this ordering exists to prevent.
+    const onSetStatus = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(
+      <ResultCard
+        result={makeResult({ applyUrl: "https://boards.example.com/jobs/7" })}
+        onSetStatus={onSetStatus}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(open).toHaveBeenCalledWith("https://boards.example.com/jobs/7", "_blank", "noreferrer");
+  });
+
+  it("UN-applying does not open a tab -- un-marking is not a reason to navigate", () => {
+    const onClearStatus = vi.fn().mockResolvedValue(undefined);
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(
+      <ResultCard
+        result={makeResult({ status: "applied" })}
+        onSetStatus={async () => {}}
+        onClearStatus={onClearStatus}
+        onViewResume={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(onClearStatus).toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("Save and Dismiss do NOT navigate -- only Apply gained that behaviour", () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(
+      <ResultCard
+        result={makeResult()}
+        onSetStatus={async () => {}}
+        onClearStatus={async () => {}}
+        onViewResume={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("Apply stays enabled once already applied -- it's a toggle now (ticket e367a63), not a disabled state", () => {

@@ -285,7 +285,42 @@ export function ResultCard({
               className={isActive ? "result-action result-action-active" : "result-action"}
               aria-pressed={isActive}
               disabled={pending !== null}
-              onClick={() => void (isActive ? handleClearStatus() : handleSetStatus(status))}
+              onClick={() => {
+                if (isActive) {
+                  void handleClearStatus();
+                  return;
+                }
+                // Nicole, 2026-10-10, after John pressed "Apply" expecting
+                // to land on the job posting and nothing visible happened:
+                // "I'd like for the apply button to change the status and
+                // open the job page." She named the duplication with the
+                // "Open Job Page" link below and accepted it -- "sometimes
+                // people just come back around to what's intuitive."
+                //
+                // This does NOT re-merge the two the way ticket 3d80a85 did
+                // and dbfd594-followup undid. That merge made one control
+                // mean both things, losing the distinction her own feedback
+                // asked for ("'I looked at the posting' isn't the same fact
+                // as 'I applied'"). Both controls still exist and still mean
+                // what they meant: the link navigates with no status effect,
+                // and Apply is now a superset -- status plus navigation.
+                // Undoing an already-applied job deliberately does NOT
+                // navigate (see the isActive early return above): un-marking
+                // is not a reason to open a tab.
+                //
+                // THE ORDER HERE IS LOAD-BEARING. `window.open` must run
+                // synchronously in this handler, BEFORE `handleSetStatus`'
+                // first `await`. After an await the call is no longer inside
+                // the browser's user-gesture window and the tab is blocked
+                // as a popup -- silently, with no error and nothing for the
+                // user to see, which is indistinguishable from the bug John
+                // just reported. Opening first also reads better: the
+                // posting appears immediately and the status catches up.
+                if (status === "applied") {
+                  window.open(result.applyUrl, "_blank", "noreferrer");
+                }
+                void handleSetStatus(status);
+              }}
             >
               {pending === status
                 ? "Saving..."
