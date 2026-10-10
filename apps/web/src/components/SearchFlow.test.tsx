@@ -825,6 +825,223 @@ describe("SearchFlow — F1 money-safety (git-bug 484889d, review round 3)", () 
   }, 15000);
 });
 
+/**
+ * Ticket 4cafff3: John toggled "include nearby cities" with no city typed
+ * and nothing on screen responded -- not a correctness bug (that flag
+ * really can't change a single result with no location to expand, so the
+ * estimate stayed honestly accurate), but a FEEDBACK bug: the user saw no
+ * reaction to a control they watched themselves change, and concluded the
+ * app was broken. Nicole's decision, verbatim: "i think making it look like
+ * something happened is a good solution" -- so SearchFlow now invalidates
+ * on the raw, visible form (the new `formState` prop) in addition to the
+ * derived `criteria` it already compared, catching exactly the case where
+ * the two diverge: a visible toggle that leaves the wire payload
+ * byte-identical.
+ *
+ * Every test below holds `criteria` FIXED (the same object, or an
+ * equivalent one) across the rerender that changes one `formState` field --
+ * that is what proves each assertion depends on the NEW formState check,
+ * not the pre-existing criteria check these tests deliberately route around.
+ */
+describe("SearchFlow — form-state invalidation (ticket 4cafff3)", () => {
+  type FormState = {
+    nearLocations: string;
+    expandMetroAreas: boolean;
+    remoteOk: boolean;
+    anyLocationOk: boolean;
+    commitmentIn: ("full-time" | "part-time" | "contract")[];
+    titleChips: string[];
+  };
+
+  function makeForm(overrides: Partial<FormState> = {}): FormState {
+    return {
+      nearLocations: "",
+      expandMetroAreas: false,
+      remoteOk: false,
+      anyLocationOk: false,
+      commitmentIn: [],
+      titleChips: [],
+      ...overrides,
+    };
+  }
+
+  /** Renders, gets an estimate showing, and returns `rerender` so each test
+   * can change exactly one thing next. */
+  async function renderEstimated(formState: FormState) {
+    estimateSearch.mockResolvedValue(makeEstimate());
+    const { rerender } = render(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={formState}
+        onSearchComplete={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
+    await screen.findByRole("button", { name: "Run search" });
+    return rerender;
+  }
+
+  async function expectInvalidated() {
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Cost estimate")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Get estimate" })).toBeInTheDocument();
+    });
+  }
+
+  it("the ticket's own reproduction: expandMetroAreas toggled with no city typed invalidates even though criteria is byte-identical", async () => {
+    const rerender = await renderEstimated(makeForm({ expandMetroAreas: false }));
+
+    // `criteria={{}}` on BOTH renders -- mirrors App.tsx's real
+    // buildSearchCriteria exactly: with no city in `nearLocations`,
+    // `expandMetroAreas` never reaches the payload either way (410e1a2).
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ expandMetroAreas: true })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("nearLocations text invalidates", async () => {
+    const rerender = await renderEstimated(makeForm({ nearLocations: "" }));
+
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ nearLocations: "Seattle" })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("remoteOk invalidates", async () => {
+    const rerender = await renderEstimated(makeForm({ remoteOk: false }));
+
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ remoteOk: true })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("anyLocationOk invalidates (ticket b9e6251's own note: this field never reaches criteria at all)", async () => {
+    const rerender = await renderEstimated(makeForm({ anyLocationOk: false }));
+
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ anyLocationOk: true })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("commitmentIn invalidates", async () => {
+    const rerender = await renderEstimated(makeForm({ commitmentIn: [] }));
+
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ commitmentIn: ["full-time"] })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("titleChips invalidates", async () => {
+    const rerender = await renderEstimated(makeForm({ titleChips: [] }));
+
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({ titleChips: ["Engineer"] })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("a change that genuinely alters the request still invalidates (formState and criteria moving together, as App.tsx really does it)", async () => {
+    const rerender = await renderEstimated(makeForm({ nearLocations: "" }));
+
+    // Unlike the tests above, `criteria` changes here too -- this is the
+    // ordinary case (a real location typed really does change the
+    // request), not the gap this ticket is about. Confirms the new
+    // formState-based check didn't accidentally weaken the pre-existing
+    // criteria-based one.
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{ nearLocations: ["Seattle"] }}
+        formState={makeForm({ nearLocations: "Seattle" })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    await expectInvalidated();
+  });
+
+  it("negative control: rerendering with an unchanged formState (and unchanged criteria) does NOT invalidate", async () => {
+    const rerender = await renderEstimated(
+      makeForm({ nearLocations: "Seattle", remoteOk: true, commitmentIn: ["full-time"] }),
+    );
+
+    // A freshly-built object, not the same reference -- proves the
+    // comparison is structural (JSON.stringify), not identity, same as
+    // `sameCriteria` already relies on for the `criteria` prop.
+    rerender(
+      <SearchFlow
+        resumeId="resume-1"
+        sourceIds={["a"]}
+        criteria={{}}
+        formState={makeForm({
+          nearLocations: "Seattle",
+          remoteOk: true,
+          commitmentIn: ["full-time"],
+        })}
+        onSearchComplete={() => {}}
+      />,
+    );
+
+    // Give the effect a tick to (not) fire, then assert the estimate is
+    // still showing, not reset.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText("Cost estimate")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run search" })).toBeInTheDocument();
+  });
+});
+
 describe("SearchFlow — real polish on the response shape (ticket 2e7ba8a)", () => {
   async function runToDone(result: Record<string, unknown>) {
     estimateSearch.mockResolvedValue(makeEstimate());

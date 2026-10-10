@@ -2258,6 +2258,16 @@ function JobSearchApp() {
                 resumeId={resumeId}
                 sourceIds={[...selectedSourceIds]}
                 criteria={criteria}
+                // Ticket 4cafff3: the raw form, not just the derived
+                // `criteria` above -- see SearchFlow's own `formState` doc
+                // comment for why. Deliberately built the same shape
+                // `buildSearchCriteria` takes (titleChips + the whole
+                // `CriteriaFormState`), so every field this ticket's scope
+                // lists (nearLocations, expandMetroAreas, remoteOk,
+                // anyLocationOk, commitmentIn, titleChips) is covered by
+                // construction, not by an enumerated list that could drift
+                // out of sync with `CriteriaFormState` itself.
+                formState={{ titleChips, ...criteriaForm }}
                 disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => {
                   setHasFreshSearchResults(false);
