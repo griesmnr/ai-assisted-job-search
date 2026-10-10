@@ -558,7 +558,42 @@ function JobSearchApp() {
     locationSectionRef.current?.querySelector("input")?.focus({ preventScroll: true });
   }
 
-  const { state: resultsState, refresh } = useResults(resumeId, scoreFloor);
+  // Ticket 9e5fcf3 (part (a)): same "a plain ref owned here, handed down
+  // into one sibling, read back inside a callback handed down into
+  // another" shape `locationSectionRef`/`handleInvalidEstimateAttempt`
+  // already use just above -- SearchFlow doesn't know the results section
+  // exists below it (it's a sibling, not a child) any more than SearchFlow
+  // knows about SearchCriteriaForm's location section, and for the same
+  // reason doesn't need to: App.tsx is what sits above both and can wire
+  // them together without either one knowing the other exists.
+  const resultsSectionRef = useRef<HTMLDivElement | null>(null);
+
+  function handleViewResults() {
+    resultsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Ticket 9e5fcf3 (part (b)): which search's own results "Results from
+  // this search" is currently scoped to -- see `useResults.ts`'s `searchId`
+  // parameter and `getResults`'s own doc comment (api/client.ts) for the
+  // full argument for doing this server-side rather than holding a
+  // client-side job-id set. Set exactly once per completed run
+  // (`handleSearchComplete` below, from the `searchId` SearchFlow's
+  // `onSearchComplete` now carries), and deliberately NOT persisted to
+  // sessionStorage -- `hasFreshSearchResults` already isn't (a reload loses
+  // "Results from this search" entirely, by design; see that state's own
+  // comment), so this would be the one durable half of an otherwise
+  // non-durable pair, restoring a search SCOPE across a reload that
+  // restores no section to apply it to.
+  //
+  // Reset to `undefined` alongside `hasFreshSearchResults` below whenever
+  // `resumeId` changes -- not merely cosmetic. A stale searchId surviving a
+  // resume switch would ask `GET /resumes/<new resumeId>/results?searchId=
+  // <old search's id>` for a search that belongs to a DIFFERENT resume,
+  // which 404s (the single-resume route's own ownership check, resumes.ts)
+  // the moment a new search is estimated/run for the new resume reads this
+  // hook before `handleSearchComplete` has had a chance to overwrite it.
+  const [lastSearchId, setLastSearchId] = useState<string | undefined>(undefined);
+  const { state: resultsState, refresh } = useResults(resumeId, scoreFloor, lastSearchId);
   // Ticket 3f0883f: "Already Scored Jobs" is the cross-resume browsable
   // history now, not the current resume's own results narrowed down --
   // its own, separately-fetched state, deliberately not derived from
@@ -704,6 +739,17 @@ function JobSearchApp() {
 
   useEffect(() => {
     setHasFreshSearchResults(false);
+    // Ticket 9e5fcf3: `lastSearchId` resets alongside `hasFreshSearchResults`
+    // on every one of these same triggers. Not just tidiness on the
+    // `resumeId` branch of this effect -- see that state's own declaration
+    // comment for the 404 a stale searchId would cause against a resume it
+    // doesn't belong to. On the other two triggers (criteria/source change,
+    // same resume) a stale value wouldn't 404, but it would be reused by
+    // the NEXT `getResults` call for no reason -- harmless since nothing
+    // renders it while `hasFreshSearchResults` is false either way, but
+    // there's no reason to let it linger past the point it stopped meaning
+    // anything.
+    setLastSearchId(undefined);
     // Ticket 88f11d7: `resumeId` joins the deps -- switching which resume
     // is active (a resubmitted new paste, or now "Change" -> "Use Resume
     // N") must clear a PREVIOUS resume's "fresh search results" the same
@@ -1572,8 +1618,37 @@ function JobSearchApp() {
     setFocusResume({ id: resumeId, token: Date.now() });
   }
 
-  function handleSearchComplete() {
+  // Ticket 9e5fcf3 (part (c)), cause found and verified 2026-10-10: this
+  // used to call `refresh()` and stop there -- `refresh()` is `useResults`'s
+  // own callback, feeding ONLY "Results from this search". It never touched
+  // `refreshAllResults()` (`useAllResults`'s callback, feeding "Already
+  // Scored Jobs"), so a freshly-completed search's new rows never reached
+  // that tab's list OR its header count without a full page reload --
+  // `scoredJobCount` (declared above) derives from the exact same
+  // `allResultsState` that list reads, so the one missing call explains
+  // BOTH of Nicole's "things are not automatically updating" reports at
+  // once. `refreshAllResults()` is safe to add unconditionally here for the
+  // same reason `handleSetStatus`/`handleClearStatus` already call it
+  // alongside `refresh()`: `useAllResults`'s own stale-while-revalidate
+  // design (see that hook's doc comment, mirroring `useResults`'s) means
+  // this refetch updates the list in place rather than flashing it away --
+  // the exact regression `useResults.ts`'s line-48 comment records Nicole
+  // hitting once already, now doubly guarded against by sharing that same
+  // hook design rather than inventing a different refresh here.
+  function handleSearchComplete(searchId: string) {
+    // Ticket 9e5fcf3 (part (b)): set BEFORE `refresh()` below, deliberately.
+    // `lastSearchId` already joins `useResults`'s dependency array, so this
+    // alone is enough to make the next fetch ask for the right scope --
+    // ordering it first means that even in the (here, purely theoretical --
+    // React 18's automatic batching coalesces both of this function's
+    // `setState` calls into one re-render in practice) case where these two
+    // updates landed across two separate renders instead of one, the FIRST
+    // of those renders would already carry the correct, new `searchId`
+    // rather than a stale one. See that state's own declaration comment for
+    // the full argument for scoping this server-side.
+    setLastSearchId(searchId);
     refresh();
+    refreshAllResults();
     // The one place `hasFreshSearchResults` is ever set true — SearchFlow
     // only calls onSearchComplete when a run's poll result.status is
     // literally "complete" (never on "failed"/"incomplete"), so this is a
@@ -2184,7 +2259,23 @@ function JobSearchApp() {
                 sourceIds={[...selectedSourceIds]}
                 criteria={criteria}
                 disableEstimate={!hasLocationSignal}
-                onEstimateStart={() => setHasFreshSearchResults(false)}
+                onEstimateStart={() => {
+                  setHasFreshSearchResults(false);
+                  // Ticket 9e5fcf3: a re-estimate with the SAME
+                  // criteria/sourceIds (clicking "Done" then "Get estimate"
+                  // again without changing anything) doesn't re-run the
+                  // `[selectedSourceIds, criteria, resumeId]` effect above
+                  // (none of its deps changed), so `lastSearchId` would
+                  // otherwise keep pointing at the PREVIOUS completed
+                  // search through the whole "estimating"/"estimated" dead
+                  // window -- harmless (same resume, so no 404 risk;
+                  // nothing renders it while `hasFreshSearchResults` is
+                  // false either way) but stale. Clearing it here too keeps
+                  // it tracking "the last FRESH search" in lockstep with
+                  // `hasFreshSearchResults`, the same symmetry this
+                  // callback already keeps for that state.
+                  setLastSearchId(undefined);
+                }}
                 onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
                 onRunningChange={setSearchRunning}
@@ -2199,6 +2290,17 @@ function JobSearchApp() {
                 // no-op, and there is no unlock path this could wrongly
                 // clobber.
                 onRealSearchStarted={() => setResumeLocked(true)}
+                // Ticket 9e5fcf3 (part (a)): see `freshResultsCount`'s own
+                // doc comment (SearchFlow.tsx) for why this is computed
+                // here rather than inside SearchFlow, and the "View N
+                // results" button's own JSX comment there for the full
+                // argument for a click-triggered scroll over auto-scroll.
+                freshResultsCount={
+                  hasFreshSearchResults && resultsState.status === "ready"
+                    ? resultsState.data.results.length
+                    : undefined
+                }
+                onViewResults={handleViewResults}
               />
             </section>
 
@@ -2217,9 +2319,20 @@ function JobSearchApp() {
                 true` (useResults.ts), so a dismissed job from a fresh
                 search shows up here too, visibly marked "Dismissed" via
                 ResultCard's existing status pill -- no change needed in
-                this component beyond the data it's handed. */}
+                this component beyond the data it's handed. Ticket 9e5fcf3
+                (part (b)): that same fetch is now also scoped to
+                `lastSearchId` (useResults.ts), so this list holds only the
+                MOST RECENT search's own results -- a second search on the
+                same resume no longer pools together with the first's
+                (Nicole, relaying John's testing: "he was expecting to see
+                results from only this search"). `resultsSectionRef`
+                (ticket 9e5fcf3 part (a)) is the scroll target for
+                SearchFlow's "View N results" button above -- attached to
+                this whole section rather than just the list so the score
+                floor control and the "No jobs matched" fallback are both
+                included in what scrolling into view actually shows. */}
             {hasFreshSearchResults && resultsState.status === "ready" && (
-              <section className="results-section">
+              <section className="results-section" ref={resultsSectionRef}>
                 <h2>Results from this search</h2>
                 <ScoreFloorControl value={scoreFloor} onChange={setScoreFloor} />
                 {resultsState.data.results.length > 0 ||
