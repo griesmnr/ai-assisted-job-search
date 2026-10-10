@@ -235,16 +235,30 @@ export type GetResultsParams = {
  *     every job a search touched (ingestJobs.ts), entirely for a different
  *     reason (idempotent re-linking on a redelivered `fetch.source`
  *     message) -- reusing it here is one WHERE clause, not new plumbing.
- *  2. Ticket d37511b's own notes (cited in this ticket's Scope) are about
- *     exactly this class of state surviving a reload. A client-held job-id
- *     set lives in React state alone (same as `hasFreshSearchResults`
- *     already does, deliberately NOT persisted -- see App.tsx) -- a reload
- *     mid-session would either lose the scope entirely (silently falling
- *     back to "every search on this resume," reproducing (b)'s own bug) or
- *     need its own sessionStorage entry to carry a potentially-large job-id
- *     array around. The server already knows which jobs belong to which
- *     search, durably, with no extra storage -- asking it beats
- *     re-deriving and re-persisting the same fact client-side.
+ *  2. CORRECTED (ticket 9e5fcf3 review round, finding 4): an earlier
+ *     version of this reason claimed a client-held job-id set "would
+ *     either lose the scope entirely... or need its own sessionStorage
+ *     entry" to survive a reload -- false as stated, and worth recording
+ *     why. `lastSearchId` (App.tsx) is a PLAIN `useState`, with exactly the
+ *     same non-persistence `hasFreshSearchResults` already has -- there is
+ *     no asymmetry in WHETHER either value survives a reload; neither does,
+ *     by design (see `lastSearchId`'s own declaration comment). The real
+ *     asymmetry is in how each gets RE-ESTABLISHED after one, and it comes
+ *     from a mechanism this reason didn't name: `session.ts`'s
+ *     `readActiveSearch`/`writeActiveSearch` already persists an IN-FLIGHT
+ *     real search (SearchFlow.tsx's own mount-only reconnect effect), so a
+ *     reload mid-run doesn't lose the thread at all -- SearchFlow resumes
+ *     polling the SAME search, and when it completes, hands App.tsx a
+ *     fresh, SERVER-SOURCED `searchId` via `onSearchComplete`, exactly as
+ *     it would without the reload. A client-held JOB-ID set has no
+ *     equivalent recovery path: `SearchStatusResponse` only ever reports a
+ *     `linked` COUNT, never the ids themselves, so there is no server
+ *     response this alternative could re-derive its job-id set FROM after a
+ *     reload -- it would need a genuinely new API field just to reconstruct
+ *     what `search_results` already durably records. Reason #1 above (the
+ *     table already exists) is still the simpler, sufficient argument on
+ *     its own; this is the deeper one this ticket's notes (d37511b, cited
+ *     in Scope) were actually gesturing at.
  */
 export function getResults(
   resumeId: string,

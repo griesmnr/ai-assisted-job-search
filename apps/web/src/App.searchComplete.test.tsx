@@ -318,6 +318,232 @@ describe("after a search completes (ticket 9e5fcf3)", () => {
     );
   });
 
+  it(
+    "(C1 regression) does not show the PREVIOUS search's results while the newly-scoped " +
+      "fetch is still in flight, at the exact moment the completion heading appears",
+    async () => {
+      getSources.mockResolvedValue(SOURCES);
+      createResume.mockResolvedValue({
+        id: "resume-1",
+        resumeNickname: "Resume 1",
+        suggestedTitles: [],
+      });
+      getAllResults.mockResolvedValue({ results: [] });
+      estimateSearch.mockResolvedValue(makeEstimate());
+
+      startSearch
+        .mockResolvedValueOnce({ searchId: "search-1", status: "pending", skippedSources: [] })
+        .mockResolvedValueOnce({ searchId: "search-2", status: "pending", skippedSources: [] });
+
+      getSearchStatus.mockImplementation((searchId: string) =>
+        Promise.resolve({
+          searchId,
+          resumeId: "resume-1",
+          status: "complete",
+          scored: 1,
+          failed: 0,
+          linked: 1,
+          sources: [],
+          completedAt: "2026-01-01T00:00:00.000Z",
+          degraded: false,
+        }),
+      );
+
+      // search-2's own `getResults` is held open deliberately -- this test
+      // exists to inspect the DOM at the exact moment the completion
+      // heading appears but the newly-scoped fetch hasn't resolved yet.
+      let resolveSearch2Results: ((data: GetResumeResultsResponse) => void) | undefined;
+      const search2ResultsPromise = new Promise<GetResumeResultsResponse>((resolve) => {
+        resolveSearch2Results = resolve;
+      });
+      getResults.mockImplementation(
+        (
+          _resumeId: string,
+          params: { searchId?: string } = {},
+        ): Promise<GetResumeResultsResponse> => {
+          if (params.searchId === "search-1") {
+            return Promise.resolve({
+              resumeId: "resume-1",
+              resumeNickname: "Resume 1",
+              results: [job("job-1", "Backend Engineer", "Acme")],
+            });
+          }
+          if (params.searchId === "search-2") {
+            return search2ResultsPromise;
+          }
+          // The UNSCOPED fetch `onEstimateStart` fires when it resets
+          // `lastSearchId` to `undefined` -- this is the realistic shape of
+          // that response, modeled on what the real server actually
+          // returns for "no searchId" at that point in the sequence: EVERY
+          // job this resume has accumulated so far, which at this moment is
+          // just search-1's own job (search-2 hasn't run yet). This is the
+          // exact payload the C1 bug leaves cached and visible -- an empty
+          // mock response here would hide the bug instead of reproducing it
+          // (confirmed: an earlier version of this mock returned `[]` here
+          // and the mutation-reverted version of this test passed anyway).
+          return Promise.resolve({
+            resumeId: "resume-1",
+            resumeNickname: "Resume 1",
+            results: [job("job-1", "Backend Engineer", "Acme")],
+          });
+        },
+      );
+
+      await submitResume();
+      await runSearchToCompletion();
+      expect(await screen.findByText("Backend Engineer")).toBeVisible();
+
+      // Start and finish a SECOND search -- but this time, do NOT await
+      // `runSearchToCompletion`'s usual full settle. Advance exactly to the
+      // poll tick that reports "complete", then inspect the DOM before
+      // `search2ResultsPromise` ever resolves.
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      const callsBefore = getSearchStatus.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
+      await screen.findByRole("button", { name: "Run search" });
+      fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+      await act(async () => {
+        await vi.waitFor(
+          () => expect(getSearchStatus.mock.calls.length).toBeGreaterThan(callsBefore),
+          { timeout: 3000 },
+        );
+      });
+
+      // The completion heading is on screen -- SearchFlow's own phase
+      // transition to "done" doesn't wait on `getResults` at all.
+      expect(
+        await screen.findByRole("heading", { name: "Search complete" }, { timeout: 3000 }),
+      ).toBeVisible();
+
+      // THE BUG THIS TEST EXISTS TO CATCH: without the C1 fix, this is
+      // exactly the moment `useResults`' stale-while-revalidate guard would
+      // still be showing search-1's OLD (unscoped-at-the-time) payload --
+      // visible right as the new completion signal pulls the user's
+      // attention to this panel. Neither job should be on screen: not
+      // search-1's (stale) and not search-2's (not fetched yet).
+      expect(screen.queryByText("Backend Engineer")).not.toBeInTheDocument();
+      expect(screen.queryByText("Platform Engineer")).not.toBeInTheDocument();
+
+      // Only once the newly-scoped fetch actually resolves does search-2's
+      // own job appear -- and search-1's stays gone.
+      resolveSearch2Results?.({
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        results: [job("job-2", "Platform Engineer", "Globex")],
+      });
+      expect(await screen.findByText("Platform Engineer")).toBeVisible();
+      expect(screen.queryByText("Backend Engineer")).not.toBeInTheDocument();
+    },
+  );
+
+  it(
+    "(H1 regression) switching resumes resets the search scope -- the next fetch for the " +
+      "new resume carries no stale searchId",
+    async () => {
+      getSources.mockResolvedValue(SOURCES);
+      createResume
+        .mockResolvedValueOnce({ id: "resume-1", resumeNickname: "Resume 1", suggestedTitles: [] })
+        .mockResolvedValueOnce({ id: "resume-2", resumeNickname: "Resume 2", suggestedTitles: [] });
+      getAllResults.mockResolvedValue({ results: [] });
+      getResults.mockResolvedValue({
+        resumeId: "resume-1",
+        resumeNickname: "Resume 1",
+        results: [],
+      });
+      estimateSearch.mockResolvedValue(makeEstimate());
+      startSearch.mockResolvedValue({
+        searchId: "search-1",
+        status: "pending",
+        skippedSources: [],
+      });
+      getSearchStatus.mockResolvedValue({
+        searchId: "search-1",
+        resumeId: "resume-1",
+        status: "complete",
+        scored: 1,
+        failed: 0,
+        linked: 1,
+        sources: [],
+        completedAt: "2026-01-01T00:00:00.000Z",
+        degraded: false,
+      });
+
+      await submitResume();
+      await runSearchToCompletion();
+      expect(getResults).toHaveBeenLastCalledWith(
+        "resume-1",
+        expect.objectContaining({ searchId: "search-1" }),
+      );
+
+      // "Change" only ever appears once the resume is LOCKED, which a real
+      // search run already did (`onRealSearchStarted`) by the time this
+      // completed. Named "Change resume" by its own `aria-label` (see
+      // ResumeInput.tsx) -- "Change" alone is not its accessible name.
+      fireEvent.click(await screen.findByRole("button", { name: "Change resume" }));
+      fireEvent.click(screen.getByRole("button", { name: "Paste a new resume" }));
+      fireEvent.change(screen.getByLabelText("Paste your resume"), {
+        target: { value: "a second, different resume" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+      // The resume actually switched (createResume's SECOND mocked
+      // response, a different id) -- `resumeId` changing is what the
+      // `[selectedSourceIds, criteria, resumeId]` effect (App.tsx) resets
+      // `lastSearchId` on.
+      await waitFor(() =>
+        expect(getResults).toHaveBeenLastCalledWith(
+          "resume-2",
+          expect.objectContaining({ searchId: undefined }),
+        ),
+      );
+    },
+  );
+
+  it("(H2 regression) re-estimating after a completed search resets the search scope too", async () => {
+    getSources.mockResolvedValue(SOURCES);
+    createResume.mockResolvedValue({
+      id: "resume-1",
+      resumeNickname: "Resume 1",
+      suggestedTitles: [],
+    });
+    getAllResults.mockResolvedValue({ results: [] });
+    getResults.mockResolvedValue({ resumeId: "resume-1", resumeNickname: "Resume 1", results: [] });
+    estimateSearch.mockResolvedValue(makeEstimate());
+    startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
+    getSearchStatus.mockResolvedValue({
+      searchId: "search-1",
+      resumeId: "resume-1",
+      status: "complete",
+      scored: 1,
+      failed: 0,
+      linked: 1,
+      sources: [],
+      completedAt: "2026-01-01T00:00:00.000Z",
+      degraded: false,
+    });
+
+    await submitResume();
+    await runSearchToCompletion();
+    expect(getResults).toHaveBeenLastCalledWith(
+      "resume-1",
+      expect.objectContaining({ searchId: "search-1" }),
+    );
+
+    // Re-estimate with the SAME criteria/sourceIds -- the
+    // `[selectedSourceIds, criteria, resumeId]` effect does NOT re-run
+    // (none of its deps changed), so only `onEstimateStart`'s own reset
+    // is what's under test here.
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get estimate" }));
+
+    await waitFor(() =>
+      expect(getResults).toHaveBeenLastCalledWith(
+        "resume-1",
+        expect.objectContaining({ searchId: undefined }),
+      ),
+    );
+  });
+
   it('(a) withholds the "View N results" button when the search found nothing', async () => {
     getSources.mockResolvedValue(SOURCES);
     createResume.mockResolvedValue({

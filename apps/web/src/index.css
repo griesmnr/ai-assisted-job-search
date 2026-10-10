@@ -719,14 +719,45 @@ button[aria-disabled="true"] {
    Same green used for `.search-source-status-complete` above (this file's
    own existing "finished successfully" color), reused rather than a new
    one so a user who's already seen that badge recognizes the same signal
-   here. Bold/larger on top of the color change, not color alone -- a user
-   relying on weight/size rather than hue (color-blind or otherwise) still
-   gets a distinct cue. See SearchFlow.tsx's own comment at this heading's
-   JSX for why `role="status"` (screen-reader half of "noticeable") lives
-   there instead of here. */
+   here.
+
+   CORRECTED (ticket 9e5fcf3 review round, finding 4): this comment used to
+   claim the larger `font-size` was deliberately paired with a WEIGHT
+   change too, "so a user relying on weight/size rather than hue... still
+   gets a distinct cue." That overstates what this rule actually does --
+   it sets `color` and `font-size` only. There never was a separate weight
+   change to point to: every `<h3>` on this page (this one included) is
+   already browser-default bold, so there is nothing for this rule to add
+   on that axis. The real non-color cue here is `font-size` alone -- still
+   a genuine, independent-of-hue signal, just not the two-part one the old
+   wording claimed. See SearchFlow.tsx's own comment at this heading's JSX,
+   and at the persistent live region near the top of that component's
+   `return`, for the screen-reader half of "noticeable" -- NOT handled by
+   this rule, or by any attribute on the heading itself. */
 .search-complete-heading {
   color: #1f7a4d;
   font-size: 1.15em;
+}
+
+/* Ticket 9e5fcf3 review round, finding C2: a standard visually-hidden
+   utility -- clipped to a 1px box rather than `display: none`/`visibility:
+   hidden` (both of which remove an element from the accessibility tree
+   too, defeating the point of an `aria-live` region meant for a screen
+   reader to announce). Added for the persistent live region in
+   SearchFlow.tsx; this file had no such utility before -- grep for
+   `visually-hidden` there for the one current use. Reusable for a future
+   screen-reader-only announcement elsewhere without inventing a second
+   version of the same clip technique. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* The explicit "reachable without hunting" half of the same fix -- see

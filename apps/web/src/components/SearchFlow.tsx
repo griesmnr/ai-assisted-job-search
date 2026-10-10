@@ -720,6 +720,36 @@ export function SearchFlow({
 
   return (
     <div className="search-flow">
+      {/* Ticket 9e5fcf3 review round, finding C2: a PERSISTENT live region,
+          unconditionally rendered on every single render of this component
+          regardless of `phase.kind` -- unlike the `<h3>` below (which only
+          exists while `phase.kind === "done"`), this exact DOM node is
+          already sitting in the tree, empty, well before the transition to
+          "done" ever happens. That is load-bearing, not incidental: opus
+          review N7 on this codebase (MagicLinkForm.tsx's own comment, cited
+          verbatim) already found and fixed the same mistake once --
+          "A region inserted together with its own content is not announced
+          by most screen readers." An earlier version of this fix put
+          `aria-live="polite"` directly on the `<h3>` inside the `"done"`
+          branch, which is exactly that mistake: the region and its content
+          both enter the DOM in the SAME mutation (the `<h3>` doesn't exist
+          a moment before phase flips to `"done"`), so there is nothing for
+          a screen reader to have been "already watching" -- most
+          implementations announce a LIVE REGION'S CHANGE, not its initial
+          appearance with content already inside it. Rendering unconditionally
+          with an empty string (never `null`, never omitting the element) is
+          what keeps this the SAME node across every phase transition, so
+          React reconciles its text content in place rather than mounting a
+          fresh node each time -- a real content CHANGE on an
+          already-present node, which is what actually gets announced.
+          Visually hidden (`.visually-hidden`, index.css) since sighted users
+          already get the signal from `.search-complete-heading` below --
+          this exists purely for the screen-reader half of "noticeable". */}
+      <p className="search-flow-live visually-hidden" aria-live="polite">
+        {phase.kind === "done" && phase.result.status === "complete"
+          ? `Search complete${phase.result.degraded ? " with some failures" : ""}.`
+          : ""}
+      </p>
       {phase.kind === "idle" && (
         <>
           <button
@@ -924,31 +954,34 @@ export function SearchFlow({
                   Two separate problems, two separate fixes on this one
                   line and the button right after it:
 
-                  NOTICEABLE: `aria-live="polite"` (not just the existing
-                  `aria-label="Search finished"` on the outer div, which is
-                  a static label, not a live region) -- so a screen reader
-                  announces the transition the instant it happens, not only
-                  if/when the user happens to tab back onto this panel.
-                  Deliberately `aria-live`, NOT this file's usual
-                  `role="status"` convention (the "estimating" spinner text
-                  and the `degraded` note just below both use it): `status`
-                  is itself an ARIA role, and setting ANY explicit role on
-                  an element overrides its implicit one -- `role="status"`
-                  on an `<h3>` would make it stop being exposed as a
-                  heading at all, which a real regression caught exactly
-                  this way (SearchFlow.test.tsx's own
-                  `getByRole("heading", { name: "Search complete" })`
-                  started failing the moment this was tried with
-                  `role="status"`, red before this fix and green after).
-                  `aria-live` is a plain attribute, not a role, so it adds
-                  the live-region behavior without taking the heading role
-                  away -- a screen reader user navigating by heading still
-                  finds this one. `.search-complete-heading` (index.css)
-                  gives it a visibly distinct green, bolder treatment for a
-                  sighted user scanning the page -- the plain `<h3>` before
-                  this ticket read identically to every other heading on
-                  screen, which is exactly "renders as a heading change"
-                  Nicole's report named as not noticeable enough.
+                  NOTICEABLE, for a SIGHTED user: `.search-complete-heading`
+                  (index.css) gives this `<h3>` a visibly distinct green,
+                  bolder treatment -- the plain `<h3>` before this ticket
+                  read identically to every other heading on screen, which
+                  is exactly "renders as a heading change" Nicole's report
+                  named as not noticeable enough.
+
+                  NOTICEABLE, for a SCREEN READER user: NOT handled on this
+                  element. Two things ruled out `aria-live`/`role="status"`
+                  living directly on this `<h3>`, each found and fixed in
+                  its own round of review (see the persistent live region
+                  mounted at the top of this component's `return`, right
+                  after `<div className="search-flow">`, for the actual
+                  fix and the full story of both):
+                    1. `role="status"` overrides this element's implicit
+                       heading role entirely -- confirmed by a real
+                       regression (SearchFlow.test.tsx's own
+                       `getByRole("heading", { name: "Search complete" })`
+                       went red the moment this was tried, green once
+                       reverted to a plain `<h3>`).
+                    2. `aria-live="polite"` directly here doesn't actually
+                       announce anything: this whole branch only exists
+                       while `phase.kind === "done"`, so the attribute and
+                       its content both enter the DOM in the SAME mutation
+                       -- the exact mistake opus review N7 already found
+                       once on this codebase (MagicLinkForm.tsx's own
+                       comment: "A region inserted together with its own
+                       content is not announced by most screen readers").
 
                   REACHABLE WITHOUT HUNTING: the "View N results" button
                   right after it, scrolling to the results section App.tsx
@@ -991,7 +1024,7 @@ export function SearchFlow({
                   "notice completion" and "see results," versus zero for
                   auto-scroll -- is a small, bounded price for never
                   surprising a user who didn't ask to be moved. */}
-              <h3 className="search-complete-heading" aria-live="polite">
+              <h3 className="search-complete-heading">
                 Search complete{phase.result.degraded ? " (with some failures)" : ""}
               </h3>
               {freshResultsCount !== undefined && freshResultsCount > 0 && (
