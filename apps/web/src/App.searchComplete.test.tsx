@@ -145,6 +145,22 @@ async function runSearchToCompletion() {
   await screen.findByRole("heading", { name: "Search complete" }, { timeout: 3000 });
 }
 
+// FLAKY-GATE FIX (PM, 2026-10-10): every test in this file drives a REAL
+// search through SearchFlow's real `setInterval` poll (POLL_INTERVAL_MS =
+// 2000ms), and `runSearchToCompletion` below can legitimately spend 3000ms
+// waiting for the first poll tick plus another 3000ms waiting for the
+// completion heading. That is 6000ms against vitest's DEFAULT 5000ms
+// testTimeout -- the file was over budget by arithmetic, not by bad luck,
+// and only passed when the real waits happened to be fast. Under a
+// full-suite run it failed 7 of its 8 tests, on main, after merge.
+//
+// 15000ms matches the convention SearchFlow.test.tsx already established for
+// exactly this reason (see its `}, 15000)` call sites and their own
+// POLL_INTERVAL_MS comments). Set once for the file rather than appended to
+// eight `it()` calls, so a ninth test cannot silently inherit the 5000ms
+// default and reintroduce the flake.
+vi.setConfig({ testTimeout: 15000 });
+
 describe("after a search completes (ticket 9e5fcf3)", () => {
   it("(c) updates the Already Scored Jobs list AND its tab count with no reload", async () => {
     getSources.mockResolvedValue(SOURCES);
