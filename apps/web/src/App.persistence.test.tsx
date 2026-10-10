@@ -330,16 +330,14 @@ describe("App — surviving a reload (git-bug 3f05144)", () => {
     // Restoring the toggles without restoring what they MEAN would be the
     // worst of both worlds: a screen that looks right pricing a search it
     // isn't describing.
+    // Ticket 5c4242d: `mergeTitleChips`/`EXTRA_TITLE_CHIPS` (App.tsx) are
+    // deleted -- `mockHappyPath`'s `suggestedTitles: ["Backend Engineer"]`
+    // is no longer followed by an appended trio.
     expect(estimateSearch).toHaveBeenCalledWith(
       "resume-1",
       ["usajobs"],
       {
-        titleInclude: [
-          "Backend Engineer",
-          "Program Analyst",
-          "IT Specialist",
-          "Computer Scientist",
-        ],
+        titleInclude: ["Backend Engineer"],
         nearLocations: ["seattle", "bellevue"],
         remoteOk: true,
       },

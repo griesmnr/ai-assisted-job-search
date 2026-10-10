@@ -143,18 +143,24 @@ export function SearchCriteriaForm({
       </p>
       {/* Ticket 8a403ee (Nicole, dogfooding: the old separate "click to add"
           federal-title row risked someone missing it entirely -- "you
-          never know if somebody's going to zone out"). A few title
-          variations some employers phrase differently (USAJOBS' federal
-          job-series names among them) are now folded directly into
-          `titleChips` at resume-submission time (App.tsx), same as any
-          resume-inferred chip -- this is just the explanatory note for why
-          an unfamiliar-looking title might be sitting in the list below.
-          Deliberately unconditional (not gated on which sources are
-          selected): the chips themselves no longer are either, per
-          Nicole's explicit "I don't want to build all the functionality
-          for" toggle-state tracking. Wording is a starting point, not
-          final copy -- her own words: "we can work on the language
-          together." */}
+          never know if somebody's going to zone out"), then ticket 5c4242d:
+          8a403ee originally folded a FIXED trio ("Program Analyst"/"IT
+          Specialist"/"Computer Scientist") into `titleChips` at
+          resume-submission time regardless of the resume's field --
+          5c4242d deleted that frontend mechanism entirely (App.tsx no
+          longer appends anything). `titleChips` is now exactly
+          `suggestedTitles`, so any federal job-series title present here
+          was derived by resume-title-inference.ts FOR this resume's own
+          field (ticket 17a5c8f) -- this note just explains why an
+          unfamiliar-looking title might be sitting in the list below, same
+          as it did before, for a different underlying reason. Rendered
+          unconditionally (not gated on titleChips actually containing a
+          federal title, or on which sources are selected) -- it's a
+          general explanation of why a chip might look unfamiliar, not a
+          per-resume guarantee that one is present; narrower gating (e.g. on
+          USAJOBS being configured at all) is ticket 99b6b25's question, not
+          this one's. Wording is a starting point, not final copy --
+          Nicole's own words: "we can work on the language together." */}
       <p className="search-criteria-hint">
         A few title variations some employers use — like USAJOBS' federal job titles — are included
         automatically.
