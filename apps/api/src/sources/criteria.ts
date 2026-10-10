@@ -44,7 +44,7 @@ import {
   filterSoftwareEngineeringJobs,
   looksLikeContractOrTemp,
 } from "../matching/swe-filter.js";
-import { compileMetroAreaMatchers } from "./metroAreas.js";
+import { compileMetroAreaMatchers, nearbyCityExpansionWarnings } from "./metroAreas.js";
 import { expandTitlePhrase } from "./titleSynonyms.js";
 import type { NormalizedJob } from "./types.js";
 
@@ -606,4 +606,29 @@ export function compileExcludedForMissingWorkArrangement(
     return excludedForMissingWorkArrangement;
   }
   return () => [];
+}
+
+/**
+ * The reasons "include nearby cities" could not expand one or more of
+ * `criteria.nearLocations`, surfaced to the CALLER -- ticket e5e1aa1 review
+ * round 2, D8/Required 4. `compileMetroAreaMatchers`'s own `console.warn`
+ * (metroAreas.ts) is operator-visible only, which does not satisfy the
+ * ticket's central acceptance criterion ("a city with no coordinate data is
+ * reported to the user"); this is the companion that a route handler calls
+ * ALONGSIDE `compileFilter` (same pairing as
+ * `compileExcludedForMissingWorkArrangement` above) and returns on the wire,
+ * so the frontend can render it next to the checkbox that produced it.
+ *
+ * `[]` whenever there is nothing to report: no criteria, the flag off, or no
+ * `nearLocations` at all -- mirroring `makeLocationMatcher`'s own "the flag
+ * is an addition, never a restriction of its own" rule, so this never
+ * fabricates a warning for a search that was never going to expand anything.
+ */
+export function locationExpansionWarnings(criteria: SearchCriteria | undefined): string[] {
+  if (criteria === undefined || !criteria.expandMetroAreas) return [];
+  const warnings: string[] = [];
+  for (const phrase of criteria.nearLocations ?? []) {
+    warnings.push(...nearbyCityExpansionWarnings(phrase));
+  }
+  return warnings;
 }

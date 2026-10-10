@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compileExcludedForMissingWorkArrangement, compileFilter } from "./criteria.js";
+import {
+  compileExcludedForMissingWorkArrangement,
+  compileFilter,
+  locationExpansionWarnings,
+} from "./criteria.js";
 import {
   excludedForMissingWorkArrangement,
   filterSoftwareEngineeringJobs,
@@ -526,6 +530,46 @@ describe("compileExcludedForMissingWorkArrangement (ticket 14289ac)", () => {
         usWideMissingArrangementJob,
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("locationExpansionWarnings (ticket e5e1aa1 review round 2, D8/Required 4)", () => {
+  // The companion to `compileFilter` that gets `metroAreas.ts`'s unresolved-
+  // expansion reasons onto the wire, alongside the actual response, rather
+  // than only into a server-side `console.warn` nobody using the app would
+  // ever see.
+  it("is [] when there is nothing to report: undefined criteria, the flag off, or no nearLocations", () => {
+    expect(locationExpansionWarnings(undefined)).toEqual([]);
+    expect(locationExpansionWarnings({})).toEqual([]);
+    expect(locationExpansionWarnings({ nearLocations: ["Boston"] })).toEqual([]);
+    expect(
+      locationExpansionWarnings({ nearLocations: ["Boston"], expandMetroAreas: false }),
+    ).toEqual([]);
+  });
+
+  it("reports a phrase that could not expand, once the flag is on", () => {
+    const warnings = locationExpansionWarnings({
+      nearLocations: ["Boston"],
+      expandMetroAreas: true,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("boston");
+  });
+
+  it("is [] for a phrase that DID resolve, even with the flag on", () => {
+    expect(
+      locationExpansionWarnings({ nearLocations: ["Seattle"], expandMetroAreas: true }),
+    ).toEqual([]);
+  });
+
+  it("collects a warning per unresolved phrase, not just the first", () => {
+    const warnings = locationExpansionWarnings({
+      nearLocations: ["Seattle", "Boston", "Timbuktu"],
+      expandMetroAreas: true,
+    });
+    expect(warnings).toHaveLength(2);
+    expect(warnings.some((w) => w.includes("boston"))).toBe(true);
+    expect(warnings.some((w) => w.includes("Timbuktu"))).toBe(true);
   });
 });
 

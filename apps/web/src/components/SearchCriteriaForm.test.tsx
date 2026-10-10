@@ -97,18 +97,18 @@ describe("SearchCriteriaForm — red highlight on missing location signal (ticke
  * wired.
  */
 describe("SearchCriteriaForm — metro-area expansion checkbox (ticket 410e1a2)", () => {
-  it("renders in the location section, unchecked, with a label naming real sibling cities", () => {
+  it("renders in the location section, unchecked, with a label naming the actual 60-mile radius", () => {
     render(<SearchCriteriaForm {...baseProps()} />);
 
-    const checkbox = screen.getByLabelText(/Also include nearby cities in the same metro area/);
+    const checkbox = screen.getByLabelText(/Also include nearby cities/);
     expect(checkbox).toBeInTheDocument();
     expect(checkbox).not.toBeChecked();
     // Specific enough that a user can predict the effect before running a
-    // search that costs money, and phrased as an addition ("Also include")
-    // rather than as something already happening.
-    expect(
-      screen.getByText(/a Seattle search would also match Bellevue, Kirkland, Redmond/),
-    ).toBeInTheDocument();
+    // search that costs money (the 60-mile radius, ticket e5e1aa1), phrased
+    // as an addition ("Also include") rather than as something already
+    // happening, and honest about straight-line vs. driving distance.
+    expect(screen.getByText(/within 60 miles/)).toBeInTheDocument();
+    expect(screen.getByText(/not driving distance/)).toBeInTheDocument();
     // Inside the same block the location input lives in, not stranded
     // elsewhere in the form.
     const locationSection = screen
@@ -121,7 +121,7 @@ describe("SearchCriteriaForm — metro-area expansion checkbox (ticket 410e1a2)"
     const onChange = vi.fn();
     render(<SearchCriteriaForm {...baseProps()} nearLocations="seattle" onChange={onChange} />);
 
-    fireEvent.click(screen.getByLabelText(/Also include nearby cities in the same metro area/));
+    fireEvent.click(screen.getByLabelText(/Also include nearby cities/));
 
     expect(onChange).toHaveBeenCalledWith({
       nearLocations: "seattle",
@@ -134,9 +134,7 @@ describe("SearchCriteriaForm — metro-area expansion checkbox (ticket 410e1a2)"
 
   it("renders checked when the caller says it is on", () => {
     render(<SearchCriteriaForm {...baseProps()} expandMetroAreas={true} />);
-    expect(
-      screen.getByLabelText(/Also include nearby cities in the same metro area/),
-    ).toBeChecked();
+    expect(screen.getByLabelText(/Also include nearby cities/)).toBeChecked();
   });
 
   it("does NOT count as a location signal — it widens the location box, it is not a substitute for it", () => {

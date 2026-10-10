@@ -1046,6 +1046,21 @@ export type EstimateSearchResponse = {
   alreadyScored: number;
   sourceOutcomes: SourceOutcome[];
   skippedSources: SkippedSource[];
+  /**
+   * Ticket e5e1aa1 review round 2 (D8/Required 4): the reasons
+   * `SearchCriteria.expandMetroAreas` could not expand one or more
+   * `nearLocations` entries -- e.g. a typed city absent from the bundled
+   * coordinate dataset, or one whose bare name is ambiguous across states
+   * ("Boston" exists in GA, IN and MA) and so needs a state added to
+   * resolve. `[]` whenever the flag is off, there is nothing to expand, or
+   * every entry expanded successfully -- never populated speculatively.
+   * `apps/api/src/sources/metroAreas.ts`'s `nearbyCityExpansionWarnings` is
+   * what computes these; this field is what gets them from there to the
+   * checkbox the user actually sees (`SearchCriteriaForm.tsx`), which a
+   * server-side `console.warn` alone -- visible to an operator, not to the
+   * person who ticked the box -- did not satisfy.
+   */
+  locationWarnings: string[];
 };
 
 export type StartSearchRequest = {

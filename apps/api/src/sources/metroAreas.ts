@@ -1,6 +1,7 @@
 /**
- * Local, zero-cost METRO-AREA EXPANSION for caller-supplied location
- * phrases (ticket 410e1a2).
+ * Local, zero-cost NEARBY-CITY EXPANSION for caller-supplied location
+ * phrases (ticket 410e1a2, replaced by ticket e5e1aa1's distance-based
+ * redesign).
  *
  * Consumed by `criteria.ts`'s `compileFilter`, ONLY on the explicit-criteria
  * path, and ONLY when the caller sets `SearchCriteria.expandMetroAreas` to
@@ -40,12 +41,14 @@
  *     Illinois; New York, New York" (the second adding "; Washington, DC"),
  *     and "Bellevue, Washington; San Francisco, California" (1).
  *
- * Verified before writing any of this (see criteria.test.ts's own strict
- * tests): `compileFilter({ nearLocations: ["Seattle"] })` returns nothing for
- * a posting located "Kirkland, WA" or "Bellevue, Washington", and DOES return
- * the real posting located "Bellevue, Washington; Seattle, Washington" --
- * multi-location matching already worked; only the sibling-city case was
- * missing.
+ * THIS EVIDENCE IS STILL VALID AND STILL THE REASON THE FEATURE EXISTS AT
+ * ALL -- carried forward unchanged from the table ticket e5e1aa1 deletes.
+ * What e5e1aa1 found wrong was the DELIVERY: `METRO_AREA_GROUPS` only ever
+ * covered two hand-built metros (Seattle-Tacoma-Bellevue, Los Angeles-Long
+ * Beach-Anaheim), so the checkbox silently did nothing for every other city
+ * a user typed -- Olympia, Portland, New York, Chicago, Austin, Denver,
+ * Boston, San Francisco. A real user (relayed by Nicole, 2026-10-10) typed
+ * "Olympia" with the box checked and got no effect, with no indication why.
  *
  * ---------------------------------------------------------------------------
  * WHY THIS IS OPT-IN, AND STAYS OPT-IN
@@ -60,31 +63,64 @@
  * that... I want it given that it meets both users' needs as long as it can
  * be seen."
  *
- * That framing is also why the groups below are METRO areas (an OMB/Census
- * MSA) rather than a commute-time radius. An MSA is a published, checkable,
- * stable definition; "45 minutes by car" is neither, and would need routing
- * data this app does not have. The cost of the MSA choice is stated plainly
- * on each group: Tacoma to Everett is ~60 miles and nobody commutes it
- * daily. The checkbox is what makes that acceptable -- the user opted into
- * "same metro", not into "guaranteed commutable".
- *
  * ---------------------------------------------------------------------------
- * WHY A CURATED TABLE AND NOT A GEOCODER
+ * WHY DISTANCE, NOT A CURATED METRO TABLE (ticket e5e1aa1)
  * ---------------------------------------------------------------------------
  *
- * Same cost-and-dependency discipline as `titleSynonyms.ts` (ticket 0298b20)
- * and `ingest/textSimilarity.ts` (ticket 78d31b7): this is evaluated against
- * every posting of every source on every search. A geocoding API call per
- * posting would be recurring money and a new network dependency in the
- * filter path, for a question a small table answers correctly for the cases
- * that actually occur. Pure, synchronous, network-free.
+ * The original design (ticket 410e1a2) used hand-curated OMB/Census MSA
+ * groupings instead of a radius specifically BECAUSE "an MSA is a published,
+ * checkable, stable definition; '45 minutes by car' is neither." That
+ * reasoning was sound for the two metros it covered, but it does not scale:
+ * building a verified MSA entry for every US metro a searcher might type is
+ * unbounded hand-curation work, and until it's done for a given city the
+ * checkbox for that city is a silent no-op -- exactly the bug Olympia hit.
  *
- * Cost shape: expansion happens once per `compileFilter` call, not per job --
- * it produces a handful of extra compiled matchers up front. Per job, the
- * added work is a few extra `RegExp.test` calls that short-circuit on the
- * first hit, and the region guard below runs ONLY after a sibling city has
- * already matched (`cityMatcher(loc) && !foreignRegion(...)`), so the common
- * case -- a posting in neither metro -- pays nothing beyond the city tests.
+ * Nicole's ruling (git-bug e5e1aa1, 2026-10-10): distance-based, 60 miles,
+ * computed from a bundled city-coordinate dataset (`cityCoordinates.ts` --
+ * see that file for provenance: the US Census Bureau's own Gazetteer place
+ * file, the same public, checkable authority class the old table held
+ * itself to). This covers every city in the dataset uniformly, rather than
+ * only the handful someone has separately verified. The tradeoff it accepts
+ * explicitly: straight-line distance is not commute distance, which is the
+ * SAME caveat the old table already carried ("Tacoma to Everett is ~60
+ * miles end to end, which is why the whole feature is a checkbox") -- a
+ * radius just makes that caveat more visible, by computing a number instead
+ * of curating a list, so this file says so again below rather than letting
+ * the number imply a precision it does not have.
+ *
+ * ---------------------------------------------------------------------------
+ * HOW IT WORKS
+ * ---------------------------------------------------------------------------
+ *
+ * `compileMetroAreaMatchers(phrase)`:
+ *
+ *  1. Finds every city name `phrase` mentions (`resolveCallerCities`),
+ *     disambiguating by a following region ("Everett, MA") where one is
+ *     given, and resolving a bare ambiguous name ("Boston") only when the
+ *     dataset has exactly one state for it -- see that function's doc
+ *     comment for why an ambiguous bare name is left UNRESOLVED rather than
+ *     guessed.
+ *  2. For each resolved coordinate, scans the full bundled dataset
+ *     (`cityCoordinates.ts`) once and collects every place within
+ *     `NEARBY_CITY_RADIUS_MILES` miles (`haversineMiles`), grouped by name ->
+ *     the set of states a within-radius instance was actually found in.
+ *     This always includes the named city itself (distance 0), which is why
+ *     a resolved phrase never produces zero matchers -- see
+ *     `compileMetroAreaMatchers`'s own comment for what "zero matchers"
+ *     therefore means.
+ *  3. Builds one matcher per nearby name, reusing `cityIsInRegions` (the
+ *     SAME region guard the old table used, unchanged) to reject a posting
+ *     that places that name in a region outside the set just computed --
+ *     e.g. a Bellevue found only in WA within Olympia's radius still
+ *     rejects a real "Bellevue, NE" posting, exactly as the old table's
+ *     `REGION_REQUIRED_CITIES` did for the same reason.
+ *
+ * A phrase that resolves to NOTHING (no recognizable city, an ambiguous bare
+ * name, or a named region the city doesn't actually have) produces zero
+ * matchers -- the checkbox then does nothing for it, same as today's strict
+ * matching alone -- but NEVER silently: see `compileMetroAreaMatchers`'s own
+ * comment for the `console.warn` this emits instead, which is the fix for
+ * the actual bug (a no-op nobody could see) rather than a repeat of it.
  *
  * ---------------------------------------------------------------------------
  * THE SAFETY MODEL: A REGION GUARD, WHOSE ONLY FAILURE IS NOT EXPANDING
@@ -99,12 +135,14 @@
  * matched literally, would happily map a Boston-area job into a Seattle
  * search.
  *
- * So each group declares the REGIONS (US state / DC / Canadian province
- * postal codes) it spans, and a city match is rejected when the text names a
- * region OUTSIDE that set immediately after the city. "Everett, MA" does not
+ * So every nearby name carries the SPECIFIC region(s) it was found in within
+ * radius, and a posting match is rejected when the text names a region
+ * OUTSIDE that set immediately after the city. "Everett, MA" does not
  * satisfy a Seattle expansion; "Everett, WA" and "Everett, Washington" do.
- * The same guard runs on the CALLER's phrase, so typing "Pasadena, TX"
- * selects no group at all rather than quietly selecting Los Angeles.
+ * The same guard runs on the CALLER's phrase (via `regionAfter`), so typing
+ * "Pasadena, TX" resolves to Pasadena, TX's OWN nearby cities (a different,
+ * real place with its own coordinates in the dataset) rather than quietly
+ * selecting Los Angeles -- see `resolveCallerCities`'s doc comment.
  *
  * **Immediately after** is doing real work and is not a simplification of
  * "anywhere in the string". Seven of the 29 real postings above are
@@ -127,38 +165,59 @@
  * mention.
  *
  * A region mention that is absent is not the same as one that agrees. For
- * most cities absence passes ("Seattle" alone is Seattle), but for the nine
- * table cities whose bare name is genuinely ambiguous a POSTING must name an
- * in-set region positively -- see `REGION_REQUIRED_CITIES`, which is where
- * "Irvine, Scotland", "Kirkland, Canada" and "Everett, United States" are
- * rejected. Callers' phrases are exempt, because "Bellevue" with no state is
- * how people search.
+ * most names absence passes ("Seattle" alone is Seattle), but for a name
+ * that is genuinely ambiguous NATIONWIDE -- found in more than one state
+ * anywhere in the bundled dataset, not just within this search's radius -- a
+ * POSTING must name an in-set region positively (`AMBIGUOUS_CITY_NAMES`,
+ * this ticket's generalization of ticket 410e1a2's hand-picked
+ * `REGION_REQUIRED_CITIES`; see that constant's doc comment for the measured
+ * scale of the generalization). That is what rejects "Irvine, Scotland",
+ * "Kirkland, Canada" and "Everett, United States" -- all of which the
+ * absence rule accepted, and the last of which is a real shape in this
+ * repo's data (the Airbnb fixture's "Los Angeles, United States").
  *
  * Known residual weaknesses, recorded rather than papered over:
- *  - A bare, region-less ambiguous city name in the CALLER's phrase still
- *    picks a group: `nearLocations: ["Everett"]` meaning Everett, MA expands
- *    to the Seattle metro. The honest mitigation is the UI, where the
- *    checkbox's own label names the cities it will pull in; the technical
- *    one (requiring a region in the caller's phrase before expanding at all)
- *    was rejected as too strict -- "Seattle" with no state is how people
- *    actually type, and it is the exact phrase this ticket exists to serve.
- *  - The region vocabulary is US + Canada, so a POSTING field naming a region
- *    elsewhere ("Kirkland, Île-de-France") is not recognized as foreign.
- *    `REGION_REQUIRED_CITIES` closes this for the nine names where it
- *    actually bites; for the rest ("Tacoma, Bogotá") it stands. Canada is
- *    included because it is the adjacency that shows up in this app's real
- *    data (the corpus contains "Vancouver, British Columbia", "Toronto,
- *    Ontario", "Ottawa, Ontario" and "Remote, Canada").
+ *  - A bare, region-less ambiguous city name in the CALLER's phrase is left
+ *    UNRESOLVED rather than guessed (see `resolveCallerCities`) -- a
+ *    deliberate change from ticket 410e1a2's table, which let a caller's
+ *    bare ambiguous name through unconditionally because the group it
+ *    picked was small and hand-vetted. With 2,732 of 12,827 names in the
+ *    bundled dataset ambiguous across states (measured 2026-10-10 -- see
+ *    `cityCoordinates.ts`), guessing a coordinate for one would risk
+ *    computing "nearby" from the wrong place entirely (a bare "Boston"
+ *    could mean Boston, MA, GA or IN). The honest fix given no population
+ *    data to break the tie is to ask for a state, not to guess -- see the
+ *    `console.warn` this produces instead.
+ *  - The region vocabulary is US + Canada, so a POSTING field naming a
+ *    region elsewhere ("Kirkland, Île-de-France") is not recognized as
+ *    foreign. `AMBIGUOUS_CITY_NAMES` closes this for every name the dataset
+ *    knows is ambiguous; for an unambiguous name paired with an unrecognized
+ *    foreign region field, this rule still accepts, exactly as the old
+ *    table's residual weakness for "Tacoma, Bogotá" did. Canada is included
+ *    because it is the adjacency that shows up in this app's real data (the
+ *    corpus contains "Vancouver, British Columbia", "Toronto, Ontario",
+ *    "Ottawa, Ontario" and "Remote, Canada") -- the bundled coordinate
+ *    dataset itself is US-only (see `cityCoordinates.ts`), so a Canadian
+ *    CALLER phrase ("Vancouver, BC") cannot resolve a coordinate even though
+ *    the region guard recognizes the region name; it is reported as
+ *    unresolved, same as any other city absent from the dataset.
  *  - Free-text between the city and its region ("Bellevue (Hybrid), WA") puts
  *    a non-region field in the guard's window, so no region is found.
- *    Unobserved in real data; for the nine region-required names that now
- *    means no expansion, and for the rest it is still a possible false
- *    positive.
+ *    Unobserved in real data; for an ambiguous name that now means no
+ *    expansion, and for the rest it is still a possible false positive.
  *  - A city list whose fields are cities, not regions -- "Seattle, New York,
  *    San Francisco" -- reads "New York" as a state and suppresses the
  *    expansion. One real posting in the corpus has this shape. It costs
  *    coverage, never a false positive (the caller's literal matcher still
  *    matches it), which is the direction below.
+ *  - A caller-typed phrase cannot resolve a dataset name that itself
+ *    contains an internal hyphen or apostrophe ("Winston-Salem",
+ *    "Coeur d'Alene") -- `resolveCallerCities`'s word-tokenizer splits on
+ *    both, same as the old table's `\b` treated a hyphen as a boundary
+ *    ("Renton-upon-Thames" still finds "renton"). 84 of the dataset's
+ *    12,827 names (0.7%, measured 2026-10-10) contain one; posting-side
+ *    matching is unaffected (it tests the literal city pattern against raw
+ *    posting text, which handles a hyphen or apostrophe directly).
  * **The guard can only ever suppress an expansion, never create one**, and
  * that holds for every change above: expansion only ADDS matchers, and the
  * caller's own literal phrase is always compiled and tested first,
@@ -167,184 +226,185 @@
  * would otherwise have added. A user who hits one sees exactly today's
  * strict behavior.
  */
+import { CITY_COORDINATES } from "./cityCoordinates.js";
 
 /**
- * One metro area: cities that a searcher naming any one of them plausibly
- * meant to include, plus the regions that metro spans.
+ * How far "nearby" reaches, in miles, as the great-circle (straight-line)
+ * distance between two places' Census-published internal points -- NOT a
+ * commute or driving distance. See this file's header for why straight-line
+ * is the deliberate choice (no routing-data dependency) and why that is a
+ * real cost, not a rounding error, stated again right here rather than left
+ * to be discovered:
  *
- * Cities are lowercase and plain-word (letters and single spaces only) --
- * `metroAreas.test.ts` asserts that, because it is what makes a `\b...\b`
- * anchor unconditionally correct for every entry, the way `makePhraseMatcher`
- * has to reason case-by-case about phrases like "c++" and ".net" that the
- * caller may type.
+ * STRAIGHT-LINE IS NOT DRIVING. Bremerton is computed at ~35-39 miles from
+ * Olympia (depending on which two points are measured -- see below), but the
+ * real trip goes around Puget Sound or by ferry. A curated metro table could
+ * at least claim "these are the cities this MSA's own definition names";
+ * a radius computes a precise-LOOKING number from two points on a map, which
+ * makes the straight-line-vs-driving gap MORE likely to be mistaken for
+ * precision, not less -- so it is written down here, not left to be
+ * discovered.
+ *
+ * WHY 60, NOT 50 (Nicole's first instinct) -- measured 2026-10-10, real
+ * great-circle distances between Census internal points, requested by
+ * Nicole while reviewing this ticket:
+ *
+ *   from Olympia:  Seattle 47.4   Tacoma 26.1   Lacey 3.7   Bremerton 38.7
+ *                  Bellevue 51.3  Everett 72.7
+ *   from Seattle:  Bellevue 6.1   Bremerton 14.3  Tacoma 25.0  Everett 26.5
+ *                  Lacey 45.7     Olympia 47.4
+ *
+ * A 50-mile radius already covers everything ticket 410e1a2's hand-built
+ * Seattle-Tacoma-Bellevue group contained, PLUS Olympia and Bremerton -- a
+ * radius is strictly more generous than that curated table, for every city
+ * rather than two. But at 50, Olympia's own numbers produce a visibly
+ * absurd result: Seattle is IN (47.4) and Bellevue -- six miles further out
+ * than Seattle, and a city nobody would call farther from Olympia than
+ * Seattle is -- is OUT (51.3). A user who knows the area would read that as
+ * a bug, correctly. 60 admits Bellevue and still excludes Everett (72.7),
+ * which is the actual Tacoma-to-Everett-scale distance the old table's own
+ * doc comment already called a stretch ("~60 miles end to end, which is why
+ * the whole feature is a checkbox"). Nicole chose 60 when shown the 50-mile
+ * Bellevue gap.
+ *
+ * Re-measured against the bundled dataset's own points (`cityCoordinates.ts`,
+ * `haversineMiles`) rather than assumed identical to the numbers above:
+ * Olympia -> Seattle 47.4, Tacoma 25.1, Lacey 4.6, Bremerton 35.5, Bellevue
+ * 51.8, Everett 71.9; Seattle -> Bellevue 9.2, Bremerton 17.9, Tacoma 25.9,
+ * Everett 25.1, Lacey 45.0. Every accept/reject decision above still holds
+ * (Bellevue still just past 50 and comfortably under 60; Everett still well
+ * past 60) even though the individual numbers differ by a few miles from
+ * Nicole's own measurement -- expected, not a bug: her numbers and this
+ * file's come from different reference points within each city (e.g.
+ * downtown vs. the Census internal point used here), which is exactly the
+ * straight-line-is-not-one-true-number caveat above restated as data rather
+ * than prose.
  */
-export interface MetroAreaGroup {
-  /** The metro's published name, with the authority it comes from. */
-  readonly metro: string;
-  /** US state / DC / Canadian province postal codes this metro spans. */
-  readonly regions: readonly string[];
-  /** Cities in this metro, lowercase, plain words. */
-  readonly cities: readonly string[];
-  /** Why these specific cities, and what was checked. */
-  readonly why: string;
+export const NEARBY_CITY_RADIUS_MILES = 60;
+
+/**
+ * Great-circle distance between two lat/lon points, in miles (the haversine
+ * formula). Exported for tests and for `compileMetroAreaMatchers`'s own
+ * radius scan.
+ *
+ * Earth radius 3,958.7613 mi (the WGS-84 mean radius used by NOAA/NASA
+ * references) -- a sphere, not the actual oblate ellipsoid, which is correct
+ * for this use: the two never differ enough at these distances (tens of
+ * miles) to move a 60-mile-radius accept/reject decision, and a sphere is
+ * what every other number quoted in this file (Nicole's own measurements,
+ * the Census internal points) is implicitly assuming too.
+ */
+export function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const EARTH_RADIUS_MILES = 3958.7613;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_RADIUS_MILES * Math.asin(Math.sqrt(a));
 }
 
 /**
- * The table. Two metro areas, both taken from the OMB/Census metropolitan
- * statistical area that already defines them, both spot-checked against this
- * repo's own real captured postings.
- *
- * Deliberately NOT exhaustive US coverage (ticket 410e1a2 scope: "prove the
- * pattern with 2+ real, well-verified groupings"). Each group lists the
- * metro's principal employment centers -- the cities that appear in the
- * MSA's own published name or metropolitan-division names, plus ones with a
- * real hiring presence -- not every incorporated city in it. An omitted city
- * costs coverage (a Kent, WA posting still will not match a "Seattle"
- * search), which is the same safe direction as everything else in this file;
- * a WRONG city would cost a false positive, which is why each one below is
- * justified individually.
+ * Every bundled coordinate, grouped by lowercase name -- built once at
+ * module load from `CITY_COORDINATES` (19,670 rows; see `cityCoordinates.ts`
+ * for provenance). A name maps to MORE than one entry either because it is
+ * genuinely ambiguous across states (11 different "bellevue"s) or because
+ * normalization produced the same (state, name) pair twice for two distinct
+ * real places (21 such pairs, e.g. two "Oakwood"s in OH, or Hawaii's own
+ * "Kailua" and "Waimea" CDPs, each real on different islands -- see
+ * `cityCoordinates.ts`'s own doc comment); either way, every entry is kept
+ * and `resolveCallerCities`/the radius scan consider all of them.
  */
-export const METRO_AREA_GROUPS: readonly MetroAreaGroup[] = [
-  {
-    metro: "Seattle-Tacoma-Bellevue, WA MSA (OMB/Census CBSA 42660)",
-    regions: ["WA"],
-    cities: ["seattle", "bellevue", "kirkland", "redmond", "renton", "everett", "tacoma"],
-    why:
-      "The ticket's own starting list, checked rather than accepted. The " +
-      "Census Bureau defines the Seattle-Tacoma-Bellevue, WA MSA as exactly " +
-      "three counties -- King, Pierce and Snohomish -- and its three " +
-      "metropolitan divisions are named Seattle-Bellevue-Kent (King), " +
-      "Tacoma-Lakewood (Pierce) and Everett (Snohomish), so Seattle, " +
-      "Bellevue, Tacoma and Everett are named by the definition itself. " +
-      "Kirkland, Redmond and Renton are King County cities on King County's " +
-      "own published city list (Renton is an inner-ring suburb ~11 miles " +
-      "southeast of downtown Seattle). All seven verified in-MSA; none " +
-      "guessed. Real-data backing, beyond the definition: of 200 postings in " +
-      "the owner's own scored corpus, 29 are in a sibling city with no " +
-      "'Seattle' anywhere in the location string (all Bellevue -- " +
-      "Databricks, Robinhood, Okta, Smartsheet), and 2 are the mixed form " +
-      "'Bellevue, Washington; Seattle, Washington' that already matched. " +
-      "Honest caveat: this is a metro, not a commute -- Tacoma to Everett is " +
-      "~60 miles end to end, which is why the whole feature is a checkbox.",
-  },
-  {
-    metro: "Los Angeles-Long Beach-Anaheim, CA MSA (OMB/Census CBSA 31080)",
-    regions: ["CA"],
-    cities: [
-      "los angeles",
-      "long beach",
-      "anaheim",
-      "santa ana",
-      "irvine",
-      "glendale",
-      "burbank",
-      "pasadena",
-      "santa monica",
-      "culver city",
-      "west hollywood",
-      "el segundo",
-      "torrance",
-    ],
-    why:
-      "The second metro, chosen because this repo already holds real " +
-      "evidence of the exact miss: the captured Match Group (Lever) fixture " +
-      "contains 'Senior Software Engineer, Machine Learning Infrastructure " +
-      "(Tinder LLC, West Hollywood, California)' located ONLY in 'West " +
-      "Hollywood, California' -- a posting a strict nearLocations " +
-      "['Los Angeles'] search misses today, in a city that is an enclave " +
-      "entirely surrounded by Los Angeles. The Census Bureau defines the " +
-      "Los Angeles-Long Beach-Anaheim, CA MSA as exactly two counties, Los " +
-      "Angeles and Orange, split into the Los Angeles-Long Beach-Glendale " +
-      "and Anaheim-Santa Ana-Irvine metropolitan divisions -- which names " +
-      "six of the thirteen cities here outright. The rest are LA County " +
-      "(Burbank, Pasadena, Santa Monica, Culver City, West Hollywood, El " +
-      "Segundo, Torrance) employment centers. Three carry a same-name " +
-      "conflict in another metro and are kept only because the region guard " +
-      "covers the case where a posting or a caller says so: Pasadena (also " +
-      "TX, pop. 149,615, a namesake of the Houston-Pasadena-The Woodlands " +
-      "MSA), Glendale (also AZ, pop. 248,325, Phoenix metro) and Long Beach " +
-      "(also NY and MS).",
-  },
-];
+const CITY_COORDINATES_BY_NAME: ReadonlyMap<
+  string,
+  readonly {
+    readonly state: string;
+    readonly lat: number;
+    readonly lon: number;
+    readonly alandSqMi: number;
+  }[]
+> = (() => {
+  const map = new Map<string, { state: string; lat: number; lon: number; alandSqMi: number }[]>();
+  for (const { state, name, lat, lon, alandSqMi } of CITY_COORDINATES) {
+    const existing = map.get(name);
+    if (existing) existing.push({ state, lat, lon, alandSqMi });
+    else map.set(name, [{ state, lat, lon, alandSqMi }]);
+  }
+  return map;
+})();
 
 /**
- * ---------------------------------------------------------------------------
- * NOT GROUPED -- candidates considered and deliberately left out
- * ---------------------------------------------------------------------------
- *
- * As in `titleSynonyms.ts`, this section is half the point. Each of these
- * looked reasonable and each would have been wrong in a specific way.
- *
- *  - `arlington`, in any group. It is three real places at once: Arlington,
- *    VA (the Pentagon -- and USAJOBS is a live source in this app, so
- *    federal Arlington postings genuinely arrive here; the captured USAJOBS
- *    fixture contains "Pentagon, Arlington, Virginia"), Arlington, TX (a
- *    namesake of the Dallas-Fort Worth-Arlington MSA), and Arlington, WA --
- *    a Snohomish County city INSIDE the Seattle MSA. A bare "Arlington" in a
- *    caller's phrase cannot be resolved, and the one direction the region
- *    guard cannot help with is exactly a bare, region-less phrase. This is
- *    also why the Dallas metro was not the second group despite being an
- *    obvious candidate: its MSA name contains the single most ambiguous
- *    city name in the country.
- *
- *  - `vancouver` in the Seattle group. Tempting because it is in Washington;
- *    wrong twice over. Vancouver, WA is part of the Portland-Vancouver-
- *    Hillsboro, OR-WA MSA -- 150 miles from Seattle, a different metro
- *    entirely -- and Vancouver, BC is a different country. The owner's own
- *    corpus contains "Vancouver, British Columbia" on a real posting, so
- *    this is a live collision, not a hypothetical. A state-level heuristic
- *    ("it's in WA, so it's Seattle") would have grouped it; the MSA
- *    definition correctly does not.
- *
- *  - `olympia`, `bremerton`, `bellingham`, `spokane` in the Seattle group.
- *    Each is its own MSA (Olympia-Lacey-Tumwater; Bremerton-Silverdale-Port
- *    Orchard; Bellingham; Spokane-Spokane Valley). Bremerton in particular
- *    is ~15 miles across Puget Sound and a ferry ride, i.e. close on a map
- *    and not close in practice -- the clearest illustration of why this
- *    table follows published metro definitions instead of map distance.
- *
- *  - `kent`, `auburn`, `lakewood` -- genuinely inside the Seattle MSA (Kent
- *    is even in the Seattle-Bellevue-Kent division name) but each is a very
- *    common US place name (Kent, OH; Auburn, AL and Auburn University;
- *    Lakewood in CO, NJ, OH and CA). They are omitted for now, which costs
- *    only coverage. `bothell`, `issaquah`, `lynnwood`, `federal way`,
- *    `puyallup` and `everett`'s other Snohomish neighbors are in-MSA and
- *    unambiguous and are the natural first additions if this table grows --
- *    left out here only to keep every line of the initial table individually
- *    verified rather than plausible.
- *
- *  - The San Francisco Bay Area, as one group. This is the candidate with
- *    the BEST real-data support in the repo -- the owner's corpus has
- *    "Bellevue, WA; Menlo Park, CA" (x3) and Palo Alto/San Francisco
- *    multi-city postings, and the Bosch fixture has "Sunnyvale, CA, United
- *    States" -- and it is still left out, because it is the one place the
- *    MSA authority this table relies on gives an answer the local job market
- *    would call wrong. San Francisco-Oakland-Berkeley and San Jose-
- *    Sunnyvale-Santa Clara are two SEPARATE MSAs: Menlo Park (San Mateo
- *    County) is in the first, Palo Alto and Sunnyvale (Santa Clara County)
- *    are in the second, even though everyone involved calls all of it "the
- *    Bay Area" and the Combined Statistical Area does group them. Grouping
- *    them here would mean silently switching authorities (MSA for Seattle
- *    and LA, CSA for the Bay) and asserting a 35-mile-each-way commute --
- *    precisely the surprise this ticket's opt-in design exists to avoid.
- *    Deferred to its own ticket, where the MSA-vs-CSA choice can be made
- *    once, explicitly, for every metro.
- *
- *  - New York / Newark / Jersey City. Nothing structural blocks it -- a
- *    group's `regions` is a set, so a tri-state metro is expressible as
- *    `["NY", "NJ", "CT"]` -- it simply has not been verified to the standard
- *    of the two above, and an unverified group is what this file exists to
- *    prevent. Same for Portland (OR vs ME, another bare-name collision that
- *    would need the guard) and for every other US metro: adding one is a
- *    small, reviewable follow-up ticket, not a reason to guess now.
- *
- *  - Neighborhoods, boroughs and areas WITHIN a city (Capitol Hill, Ballard,
- *    Brooklyn, Silicon Beach). A different mechanism with a different risk
- *    profile: they are sub-city, so the containment is one-directional (a
- *    "Seattle" search should match a Ballard posting, but a "Ballard" search
- *    matching everything in Seattle is a much broader claim), and the names
- *    collide with ordinary words far more often. Not attempted.
+ * Names that ARE unambiguous within the bundled (US-only) dataset but
+ * collide with a real place OUTSIDE it, carried forward from ticket
+ * 410e1a2's hand-picked `REGION_REQUIRED_CITIES` rather than silently
+ * dropped when that set was replaced by the computed one below. The
+ * dataset-driven set below can only ever see a collision between two US
+ * states -- it has no way to know "Santa Ana" is also a real city in Costa
+ * Rica and El Salvador, because neither is in a US Census file. Checked
+ * 2026-10-10 against the full old hand-picked list: of its nine names,
+ * `irvine` (CA, KY) and `kirkland` (IL, WA) turn out to ALSO be ambiguous
+ * within the 50 states for an unrelated domestic reason and need no special
+ * case; `santa ana` (CA only, domestically) does not, and is the one name
+ * in this list. Not an attempt to enumerate every US/non-US name collision
+ * nationwide -- that would need a non-US gazetteer this file doesn't have --
+ * just the one this project already verified matters, so that verification
+ * isn't silently lost.
  */
+const FOREIGN_NAMESAKE_COLLISIONS: readonly string[] = ["santa ana"];
+
+/**
+ * Names found in MORE than one state anywhere in the bundled dataset --
+ * ticket e5e1aa1's generalization of ticket 410e1a2's hand-picked
+ * `REGION_REQUIRED_CITIES` (nine names, chosen by inspection: "everett",
+ * "glendale", "pasadena", "long beach", "kirkland", "redmond", "bellevue",
+ * "santa ana", "irvine"). That hand-picked set could never scale past the
+ * two curated metros it protected; this computes the SAME property --
+ * "is a bare mention of this name trustworthy on its own, or does it need a
+ * region to mean anything" -- from the full nationwide dataset instead.
+ *
+ * Measured 2026-10-10 (recomputed after review round 2's Hawaii/Juneau
+ * fixes to `cityCoordinates.ts`): 2,732 of 12,827 unique names (21.3%) are
+ * ambiguous by this definition, including some a human would not expect --
+ * "Boston" (GA, IN, MA), "Austin" (AR, IN, MN, PA, TX), "Denver" (CO, IA,
+ * IN, MO, PA) and "Portland" (AR, IN, ME, MI, ND, OR, PA, TN, TX) are all,
+ * technically, multi-state names, even though common usage treats each as
+ * having one obvious referent. This file has no population data to break
+ * that kind of tie (the Gazetteer place file carries land AREA, not
+ * population) -- and land area was tried and rejected as a substitute,
+ * measured, not assumed: picking the largest-land-area candidate resolves
+ * the colloquial referent correctly for Boston/Austin/Denver/Portland and
+ * Bellevue, but gets it WRONG for "pasadena" (picks TX over the far more
+ * famous Pasadena, CA), "nashville" (AR over TN), "lexington" (NC over KY),
+ * "rochester" (MN over NY) and "albany" (GA over NY) -- 5 of 23 probed
+ * names (2026-10-10), including the exact Pasadena/CA-vs-TX collision this
+ * file's own `FOREIGN_NAMESAKE_COLLISIONS`-adjacent reasoning already uses
+ * as its worked example of why a human-obvious answer isn't always the
+ * measurable one. So resolution does not try ANY tie-break: a POSTING
+ * naming one of these bare, with no state, is treated exactly like a
+ * posting naming "Bellevue" bare -- not expanded into, on the theory that
+ * an unresolved-but-honest miss is better than a resolved-but-wrong guess.
+ * (Land area IS used elsewhere, but only to word a WARNING's example text,
+ * where a wrong guess costs nothing worse than a slightly-off hint -- see
+ * `resolveCallerCities`.) The real motivating names for this ticket --
+ * Seattle, Olympia, Tacoma, Lacey, Los Angeles -- are each in exactly ONE
+ * state and are unaffected.
+ *
+ * Same asymmetry as the old `REGION_REQUIRED_CITIES`: this set is consulted
+ * for POSTINGS only (`cityIsInRegions`'s `side` parameter). A CALLER typing
+ * one of these names bare is handled by `resolveCallerCities`, which has its
+ * own (stricter, by necessity -- a coordinate, not just a region check, is
+ * needed) decision about when a bare ambiguous name can resolve at all.
+ */
+const AMBIGUOUS_CITY_NAMES: ReadonlySet<string> = (() => {
+  const set = new Set<string>();
+  for (const [name, candidates] of CITY_COORDINATES_BY_NAME) {
+    const states = new Set(candidates.map((c) => c.state));
+    if (states.size > 1) set.add(name);
+  }
+  for (const name of FOREIGN_NAMESAKE_COLLISIONS) set.add(name);
+  return set;
+})();
 
 /**
  * US states + DC + Canadian provinces, by the forms that actually appear in
@@ -607,18 +667,11 @@ const MAX_REGION_WORDS = 3;
  *       `AMBIGUOUS_WORD_CODES` can't tell "real Oregon code" from "shouted
  *       'or'" apart. For a NON-region-required city like Tacoma this is a
  *       false positive (the hidden real code means a foreign posting is
- *       wrongly accepted); for a `REGION_REQUIRED_CITIES` city it would be
- *       a coverage loss instead (F4 needs a positively-named region, and
- *       this rule hides the one that was there, so a genuine match is
- *       wrongly rejected) -- the SAME hidden-code mechanism, but which
- *       direction it fails in depends on the city. Harmless today because
- *       no non-region-required table city has a populous same-named place
- *       in Indiana/Oregon/Ontario/Oklahoma/Maine/Delaware/Louisiana
- *       (Burbank, OK exists but is a ~130-person town). Would need
- *       revisiting if a Portland group is ever added -- both its real
- *       namesakes, OR and ME, are ambiguous codes, and Portland would be
- *       region-required, so neither "Portland, OR-Hybrid" nor "Portland,
- *       ME-Hybrid" would resolve, this time as a coverage loss.
+ *       wrongly accepted); for an ambiguous-nationally city it would be a
+ *       coverage loss instead (the positive-region rule needs a positively-
+ *       named region, and this rule hides the one that was there, so a
+ *       genuine match is wrongly rejected) -- the SAME hidden-code
+ *       mechanism, but which direction it fails in depends on the city.
  *     - Symmetrically, a NON-ambiguous code shouted in caps as emphasis is
  *       misread as real -- "Tacoma, CO-OP", "Tacoma, WI-FI", and "Tacoma,
  *       HI-TECH" all reject as Colorado/Wisconsin/Hawaii, a coverage loss
@@ -634,16 +687,16 @@ const MAX_REGION_WORDS = 3;
  * whole-field equality has two possible effects, not one: for most cities,
  * finding an out-of-set region REJECTS an expansion that absence-passes
  * would otherwise have allowed (closing a false positive, e.g. "Everett, MA
- * 02149"); for a `REGION_REQUIRED_CITIES` city, finding an IN-set region
+ * 02149"); for an ambiguous-nationally city, finding an IN-set region
  * instead CREATES an acceptance that whole-field equality would have denied
- * (adding a true positive, e.g. "Bellevue, WA (HQ)" -- F4 requires exactly
- * this). Neither is a coverage-only or safety-only guarantee, which is why
- * earlier versions of this paragraph claiming a one-directional invariant
- * were each wrong: this function's failure modes are symmetric too -- a
- * code misread out of prose is a wrong rejection (coverage loss, "on-site"
- * round 2, "co-located" round 4, "CO-OP" above), and a real code hidden by
- * the hyphen rule is a failure to reject (false positive, "IL-Hybrid" round
- * 3, "OR-Hybrid" above on a non-region-required city).
+ * (adding a true positive, e.g. "Bellevue, WA (HQ)"). Neither is a
+ * coverage-only or safety-only guarantee, which is why earlier versions of
+ * this paragraph claiming a one-directional invariant were each wrong: this
+ * function's failure modes are symmetric too -- a code misread out of prose
+ * is a wrong rejection (coverage loss, "on-site" round 2, "co-located"
+ * round 4, "CO-OP" above), and a real code hidden by the hyphen rule is a
+ * failure to reject (false positive, "IL-Hybrid" round 3, "OR-Hybrid" above
+ * on a non-ambiguous city).
  */
 function regionOfField(field: string): string | undefined {
   const whole = lookupRegion(field);
@@ -711,74 +764,39 @@ function regionAfter(text: string, index: number): string | undefined {
 }
 
 /** `\b city \b`, case-insensitive, global (the caller walks occurrences).
- * Cities are plain words by construction, so a bare `\b` on each end is
- * always the right anchor and no regex escaping is needed -- both pinned by
- * `metroAreas.test.ts`. Internal spaces are relaxed to `\s+` so "culver
- * city" also matches "Culver  City" across a line break. */
+ * Dataset names are lowercase letters, spaces, hyphens and apostrophes only
+ * (`cityCoordinates.ts`'s own filtering guarantees it), none of which are
+ * regex metacharacters, so no escaping is needed and a bare `\b` anchor on
+ * each end is always correct -- both pinned by `metroAreas.test.ts`.
+ * Internal spaces are relaxed to `\s+` so "culver city" also matches
+ * "Culver  City" across a line break. */
 function cityPattern(city: string): RegExp {
   return new RegExp(`\\b${city.replace(/ +/g, "\\s+")}\\b`, "gi");
 }
 
-const PATTERN_BY_CITY: ReadonlyMap<string, RegExp> = (() => {
-  const map = new Map<string, RegExp>();
-  for (const group of METRO_AREA_GROUPS) {
-    for (const city of group.cities) map.set(city, cityPattern(city));
-  }
-  return map;
-})();
-
 /**
- * Table cities whose bare name, with NO region attached, is genuinely
- * ambiguous enough that a POSTING carrying it should not be expanded on the
- * strength of the name alone (ticket 410e1a2 review finding F4).
- *
- * The region guard's default is "absence of a foreign region passes" -- a
- * posting that says only "Bellevue" is taken to mean the Bellevue of the
- * metro the user asked about. That is right for a name with one famous
- * bearer ("Seattle", "Los Angeles", "Tacoma", "Anaheim"), and wrong for
- * these nine, each of which names a real, populous place somewhere the user
- * did not ask about:
- *
- *   everett (MA, Boston metro) · glendale (AZ, Phoenix metro) ·
- *   pasadena (TX, Houston metro) · long beach (NY, MS) ·
- *   kirkland (QC) · redmond (OR) · bellevue (NE, KY, OH) ·
- *   santa ana (Costa Rica, El Salvador) · irvine (Scotland)
- *
- * For these, the posting must POSITIVELY name a region in the group's set.
- * That is what rejects "Santa Ana, Costa Rica", "Irvine, Scotland",
- * "Kirkland, Canada", "Everett, Middlesex County", "Glendale, Phoenix, AZ"
- * and "Everett, United States" -- all of which the absence rule accepted,
- * and the last of which is a real shape in this repo's data (the Airbnb
- * fixture's "Los Angeles, United States").
- *
- * Measured cost, not assumed: re-running the owner's corpus
- * (`prep/match-results.json`) with this rule on changes the "Seattle" result
- * by zero postings. All 29 real Bellevue postings spell "WA" or
- * "Washington" out. What it does give up is the hypothetical bare
- * "Bellevue" / "Redmond (Hybrid)" posting, which is exactly today's strict
- * behavior for that posting -- i.e. coverage, not a false positive.
- *
- * This applies to POSTINGS only. On the CALLER's side a bare "Bellevue" must
- * still select the Seattle metro, because typing a city with no state is how
- * people actually search; the residual weakness that creates (a searcher
- * meaning Everett, MA) is recorded in this file's header and answered by the
- * UI label, not here.
+ * Lazily-built, indefinitely-cached `cityPattern` results. The old table
+ * precompiled a pattern for every one of its ~20 cities eagerly at module
+ * load; that doesn't scale to this dataset's 12,827 unique names, almost
+ * none of which are ever looked up in a given process's lifetime. Building
+ * on first use and caching forever keeps the steady-state cost identical to
+ * the old table's (one compiled `RegExp` per name actually matched against,
+ * reused for every job after that) without paying to compile the other
+ * ~12,000+ up front.
  */
-const REGION_REQUIRED_CITIES: ReadonlySet<string> = new Set([
-  "everett",
-  "glendale",
-  "pasadena",
-  "long beach",
-  "kirkland",
-  "redmond",
-  "bellevue",
-  "santa ana",
-  "irvine",
-]);
+const cityPatternCache = new Map<string, RegExp>();
+function getCityPattern(city: string): RegExp {
+  let pattern = cityPatternCache.get(city);
+  if (pattern === undefined) {
+    pattern = cityPattern(city);
+    cityPatternCache.set(city, pattern);
+  }
+  return pattern;
+}
 
 /**
  * Which side of the match `text` is: the caller's search phrase, or a
- * posting's location string. Only `REGION_REQUIRED_CITIES` treats the two
+ * posting's location string. Only `AMBIGUOUS_CITY_NAMES` treats the two
  * differently -- see its doc comment.
  */
 type MatchSide = "phrase" | "posting";
@@ -791,7 +809,7 @@ type MatchSide = "phrase" | "posting";
  * ambiguous -- by no region at all ("Seattle", "Tacoma, 98402"). False when
  * every occurrence is followed by a region outside the set ("Everett, MA"),
  * false for an ambiguous city with no region on the posting side (see
- * `REGION_REQUIRED_CITIES`), and false, of course, when the city does not
+ * `AMBIGUOUS_CITY_NAMES`), and false, of course, when the city does not
  * occur.
  *
  * Per-occurrence rather than per-string on purpose: "Bellevue, WA; Menlo
@@ -804,10 +822,9 @@ function cityIsInRegions(
   regions: readonly string[],
   side: MatchSide,
 ): boolean {
-  const pattern = PATTERN_BY_CITY.get(city);
-  if (pattern === undefined) return false;
-  const regionRequired = side === "posting" && REGION_REQUIRED_CITIES.has(city);
-  // Shared compiled RegExp objects carry `lastIndex` between calls, so reset
+  const pattern = getCityPattern(city);
+  const regionRequired = side === "posting" && AMBIGUOUS_CITY_NAMES.has(city);
+  // Shared, cached RegExp objects carry `lastIndex` between calls, so reset
   // before every walk. (A fresh RegExp per call would be correct too, and
   // measurably more allocation on the per-job path.)
   pattern.lastIndex = 0;
@@ -825,73 +842,278 @@ function cityIsInRegions(
   return false;
 }
 
-/**
- * The metro groups a caller's `nearLocations` phrase selects.
- *
- * A phrase selects a group when it names one of that group's cities AND does
- * not pin that city to a region outside the group -- so "Seattle", "seattle,
- * wa" and "Greater Seattle Area" all select the Seattle metro, while
- * "Pasadena, TX" selects nothing. Usually zero or one group; the array shape
- * is for the phrase that names cities in two ("Seattle and Los Angeles"),
- * which is unusual but not wrong.
- */
-export function metroGroupsFor(phrase: string): MetroAreaGroup[] {
-  return METRO_AREA_GROUPS.filter((group) =>
-    group.cities.some((city) => cityIsInRegions(city, phrase, group.regions, "phrase")),
-  );
+/** Longest dataset name in words ("village of grosse pointe shores", "the
+ * village of indian hill" -- both 5 words, measured 2026-10-10 against
+ * `cityCoordinates.ts`). Bounds the n-gram scan in `resolveCallerCities`. */
+const MAX_CITY_NAME_WORDS = 5;
+
+/** `text`'s letter-runs, lowercased, each with the `[start, end)` character
+ * span it occupies in `text` -- punctuation, digits, hyphens and apostrophes
+ * all act as separators, matching `cityPattern`'s own `\b` treatment of a
+ * hyphen as a boundary (ticket 410e1a2's "Renton-upon-Thames still finds
+ * 'renton'" case, carried forward). This is also the source of the
+ * documented coverage gap for the 87 dataset names that contain an internal
+ * hyphen or apostrophe (this file's header) -- a caller phrase can never
+ * reconstruct one of those names from separately-tokenized words, though a
+ * POSTING naming one is matched fine (that path uses `cityPattern` against
+ * raw text directly, never this tokenizer). */
+function wordTokensWithOffsets(text: string): { word: string; start: number; end: number }[] {
+  const tokens: { word: string; start: number; end: number }[] = [];
+  const re = /[A-Za-z]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    tokens.push({
+      word: match[0].toLowerCase(),
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return tokens;
 }
 
 /**
- * The sibling cities a phrase expands to: every city of every group it
- * selects, minus the ones the phrase already names.
+ * Every city name `phrase` names, resolved to a coordinate where possible --
+ * the caller-phrase half of ticket e5e1aa1's redesign, replacing ticket
+ * 410e1a2's `metroGroupsFor`.
  *
- * Exported for tests and for anything that wants to SHOW a user what a
- * phrase will pull in -- which is the only thing "sibling" is the right word
- * for. `compileMetroAreaMatchers` is what the filter itself uses, and it
- * deliberately covers the named city too.
+ * Scans `phrase` for the longest dataset name starting at each word (so
+ * "los angeles" wins over "los" at the same position, and a multi-word match
+ * consumes all of its words before scanning continues), then, for each
+ * found name:
+ *
+ *  - If a region immediately follows ("Everett, MA"), resolve to exactly the
+ *    dataset entries for that name IN that region -- which may be a
+ *    DIFFERENT real place than any other group previously keyed on the same
+ *    name (e.g. "Pasadena, TX" resolves to Pasadena, TX's own coordinates,
+ *    not "nothing", a deliberate behavior change from ticket 410e1a2's
+ *    table -- see this file's header). A region that matches no dataset
+ *    entry for the name is reported as unresolved ("wrong region"), not
+ *    silently ignored.
+ *  - Otherwise, if the name is unambiguous nationwide (exactly one state in
+ *    `CITY_COORDINATES_BY_NAME`), resolve to it directly -- "absence passes"
+ *    for a bare name, same spirit as ticket 410e1a2's caller-side exemption.
+ *  - Otherwise (ambiguous, no region given) the name is reported as
+ *    unresolved ("ambiguous") rather than guessed -- see
+ *    `AMBIGUOUS_CITY_NAMES`'s doc comment for why.
+ *
+ * A phrase can name more than one city ("Seattle or Bellevue"), which is
+ * unusual but not wrong -- every resolved name's coordinates are returned,
+ * not just the first.
  */
-export function metroSiblingCitiesFor(phrase: string): string[] {
-  const siblings: string[] = [];
-  for (const group of metroGroupsFor(phrase)) {
-    for (const city of group.cities) {
-      if (cityIsInRegions(city, phrase, group.regions, "phrase")) continue;
-      if (!siblings.includes(city)) siblings.push(city);
+type CityCoordinateCandidate = {
+  state: string;
+  lat: number;
+  lon: number;
+  alandSqMi: number;
+};
+
+function resolveCallerCities(phrase: string): {
+  resolved: Map<string, CityCoordinateCandidate[]>;
+  unresolvedMessages: string[];
+} {
+  const resolved = new Map<string, CityCoordinateCandidate[]>();
+  const unresolvedMessages: string[] = [];
+  const tokens = wordTokensWithOffsets(phrase);
+
+  let i = 0;
+  while (i < tokens.length) {
+    let matchedLen = 0;
+    let candidateName = "";
+    let candidates: readonly CityCoordinateCandidate[] | undefined;
+    const maxLen = Math.min(MAX_CITY_NAME_WORDS, tokens.length - i);
+    for (let len = maxLen; len >= 1; len--) {
+      const name = tokens
+        .slice(i, i + len)
+        .map((t) => t.word)
+        .join(" ");
+      const found = CITY_COORDINATES_BY_NAME.get(name);
+      if (found !== undefined) {
+        matchedLen = len;
+        candidateName = name;
+        candidates = found;
+        break;
+      }
     }
+    if (candidates === undefined) {
+      i += 1;
+      continue;
+    }
+
+    const matchEnd = tokens[i + matchedLen - 1].end;
+    const region = regionAfter(phrase, matchEnd);
+    if (region !== undefined) {
+      const inRegion = candidates.filter((c) => c.state === region);
+      if (inRegion.length > 0) {
+        resolved.set(candidateName, [...(resolved.get(candidateName) ?? []), ...inRegion]);
+      } else {
+        unresolvedMessages.push(
+          `"${candidateName}" was named with region "${region}", but the bundled dataset has no ` +
+            `such place there`,
+        );
+      }
+    } else {
+      const states = [...new Set(candidates.map((c) => c.state))].sort();
+      if (states.length === 1) {
+        resolved.set(candidateName, [...(resolved.get(candidateName) ?? []), ...candidates]);
+      } else {
+        // The example state named in the warning (NOT the resolution logic
+        // above, which never guesses) is picked by largest land area --
+        // measured, not assumed, to be a reasonable HINT even though it is
+        // not a reliable RESOLUTION heuristic (see `AMBIGUOUS_CITY_NAMES`'s
+        // doc comment for the measurement showing it gets Pasadena,
+        // Nashville, Lexington, Rochester and Albany wrong as a resolution
+        // rule). A wrong example state in a hint costs nothing worse than a
+        // slightly-off suggestion; a wrong example in the ACTUAL resolution
+        // would silently compute "nearby" from the wrong place entirely,
+        // which is exactly what this file refuses to do.
+        const suggestedState = [...candidates].sort((a, b) => b.alandSqMi - a.alandSqMi)[0].state;
+        unresolvedMessages.push(
+          `"${candidateName}" exists in multiple states (${states.join(", ")}) -- add one ` +
+            `(e.g. "${candidateName}, ${suggestedState}") to use "include nearby cities" for it`,
+        );
+      }
+    }
+    i += matchedLen;
   }
-  return siblings;
+
+  return { resolved, unresolvedMessages };
+}
+
+/**
+ * The default "no coordinate data at all" message, or `unresolvedMessages`
+ * verbatim when `resolveCallerCities` already has something more specific to
+ * say (ambiguous / wrong region). Factored out so `compileMetroAreaMatchers`'s
+ * `console.warn` (operator-visible) and `nearbyCityExpansionWarnings` (the
+ * caller-facing one surfaced through the API -- ticket e5e1aa1 review round
+ * 2, D8) can never drift out of sync in wording -- they call this with the
+ * SAME `unresolvedMessages` array `resolveCallerCities` already computed,
+ * not two independent re-derivations of it.
+ */
+function unresolvedReasonMessages(phrase: string, unresolvedMessages: string[]): string[] {
+  if (unresolvedMessages.length > 0) return unresolvedMessages;
+  return [
+    `no coordinate data for "${phrase.trim()}" in the bundled dataset -- "include nearby ` +
+      `cities" has no effect for this location`,
+  ];
+}
+
+/**
+ * The reasons `phrase` could not be expanded when `expandMetroAreas` is on --
+ * the caller-facing half of the fix for ticket e5e1aa1's central acceptance
+ * criterion ("a city with no coordinate data is reported to the user rather
+ * than silently matching nothing"), which `compileMetroAreaMatchers`'s
+ * `console.warn` alone did not satisfy (review round 2, D8: a server log
+ * line is visible to an operator, not to the user filling in the checkbox).
+ *
+ * `criteria.ts`'s `locationExpansionWarnings` calls this once per
+ * `nearLocations` phrase and `searches.ts` returns the result on
+ * `EstimateSearchResponse.locationWarnings`; `SearchCriteriaForm.tsx` renders
+ * it next to the checkbox. `[]` for a phrase that resolved (nothing to
+ * report) or that named no city at all AND is blank -- a non-blank phrase
+ * that names no recognizable city ("Remote", "EMEA", a typo) still reports,
+ * same as `compileMetroAreaMatchers`'s own console.warn and for the same
+ * reason: this function cannot tell "unsupported real city" apart from "not
+ * a city" either, and over-reporting a harmless case costs far less than
+ * silently swallowing a real one again.
+ */
+export function nearbyCityExpansionWarnings(phrase: string): string[] {
+  if (phrase.trim().length === 0) return [];
+  const { resolved, unresolvedMessages } = resolveCallerCities(phrase);
+  if (resolved.size > 0) return [];
+  return unresolvedReasonMessages(phrase, unresolvedMessages);
 }
 
 /**
  * The extra location matchers one `nearLocations` phrase earns when
- * `expandMetroAreas` is on. Empty for a phrase that names no table city --
- * i.e. for the overwhelming majority of phrases, the flag changes nothing.
+ * `expandMetroAreas` is on. Empty for a phrase that resolves to no
+ * coordinate at all -- see below for what that means and what this function
+ * does about it instead of staying silent.
  *
- * Each matcher is "this posting names that city, and does not place it in
- * another region" (see `cityIsInRegions`). The caller's own literal matcher
- * is NOT included here: `criteria.ts` always compiles and tests that one
- * itself, unmodified, which is what makes expansion purely additive.
+ * Each matcher is "this posting names that city, and does not place it in a
+ * region the within-radius scan didn't find it in" (`cityIsInRegions`). The
+ * caller's own literal matcher is NOT included here: `criteria.ts` always
+ * compiles and tests that one itself, unmodified, which is what makes
+ * expansion purely additive.
  *
- * EVERY city of a selected group gets a matcher, INCLUDING the one the
- * caller typed (ticket 410e1a2 review finding F2). Skipping the named city
- * -- this function's original shape -- gave it strictly HARSHER matching
- * than its own metro siblings: `nearLocations: ["Seattle, WA"]` with the
- * flag on got only the literal `\bseattle, wa\b` for Seattle while Bellevue
- * and Kirkland got the lenient, region-guarded treatment, so it matched a
- * posting phrased "Bellevue, Washington" but not one phrased "Seattle,
- * Washington". Measured on the owner's corpus: that cost 25 real
- * Seattle-named postings ("Seattle" alone, "Seattle, Washington", "Seattle,
- * Washington, United States" and five multi-city strings). The ticket's own
- * requirement is that a phrase match its metro GROUPING, and a city is in
- * its own grouping.
+ * EVERY city within radius gets a matcher, INCLUDING the one the caller
+ * typed -- it is always within its own radius (distance 0), so it is always
+ * among `nearby`'s keys for a resolved phrase. This is why a SUCCESSFULLY
+ * RESOLVED phrase can never produce zero matchers (ticket 410e1a2 review
+ * finding F2's fix, preserved by construction rather than by special-casing
+ * the named city the way the old table had to).
+ *
+ * That invariant is what makes `matchers.length === 0` an unambiguous signal
+ * that resolution failed -- not "resolved to a city with nothing nearby",
+ * which cannot happen. THIS IS THE FIX FOR THE ACTUAL BUG (ticket e5e1aa1):
+ * a city absent from the dataset, named with the wrong region, or ambiguous
+ * with no region given, now produces a `console.warn` naming the phrase and
+ * the reason, rather than the silent no-op John hit typing "Olympia" under
+ * the old table. The warning fires for ANY non-blank phrase that resolves to
+ * nothing -- including a phrase that was never meant as a city at all
+ * ("Remote", "EMEA") -- because this function has no principled way to tell
+ * "an unsupported real city" apart from "not a city", and the cost of a
+ * same-session developer/operator log line for the latter is far smaller
+ * than the cost of silently swallowing the former again. A blank phrase
+ * ("", "  ") produces neither a matcher nor a warning: it names no attempt
+ * at a location, same as today.
  */
 export function compileMetroAreaMatchers(phrase: string): ((location: string) => boolean)[] {
-  const matchers: ((location: string) => boolean)[] = [];
-  for (const group of metroGroupsFor(phrase)) {
-    for (const city of group.cities) {
-      matchers.push((location: string) =>
-        cityIsInRegions(city, location, group.regions, "posting"),
-      );
+  const { resolved, unresolvedMessages } = resolveCallerCities(phrase);
+  const nearby = new Map<string, Set<string>>();
+  for (const coordinates of resolved.values()) {
+    for (const { lat, lon } of coordinates) {
+      for (const candidate of CITY_COORDINATES) {
+        if (haversineMiles(lat, lon, candidate.lat, candidate.lon) <= NEARBY_CITY_RADIUS_MILES) {
+          let states = nearby.get(candidate.name);
+          if (states === undefined) {
+            states = new Set();
+            nearby.set(candidate.name, states);
+          }
+          states.add(candidate.state);
+        }
+      }
     }
   }
+
+  const matchers = [...nearby.entries()].map(([name, states]) => {
+    const regions = [...states];
+    return (location: string) => cityIsInRegions(name, location, regions, "posting");
+  });
+
+  if (matchers.length === 0 && phrase.trim().length > 0) {
+    for (const message of unresolvedReasonMessages(phrase, unresolvedMessages)) {
+      console.warn(`[metroAreas] "include nearby cities" could not expand: ${message}`);
+    }
+  }
+
   return matchers;
+}
+
+/**
+ * The city names a phrase expands to within `NEARBY_CITY_RADIUS_MILES`
+ * miles, EXCLUDING the names the phrase itself resolved to -- "what will
+ * this checkbox pull in, beyond what I typed". Exported for tests and for a
+ * future UI surface (e.g. a dynamic version of the checkbox's own label
+ * text, which ticket e5e1aa1 deliberately left static and generic -- see
+ * `SearchCriteriaForm.tsx`); `compileMetroAreaMatchers` is what the filter
+ * itself uses, and it deliberately covers the named city too (see its own
+ * doc comment for why that is not the same list).
+ */
+export function nearbySiblingCitiesFor(phrase: string): string[] {
+  const { resolved } = resolveCallerCities(phrase);
+  const named = new Set(resolved.keys());
+  const siblings = new Set<string>();
+  for (const coordinates of resolved.values()) {
+    for (const { lat, lon } of coordinates) {
+      for (const candidate of CITY_COORDINATES) {
+        if (
+          !named.has(candidate.name) &&
+          haversineMiles(lat, lon, candidate.lat, candidate.lon) <= NEARBY_CITY_RADIUS_MILES
+        ) {
+          siblings.add(candidate.name);
+        }
+      }
+    }
+  }
+  return [...siblings];
 }

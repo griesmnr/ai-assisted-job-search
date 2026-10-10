@@ -38,6 +38,7 @@ export function SearchCriteriaForm({
   anyLocationOk,
   commitmentIn,
   locationSectionRef,
+  locationWarnings,
   onTitleChipsChange,
   onChange,
 }: {
@@ -71,6 +72,19 @@ export function SearchCriteriaForm({
    * so every other existing caller/test (none of which care about
    * scrolling) keeps working unchanged. */
   locationSectionRef?: RefObject<HTMLDivElement | null>;
+  /** Ticket e5e1aa1 review round 2 (D8/Required 4): the reasons the most
+   * recent estimate's "include nearby cities" expansion could not resolve
+   * one or more typed locations -- e.g. "Boston" exists in GA, IN and MA
+   * and needs a state added. Comes from
+   * `EstimateSearchResponse.locationWarnings` via App.tsx's
+   * `onEstimateReady` (SearchFlow.tsx) -- a plain string array, not a prop
+   * this component derives itself, same as every other value here.
+   * Optional/defaulted to `[]` so every existing caller/test keeps working
+   * unchanged. Rendered directly under the checkbox that produced it,
+   * rather than only logged server-side, which is the actual fix for this
+   * ticket's acceptance criterion ("reported to the user", not to an
+   * operator's terminal). */
+  locationWarnings?: string[];
   onTitleChipsChange: (next: string[]) => void;
   onChange: (next: {
     nearLocations: string;
@@ -227,27 +241,49 @@ export function SearchCriteriaForm({
             aria-invalid={!hasLocationSignal}
           />
         </label>
-        {/* Ticket 410e1a2. Sits directly under the location box because it
-            only ever modifies what is typed there. Nicole raised both
-            sides of this herself -- some searchers want "Seattle" to mean
-            the metro area, others would be annoyed by an unrequested
-            Kirkland commute -- and settled it as a visible opt-in: "I
-            think it'll just be a check, a checkbox or something like
-            that... I want it given that it meets both users' needs as long
-            as it can be seen." So: off by default, and the label says what
-            it will actually do (names real sibling cities) rather than
-            something vague like "search nearby" that a user cannot predict
-            the effect of. The curated table behind it lives in
-            apps/api/src/sources/metroAreas.ts. */}
+        {/* Ticket 410e1a2, redesigned by ticket e5e1aa1. Sits directly under
+            the location box because it only ever modifies what is typed
+            there. Nicole raised both sides of this herself -- some
+            searchers want "Seattle" to also mean nearby cities, others
+            would be annoyed by an unrequested Kirkland commute -- and
+            settled it as a visible opt-in: "I think it'll just be a check,
+            a checkbox or something like that... I want it given that it
+            meets both users' needs as long as it can be seen." So: off by
+            default, and the label says what it will actually do.
+            Ticket e5e1aa1 replaced the original curated-metro-table version
+            of this label (which named Seattle's own siblings by name, and
+            silently did nothing for any other city -- the bug that ticket
+            fixes) with the generic distance claim every typed city now
+            actually gets: see apps/api/src/sources/metroAreas.ts for the
+            60-mile radius, why 60 and not 50, and the straight-line-is-not-
+            driving caveat this text deliberately echoes rather than hides.
+            Review round 2 (Required 5): the first version of this text
+            promised the 60-mile match UNCONDITIONALLY, which is false for a
+            location that can't resolve -- a bare city whose name exists in
+            more than one state ("Austin", "Boston", "Denver", "Portland" --
+            four of the eight cities the ticket's own bug report names) does
+            NOT get expanded, same as one absent from the dataset entirely.
+            "that resolves" below is the honest qualifier; `locationWarnings`
+            just under the checkbox is where a non-resolving location is
+            actually named, so this label does not have to enumerate every
+            failure mode itself. */}
         <label className="search-criteria-checkbox">
           <input
             type="checkbox"
             checked={expandMetroAreas}
             onChange={(e) => set({ expandMetroAreas: e.target.checked })}
           />
-          Also include nearby cities in the same metro area — a Seattle search would also match
-          Bellevue, Kirkland, Redmond, Renton, Everett and Tacoma
+          Also include nearby cities — matches postings within 60 miles (straight-line, not driving
+          distance) of each location above that resolves; some place names need a state added to
+          resolve (we'll say so below if so)
         </label>
+        {locationWarnings && locationWarnings.length > 0 && (
+          <ul className="search-criteria-location-expansion-warnings" role="alert">
+            {locationWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        )}
         <label className="search-criteria-checkbox">
           <input
             type="checkbox"

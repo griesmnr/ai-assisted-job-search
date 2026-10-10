@@ -4,6 +4,7 @@ import {
   MATCH_SCORE_FLOOR,
   nextResumeNicknameFor,
   type CreateResumeResponse,
+  type EstimateSearchResponse,
   type ScoredJobResult,
   type SearchCriteria,
   type UpdateResumeTextResponse,
@@ -762,8 +763,21 @@ function JobSearchApp() {
   // set true only by onSearchComplete, once a real run actually finishes.
   const [hasFreshSearchResults, setHasFreshSearchResults] = useState(false);
 
+  // Ticket e5e1aa1 review round 2 (D8/Required 4): "include nearby cities"
+  // reasons for a nearLocations phrase that didn't expand, surfaced on the
+  // most recent estimate response (`SearchFlow`'s `onEstimateReady`) and
+  // rendered by `SearchCriteriaForm` right next to the checkbox that
+  // produced them. Cleared on the SAME triggers as `hasFreshSearchResults`
+  // just below (criteria/source/resume change) so a stale warning from a
+  // DIFFERENT location/criteria never lingers after the thing it was about
+  // has changed -- and also whenever a new estimate starts, so a slow
+  // network round trip doesn't show last time's warning while this one is
+  // still in flight.
+  const [locationWarnings, setLocationWarnings] = useState<string[]>([]);
+
   useEffect(() => {
     setHasFreshSearchResults(false);
+    setLocationWarnings([]);
     // Ticket 9e5fcf3: `lastSearchId` resets alongside `hasFreshSearchResults`
     // on every one of these same triggers. Not just tidiness on the
     // `resumeId` branch of this effect -- see that state's own declaration
@@ -2265,6 +2279,7 @@ function JobSearchApp() {
                 anyLocationOk={criteriaForm.anyLocationOk}
                 commitmentIn={criteriaForm.commitmentIn}
                 locationSectionRef={locationSectionRef}
+                locationWarnings={locationWarnings}
                 onTitleChipsChange={setTitleChips}
                 onChange={setCriteriaForm}
               />
@@ -2294,6 +2309,10 @@ function JobSearchApp() {
                 disableEstimate={!hasLocationSignal}
                 onEstimateStart={() => {
                   setHasFreshSearchResults(false);
+                  // Ticket e5e1aa1 review round 2: don't show a stale
+                  // warning from a previous estimate while this new one is
+                  // still in flight.
+                  setLocationWarnings([]);
                   // Ticket 9e5fcf3: a re-estimate with the SAME
                   // criteria/sourceIds (clicking "Done" then "Get estimate"
                   // again without changing anything) doesn't re-run the
@@ -2309,6 +2328,9 @@ function JobSearchApp() {
                   // callback already keeps for that state.
                   setLastSearchId(undefined);
                 }}
+                onEstimateReady={(estimate: EstimateSearchResponse) =>
+                  setLocationWarnings(estimate.locationWarnings)
+                }
                 onInvalidEstimateAttempt={handleInvalidEstimateAttempt}
                 onSearchComplete={handleSearchComplete}
                 onRunningChange={setSearchRunning}

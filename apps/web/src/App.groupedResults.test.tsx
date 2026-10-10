@@ -145,6 +145,7 @@ describe("dismissed jobs stay visible in 'Results from this search' (ticket bec2
       alreadyScored: 0,
       sourceOutcomes: [],
       skippedSources: [],
+      locationWarnings: [],
     });
     startSearch.mockResolvedValue({ searchId: "search-1", status: "pending", skippedSources: [] });
     getSearchStatus.mockResolvedValue({

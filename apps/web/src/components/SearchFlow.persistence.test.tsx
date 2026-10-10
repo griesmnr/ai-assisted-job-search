@@ -66,6 +66,7 @@ function makeEstimate(overrides: Partial<EstimateSearchResponse> = {}): Estimate
     alreadyScored: 0,
     sourceOutcomes: [],
     skippedSources: [],
+    locationWarnings: [],
     ...overrides,
   };
 }
